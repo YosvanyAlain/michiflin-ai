@@ -26,7 +26,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from michiflin import (access, ai, chat, coder, config, egress, live_web, media, media_worker, miniapp,
-                       private_media, queue, sandbox, smart_agent, state, web_vault)
+                       private_media, queue, remote_worker, sandbox, smart_agent, state, web_vault)
 
 ALICE = "alice@example.org"
 BOB = "bob@example.org"
@@ -378,6 +378,58 @@ class VaultAndBridgeTests(unittest.TestCase):
             self.assertEqual(session._queue_video("https://facebook.com/video/1", 3)["error"], "not_video")
 
 
+class BrowserFrameTests(unittest.TestCase):
+    def test_sharp_frame_falls_back_and_remains_within_transport_limit(self):
+        page = mock.Mock()
+        page.screenshot.side_effect = lambda **kw: b"x" * (remote_worker.MAX_FRAME + 1 if kw["scale"] == "device" else 100)
+        result = remote_worker.frame(page, "sharp")
+        self.assertEqual(result["kind"], "frame")
+        self.assertEqual(result["rendered"], "economy")
+        self.assertEqual((result["width"], result["height"]), (480, 760))
+        self.assertEqual([call.kwargs["scale"] for call in page.screenshot.call_args_list], ["device"] * 4 + ["css"])
+        largest = dict(result, image=base64.b64encode(b"x" * remote_worker.MAX_FRAME).decode("ascii"))
+        self.assertLess(len(json.dumps({"v": 1, "sid": "a" * 32, **largest})), live_web.MAX_RESPONSE)
+        page.reset_mock()
+        result = remote_worker.frame(page, "economy")
+        self.assertEqual(result["rendered"], "economy")
+        self.assertEqual(page.screenshot.call_args.kwargs["scale"], "css")
+
+    def test_frame_rejects_even_an_economy_image_that_cannot_fit(self):
+        page = mock.Mock()
+        page.screenshot.return_value = b"x" * (remote_worker.MAX_FRAME + 1)
+        self.assertEqual(remote_worker.frame(page, "sharp"), {"kind": "error", "error": "frame_too_large"})
+        self.assertEqual(page.screenshot.call_count, 8)
+
+    def test_address_bar_stays_in_its_service_container(self):
+        self.assertTrue(live_web._same_site_url("https://m.youtube.com/watch?v=1", "youtube"))
+        self.assertTrue(live_web._same_site_url("https://youtu.be/test", "youtube"))
+        for url in ("https://facebook.com/", "http://youtube.com/", "https://youtube.com.evil.test/",
+                    "https://name:pass@youtube.com/", "https://youtube.com:444/", None, "x" * 4097):
+            with self.subTest(url=str(url)[:40]):
+                self.assertFalse(live_web._same_site_url(url, "youtube"))
+
+    def test_cross_site_address_is_rejected_before_reaching_browser(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/")
+        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()))
+        sent = []
+        def send(_instance, _sid, message):
+            sent.append(message)
+            if message.get("seq") == 0:
+                session.submit({"action": "goto", "seq": 1, "url": "https://facebook.com/"})
+            elif message.get("seq") == 1:
+                session.stop()
+            return True
+        with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()), \
+             mock.patch.object(live_web, "_send", side_effect=send), \
+             mock.patch.object(web_vault, "load", return_value=None), \
+             mock.patch.object(sandbox, "BrowserProcess") as factory, \
+             mock.patch.object(session, "_exchange", return_value={"kind": "frame", "image": ""}) as exchange:
+            factory.return_value.__enter__.return_value = worker
+            session.run()
+        self.assertEqual(exchange.call_count, 1)  # opening only, no external goto
+        self.assertIn({"t": "error", "seq": 1, "error": "different_site"}, sent)
+
+
 class EgressAndResearchTests(unittest.TestCase):
     def test_public_addresses_and_authorities_fail_closed(self):
         for address in ("127.0.0.1", "10.2.3.4", "169.254.169.254", "::1", "::ffff:127.0.0.1",
@@ -562,8 +614,11 @@ class RealSandboxTests(unittest.TestCase):
                            stderr=subprocess.DEVNULL, check=True, timeout=25)
             class Handler(http.server.BaseHTTPRequestHandler):
                 def do_GET(self):
-                    if self.path == "/long":
-                        body = b'<html><body style="height:2200px">Top<div style="position:absolute;top:2000px">Bottom</div></body></html>'
+                    if self.path.split("?", 1)[0] == "/long":
+                        body = (b'<html><body style="height:2200px">Top'
+                                b'<button style="position:fixed;left:20px;top:80px;width:120px;height:50px" '
+                                b'onclick="localStorage.setItem(\'clicked\',\'yes\')">Click fixture</button>'
+                                b'<div style="position:absolute;top:2000px">Bottom</div></body></html>')
                         self.send_response(200); self.send_header("Content-Type", "text/html")
                         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
                     if "demo_session=alice" not in (self.headers.get("Cookie") or ""):
@@ -649,22 +704,36 @@ class RealSandboxTests(unittest.TestCase):
                             process.stdin.write((json.dumps(payload) + "\n").encode()); process.stdin.flush()
                             self.assertTrue(select.select([process.stdout], [], [], 45)[0])
                             return json.loads(process.stdout.readline(3_000_001))
-                        first = exchange({"url": "https://fixture.example/long", "storage": None})
-                        self.assertEqual(first["kind"], "frame")
+                        first = exchange({"url": "https://fixture.example/long", "storage": None, "detail": "sharp"})
+                        self.assertEqual((first["kind"], first["rendered"]), ("frame", "sharp"))
                         frame = Image.open(io.BytesIO(base64.b64decode(first["image"])))
-                        self.assertEqual(frame.size, (480, 760))
-                        image = exchange({"action": "capture", "seq": 1})
+                        self.assertEqual(frame.size, (960, 1520))
+                        self.assertEqual((first["width"], first["height"]), (480, 760))  # click coordinates remain CSS pixels
+                        self.assertLess(len(json.dumps({"v": 1, "sid": "a" * 32, **first})), live_web.MAX_RESPONSE)
+                        clicked = exchange({"action": "click", "x": 60, "y": 100, "seq": 1})
+                        self.assertEqual(clicked["kind"], "frame")
+                        saved = exchange({"action": "save", "seq": 2})
+                        self.assertTrue(any(item["name"] == "clicked" and item["value"] == "yes"
+                                            for origin in saved["storage"]["origins"] for item in origin["localStorage"]))
+                        small = exchange({"action": "frame", "detail": "economy", "seq": 3})
+                        self.assertEqual((small["kind"], small["rendered"]), ("frame", "economy"))
+                        self.assertEqual(Image.open(io.BytesIO(base64.b64decode(small["image"]))).size, (480, 760))
+                        image = exchange({"action": "capture", "seq": 4})
                         self.assertEqual(image["kind"], "capture")
                         capture = Image.open(io.BytesIO(base64.b64decode(image["image"])))
                         self.assertEqual(capture.width, 960)
                         self.assertEqual(capture.height, image["height"] * 2)
                         self.assertGreater(capture.height, 3000)
-                        self.assertEqual(exchange({"action": "scroll", "amount": 600, "seq": 2})["kind"], "frame")
-                        scrolled = exchange({"action": "capture", "seq": 3})
+                        self.assertEqual(exchange({"action": "scroll", "amount": 240, "seq": 5})["kind"], "frame")
+                        scrolled = exchange({"action": "capture", "seq": 6})
                         self.assertEqual(scrolled["kind"], "capture")
                         self.assertLess(scrolled["height"], image["height"])
                         self.assertEqual(Image.open(io.BytesIO(base64.b64decode(scrolled["image"]))).height,
                                          scrolled["height"] * 2)
+                        self.assertEqual(exchange({"action": "goto", "url": "https://fixture.example/long?second=1", "seq": 7})["kind"], "frame")
+                        self.assertEqual(exchange({"action": "back", "seq": 8})["kind"], "frame")
+                        self.assertEqual(exchange({"action": "forward", "seq": 9})["kind"], "frame")
+                        self.assertIn("second=1", exchange({"action": "page_url", "seq": 10})["url"])
             finally:
                 os.umask(previous_umask)
                 server.shutdown(); server.server_close(); thread.join(timeout=3)

@@ -82,4 +82,34 @@ function boot() {
   assert.strictEqual(test.leaves(), 1);
 }
 
-console.log("live web startup ok");
+// Sharp/economy and optional still-frame refresh use the same ordered channel.
+// A slow reply never overlaps another action, and duplicate old frames are ignored.
+{
+  const test = boot(), messages = [];
+  test.web.start("https://example.org/", (message) => messages.push(message));
+  const sid = test.web.sid;
+  assert.strictEqual(test.sent[0].detail, "sharp");
+  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "first", rendered: "sharp" });
+  test.web.detail = "economy";
+  test.web.setAuto(true);
+  test.fire(5000);
+  assert.strictEqual(test.sent.at(-1).action, "frame");
+  assert.strictEqual(test.sent.at(-1).detail, "economy");
+  const before = test.sent.length;
+  test.fire(5000);
+  assert.strictEqual(test.sent.length, before); // the first refresh is still pending
+  test.receive({ v: 1, sid, t: "frame", seq: 1, image: "second", rendered: "economy" });
+  test.fire(5000);
+  assert.strictEqual(test.sent.at(-1).seq, 2);
+  const delivered = messages.length;
+  test.receive({ v: 1, sid, t: "frame", seq: 1, image: "stale" });
+  assert.strictEqual(messages.length, delivered);
+  assert.strictEqual(test.web.pending.seq, 2);
+  test.receive({ v: 1, sid, t: "frame", seq: 2, image: "third" });
+  assert.strictEqual(test.web.pending, null);
+  test.web.stop();
+  assert.strictEqual(test.timers.size, 0);
+  assert.strictEqual(test.leaves(), 1);
+}
+
+console.log("live web startup ok; quality and refresh ok");

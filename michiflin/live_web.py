@@ -63,6 +63,20 @@ def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
     return entry, owner
 
 
+def _same_site_url(url: Any, site: str) -> bool:
+    """Direct address-bar navigation stays in the session's service container.
+
+    Provider-driven redirects and login pop-ups can still visit other domains;
+    the encrypted state may therefore also contain their cookies.
+    """
+    if not isinstance(url, str) or len(url) > 4096:
+        return False
+    try:
+        return web_vault.site_of(url) == site
+    except web_vault.VaultError:
+        return False
+
+
 def _send(instance: int, sid: str, message: dict[str, Any]) -> bool:
     if _authorized(instance) is None:
         return False
@@ -127,8 +141,13 @@ def receive(instance: int, values: list[int]) -> None:
             except web_vault.VaultError as exc:
                 _send(instance, sid, {"t": "error", "error": str(exc)})
                 return
-            locale = body.get("lang") if body.get("lang") in {"es", "en"} else "es"
-            session = Session(instance, sid, authenticated[1], site, url, locale)
+            locale = body.get("lang")
+            if not isinstance(locale, str) or locale not in {"es", "en"}:
+                locale = "es"
+            detail = body.get("detail")
+            if not isinstance(detail, str) or detail not in {"sharp", "economy"}:
+                detail = "sharp"
+            session = Session(instance, sid, authenticated[1], site, url, locale, detail)
             _sessions[instance] = session
             session.start()
         elif existing and existing.sid == sid:
@@ -164,8 +183,9 @@ def shutdown() -> None:
 
 
 class Session:
-    def __init__(self, instance: int, sid: str, owner: str, site: str, url: str, locale: str = "es"):
+    def __init__(self, instance: int, sid: str, owner: str, site: str, url: str, locale: str = "es", detail: str = "sharp"):
         self.instance, self.sid, self.owner, self.site, self.url, self.locale = instance, sid, owner, site, url, locale
+        self.detail = detail if isinstance(detail, str) and detail in {"sharp", "economy"} else "sharp"
         self.generation = state.kill_generation(owner)
         self.stopped = threading.Event()
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
@@ -192,8 +212,8 @@ class Session:
 
     def submit(self, body: dict[str, Any]) -> None:
         seq, action = body.get("seq"), body.get("action")
-        if type(seq) is not int or seq < 1 or seq > 1_000_000 or action not in {
-            "click", "text", "key", "scroll", "back", "reload", "goto", "frame", "save", "close", "capture", "download"
+        if type(seq) is not int or seq < 1 or seq > 1_000_000 or not isinstance(action, str) or action not in {
+            "click", "text", "key", "scroll", "back", "forward", "reload", "goto", "frame", "save", "close", "capture", "download"
         }:
             return
         with self.mutex:
@@ -208,7 +228,7 @@ class Session:
                 self.inflight = seq
                 reply = None
                 # The queue contains plaintext briefly, never on disk or in logs.
-                request = {key: body[key] for key in ("action", "seq", "x", "y", "text", "key", "amount", "url") if key in body}
+                request = {key: body[key] for key in ("action", "seq", "x", "y", "text", "key", "amount", "url", "detail") if key in body}
                 try:
                     self.queue.put_nowait(request)
                 except queue.Full:
@@ -247,7 +267,8 @@ class Session:
         kind = result.get("kind")
         if kind == "frame":
             return {"t": "frame", "seq": seq, "image": result.get("image", ""), "width": result.get("width"),
-                    "height": result.get("height"), "warning": result.get("warning", "")}
+                    "height": result.get("height"), "rendered": result.get("rendered", ""),
+                    "warning": result.get("warning", "")}
         if kind == "state":
             # Linearize persistence with both kill-switch transitions and guest
             # revocation. A concurrent disconnect also takes self.mutex first.
@@ -331,7 +352,7 @@ class Session:
                 if worker.process is None or worker.process.stdout is None:
                     raise sandbox.SandboxError("browser_failed")
                 reader = io.BufferedReader(worker.process.stdout, buffer_size=65536)
-                first = self._exchange(worker, reader, {"url": self.url, "storage": storage}, 50)
+                first = self._exchange(worker, reader, {"url": self.url, "storage": storage, "detail": self.detail}, 50)
                 if not self._allowed():
                     return
                 reply = self._reply(first, 0)
@@ -350,7 +371,10 @@ class Session:
                     worker_request = dict(request)
                     if worker_request["action"] == "download":
                         worker_request["action"] = "page_url"
-                    result = self._exchange(worker, reader, worker_request, 45)
+                    if worker_request["action"] == "goto" and not _same_site_url(worker_request.get("url"), self.site):
+                        result = {"kind": "error", "error": "different_site"}
+                    else:
+                        result = self._exchange(worker, reader, worker_request, 45)
                     if not self._allowed():
                         return
                     reply = self._reply(result, seq)

@@ -18,7 +18,8 @@ function liveSite(value) {
 }
 
 window.liveWeb = {
-  channel: null, sid: "", seq: 0, pending: null, ready: false, startTimer: 0, startDeadline: 0, actionTimer: 0, onMessage: null,
+  channel: null, sid: "", seq: 0, pending: null, ready: false, detail: "sharp",
+  startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null,
   send(body) {
     if (!this.channel) return;
     const data = new TextEncoder().encode(JSON.stringify({ v: 1, sid: this.sid, ...body }));
@@ -39,7 +40,10 @@ window.liveWeb = {
       try { message = JSON.parse(new TextDecoder().decode(data)); } catch (error) { return; }
       if (!message || message.v !== 1 || message.sid !== this.sid) return;
       if (message.t === "opening" && this.ready) return;
-      if (message.t === "frame" && message.seq === 0 && this.seq > 0) return;
+      // Duplicate replies can arrive after a retry; do not put an old image or
+      // status over a newer action, and never acknowledge an unknown sequence.
+      if (Number.isInteger(message.seq) && message.seq > 0 && (!this.pending || message.seq !== this.pending.seq)) return;
+      if (message.t === "frame" && message.seq === 0 && (this.seq > 0 || this.pending)) return;
       if (message.t === "frame" && message.seq === 0) {
         clearInterval(this.startTimer);
         clearTimeout(this.startDeadline);
@@ -61,7 +65,7 @@ window.liveWeb = {
       }
       if (this.onMessage) this.onMessage(message);
     });
-    const hello = () => { try { this.send({ t: "start", url, lang: lang() }); } catch (error) { /* peer may not be ready yet */ } };
+    const hello = () => { try { this.send({ t: "start", url, lang: lang(), detail: this.detail }); } catch (error) { /* peer may not be ready yet */ } };
     hello();
     this.startTimer = setInterval(hello, 3500);
     this.startDeadline = setTimeout(() => {
@@ -70,7 +74,7 @@ window.liveWeb = {
   },
   action(action, args = {}) {
     if (!this.ready || this.pending) return false;
-    const request = { t: "action", action, seq: this.seq + 1, ...args };
+    const request = { t: "action", action, seq: this.seq + 1, ...args, detail: this.detail };
     this.pending = request;
     let attempts = 0;
     const retry = () => {
@@ -92,7 +96,19 @@ window.liveWeb = {
     retry();
     return true;
   },
+  setAuto(enabled) {
+    clearInterval(this.autoTimer);
+    this.autoTimer = 0;
+    if (enabled && this.channel) {
+      // Explicit opt-in: one still frame every five seconds, not a video stream.
+      // A pending click or refresh is never repeated or interrupted.
+      this.autoTimer = setInterval(() => {
+        if (this.ready && !this.pending) this.action("frame");
+      }, 5000);
+    }
+  },
   stop() {
+    this.setAuto(false);
     clearInterval(this.startTimer);
     clearTimeout(this.startDeadline);
     clearTimeout(this.actionTimer);
@@ -114,15 +130,21 @@ VIEWS.live_web = {
   render(main, params) {
     let site = "";
     try { site = liveSite(params.url); } catch (error) { add(main, failure(t("live_bad_url"))); return; }
+    window.liveWeb.detail = "sharp";
     const status = h("div", { class: "note", role: "status" }, t("live_click_start"));
     const stored = h("small", { class: "muted" }, t("live_checking"));
-    const picture = h("img", { class: "live-screen", alt: t("live_screen"), hidden: true });
+    const picture = h("img", { class: "live-screen", alt: t("live_screen"), hidden: true, draggable: "false" });
+    const screenBox = h("div", { class: "live-screen-box", hidden: true, tabindex: "0", role: "region", "aria-label": t("live_screen") }, picture);
+    const viewSettings = h("div", { class: "stack live-settings" });
     const secret = field({ type: "password", placeholder: t("live_type_placeholder"), autocomplete: "off" });
+    const address = field({ type: "url", value: params.url, maxlength: "4096", placeholder: t("live_address") });
     const controls = h("div", { class: "stack", hidden: true });
+    const auto = h("input", { type: "checkbox", disabled: true, onchange: (event) => window.liveWeb.setAuto(event.target.checked) });
     const errKey = (code) => ({ bad_url: "live_bad_url", not_configured: "live_not_configured", vault: "live_vault",
       too_large: "live_too_large", site_limit: "live_site_limit", busy: "live_busy", unsupported: "live_unsupported",
       isolation_unavailable: "live_isolation", python_unavailable: "live_isolation", browser_missing: "live_isolation",
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
+      different_site: "live_same_site", frame_too_large: "live_frame_large",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
     const run = (action, args) => {
       try {
@@ -130,11 +152,29 @@ VIEWS.live_web = {
         status.textContent = t("live_wait_action");
       } catch (error) { status.textContent = t(errKey(error.message)); }
     };
+    const setZoom = (value) => { picture.style.width = value + "%"; screenBox.scrollLeft = 0; screenBox.scrollTop = 0; };
+    add(viewSettings,
+      h("div", { class: "row live-zoom" }, h("small", { class: "muted" }, t("live_zoom")),
+        segmented("100", [["100", "100%"], ["150", "150%"], ["200", "200%"]], setZoom)),
+      h("small", { class: "muted" }, t("live_zoom_hint")),
+      h("details", { class: "live-options" }, h("summary", {}, t("live_view_options")),
+        h("small", { class: "muted" }, t("live_detail_hint")),
+        segmented("sharp", [["sharp", t("live_detail_sharp")], ["economy", t("live_detail_economy")]], (value) => {
+          window.liveWeb.detail = value;
+          if (window.liveWeb.ready && !window.liveWeb.pending) run("frame");
+        }),
+        h("label", { class: "row live-auto" }, auto, t("live_auto"))));
     const updateStored = async () => {
       try {
         const result = await bridge.call("browser_session", { do: "status", site });
         if (stored.isConnected) stored.textContent = t(result.stored ? "live_stored" : "live_not_stored");
       } catch (error) { if (stored.isConnected) stored.textContent = t("live_status_unknown"); }
+    };
+    const clearView = () => {
+      window.liveWeb.setAuto(false);
+      auto.checked = false; auto.disabled = true;
+      picture.removeAttribute("src"); picture.hidden = true; screenBox.hidden = true;
+      controls.hidden = true; secret.value = "";
     };
     const receive = (message) => {
       if (!main.isConnected) return;
@@ -143,8 +183,11 @@ VIEWS.live_web = {
         if (typeof message.image !== "string" || message.image.length > 120000) return;
         picture.src = "data:image/jpeg;base64," + message.image;
         picture.hidden = false;
+        screenBox.hidden = false;
+        auto.disabled = false;
         controls.hidden = false;
-        status.textContent = t(message.warning ? "live_action_warning" : "live_ready");
+        status.textContent = t(message.warning ? "live_action_warning"
+          : window.liveWeb.detail === "sharp" && message.rendered === "economy" ? "live_reduced" : "live_ready");
       } else if (message.t === "saved") {
         stored.textContent = t("live_stored");
         status.textContent = t("live_saved");
@@ -156,13 +199,14 @@ VIEWS.live_web = {
         status.textContent = t("live_closed");
         window.liveWeb.stop();
         start.disabled = false;
-        picture.removeAttribute("src"); picture.hidden = true; controls.hidden = true; secret.value = "";
+        clearView();
       } else if (message.t === "error") {
         status.textContent = t(errKey(message.error));
+        if (message.error === "frame_too_large") { auto.checked = false; window.liveWeb.setAuto(false); }
         if (message.seq === undefined || (message.seq === 0 && !window.liveWeb.ready)) {
           window.liveWeb.stop();
           start.disabled = false;
-          picture.removeAttribute("src"); picture.hidden = true; controls.hidden = true; secret.value = "";
+          clearView();
         }
       }
     };
@@ -176,24 +220,39 @@ VIEWS.live_web = {
       try { liveSite(params.url); window.liveWeb.start(params.url, receive); status.textContent = t("live_wait"); start.disabled = true; }
       catch (error) { status.textContent = t(errKey(error.message)); }
     } }, t("live_start"));
+    const openAddress = () => {
+      const value = address.value.trim();
+      try {
+        if (value.length > 4096 || liveSite(value) !== site) throw new Error("different_site");
+        run("goto", { url: value });
+      } catch (error) { status.textContent = t(errKey(error.message)); }
+    };
+    address.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); openAddress(); }
+    });
     const disconnect = h("button", { class: "btn ghost", onclick: async () => {
       if (!await confirmBox(t("live_forget"), t("live_forget_q"), t("live_forget"))) return;
       window.liveWeb.stop();
+      start.disabled = false;
+      clearView();
       try {
         await bridge.call("browser_session", { do: "disconnect", site });
         stored.textContent = t("live_not_stored");
         status.textContent = t("live_forgotten");
-        start.disabled = false;
-        picture.removeAttribute("src"); picture.hidden = true; controls.hidden = true; secret.value = "";
-      } catch (error) { toast(error.message, "bad"); }
+      } catch (error) { status.textContent = t("live_closed"); toast(error.message, "bad"); }
     } }, t("live_forget"));
     add(controls,
       h("div", { class: "row wrap" },
         h("button", { class: "btn small ghost", onclick: () => run("back") }, "← ", t("back")),
-        h("button", { class: "btn small ghost", onclick: () => run("scroll", { amount: -600 }) }, "↑"),
-        h("button", { class: "btn small ghost", onclick: () => run("scroll", { amount: 600 }) }, "↓"),
-        h("button", { class: "btn small ghost", onclick: () => run("reload") }, "↻"),
+        h("button", { class: "btn small ghost", onclick: () => run("forward") }, t("next"), " →"),
+        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_up"), onclick: () => run("scroll", { amount: -240 }) }, "↑"),
+        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_down"), onclick: () => run("scroll", { amount: 240 }) }, "↓"),
+        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_up"), onclick: () => run("scroll", { amount: -600 }) }, "↑↑"),
+        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_down"), onclick: () => run("scroll", { amount: 600 }) }, "↓↓"),
+        h("button", { class: "btn small ghost", "aria-label": t("refresh"), onclick: () => run("reload") }, "↻"),
         h("button", { class: "btn small ghost", onclick: () => run("frame") }, t("live_refresh"))),
+      h("small", { class: "muted" }, t("live_address_hint")),
+      h("div", { class: "row" }, address, h("button", { class: "btn small", onclick: openAddress }, t("go"))),
       h("p", { class: "muted small" }, t("live_click_hint")),
       h("div", { class: "row" }, secret,
         h("button", { class: "btn small", onclick: () => {
@@ -219,8 +278,10 @@ VIEWS.live_web = {
           if (await confirmBox(t("live_download"), t("live_download_q"), t("live_download"))) run("download");
         } }, t("live_download")),
         h("button", { class: "btn ghost", onclick: () => run("close") }, t("live_close"))));
-    add(main, h("p", { class: "note" }, t("live_privacy")), h("small", { class: "site-address" }, params.url), stored,
-      h("div", { class: "row wrap" }, start, disconnect), status, picture, controls);
+    add(main, h("p", { class: "note" }, t("live_privacy")), h("small", { class: "site-address" }, params.url),
+      h("p", { class: "muted small" }, t("live_personal_hint")),
+      h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")), stored,
+      h("div", { class: "row wrap" }, start, disconnect), status, viewSettings, screenBox, controls);
     updateStored();
   },
 };

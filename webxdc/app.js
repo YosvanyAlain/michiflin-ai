@@ -1042,6 +1042,30 @@ function actionBar(url, isMedia) {
     chip("copy", t("copy_link"), () => copyText(url)));
 }
 
+function searchVideoCandidate(value) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return false;
+    const host = url.hostname.toLowerCase().replace(/\.$/, "");
+    const domain = (name) => host === name || host.endsWith("." + name);
+    if (domain("tiktok.com")) return /\/@[^/]+\/video\/\d+/i.test(url.pathname);
+    if (domain("youtube.com")) return url.pathname === "/watch" || /^\/shorts\//.test(url.pathname);
+    if (domain("youtu.be")) return url.pathname.length > 1;
+    if (domain("instagram.com")) return /^\/(reel|p)\//.test(url.pathname);
+    if (domain("facebook.com")) return /^\/(watch|reel)\//.test(url.pathname) || url.pathname === "/watch";
+    return false;
+  } catch (error) { return false; }
+}
+
+function searchVideoSheet(url) {
+  openSheet(t("search_video_actions"), [
+    h("p", { class: "muted small" }, t("search_video_hint")),
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn primary", onclick: () => qualitySheet("video", url) }, t("search_video_public")),
+      h("button", { class: "btn ghost", onclick: () => { closeSheet(); go("live_web", { name: t("live_title"), url }); } }, t("search_video_private"))),
+  ]);
+}
+
 function resultCard(item) {
   return h("article", { class: "card result" },
     h("button", { class: "result-main", onclick: () => go("reader", { url: item.url }) },
@@ -1049,6 +1073,7 @@ function resultCard(item) {
       h("b", {}, plain(item.title)),
       item.snippet ? h("p", { class: "clamp" }, plain(item.snippet)) : null),
     h("div", { class: "result-tools" },
+      searchVideoCandidate(item.url) ? iconButton("video", t("search_video_actions"), () => searchVideoSheet(item.url), "tiny") : null,
       iconButton("pdf", "PDF", () => runAction("pdf", item.url), "tiny"),
       iconButton("camera", t("act_capture"), () => runAction("capture", item.url), "tiny"),
       iconButton("copy", t("copy_link"), () => copyText(item.url), "tiny")));

@@ -43,14 +43,23 @@ def valid_url(url: str) -> bool:
         return False
 
 
-def frame(page: Any) -> dict[str, Any]:
+def frame(page: Any, detail: str = "sharp") -> dict[str, Any]:
+    """Fit a frame into the realtime budget, retaining CSS click coordinates.
+
+    Sharp uses the existing device scale factor of two. A photograph-heavy page
+    can exceed the budget even at the lowest quality, so fall back to CSS pixels
+    instead of dropping the frame. Economy always uses CSS pixels.
+    """
     page.wait_for_timeout(300)
-    for quality in (60, 45, 30, 18):
-        image = page.screenshot(type="jpeg", quality=quality, full_page=False, timeout=12_000,
-                                animations="disabled", caret="hide", scale="css")
-        if len(image) <= MAX_FRAME:
-            return {"kind": "frame", "image": base64.b64encode(image).decode("ascii"),
-                    "width": WIDTH, "height": HEIGHT}
+    scales = ("device", "css") if detail != "economy" else ("css",)
+    for scale in scales:
+        for quality in (60, 45, 30, 18):
+            image = page.screenshot(type="jpeg", quality=quality, full_page=False, timeout=12_000,
+                                    animations="disabled", caret="hide", scale=scale)
+            if len(image) <= MAX_FRAME:
+                return {"kind": "frame", "image": base64.b64encode(image).decode("ascii"),
+                        "width": WIDTH, "height": HEIGHT,
+                        "rendered": "sharp" if scale == "device" else "economy"}
     return {"kind": "error", "error": "frame_too_large"}
 
 
@@ -78,13 +87,18 @@ def main() -> int:
             except Exception:
                 # The screenshot may still show a meaningful provider error or challenge.
                 pass
-            emit(frame(page))
+            candidate = initial.get("detail")
+            detail = candidate if isinstance(candidate, str) and candidate in {"sharp", "economy"} else "sharp"
+            emit(frame(page, detail))
             while True:
                 request = read()
                 if not request:
                     break
                 action = str(request.get("action") or "")
                 seq = request.get("seq")
+                candidate = request.get("detail")
+                if isinstance(candidate, str) and candidate in {"sharp", "economy"}:
+                    detail = candidate
                 try:
                     pages = [item for item in context.pages if not item.is_closed()]
                     if pages:
@@ -131,11 +145,13 @@ def main() -> int:
                         page.keyboard.press(key)
                     elif action == "scroll":
                         amount = int(request.get("amount", 0))
-                        if amount not in {-600, 600}:
+                        if amount not in {-600, -240, 240, 600}:
                             raise ValueError("scroll")
                         page.mouse.wheel(0, amount)
                     elif action == "back":
                         page.go_back(wait_until="domcontentloaded", timeout=15_000)
+                    elif action == "forward":
+                        page.go_forward(wait_until="domcontentloaded", timeout=15_000)
                     elif action == "reload":
                         page.reload(wait_until="domcontentloaded", timeout=15_000)
                     elif action == "goto":
@@ -145,13 +161,13 @@ def main() -> int:
                         page.goto(url, wait_until="domcontentloaded", timeout=25_000)
                     elif action != "frame":
                         raise ValueError("action")
-                    result = frame(page)
+                    result = frame(page, detail)
                     result["seq"] = seq
                     emit(result)
                 except Exception:
                     # Do not report provider exception text: it can include tokens and URLs.
                     try:
-                        result = frame(page)
+                        result = frame(page, detail)
                         result.update(seq=seq, warning="action_failed")
                         emit(result)
                     except Exception:

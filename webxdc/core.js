@@ -261,16 +261,17 @@ function confirmBox(title, text, okLabel) {
 }
 
 async function copyText(text) {
+  let copied = false;
   try {
     await navigator.clipboard.writeText(text);
+    copied = true;
   } catch (error) {
     const area = h("textarea", { value: text, style: "position:fixed;opacity:0" });
     document.body.append(area);
-    area.select();
-    document.execCommand("copy");
-    area.remove();
+    try { area.select(); copied = document.execCommand("copy"); } catch (fallbackError) { /* client refused clipboard */ }
+    finally { area.remove(); }
   }
-  toast(t("copied"), "ok");
+  toast(t(copied ? "copied" : "copy_failed"), copied ? "ok" : "bad");
 }
 
 function blobToBase64(blob) {
