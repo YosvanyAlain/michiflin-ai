@@ -30,6 +30,16 @@ def main() -> int:
     # Four rounds are sufficient for this small request and cap quota usage.
     coder.MAX_STEPS = 4
     coder.ANSWER_TOKENS = 1800
+    original_ask = coder._ask
+    rounds = 0
+    def trace_ask(messages, model_key, sticky):
+        nonlocal rounds
+        rounds += 1
+        response = original_ask(messages, model_key, sticky)
+        kinds = [kind for kind, _arg, _body in coder.parse(response.text)]
+        print("Model round:", rounds, "ok:", response.ok, "actions:", ",".join(kinds) or "none", flush=True)
+        return response
+    coder._ask = trace_ask
     try:
         result = coder.run(request, [], "en")
     except Exception as exc:
@@ -44,6 +54,11 @@ def main() -> int:
     print("Real model produced main.py:", built, flush=True)
     print("Real model requested research:", researched, flush=True)
     print("Real model ran a successful command:", executed, flush=True)
+    # This prompt and all pages read in this test are public; never print secrets
+    # or raw provider errors. The bounded summary helps diagnose a no-file reply.
+    if not built:
+        summary = str(result.get("summary") or "").replace("\n", " ")[:250]
+        print("Public test summary:", summary, flush=True)
     print("RESULT:", "full-pass" if built and researched and executed else "partial", flush=True)
     return 0 if built and researched and executed else 3
 
