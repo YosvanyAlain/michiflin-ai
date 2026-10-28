@@ -27,7 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tools, usage, web, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -312,7 +312,8 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     chat.send_update(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "action", "command", "tool", "translate", "rates", "youtube_account"}
+WORK_OPS = {"ask", "image", "code", "read", "search", "action", "command", "tool", "translate", "rates",
+            "youtube_account", "facebook_account", "tiktok_account"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "translate": 90, "code": 900}
@@ -357,9 +358,10 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
                                            "Michiflin is under maintenance and available only to its owner."))
         return
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
-    # Disconnecting an existing authorization is a safety operation, even
-    # while work is paused; other YouTube actions remain kill-switch guarded.
-    kill_safe = op in KILL_SAFE_OPS or (op == "youtube_account" and args.get("do") == "disconnect")
+    # Local authorization status and disconnection remain available while work
+    # is paused; starting, polling or reading providers is kill-switch guarded.
+    social_ops = {"youtube_account", "facebook_account", "tiktok_account"}
+    kill_safe = op in KILL_SAFE_OPS or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
     generation = int(request.get("_kill_generation", state.kill_generation(address)))
     was_killed = bool(request.get("_kill_at_admission", state.get_kill_switch(address)))
     if not kill_safe and (was_killed or state.work_interrupted(address, generation)):
@@ -840,6 +842,53 @@ def op_youtube_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                                                        "Google did not complete the operation. Check the configuration and retry."))
         raise AppError(tr(locale, spanish, english)) from None
     raise AppError(tr(locale, "Operación desconocida.", "Unknown operation."))
+
+
+def _social_account(provider: Any, service: str, args: dict[str, Any], locale: str) -> Any:
+    address, action = chat.sender(), str(args.get("do") or "status")
+    try:
+        if action == "status":
+            return provider.status(address)
+        if action == "start":
+            return provider.start(address)
+        if action == "poll":
+            return provider.poll(address)
+        if action == "disconnect":
+            return provider.disconnect(address)
+        if action == "cancel":
+            return provider.cancel(address)
+        permitted = {"facebook": {"profile", "posts"}, "tiktok": {"profile", "videos"}}
+        if action in permitted[service]:
+            return provider.read(address, action)
+    except provider.AccountError as exc:
+        labels = {"facebook": "Facebook", "tiktok": "TikTok"}
+        name = labels[service]
+        messages = {
+            "not_configured": (f"La conexión oficial de {name} aún no está configurada en el servidor.",
+                               f"The official {name} connection is not configured on the server."),
+            "not_connected": (f"Todavía no has conectado {name}.", f"You have not connected {name} yet."),
+            "network": (f"No pude contactar con {name}. Inténtalo de nuevo.", f"Could not reach {name}. Please retry."),
+            "reauthorize": ("La autorización caducó o fue revocada. Conecta tu cuenta de nuevo.",
+                            "Authorization expired or was revoked. Connect your account again."),
+            "vault": ("No se pudo abrir la sesión cifrada. Comprueba la clave del servidor.",
+                      "Could not open the encrypted session. Check the server key."),
+            "scope": ("El proveedor no concedió los permisos de lectura esperados, o incluyó otros no solicitados.",
+                      "The provider did not grant the expected read permissions, or included unrequested permissions."),
+        }
+        spanish, english = messages.get(str(exc), (f"{name} no completó la operación. Comprueba la app y vuelve a intentarlo.",
+                                                   f"{name} did not complete the operation. Check the app and retry."))
+        raise AppError(tr(locale, spanish, english)) from None
+    raise AppError(tr(locale, "Operación desconocida.", "Unknown operation."))
+
+
+@op("facebook_account")
+def op_facebook_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    return _social_account(facebook_account, "facebook", args, locale)
+
+
+@op("tiktok_account")
+def op_tiktok_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    return _social_account(tiktok_account, "tiktok", args, locale)
 
 
 @op("code")

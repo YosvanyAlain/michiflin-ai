@@ -1189,6 +1189,9 @@ VIEWS.accounts = {
     add(main, h("p", { class: "note" }, icon("info"), t("accounts_hint")),
       h("button", { class: "card space-card", onclick: () => go("youtube_account") },
         icon("youtube"), h("span", { class: "grow" }, h("b", {}, t("yt_account")), h("small", {}, t("yt_account_hint"))), icon("next")),
+      ...[["facebook_account", "fb_account"], ["tiktok_account", "tt_account"]].map(([view, label]) =>
+        h("button", { class: "card space-card", onclick: () => go(view) },
+          icon("user"), h("span", { class: "grow" }, h("b", {}, t(label)), h("small", {}, t("social_official_hint"))), icon("next"))),
       ...MANUAL_SITES.map(([name, url]) => card(
         h("b", {}, name), h("small", { class: "muted block" }, t("accounts_manual")),
         h("div", { class: "row wrap" }, h("small", { class: "site-address" }, url),
@@ -1263,6 +1266,88 @@ VIEWS.youtube_account = {
     act("status");
   },
 };
+
+function socialAccountView(service) {
+  const facebook = service === "facebook";
+  const label = facebook ? "Facebook" : "TikTok";
+  const operationName = `${service}_account`;
+  return {
+    tab: "web",
+    title: () => t(facebook ? "fb_account" : "tt_account"),
+    render(main) {
+      const box = h("div", { class: "stack" });
+      const results = h("div", { class: "stack" });
+      let current = {};
+      add(main, box, results);
+      const act = async (operation) => {
+        try {
+          const data = await bridge.call(operationName, { do: operation });
+          if (["profile", "posts", "videos"].includes(operation)) {
+            const items = Array.isArray(data.items) ? data.items : [];
+            fill(results, h("p", { class: "note" }, t("yt_first_page")),
+              ...(items.length ? items.map((item) => card(h("b", {}, item.title),
+                item.description ? h("p", { class: "muted" }, item.description) : null)) : [empty(t("yt_no_results"), "user")]));
+            return;
+          }
+          if (operation === "disconnect") {
+            current = { configured: !!current.configured, connected: false, pending: false, stored: false };
+            fill(results);
+            if (!data.revoked) toast(t("social_revocation_failed"), "bad");
+          } else if (operation === "cancel") {
+            current = data;
+          } else {
+            current = { ...current, ...data };
+            if (operation === "poll" && data.pending) toast(t("social_pending"));
+            if (data.expired && !data.pending) toast(t("social_expired"), "bad");
+          }
+          draw();
+        } catch (error) {
+          if (!error.cancelled) {
+            if (operation === "status") fill(box, failure(error.message, () => act("status")));
+            else toast(error.message, "bad");
+          }
+        }
+      };
+      const disconnect = () => h("button", { class: "btn ghost", onclick: async () => {
+        if (await confirmBox(t("yt_disconnect"), t("social_disconnect_q"), t("yt_disconnect"))) act("disconnect");
+      } }, t("yt_disconnect"));
+      const draw = () => {
+        if (!current.configured || current.vault_error) {
+          fill(box, card(h("p", {}, t(current.vault_error ? "social_vault_error" : "social_not_configured")),
+            current.stored ? disconnect() : null));
+        } else if (current.pending && (facebook ? current.url && current.user_code : current.qr_png)) {
+          const code = facebook ? [
+            h("p", {}, t("fb_instructions")),
+            h("div", { class: "row wrap" }, h("b", { class: "site-address" }, current.url),
+              h("button", { class: "btn small ghost", onclick: () => copyText(current.url) }, icon("copy"), t("accounts_copy"))),
+            h("p", {}, t("fb_code"), ": ", h("b", {}, current.user_code)),
+          ] : [h("p", {}, t("tt_instructions")),
+            h("img", { class: "social-qr", alt: t("tt_qr_alt"), src: "data:image/png;base64," + current.qr_png })];
+          fill(box, card(...code, h("div", { class: "row wrap" },
+            h("button", { class: "btn primary", onclick: () => act("poll") }, t("social_approved")),
+            h("button", { class: "btn ghost", onclick: () => act("cancel") }, t("social_cancel")))));
+        } else if (current.connected) {
+          fill(box, card(h("p", {}, t("social_connected")), h("p", { class: "muted" }, t("social_limited")),
+            h("div", { class: "row wrap" },
+              h("button", { class: "btn primary", onclick: () => act("profile") }, t("social_profile")),
+              facebook && current.posts_granted ? h("button", { class: "btn ghost", onclick: () => act("posts") }, t("fb_posts")) : null,
+              !facebook && current.videos_granted ? h("button", { class: "btn ghost", onclick: () => act("videos") }, t("tt_videos")) : null,
+              disconnect())));
+        } else {
+          fill(box, card(h("p", {}, t("social_disconnected")), h("p", { class: "muted" }, t("social_limited")),
+            h("div", { class: "row wrap" },
+              h("button", { class: "btn primary", onclick: () => act("start") }, t("social_connect", { name: label })),
+              current.stored ? disconnect() : null)));
+        }
+      };
+      fill(box, loading());
+      act("status");
+    },
+  };
+}
+
+VIEWS.facebook_account = socialAccountView("facebook");
+VIEWS.tiktok_account = socialAccountView("tiktok");
 
 VIEWS.transcript = {
   tab: "apps",

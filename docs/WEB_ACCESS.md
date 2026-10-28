@@ -1,43 +1,44 @@
-# Web access and session scope
+# Web access and official account connections
 
-## Current behavior
+The general reader opens accessible public pages; it is **not** a persistent logged-in browser. The cards for Instagram, Facebook, TikTok, Revolico, Arena.ai, Z.AI and DeepSeek Chat can also copy a website address for manual use. Opening a site manually does not connect the bot. `yt-dlp` support for public links changes by website and does not imply access to private or DRM-protected content. `YTDLP_COOKIES` is a single administrator-only facility, not a per-person social session; do not place other people's cookies there.
 
-- The reader and browser can open public pages accessible from the server. They do not perform interactive website login or maintain browser cookies as a persistent login per contact.
-- An optional YouTube **Data API** connection uses Google's official device authorization, not a browser session. It is disabled until the deployer configures an OAuth client and a separate session-encryption key. It is not connected by default.
-- `yt-dlp` has extractors for many public YouTube, Facebook, TikTok, Instagram, and other links. Support depends on the extractor, public access, website changes, and anti-bot checks; DRM and private content are not promised.
-- `YTDLP_COOKIES` is a single global file used only for the administrator. It is not per-contact authentication; do not place other people's cookies there.
-- Revolico's public pages can be tried with the general reader, but no stable official API or reliable extraction is claimed.
+## Optional social API connections
 
-## Social services: requested scope and official routes
+YouTube, Facebook and TikTok have separate, opt-in, sender-specific flows using official APIs. They are **not automatically connected**: provider app registration, configuration, and each account holder's approval are necessary, and the provider may restrict or reject an application. WebXDC has no direct network access. No passwords, cookies, refresh tokens, or access tokens should be pasted into a chat or sent to WebXDC. Device/QR approvals are temporary and remain tied to the requesting sender. The implementation is read-only apart from token lifecycle operations such as revocation; it does not grant arbitrary private feeds or a general browser session.
 
-The requested scope for Instagram, Facebook, YouTube, and TikTok is **read-only**. Link cards offer reading, screenshots, copying, and downloading where accessible; they are not a browser with a personal session. YouTube's optional OAuth connection is limited to the owner's own channel and the first 20 subscriptions and requires explicit authorization. The other sites are manual browser links, not connected sessions.
+The server stores tokens in `CONFIG_DIR/web-sessions` using a key derived from the separate, stable high-entropy `WEB_SESSION_KEY` (at least 32 characters). Filenames and encryption domains differ by service and sender. The outer state backup encrypts these files again. Losing/rotating `WEB_SESSION_KEY` makes old sessions unreadable. Disconnect removes the local encrypted file and requests provider revocation; if not confirmed, the account holder must revoke the app at the provider. Previously made encrypted backups can still contain an older copy until rotation; provider revocation is important to invalidate it.
 
-- **YouTube:** the [Data API](https://developers.google.com/youtube/v3/guides/authentication) can access certain private data with OAuth, consent, and credentials for a Google Cloud application. It does not automatically permit playback of arbitrary private or restricted content.
-- **TikTok:** [Login Kit and Display API](https://developers.tiktok.com/doc/login-kit-overview?enter_method=left_navigation) require an application, authorization, and approved permissions. `user.info.basic` and `video.list` have the scope described in the [permissions reference](https://developers.tiktok.com/doc/tiktok-api-scopes?enter_method=left_navigation); they do not grant unlimited access to private feeds.
-- **Instagram:** the [official API](https://developers.facebook.com/docs/instagram-platform/overview/) documents professional accounts, not a universal personal browsing session. A Meta app and the appropriate permissions are needed.
-- **Facebook:** capabilities depend on the Meta product, account type, review, and granted permissions. No API is claimed to replicate a personal feed freely, and credential-based scraping has not been implemented.
+### YouTube
 
-These flows require application registration, consent, encrypted storage separated by identity, and revocation; some providers also require a trusted web redirect, whereas YouTube's device flow does not. Provider restrictions or approvals may prevent access to certain data. WebXDC has no direct network access, so it is unsafe to imitate login or ask for passwords through messages. **Do not ask users to paste passwords or cookies into the bot.**
+1. Enable YouTube Data API v3 and create a Google OAuth client of type **TVs and limited-input devices**. Complete the consent-screen setup and any required verification.
+2. Configure server secrets `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and `WEB_SESSION_KEY`.
+3. In **Web → Accounts and sites → My YouTube account**, choose Connect. Open the displayed Google device address in a browser, enter the short code, and authorize `youtube.readonly` on Google. Return and select **I have authorized**.
+4. The first page of the account's own channel and subscriptions can be read, up to 20 results. This is not arbitrary private video access or a logged-in website.
 
-## Other evaluated websites
+The code is documented by [Google's device authorization guide](https://developers.google.com/youtube/v3/guides/auth/devices). If disconnect does not confirm revocation, use `https://myaccount.google.com/permissions`.
 
-- **Arena.ai:** its [terms](https://help.arena.ai/articles/5629909088-terms-of-use) restrict automated or programmatic access without an applicable license or authorization. Do not automate the site or reuse cookies without an expressly permitted route. Inputs may be shared with model providers; a free interface does not imply confidential processing. See the [API documentation](https://platform.arena.ai/docs) and [terms](https://help.arena.ai/articles/5629909088-terms-of-use).
-- **DeepSeek Chat:** the website and developer API are different products. The official API charges for tokens and Search/Fetch; it is not configured as a free route. Aggregators may offer free DeepSeek-named models under their own conditions. See [official pricing](https://api-docs.deepseek.com/quick_start/pricing/).
-- **Revolico:** authenticated interaction has not been implemented and no public API for it has been verified. Reading public pages is not equivalent to login.
-- **Z.AI:** the bot already has an OpenAI-compatible API route for Flash variants marked free in its [pricing table](https://docs.z.ai/guides/overview/pricing). No universal daily allowance for those variants was found there; Michiflin's caps are internal controls, not provider guarantees. Respect `429` responses and do not configure paid models on that key.
+### Facebook
 
-## Safe prerequisites for personal sessions
+1. Create a Meta app, enable **Facebook Login for Devices**, and comply with Meta's review and allowed-use requirements. Configure `FACEBOOK_APP_ID`, `FACEBOOK_CLIENT_TOKEN` and `WEB_SESSION_KEY` as secrets.
+2. The default request is only `public_profile`; the account owner opens `https://www.facebook.com/device`, enters the displayed code, and grants permission. Return and select **I have authorized**. The bot can then read the authorized account's basic profile.
+3. Optionally set repository variable `FACEBOOK_READ_POSTS=1` only if the app and use are approved for `user_posts`. The owner must grant it; only their own posts are requested, and availability is subject to Meta's restrictions. No posting or deletion permission is requested.
 
-If website login is added later, each session must belong solely to the authenticated sender, remain isolated by address, expire, and be removable from the app. Never request or copy passwords or cookies between users. Before enabling it, use a provider-authorized flow, preferably OAuth or an official API, encrypted storage, and a separate test instance. Without staging, real login has not been tested and must not be presented as operational.
+The endpoint and error codes follow [Facebook Login for Devices](https://developers.facebook.com/documentation/facebook-login/for-devices). Device tokens can expire or be revoked and are not assumed valid just because a ciphertext file exists.
 
-No website session is connected for Arena.ai, Revolico, DeepSeek Chat, or Z.AI. The app can copy their official addresses for manual use outside WebXDC; this does not grant the bot access. Z.AI's existing API route is distinct from a web session and depends on the key's validity, permissions, and fees.
+### TikTok
 
-## Optional YouTube connection
+1. Register a TikTok developer app with Login Kit, configure an approved HTTPS redirect URI, and complete applicable review. Configure `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_OAUTH_REDIRECT_URI` (exactly the registered URI, without query or fragment), and `WEB_SESSION_KEY` as secrets.
+2. In **My TikTok account**, choose Connect and scan the temporary QR using TikTok on another device. Approve the request there and return to select **I have authorized**. The backend verifies `client_ticket`, random `state` and the registered redirect before exchanging a code; the authorization code and tokens do not enter WebXDC.
+3. The default permission is `user.info.basic`, which permits basic account information. `TIKTOK_READ_VIDEOS=1` optionally requests `video.list` **only after** the app and scope are approved; this allows the authorized user's own video list, not their private For You feed. Permissions can be declined and API availability depends on TikTok.
 
-1. In Google Cloud, enable YouTube Data API v3 and create an OAuth client of type **TVs and limited-input devices**. Complete the consent-screen setup and any applicable verification/review. Do not request write scopes.
-2. Configure `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, and a separate high-entropy `WEB_SESSION_KEY` of at least 32 characters as deployment secrets. Keep the encryption key stable across restarts. Do not share any secret through bot messages or WebXDC.
-3. In Web → Accounts and sites → My YouTube account, choose Connect. In a separate browser, open the Google address, enter the displayed short code, and approve `youtube.readonly`. Return to the app and select “I have authorized”. WebXDC itself has no Internet access.
-4. The bot can read the first page of the authorized account's channel and subscriptions. This is not a website login, private video downloader, or a general feed. Google may reject or expire authorization, or require app review.
-5. Disconnect removes the local encrypted token and asks Google to revoke it. If revocation is not confirmed, revoke the application yourself at `https://myaccount.google.com/permissions`.
+See TikTok's [QR authorization](https://developers.tiktok.com/docs/en/login-kit-qr-code-authorization) and [token management](https://developers.tiktok.com/docs/en/oauth-user-access-token-management) guides. The QR flow is implemented and mock-tested; without real app credentials and approval, actual provider behavior and review remain unverified.
 
-Device codes are temporary and kept only in memory. Refresh tokens are encrypted with the separate session key in sender-specific files; the existing backup encrypts the whole account again. Loss/rotation of the session key makes the old sessions unreadable. Never reuse a token between contacts. This integration needs an actual configured Google app and user consent; mocked tests do not prove that a real account is connected.
+## Other requested services
+
+- **Instagram:** the [official platform](https://developers.facebook.com/docs/instagram-platform/overview/) targets professional/business or creator accounts and has app, authorization, permission and often review requirements. Its business-login flow needs an appropriate configured redirect or business setup; a universal personal Instagram feed is not available through this integration. It has **not** been implemented here and the manual link is not a connected session.
+- **Revolico:** no reliable official authenticated API has been verified; only public reading/manual browsing is attempted. No account login is implemented.
+- **Arena.ai:** its [terms](https://help.arena.ai/articles/5629909088-terms-of-use) restrict programmatic use without an applicable authorization/license. Do not automate the website or reuse cookies. A separately authorized [API](https://platform.arena.ai/docs) is not a website login.
+- **DeepSeek Chat:** the [developer API](https://api-docs.deepseek.com/) is a separate, potentially paid product, not an authenticated session for `chat.deepseek.com`. No website login is implemented.
+- **Z.AI:** the bot's configured API route is separate from a website session; availability, authorization and pricing depend on the actual key and service. No Z.AI website login is implemented.
+
+Mock tests and simulated browser screenshots do not establish a real social connection. Confirm each provider app and account authorization individually before claiming operational access.

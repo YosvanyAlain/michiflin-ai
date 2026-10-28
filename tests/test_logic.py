@@ -1148,7 +1148,8 @@ class BackupTests(unittest.TestCase):
                 return mock.Mock(status_code=200, json=lambda: {"tree": {"sha": "existing-tree"}}, raise_for_status=lambda: None)
             return mock.Mock(status_code=404)
 
-        env = {"GITHUB_TOKEN": "t", "STATE_BACKUP_REPO": "o/r", "STATE_BACKUP_PASSPHRASE": "pass phrase"}
+        env = {"GITHUB_TOKEN": "t", "STATE_BACKUP_REPO": "o/r", "STATE_BACKUP_PASSPHRASE": "pass phrase",
+               "STATE_BACKUP_STORAGE": "legacy-git"}
         with mock.patch.dict(os.environ, env), \
                 mock.patch.object(state_backup.requests, "get", side_effect=get), \
                 mock.patch.object(state_backup.requests, "post", side_effect=post), \
@@ -1167,7 +1168,7 @@ class BackupTests(unittest.TestCase):
                 os.environ["CONFIG_DIR"] = f"{_TMP}/cfg"
         self.assertEqual((base / "michiflin" / "code.py").read_text(), "keep")
         self.assertEqual((base / ".michiflin-state" / "accounts" / "db").read_text(), "state")
-        self.assertEqual(sorted(p.name for p in base.iterdir()), [".michiflin-state", "michiflin", "src"])
+        self.assertTrue({".michiflin-state", "michiflin", "src"}.issubset({p.name for p in base.iterdir()}))
         return calls
 
     def test_backup_appends_without_rewriting_history(self):

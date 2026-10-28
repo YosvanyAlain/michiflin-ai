@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from michiflin import access, admin, chat, config, miniapp, state
+from michiflin import access, admin, chat, config, miniapp, state, tiktok_account
 
 try:
     from playwright.sync_api import sync_playwright
@@ -43,6 +43,11 @@ BRIDGE = r"""
   window.__delay = 0;
   window.__ytConfigured = false;
   window.__ytConnected = false;
+  window.__fbConfigured = false;
+  window.__fbConnected = false;
+  window.__ttConfigured = false;
+  window.__ttConnected = false;
+  const simulatedQr = "__SIMULATED_QR__";
   const responseFor = (request) => {
     switch (request.op) {
       case "hello": return { version: "browser-smoke", admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
@@ -80,6 +85,18 @@ BRIDGE = r"""
         if (request.args.do === "disconnect") { window.__ytConnected = false; return { connected: false, revoked: true }; }
         if (request.args.do === "channels" || request.args.do === "subscriptions") return { items: [{ title: "SIMULATED channel", description: "Mock account data" }] };
         return { configured: window.__ytConfigured, connected: window.__ytConnected };
+      case "facebook_account":
+        if (request.args.do === "start") return { configured: true, connected: false, pending: true, url: "https://www.facebook.com/device", user_code: "FB-TEST-CODE" };
+        if (request.args.do === "poll") { window.__fbConnected = true; return { configured: true, connected: true, pending: false, posts_granted: false }; }
+        if (request.args.do === "disconnect") { window.__fbConnected = false; return { connected: false, revoked: true }; }
+        if (request.args.do === "profile") return { items: [{ title: "SIMULATED Facebook profile", description: "" }] };
+        return { configured: window.__fbConfigured, connected: window.__fbConnected };
+      case "tiktok_account":
+        if (request.args.do === "start") return { configured: true, connected: false, pending: true, qr_png: simulatedQr };
+        if (request.args.do === "poll") { window.__ttConnected = true; return { configured: true, connected: true, pending: false, videos_granted: false }; }
+        if (request.args.do === "disconnect") { window.__ttConnected = false; return { connected: false, revoked: true }; }
+        if (request.args.do === "profile") return { items: [{ title: "SIMULATED TikTok profile", description: "" }] };
+        return { configured: window.__ttConfigured, connected: window.__ttConnected };
       case "queue": return { jobs: [] };
       case "action": return { title: "Smoke test", text: "smoke test result" };
       default: return {};
@@ -133,7 +150,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
         root = Path(temporary)
         for name in miniapp.APP_FILES:
             shutil.copy2(miniapp.APP_DIR / name, root / name)
-        (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
+        qr = tiktok_account._qr_image("aweme://authorize?client_key=SIMULATED&client_ticket=SIMULATED")
+        (root / "webxdc.js").write_text(BRIDGE.replace("__SIMULATED_QR__", qr), encoding="utf-8")
 
         class QuietHandler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, _format: str, *_args: object) -> None:
@@ -226,6 +244,37 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
                 page.get_by_role("button", name="Mi canal" if language == "es" else "My channel").click()
                 page.get_by_text("SIMULATED channel").wait_for(state="visible")
+                self.assertEqual(errors, [])
+
+    def test_official_social_views_with_simulated_bridge(self) -> None:
+        cases = [("es", {"width": 390, "height": 844}), ("en", {"width": 1280, "height": 800})]
+        for language, viewport in cases:
+            with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
+                page.evaluate("go('accounts')")
+                page.get_by_role("button", name="Mi cuenta de Facebook" if language == "es" else "My Facebook account", exact=False).click()
+                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server does not yet have", exact=False).wait_for(state="visible")
+                self.assertEqual(page.get_by_role("button", name="Conectar con Facebook" if language == "es" else "Connect with Facebook").count(), 0)
+                screenshot_if_requested(page, language + "-facebook-not-configured")
+                page.evaluate("window.__fbConfigured = true; go('facebook_account')")
+                page.get_by_role("button", name="Conectar con Facebook" if language == "es" else "Connect with Facebook").click()
+                page.get_by_text("FB-TEST-CODE").wait_for(state="visible")
+                screenshot_if_requested(page, language + "-facebook-device-SIMULATED")
+                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
+                page.get_by_role("button", name="Mi perfil" if language == "es" else "My profile").click()
+                page.get_by_text("SIMULATED Facebook profile").wait_for(state="visible")
+
+                page.evaluate("go('tiktok_account')")
+                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server does not yet have", exact=False).wait_for(state="visible")
+                screenshot_if_requested(page, language + "-tiktok-not-configured")
+                page.evaluate("window.__ttConfigured = true; go('tiktok_account')")
+                page.get_by_role("button", name="Conectar con TikTok" if language == "es" else "Connect with TikTok").click()
+                qr = page.locator("#view img.social-qr")
+                qr.wait_for(state="visible")
+                self.assertTrue(qr.evaluate("e => e.complete && e.naturalWidth > 0 && e.src.startsWith('data:image/png;base64,')"))
+                screenshot_if_requested(page, language + "-tiktok-qr-SIMULATED")
+                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
+                page.get_by_role("button", name="Mi perfil" if language == "es" else "My profile").click()
+                page.get_by_text("SIMULATED TikTok profile").wait_for(state="visible")
                 self.assertEqual(errors, [])
 
     def test_bilingual_mode_status_chat_and_private_admin(self) -> None:

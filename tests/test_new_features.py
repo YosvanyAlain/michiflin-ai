@@ -433,6 +433,34 @@ class KillSwitchDisconnectTests(unittest.TestCase):
             miniapp.handle(100, entry, request)
             function.assert_not_called()
 
+    def test_social_status_cancel_and_disconnect_are_safe_while_work_paused(self) -> None:
+        class Immediate:
+            def submit(self, fn):
+                future = Future()
+                try:
+                    future.set_result(fn())
+                except Exception as exc:
+                    future.set_exception(exc)
+                return future
+        entry = {"chat": 10, "addr": OWNER}
+        for op in ("facebook_account", "tiktok_account"):
+            function = mock.Mock(return_value={"connected": False})
+            with self.subTest(op=op), mock.patch.dict(miniapp.OPS, {op: function}), \
+                 mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
+                 mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
+                 mock.patch.object(miniapp.admin, "seen"), mock.patch.object(config, "service_access_allowed", return_value=True), \
+                 mock.patch.object(state, "get_kill_switch", return_value=True), \
+                 mock.patch.object(state, "work_interrupted", return_value=True), \
+                 mock.patch.object(miniapp, "respond"), mock.patch.object(miniapp, "_workers", Immediate()), \
+                 mock.patch.object(miniapp.usage, "note"), mock.patch.object(miniapp.perf, "note_op"):
+                for action in ("status", "cancel", "disconnect"):
+                    miniapp.handle(100, entry, {"id": "abc", "op": op, "lang": "en", "args": {"do": action}})
+                self.assertEqual(function.call_count, 3)
+                function.reset_mock()
+                for action in ("start", "poll", "profile"):
+                    miniapp.handle(100, entry, {"id": "abc", "op": op, "lang": "en", "args": {"do": action}})
+                function.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
