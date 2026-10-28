@@ -30,18 +30,25 @@ SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _lock = threading.RLock()
 _sessions: dict[int, Session] = {}
 _advertised: dict[int, float] = {}
+_stale_notices: dict[int, float] = {}
+STALE_NOTICE_GAP = 1800
 
 
-def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
+def _identity(instance: int) -> tuple[dict[str, Any], str] | None:
+    """Verify the bound recipient and encrypted chat even for a denial notice.
+
+    This does not authorize browser work. A stale or paused app can receive
+    only a fixed, non-sensitive explanation; revoked/foreign instances cannot.
+    """
     # Delayed imports avoid a cycle with miniapp event registration.
     from . import miniapp
     with state.lock:
         original = miniapp._instance(instance)
         entry = dict(original) if original else None
-    if not entry or entry.get("build") != miniapp.app_build() or not access.bound_allowed(entry):
+    if not entry or not access.bound_allowed(entry):
         return None
     owner = str(entry.get("addr") or "").strip().casefold()
-    if not owner or not admin.is_allowed(owner) or not config.service_access_allowed(owner) or state.get_kill_switch(owner):
+    if not owner or not admin.is_allowed(owner) or not config.service_access_allowed(owner):
         return None
     try:
         rpc, account = chat.rpc(), chat.account()
@@ -61,6 +68,18 @@ def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
     except Exception:
         return None
     return entry, owner
+
+
+def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
+    """Admit browser work only for a current build with the kill switch off."""
+    from . import miniapp
+    identity = _identity(instance)
+    if not identity:
+        return None
+    entry, owner = identity
+    if entry.get("build") != miniapp.app_build() or state.get_kill_switch(owner):
+        return None
+    return identity
 
 
 def _same_site_url(url: Any, site: str) -> bool:
@@ -90,8 +109,65 @@ def _send(instance: int, sid: str, message: dict[str, Any]) -> bool:
         return False
 
 
+def _notice_stale(instance: int, entry: dict[str, Any], owner: str, locale: str) -> None:
+    """Tell older clients what to do, without exposing an invitation or data.
+
+    The old client does not know the new error code, so an occasional private
+    chat message provides the actionable explanation it cannot display itself.
+    """
+    from . import miniapp
+    chat_id = int(entry["chat"])
+    now = time.monotonic()
+    with _lock:
+        if now - _stale_notices.get(chat_id, float("-inf")) < STALE_NOTICE_GAP:
+            return
+        _stale_notices[chat_id] = now
+        if len(_stale_notices) > 512:
+            _stale_notices.pop(min(_stale_notices, key=_stale_notices.get), None)
+
+    def interrupted() -> bool:
+        current = _identity(instance)
+        return not current or current[1] != owner or current[0].get("build") == miniapp.app_build()
+
+    text = ("La mini app abierta es anterior y no puede iniciar Live. Abre la versión más reciente del chat. "
+            "Si no ha llegado, usa Ajustes → Sincronizar ahora para solicitarla. La app anterior y sus datos se conservan."
+            if locale == "es" else
+            "The open mini app is older and cannot start Live. Open the newest app in the chat. "
+            "If it has not arrived, use Settings → Sync now to request it. The older app and its data are kept.")
+    try:
+        sent = chat.send(chat_id, text, quote=instance, interrupted=interrupted)
+    except Exception:
+        sent = 0
+    if not sent:
+        with _lock:
+            if _stale_notices.get(chat_id) == now:
+                _stale_notices.pop(chat_id, None)
+
+
+def _deny(instance: int, sid: str, locale: str) -> None:
+    """Send only a fixed reason after rechecking the full chat identity."""
+    from . import miniapp
+    identity = _identity(instance)
+    if not identity:
+        return
+    entry, owner = identity
+    reason = ("stale_app" if entry.get("build") != miniapp.app_build()
+              else "paused" if state.get_kill_switch(owner) else "")
+    if not reason:
+        return
+    raw = json.dumps({"v": 1, "sid": sid, "t": "error", "error": reason}, separators=(",", ":")).encode("utf-8")
+    try:
+        chat.rpc().send_webxdc_realtime_data(chat.account(), instance, list(raw))
+    except Exception:
+        pass
+    if reason == "stale_app":
+        _notice_stale(instance, entry, owner, locale)
+
+
 def advertisement(instance: int) -> None:
-    if _authorized(instance) is None:
+    # Join even for a paused/stale *verified* recipient so it can receive a
+    # non-sensitive denial. This never admits a browser session on its own.
+    if _identity(instance) is None:
         return
     now = time.monotonic()
     with _lock:
@@ -105,7 +181,10 @@ def advertisement(instance: int) -> None:
 
 
 def receive(instance: int, values: list[int]) -> None:
-    if len(values) > MAX_MESSAGE or _authorized(instance) is None:
+    if len(values) > MAX_MESSAGE:
+        return
+    authorized = _authorized(instance)
+    if authorized is None and _identity(instance) is None:
         return
     try:
         body = json.loads(bytes(values).decode("utf-8"))
@@ -117,6 +196,13 @@ def receive(instance: int, values: list[int]) -> None:
     if not isinstance(sid, str) or not SESSION_ID.fullmatch(sid):
         return
     operation = body.get("t")
+    if authorized is None:
+        if isinstance(operation, str) and operation in {"start", "action"}:
+            locale = body.get("lang")
+            if not isinstance(locale, str) or locale not in {"es", "en"}:
+                locale = "es"
+            _deny(instance, sid, locale)
+        return
     with _lock:
         existing = _sessions.get(instance)
         if operation == "start":
@@ -378,6 +464,9 @@ class Session:
                 while self._allowed():
                     now = time.monotonic()
                     if now - self.last_active > IDLE_SECONDS or now - self.started > LIFETIME_SECONDS:
+                        # Best-effort notice before leaving: otherwise the app looks
+                        # usable until its next action waits for a lost reply.
+                        _send(self.instance, self.sid, {"t": "closed", "reason": "expired"})
                         break
                     try:
                         request = self.queue.get(timeout=2)

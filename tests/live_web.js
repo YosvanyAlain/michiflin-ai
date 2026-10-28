@@ -56,12 +56,23 @@ function boot() {
   assert.strictEqual(test.sent.filter((item) => item.t === "start").length, 2);
   test.fire(110000);
   assert.strictEqual(messages.length, 1);
-  assert.strictEqual(messages[0].error, "timeout");
+  assert.strictEqual(messages[0].error, "channel_timeout");
   assert.strictEqual(test.web.ready, false);
   assert.strictEqual(test.web.channel, null);
   assert.strictEqual(test.timers.size, 0);
   assert.strictEqual(test.leaves(), 1);
   assert.strictEqual(test.sent[test.sent.length - 1].t, "stop");
+}
+
+// A peer answered but its browser failed to produce a frame: this is a
+// different diagnosis from a realtime channel that never answered.
+{
+  const test = boot(), messages = [];
+  test.web.start("https://example.org/", (message) => messages.push(message));
+  test.receive({ v: 1, sid: test.web.sid, t: "opening" });
+  test.fire(110000);
+  assert.strictEqual(messages.at(-1).error, "timeout");
+  test.web.stop();
 }
 
 // A genuine first frame cancels startup retry/deadline; a foreign session and
@@ -79,6 +90,21 @@ function boot() {
   assert.strictEqual(test.timers.size, 0);
   assert.strictEqual(messages[messages.length - 1].t, "frame");
   test.web.stop();
+  assert.strictEqual(test.leaves(), 1);
+}
+
+// An authenticated peer may explain a paused or outdated app without ever
+// sending a frame. The view stops retrying and leaves immediately.
+for (const reason of ["paused", "stale_app"]) {
+  const test = boot(), messages = [];
+  test.web.start("https://example.org/", (message) => {
+    messages.push(message);
+    if (message.t === "error") test.web.stop();
+  });
+  test.receive({ v: 1, sid: test.web.sid, t: "error", error: reason });
+  assert.strictEqual(messages[0].error, reason);
+  assert.strictEqual(test.web.channel, null);
+  assert.strictEqual(test.timers.size, 0);
   assert.strictEqual(test.leaves(), 1);
 }
 
