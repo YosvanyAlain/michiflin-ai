@@ -138,11 +138,19 @@ def receive(instance: int, values: list[int]) -> None:
                 existing.stop()
 
 
-def stop_site(owner: str, site: str) -> None:
+def forget_site(owner: str, site: str) -> bool:
+    """Stop every matching browser and erase its state as one admission step.
+
+    Starting a browser also takes _lock. Holding it until the saved state is
+    removed prevents a new worker from slipping in after the stop snapshot and
+    later writing the just-forgotten cookies back. Each stop waits for an
+    already-running save via the session mutex before the deletion occurs.
+    """
     with _lock:
         sessions = [item for item in _sessions.values() if item.owner == owner and item.site == site]
-    for session in sessions:
-        session.stop()
+        for session in sessions:
+            session.stop()
+        return web_vault.remove(owner, site)
 
 
 def shutdown() -> None:
