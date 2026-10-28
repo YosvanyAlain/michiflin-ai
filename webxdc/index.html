@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Michiflin AI</title>
+<link rel="stylesheet" href="app.css">
+<script src="webxdc.js"></script>
+</head>
+<body>
+<div id="splash" aria-hidden="true">
+  <svg class="cat" viewBox="0 0 120 120">
+    <path class="line" d="M24 50 L30 14 L52 34 Q60 32 68 34 L90 14 L96 50 Q100 70 92 84 Q80 102 60 102 Q40 102 28 84 Q20 70 24 50 Z"/>
+    <circle class="lens" cx="45" cy="60" r="11"/>
+    <circle class="lens" cx="75" cy="60" r="11"/>
+    <path class="line thin" d="M56 60 Q60 57 64 60"/>
+    <circle class="eye" cx="45" cy="60" r="4.5"/>
+    <circle class="eye" cx="75" cy="60" r="4.5"/>
+    <path class="line thin" d="M56 75 L60 79 L64 75 M60 79 Q60 84 54 85 M60 79 Q60 84 66 85"/>
+    <path class="line thin" d="M14 70 L36 73 M14 80 L36 78 M106 70 L84 73 M106 80 L84 78"/>
+  </svg>
+  <div class="splash-name"><span>Michiflin</span> <b>AI</b></div>
+  <div class="load"><i></i></div>
+</div>
+<div id="app" class="shell">
+  <nav id="rail" class="rail"></nav>
+  <div class="stage">
+    <header class="top">
+      <button id="back" class="icon-btn" hidden></button>
+      <h1 id="title"></h1>
+      <span id="activity" class="activity" hidden></span>
+      <button id="gear" class="icon-btn"></button>
+    </header>
+    <main id="view"></main>
+  </div>
+  <nav id="tabs" class="tabs"></nav>
+</div>
+<div id="sheet" class="sheet" hidden></div>
+<div id="toasts" class="toasts"></div>
+<script src="i18n.js"></script>
+<script src="core.js"></script>
+<script src="mp4.js"></script>
+<script src="brands.js"></script>
+<script src="app.js"></script>
+<script src="coder.js"></script>
+</body>
+</html>
