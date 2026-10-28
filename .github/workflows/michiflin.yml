@@ -34,6 +34,8 @@ jobs:
       FREE_GATEWAYS: "0"
       AI_HORDE: "0"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      BAZAARLINK_API_KEY: ${{ secrets.BAZAARLINK_API_KEY }}
+      ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -64,11 +66,9 @@ jobs:
       STATE_BACKUP_REQUIRED: "0"
       FREE_GATEWAYS: "0"
       AI_HORDE: "0"
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
-      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      GITHUB_MODELS_TOKEN: ${{ github.token }}
+      BAZAARLINK_API_KEY: ${{ secrets.BAZAARLINK_API_KEY }}
+      ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

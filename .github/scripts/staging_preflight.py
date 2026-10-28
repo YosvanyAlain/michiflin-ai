@@ -1,9 +1,12 @@
-"""Bounded, disposable online preflight; never print provider responses or keys."""
+"""Bounded online preflight: never print private keys or provider errors."""
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
+# Model errors may echo provider metadata; never put them in CI logs.
+logging.disable(logging.CRITICAL)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from michiflin import ai, coder, state
 
@@ -30,6 +33,15 @@ def main() -> int:
     # Four rounds are sufficient for this small request and cap quota usage.
     coder.MAX_STEPS = 4
     coder.ANSWER_TOKENS = 1800
+    original_call = ai._call
+    calls = 0
+    def bounded_call(*args, **kwargs):
+        nonlocal calls
+        if calls >= 8:
+            return ai.AIResult(error="quota")
+        calls += 1
+        return original_call(*args, **kwargs)
+    ai._call = bounded_call
     original_ask = coder._ask
     rounds = 0
     def trace_ask(messages, model_key, sticky):
@@ -51,6 +63,7 @@ def main() -> int:
     researched = any(item.get("kind") == "research" for item in steps)
     executed = any(item.get("kind") == "run" and item.get("code") == 0 for item in steps)
     built = any(item.get("path") == "main.py" for item in files)
+    print("Model network requests:", calls, flush=True)
     print("Real model produced main.py:", built, flush=True)
     print("Real model requested research:", researched, flush=True)
     print("Real model ran a successful command:", executed, flush=True)
