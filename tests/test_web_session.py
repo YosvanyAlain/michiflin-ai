@@ -431,6 +431,32 @@ class EgressAndResearchTests(unittest.TestCase):
         with mock.patch.object(smart_agent, "_PublicHTTPS", return_value=connection):
             self.assertIn("Readable public page", smart_agent._read("https://example.org/"))
 
+    def test_coder_retries_classifier_output_for_a_build_request(self):
+        """A real free-router returned this instead of code: never treat it as a built project."""
+        results = [ai.AIResult(text="User Safety: safe", provider="Router", model="Free"),
+                   ai.AIResult(text="<<<FILE main.py>>>\nprint('ok')\n<<<END>>>\n"
+                                    "<<<RUN>>>\npython3 main.py\n<<<END>>>\n<<<DONE>>>\ndone\n<<<END>>>",
+                               provider="Coder", model="Model")]
+        seen = []
+        def ask(messages, _model, sticky):
+            seen.append((messages[-1]["content"], sticky))
+            return results.pop(0)
+        with mock.patch.object(coder, "_ask", side_effect=ask), mock.patch.object(coder, "_sticky_key", return_value="router:free"), \
+             mock.patch.object(coder, "isolation", return_value=True), mock.patch.object(coder, "_lock_private"), \
+             mock.patch.object(coder, "_run", return_value=(0, "ok")), mock.patch.object(coder, "_remove", side_effect=shutil.rmtree):
+            result = coder.run("Build a Python script", [], "en")
+        self.assertEqual([item["path"] for item in result["files"]], ["main.py"])
+        self.assertTrue(any(step["kind"] == "run" and step["code"] == 0 for step in result["steps"]))
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[1][1], "")  # the invalid router is not made sticky
+
+    def test_coder_reports_failure_if_only_irrelevant_plain_responses_arrive(self):
+        with mock.patch.object(coder, "MAX_STEPS", 2), \
+             mock.patch.object(coder, "_ask", return_value=ai.AIResult(text="User Safety: safe")), \
+             mock.patch.object(coder, "isolation", return_value=False):
+            with self.assertRaises(coder.CoderError):
+                coder.run("Build a Python script", [], "en")
+
     def test_coder_autonomous_loop_researches_then_tests(self):
         url = "https://example.org/docs"
         results = [ai.AIResult(text=f"<<<OPEN>>>\n{url}\n<<<END>>>"),
