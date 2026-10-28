@@ -46,6 +46,11 @@ class Scripts(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr[-2000:])
         self.assertIn("coder history ok", result.stdout)
 
+    def test_live_browser_startup_timeout_and_cleanup(self):
+        result = subprocess.run(["node", str(ROOT / "tests" / "live_web.js")], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        self.assertIn("live web startup ok", result.stdout)
+
 
 class Translations(unittest.TestCase):
     @classmethod

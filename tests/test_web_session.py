@@ -25,7 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from michiflin import (ai, chat, coder, config, egress, live_web, media, media_worker, miniapp,
+from michiflin import (access, ai, chat, coder, config, egress, live_web, media, media_worker, miniapp,
                        private_media, queue, sandbox, smart_agent, state, web_vault)
 
 ALICE = "alice@example.org"
@@ -172,6 +172,175 @@ class VaultAndBridgeTests(unittest.TestCase):
         web_vault.remove(ALICE, "youtube")
         self.assertIsNone(web_vault.load(ALICE, "youtube"))
 
+    def test_forget_serializes_with_a_concurrent_new_browser(self):
+        """A new session cannot slip between stopping old workers and deleting storage."""
+        owner, site = ALICE, "youtube"
+        web_vault.save(owner, site, storage("before-forget"))
+        old = live_web.Session(10, "a" * 32, owner, site, "https://youtube.com")
+        entered, release, new_started, forgotten = (threading.Event() for _ in range(4))
+        failures = []
+        original_stop = old.stop
+
+        def slow_stop():
+            entered.set()
+            if not release.wait(5):
+                failures.append("stop did not resume")
+            original_stop()
+
+        def forget():
+            try:
+                miniapp.op_browser_session(7, {"do": "disconnect", "site": site}, "en")
+                forgotten.set()
+            except Exception as exc:
+                failures.append(type(exc).__name__)
+
+        def open_another():
+            payload = {"v": 1, "sid": "b" * 32, "t": "start", "url": "https://youtube.com", "lang": "en"}
+            live_web.receive(11, list(json.dumps(payload).encode()))
+
+        with live_web._lock:
+            live_web._sessions[10] = old
+        try:
+            with mock.patch.object(chat, "sender", return_value=owner), \
+                 mock.patch.object(live_web, "_authorized", return_value=({"chat": 7}, owner)), \
+                 mock.patch.object(old, "stop", side_effect=slow_stop), \
+                 mock.patch.object(live_web.Session, "start", side_effect=lambda: new_started.set()):
+                remover = threading.Thread(target=forget, daemon=True)
+                opener = threading.Thread(target=open_another, daemon=True)
+                remover.start()
+                self.assertTrue(entered.wait(3))
+                opener.start()
+                try:
+                    # Before the fix, the newly opened browser starts here, while
+                    # forget is still stopping a snapshot of the old sessions.
+                    self.assertFalse(new_started.wait(0.2))
+                finally:
+                    release.set()
+                    remover.join(5)
+                    opener.join(5)
+                self.assertFalse(remover.is_alive() or opener.is_alive(), "deadlock")
+                self.assertTrue(forgotten.is_set())
+                self.assertTrue(new_started.is_set())
+                self.assertTrue(old.stopped.is_set())
+                self.assertIsNone(web_vault.load(owner, site))
+                self.assertEqual(failures, [])
+        finally:
+            release.set()
+            with live_web._lock:
+                live_web._sessions.pop(10, None)
+                live_web._sessions.pop(11, None)
+
+    def test_forget_waits_for_an_inflight_save_under_contention(self):
+        """Repeated simultaneous save/forget operations leave no restored state."""
+        for index in range(30):
+            with self.subTest(iteration=index):
+                session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
+                entered, release, done = (threading.Event() for _ in range(3))
+                original_save = web_vault.save
+                replies, errors = [], []
+
+                def delayed_save(*args):
+                    entered.set()
+                    if not release.wait(5):
+                        errors.append("save did not resume")
+                    return original_save(*args)
+
+                def save():
+                    try:
+                        replies.append(session._reply({"kind": "state", "storage": storage("inflight")}, 1))
+                    except Exception as exc:
+                        errors.append(type(exc).__name__)
+
+                def forget():
+                    try:
+                        live_web.forget_site(ALICE, "youtube")
+                        done.set()
+                    except Exception as exc:
+                        errors.append(type(exc).__name__)
+
+                with live_web._lock:
+                    live_web._sessions[10] = session
+                try:
+                    with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()), \
+                         mock.patch.object(web_vault, "save", side_effect=delayed_save):
+                        saver = threading.Thread(target=save, daemon=True)
+                        remover = threading.Thread(target=forget, daemon=True)
+                        saver.start()
+                        self.assertTrue(entered.wait(3))
+                        remover.start()
+                        try:
+                            self.assertFalse(done.wait(0.01))
+                        finally:
+                            release.set()
+                            saver.join(5)
+                            remover.join(5)
+                        self.assertFalse(saver.is_alive() or remover.is_alive(), "deadlock")
+                        self.assertEqual(errors, [])
+                        self.assertEqual(replies[0]["t"], "saved")
+                        self.assertTrue(done.is_set() and session.stopped.is_set())
+                        self.assertIsNone(web_vault.load(ALICE, "youtube"))
+                        self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2)["error"], "closed")
+                finally:
+                    release.set()
+                    with live_web._lock:
+                        live_web._sessions.pop(10, None)
+
+    def test_kill_switch_races_with_save_and_invalidates_old_generation(self):
+        with mock.patch.object(live_web, "_authorized", return_value=({"chat": 7}, ALICE)), \
+             mock.patch.object(config, "service_access_allowed", return_value=True), \
+             mock.patch.object(state, "save"), mock.patch.dict(state.data, {"kill_switch": {}}):
+            for index in range(40):
+                with self.subTest(iteration=index):
+                    state.set_kill_switch(ALICE, False)
+                    session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
+                    barrier = threading.Barrier(3)
+                    replies, errors = [], []
+
+                    def save():
+                        try:
+                            barrier.wait(5)
+                            replies.append(session._reply({"kind": "state", "storage": storage("racing")}, 1))
+                        except Exception as exc:
+                            errors.append(type(exc).__name__)
+
+                    def pause():
+                        try:
+                            barrier.wait(5)
+                            state.set_kill_switch(ALICE, True)
+                        except Exception as exc:
+                            errors.append(type(exc).__name__)
+
+                    saver = threading.Thread(target=save, daemon=True)
+                    killer = threading.Thread(target=pause, daemon=True)
+                    saver.start(); killer.start(); barrier.wait(5)
+                    saver.join(5); killer.join(5)
+                    self.assertFalse(saver.is_alive() or killer.is_alive(), "deadlock")
+                    self.assertEqual(errors, [])
+                    self.assertIn(replies[0]["t"], {"saved", "error"})  # either side may linearize first
+                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2)["error"], "closed")
+                    state.set_kill_switch(ALICE, False)
+                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 3)["error"], "closed")
+
+    def test_guest_revocation_and_regrant_do_not_revive_old_browser(self):
+        with mock.patch.object(config, "OWNER_ADDRESS", "owner@example.org"), \
+             mock.patch.object(config, "OWNER_ONLY", True), mock.patch.object(config, "MAINTENANCE_MODE", False), \
+             mock.patch.dict(state.data, {"kill_switch": {}}):
+            access.reset()
+            try:
+                self.assertTrue(access.set_owner_only(False, 0, access.snapshot()["nonce"]))
+                self.assertTrue(access.allow_guest(ALICE, access.snapshot()["revision"]))
+                session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
+                with mock.patch.object(live_web, "_authorized", side_effect=lambda _instance: (
+                        ({"chat": 7}, ALICE) if access.service_allowed(ALICE) else None)):
+                    item = {"kind": "state", "storage": storage("guest")}
+                    self.assertEqual(session._reply(item, 1)["t"], "saved")
+                    self.assertTrue(access.revoke_guest(ALICE))
+                    self.assertEqual(session._reply(item, 2)["error"], "closed")
+                    self.assertTrue(access.allow_guest(ALICE, access.snapshot()["revision"]))
+                    self.assertEqual(session._reply(item, 3)["error"], "closed")
+            finally:
+                access.reset()
+
     def test_capture_sent_as_file_then_temporary_copy_removed(self):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
         jpeg = b"\xff\xd8\xff" + b"fixture"
@@ -287,6 +456,25 @@ def tools_result(url):
 
 @unittest.skipUnless(os.getenv("MICHIFLIN_SANDBOX_TESTS") == "1", "requires Linux namespaces, sudo, ffmpeg, openssl and socat")
 class RealSandboxTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("deno"), "Deno is not installed on this runner")
+    def test_real_deno_runs_inside_media_sandbox(self):
+        """Exercise the actual Deno binary via the same private worker jail."""
+        original = sandbox.shutil.copyfile
+        code = ("import json,shutil,subprocess\n"
+                "path=shutil.which('deno')\n"
+                "result=subprocess.run([path,'eval','console.log(42)'],capture_output=True,text=True,timeout=20)\n"
+                "print(json.dumps({'path':path,'code':result.returncode,'output':result.stdout.strip()}),flush=True)\n")
+        def copy(src, dst, *args, **kwargs):
+            if Path(src).name == "media_worker.py":
+                Path(dst).write_text(code)
+                return dst
+            return original(src, dst, *args, **kwargs)
+        with mock.patch.object(sandbox.shutil, "copyfile", side_effect=copy), sandbox.BrowserProcess("media_worker.py") as worker:
+            self.assertIsNotNone(worker.process)
+            self.assertTrue(select.select([worker.process.stdout], [], [], 45)[0])
+            result = json.loads(worker.process.stdout.readline())
+            self.assertEqual(result, {"path": "/runtime/deno", "code": 0, "output": "42"})
+
     def test_cannot_reach_host_files_through_relay_proc_root(self):
         marker = Path(tempfile.gettempdir()) / ("michiflin-test-marker-" + os.urandom(8).hex())
         marker.write_text("TEST-MARKER"); marker.chmod(0o644)
