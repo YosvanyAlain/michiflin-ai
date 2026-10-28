@@ -1,0 +1,32 @@
+# Web access and session scope
+
+## Current behavior
+
+- The reader and browser can open public pages accessible from the server. They do not perform interactive login or maintain a persistent web session per contact.
+- `yt-dlp` has extractors for many public YouTube, Facebook, TikTok, Instagram, and other links. Support depends on the extractor, public access, website changes, and anti-bot checks; DRM and private content are not promised.
+- `YTDLP_COOKIES` is a single global file used only for the administrator. It is not per-contact authentication; do not place other people's cookies there.
+- Revolico's public pages can be tried with the general reader, but no stable official API or reliable extraction is claimed.
+
+## Social services: requested scope and official routes
+
+The requested scope for Instagram, Facebook, YouTube, and TikTok is **read-only**. No account has been connected and no authenticated session has been created. Link cards offer reading, screenshots, copying, and downloading where accessible; they are not a browser with a personal session.
+
+- **YouTube:** the [Data API](https://developers.google.com/youtube/v3/guides/authentication) can access certain private data with OAuth, consent, and credentials for a Google Cloud application. It does not automatically permit playback of arbitrary private or restricted content.
+- **TikTok:** [Login Kit and Display API](https://developers.tiktok.com/doc/login-kit-overview?enter_method=left_navigation) require an application, authorization, and approved permissions. `user.info.basic` and `video.list` have the scope described in the [permissions reference](https://developers.tiktok.com/doc/tiktok-api-scopes?enter_method=left_navigation); they do not grant unlimited access to private feeds.
+- **Instagram:** the [official API](https://developers.facebook.com/docs/instagram-platform/overview/) documents professional accounts, not a universal personal browsing session. A Meta app and the appropriate permissions are needed.
+- **Facebook:** capabilities depend on the Meta product, account type, review, and granted permissions. No API is claimed to replicate a personal feed freely, and credential-based scraping has not been implemented.
+
+These flows require application registration, a trusted redirect, consent, encrypted storage separated by identity, and revocation. Provider restrictions or approvals may prevent access to certain data. WebXDC has no direct network access, so it is unsafe to imitate login or ask for passwords through messages. **Do not ask users to paste passwords or cookies into the bot.**
+
+## Other evaluated websites
+
+- **Arena.ai:** its [terms](https://help.arena.ai/articles/5629909088-terms-of-use) restrict automated or programmatic access without an applicable license or authorization. Do not automate the site or reuse cookies without an expressly permitted route. Inputs may be shared with model providers; a free interface does not imply confidential processing. See the [API documentation](https://platform.arena.ai/docs) and [terms](https://help.arena.ai/articles/5629909088-terms-of-use).
+- **DeepSeek Chat:** the website and developer API are different products. The official API charges for tokens and Search/Fetch; it is not configured as a free route. Aggregators may offer free DeepSeek-named models under their own conditions. See [official pricing](https://api-docs.deepseek.com/quick_start/pricing/).
+- **Revolico:** authenticated interaction has not been implemented and no public API for it has been verified. Reading public pages is not equivalent to login.
+- **Z.AI:** the bot already has an OpenAI-compatible API route for Flash variants marked free in its [pricing table](https://docs.z.ai/guides/overview/pricing). No universal daily allowance for those variants was found there; Michiflin's caps are internal controls, not provider guarantees. Respect `429` responses and do not configure paid models on that key.
+
+## Safe prerequisites for personal sessions
+
+If website login is added later, each session must belong solely to the authenticated sender, remain isolated by address, expire, and be removable from the app. Never request or copy passwords or cookies between users. Before enabling it, use a provider-authorized flow, preferably OAuth or an official API, encrypted storage, and a separate test instance. Without staging, real login has not been tested and must not be presented as operational.
+
+No website session is connected for Arena.ai, Revolico, or Z.AI. Z.AI's existing API route is distinct from a web session and depends on the key's validity, permissions, and fees; its production key has not been verified here.

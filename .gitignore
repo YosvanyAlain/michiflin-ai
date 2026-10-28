@@ -1,0 +1,22 @@
+# Credentials and runtime data
+.env
+.env.*
+!.env.example
+michiflin-state.bin
+*.state.bin
+state/
+backup/
+.michiflin-state/
+michiflin-queue/
+attachments/
+downloads/
+*.tar.gz
+*.pem
+*.key
+
+# Generated files
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+tmp/

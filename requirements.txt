@@ -1,0 +1,15 @@
+deltabot-cli>=9.1,<10
+deltachat2>=2.50,<3
+deltachat-rpc-server>=2.50
+requests>=2.31
+ddgs>=9,<11
+yt-dlp[default]>=2025.10.1
+cryptography>=44,<47
+defusedxml>=0.7.1,<1
+pypdf>=5,<7
+beautifulsoup4>=4.12,<5
+lxml>=5
+Pillow>=10
+playwright>=1.48
+PySocks>=1.7
+gradio_client>=1.5
