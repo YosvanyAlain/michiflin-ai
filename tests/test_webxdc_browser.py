@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from michiflin import access, admin, chat, config, miniapp, state, tiktok_account
+from michiflin import access, admin, chat, config, miniapp, state
 
 try:
     from playwright.sync_api import sync_playwright
@@ -42,13 +42,6 @@ BRIDGE = r"""
   window.__notes = [];
   window.__failNext = {};
   window.__delay = 0;
-  window.__ytConfigured = false;
-  window.__ytConnected = false;
-  window.__fbConfigured = false;
-  window.__fbConnected = false;
-  window.__ttConfigured = false;
-  window.__ttConnected = false;
-  const simulatedQr = "__SIMULATED_QR__";
   const responseFor = (request) => {
     switch (request.op) {
       case "hello": return { version: "browser-smoke", admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
@@ -84,24 +77,6 @@ BRIDGE = r"""
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
       case "ask": return { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
-      case "youtube_account":
-        if (request.args.do === "start") return { configured: true, connected: false, pending: true, url: "https://www.google.com/device", user_code: "TEST-CODE" };
-        if (request.args.do === "poll") { window.__ytConnected = true; return { configured: true, connected: true, pending: false }; }
-        if (request.args.do === "disconnect") { window.__ytConnected = false; return { connected: false, revoked: true }; }
-        if (request.args.do === "channels" || request.args.do === "subscriptions") return { items: [{ title: "SIMULATED channel", description: "Mock account data" }] };
-        return { configured: window.__ytConfigured, connected: window.__ytConnected };
-      case "facebook_account":
-        if (request.args.do === "start") return { configured: true, connected: false, pending: true, url: "https://www.facebook.com/device", user_code: "FB-TEST-CODE" };
-        if (request.args.do === "poll") { window.__fbConnected = true; return { configured: true, connected: true, pending: false, posts_granted: false }; }
-        if (request.args.do === "disconnect") { window.__fbConnected = false; return { connected: false, revoked: true }; }
-        if (request.args.do === "profile") return { items: [{ title: "SIMULATED Facebook profile", description: "" }] };
-        return { configured: window.__fbConfigured, connected: window.__fbConnected };
-      case "tiktok_account":
-        if (request.args.do === "start") return { configured: true, connected: false, pending: true, qr_png: simulatedQr };
-        if (request.args.do === "poll") { window.__ttConnected = true; return { configured: true, connected: true, pending: false, videos_granted: false }; }
-        if (request.args.do === "disconnect") { window.__ttConnected = false; return { connected: false, revoked: true }; }
-        if (request.args.do === "profile") return { items: [{ title: "SIMULATED TikTok profile", description: "" }] };
-        return { configured: window.__ttConfigured, connected: window.__ttConnected };
       case "queue": return { jobs: [] };
       case "action": return { title: "Smoke test", text: "smoke test result" };
       default: return {};
@@ -155,8 +130,7 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
         root = Path(temporary)
         for name in miniapp.APP_FILES:
             shutil.copy2(miniapp.APP_DIR / name, root / name)
-        qr = tiktok_account._qr_image("aweme://authorize?client_key=SIMULATED&client_ticket=SIMULATED")
-        (root / "webxdc.js").write_text(BRIDGE.replace("__SIMULATED_QR__", qr), encoding="utf-8")
+        (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
 
         class QuietHandler(http.server.SimpleHTTPRequestHandler):
             def log_message(self, _format: str, *_args: object) -> None:
@@ -215,7 +189,7 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
-    def test_live_view_zoom_quality_navigation_and_search_video_with_simulated_realtime(self) -> None:
+    def test_live_view_zoom_quality_navigation_and_search_with_simulated_realtime(self) -> None:
         # The bridge and picture below are deliberately simulated; the separate
         # sandbox integration verifies real Chromium screenshots and clicks.
         for language in ("es", "en"):
@@ -248,14 +222,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     title:'SIMULATED video', source:'TikTok', snippet:'Fixture'}];
                   go('results', {q:'fixture video', engine:'web'});
                 }""")
-                options = "Opciones para este posible video" if language == "es" else "Options for this possible video"
-                page.get_by_role("button", name=options).click(timeout=15000)
-                page.get_by_text("se usa tu sesión guardada" if language == "es" else "uses your saved session", exact=False).wait_for()
-                page.get_by_role("button", name="Intentar descargar" if language == "es" else "Try downloading").click()
-                page.get_by_role("button", name="360p", exact=True).click()
-                page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'action' && x.payload?.args?.kind === 'video')")
-                page.get_by_role("button", name=options).click()
-                page.get_by_role("button", name="Abrir en navegador privado" if language == "es" else "Open in private browser").click()
+                page.get_by_role("button", name="Abrir en Live" if language == "es" else "Open in Live").click(timeout=15000)
                 page.evaluate("""() => {
                   Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{writeText:() => Promise.reject(new Error('blocked'))}});
                   document.execCommand = () => false;
@@ -317,7 +284,6 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.wait_for_function("window.__liveActions.filter(x => x.action === 'frame').length >= 2", timeout=8000)
                 screenshot_if_requested(page, f"navegador-{language}")
                 page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").uncheck()
-                self.assertFalse(page.evaluate("searchVideoCandidate('https://tiktok.com.evil.test/@sample/video/12345')"))
                 self.assertEqual(errors, [])
 
     def test_notes_are_labelled_and_long_text_wraps_in_both_languages(self) -> None:
@@ -336,7 +302,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(note.evaluate("e => getComputedStyle(e).overflow"), "visible")
                 self.assertEqual(errors, [])
 
-    def test_new_agent_and_account_views_are_honest_and_bilingual(self) -> None:
+    def test_agent_modes_are_honest_and_bilingual(self) -> None:
         for language in ("es", "en"):
             viewport = {"width": 390, "height": 844} if language == "es" else {"width": 1280, "height": 900}
             with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
@@ -362,60 +328,80 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(page.get_by_text("free-mode question").is_visible())
                 self.assertEqual(page.get_by_text("Weather in Havana").count(), 0)
 
-                page.locator('.tab[data-tab="web"]:visible').click()
-                page.get_by_role("button", name="Cuentas y sitios" if language == "es" else "Accounts and sites").click()
-                for site in ("Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
-                    self.assertTrue(page.get_by_text(site, exact=True).is_visible())
-                self.assertIn("inicia sesión tú mismo" if language == "es" else "sign in yourself", page.locator("#view").inner_text().lower())
-                screenshot_if_requested(page, language + "-accounts-browser")
-                page.get_by_role("button", name="Instagram", exact=False).first.click()
-                self.assertIn("canal cifrado" if language == "es" else "encrypted channel", page.locator("#view").inner_text().lower())
-                self.assertTrue(page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").is_visible())
-                screenshot_if_requested(page, language + "-browser-before-start")
-                page.locator("#back").click()
-                page.get_by_role("button", name="Mi cuenta de YouTube" if language == "es" else "My YouTube account", exact=False).first.click()
-                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server has not configured", exact=False).wait_for(state="visible")
-                self.assertEqual(page.get_by_role("button", name="Conectar con Google" if language == "es" else "Connect with Google").count(), 0)
-                screenshot_if_requested(page, language + "-youtube-not-configured")
-                page.evaluate("window.__ytConfigured = true; go('youtube_account')")
-                page.get_by_role("button", name="Conectar con Google" if language == "es" else "Connect with Google").click()
-                page.get_by_text("TEST-CODE").wait_for(state="visible")
-                self.assertTrue(page.locator("#view .site-address").evaluate("e => {const a=e.getBoundingClientRect(), b=e.nextElementSibling.getBoundingClientRect(); return a.right <= b.left || a.bottom <= b.top}"))
-                screenshot_if_requested(page, language + "-youtube-device-SIMULATED")
-                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
-                page.get_by_role("button", name="Mi canal" if language == "es" else "My channel").click()
-                page.get_by_text("SIMULATED channel").wait_for(state="visible")
                 self.assertEqual(errors, [])
 
-    def test_official_social_views_with_simulated_bridge(self) -> None:
-        cases = [("es", {"width": 390, "height": 844}), ("en", {"width": 1280, "height": 800})]
+    def test_web_search_and_manual_live_address_without_site_cards(self) -> None:
+        cases = [("es", {"width": 320, "height": 700}), ("en", {"width": 1280, "height": 800})]
         for language, viewport in cases:
             with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
-                page.evaluate("go('accounts')")
-                page.get_by_role("button", name="Mi cuenta de Facebook" if language == "es" else "My Facebook account", exact=False).click()
-                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server does not yet have", exact=False).wait_for(state="visible")
-                self.assertEqual(page.get_by_role("button", name="Conectar con Facebook" if language == "es" else "Connect with Facebook").count(), 0)
-                screenshot_if_requested(page, language + "-facebook-not-configured")
-                page.evaluate("window.__fbConfigured = true; go('facebook_account')")
-                page.get_by_role("button", name="Conectar con Facebook" if language == "es" else "Connect with Facebook").click()
-                page.get_by_text("FB-TEST-CODE").wait_for(state="visible")
-                screenshot_if_requested(page, language + "-facebook-device-SIMULATED")
-                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
-                page.get_by_role("button", name="Mi perfil" if language == "es" else "My profile").click()
-                page.get_by_text("SIMULATED Facebook profile").wait_for(state="visible")
+                self.assertEqual(page.locator("#view .tile-youtube").count(), 0)
+                page.locator('.tab[data-tab="apps"]:visible').click()
+                self.assertEqual(page.locator("#view .tile-youtube").count(), 0)
+                page.evaluate("""() => {
+                  store.set('recent', [{q:'preserved search', engine:'videos'}]);
+                  store.set('visited', [{url:'https://example.org/', title:'Preserved'}]);
+                  prefs.engine = 'videos';
+                }""")
+                page.locator('.tab[data-tab="web"]:visible').click()
+                self.assertTrue(page.get_by_text("Buscar en internet" if language == "es" else "Search the web", exact=True).is_visible())
+                self.assertTrue(page.get_by_text("Abrir una dirección en Live" if language == "es" else "Open an address in Live", exact=True).is_visible())
+                for name in ("YouTube", "Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
+                    self.assertEqual(page.get_by_text(name, exact=True).count(), 0, name)
+                self.assertTrue(page.evaluate("!['accounts', 'youtube', 'youtube_account', 'facebook_account', 'tiktok_account'].some(k => k in VIEWS)"))
+                self.assertEqual(page.locator('#view .segmented [data-key="web"]').get_attribute("aria-selected"), "true")
+                self.assertEqual(page.locator('#view .segmented [data-key="videos"]').count(), 0)
+                self.assertEqual(page.evaluate("store.get('recent')[0].q"), "preserved search")
+                self.assertEqual(page.evaluate("store.get('visited')[0].title"), "Preserved")
+                self.assertTrue(page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth"))
+                screenshot_if_requested(page, language + "-web-simplified")
 
-                page.evaluate("go('tiktok_account')")
-                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server does not yet have", exact=False).wait_for(state="visible")
-                screenshot_if_requested(page, language + "-tiktok-not-configured")
-                page.evaluate("window.__ttConfigured = true; go('tiktok_account')")
-                page.get_by_role("button", name="Conectar con TikTok" if language == "es" else "Connect with TikTok").click()
-                qr = page.locator("#view img.social-qr")
-                qr.wait_for(state="visible")
-                self.assertTrue(qr.evaluate("e => e.complete && e.naturalWidth > 0 && e.src.startsWith('data:image/png;base64,')"))
-                screenshot_if_requested(page, language + "-tiktok-qr-SIMULATED")
-                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
-                page.get_by_role("button", name="Mi perfil" if language == "es" else "My profile").click()
-                page.get_by_text("SIMULATED TikTok profile").wait_for(state="visible")
+                manual = page.get_by_label("Dirección para Live" if language == "es" else "Address for Live")
+                manual.fill("http://example.org/")
+                manual.press("Enter")
+                page.get_by_text("Usa una dirección HTTPS" if language == "es" else "Use a public HTTPS address", exact=False).wait_for()
+                self.assertTrue(manual.is_visible())
+                manual.fill("https://user:password@example.org/")
+                manual.press("Enter")
+                self.assertEqual(page.evaluate("current.view"), "web")
+                manual.fill("ftp://example.org/")
+                manual.press("Enter")
+                self.assertEqual(page.evaluate("current.view"), "web")
+                manual.fill("example.org/path?mode=test#top")
+                page.locator(".live-entry-field button").click()
+                self.assertEqual(page.evaluate("current.view"), "live_web")
+                self.assertEqual(page.evaluate("current.params.url"), "https://example.org/path?mode=test#top")
+                self.assertIn("canal cifrado" if language == "es" else "encrypted channel", page.locator("#view").inner_text().lower())
+                page.locator("#back").click()
+
+                page.evaluate("""() => { window.__searchResults = [
+                  {url:'https://example.org/article?x=1', title:'SIMULATED secure result', source:'Example'},
+                  {url:'http://example.net/plain', title:'SIMULATED HTTP result', source:'Example'}]; }""")
+                search = page.get_by_placeholder("Buscar o pegar un enlace" if language == "es" else "Search or paste a link")
+                search.fill("a public research topic")
+                search.press("Enter")
+                page.get_by_text("SIMULATED secure result").wait_for(state="visible")
+                req = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'search').at(-1).payload.args")
+                self.assertEqual(req["q"], "a public research topic")
+                self.assertEqual(req["engine"], "web")
+                live_label = "Abrir en Live" if language == "es" else "Open in Live"
+                secure = page.locator("article.result").filter(has_text="SIMULATED secure result")
+                insecure = page.locator("article.result").filter(has_text="SIMULATED HTTP result")
+                self.assertEqual(insecure.get_by_role("button", name=live_label).count(), 0)
+                secure.get_by_role("button", name=live_label).click()
+                self.assertEqual(page.evaluate("current.params.url"), "https://example.org/article?x=1")
+                page.locator("#back").click()
+                search = page.get_by_placeholder("Buscar o pegar un enlace" if language == "es" else "Search or paste a link")
+                search.fill("https://example.org/?query=1#section")
+                search.press("Enter")
+                self.assertEqual(page.evaluate("current.view"), "live_web")
+                self.assertEqual(page.evaluate("current.params.url"), "https://example.org/?query=1#section")
+                page.locator('.tab[data-tab="home"]:visible').click()
+                home_search = page.get_by_placeholder("Buscar o pegar un enlace" if language == "es" else "Search or paste a link")
+                home_search.fill("example.org/?from=home")
+                home_search.press("Enter")
+                self.assertEqual(page.evaluate("current.view"), "live_web")
+                self.assertEqual(page.evaluate("current.params.url"), "https://example.org/?from=home")
+                self.assertFalse(page.evaluate("window.__sentUpdates.some(x => ['youtube_account','facebook_account','tiktok_account'].includes(x.payload?.op))"))
                 self.assertEqual(errors, [])
 
     def test_bilingual_mode_status_chat_and_private_admin(self) -> None:

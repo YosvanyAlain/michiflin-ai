@@ -8,7 +8,8 @@ const TABS = [
   { id: "downloads", icon: "downloads" },
   { id: "settings", icon: "settings" },
 ];
-const ENGINES = ["web", "news", "videos", "wiki"];
+const ENGINES = ["web", "news", "wiki"];
+const searchEngine = (value) => ENGINES.includes(value) ? value : "web";
 const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 
@@ -287,6 +288,32 @@ function normalUrl(text) {
   return /^https?:\/\//i.test(value) ? value : `https://${value}`;
 }
 
+function looksLikeWebAddress(text) {
+  const value = text.trim();
+  if (!value || /\s/.test(value)) return false;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+    || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(value);
+}
+
+function openLiveAddress(value, move = go) {
+  const raw = value.trim();
+  const url = normalUrl(raw);
+  try {
+    if (url.length > 4096 || (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) && !/^https:\/\//i.test(raw))) throw new Error("bad_url");
+    liveSite(url);
+  } catch (error) {
+    toast(t("live_bad_url"), "bad");
+    return false;
+  }
+  move("live_web", { name: t("live_title"), url });
+  return true;
+}
+
+function liveAddressAllowed(value) {
+  try { if (typeof value !== "string" || value.length > 4096) return false; liveSite(value); return true; }
+  catch (error) { return false; }
+}
+
 function remember(key, value, limit = 8) {
   const list = store.get(key, []).filter((item) => JSON.stringify(item) !== JSON.stringify(value));
   list.unshift(value);
@@ -428,7 +455,6 @@ bridge.watchers.add(activity);
 const TILES = [
   ["ai", "tile_agent", "chat", { space: "agent" }],
   ["image", "tile_images", "images"],
-  ["youtube", "tile_youtube", "youtube"],
   ["translate", "tile_translate", "translate"],
   ["rates", "tile_rates", "rates"],
   ["weather", "tile_weather", "weather"],
@@ -469,7 +495,7 @@ function statusChips() {
 }
 
 function searchBox(initial = {}, replace = false) {
-  let engine = initial.engine || prefs.engine;
+  let engine = searchEngine(initial.engine || prefs.engine);
   let mode = initial.mode || prefs.searchMode || "standard";
   const modeButton = h("button", { class: "mode-btn", type: "button" });
   const drawMode = () => {
@@ -490,12 +516,12 @@ function searchBox(initial = {}, replace = false) {
     const q = input.value.trim();
     if (!q) return;
     const move = replace ? swap : go;
-    if (isUrl(q)) {
-      move("reader", { url: normalUrl(q) });
+    if (looksLikeWebAddress(q)) {
+      openLiveAddress(q, move);
       return;
     }
     remember("recent", { q, engine, mode });
-    move(engine === "videos" ? "youtube" : "results", { q, engine, mode });
+    move("results", { q, engine, mode });
   };
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -1042,30 +1068,6 @@ function actionBar(url, isMedia) {
     chip("copy", t("copy_link"), () => copyText(url)));
 }
 
-function searchVideoCandidate(value) {
-  try {
-    const url = new URL(value);
-    if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) return false;
-    const host = url.hostname.toLowerCase().replace(/\.$/, "");
-    const domain = (name) => host === name || host.endsWith("." + name);
-    if (domain("tiktok.com")) return /\/@[^/]+\/video\/\d+/i.test(url.pathname);
-    if (domain("youtube.com")) return url.pathname === "/watch" || /^\/shorts\//.test(url.pathname);
-    if (domain("youtu.be")) return url.pathname.length > 1;
-    if (domain("instagram.com")) return /^\/(reel|p)\//.test(url.pathname);
-    if (domain("facebook.com")) return /^\/(watch|reel)\//.test(url.pathname) || url.pathname === "/watch";
-    return false;
-  } catch (error) { return false; }
-}
-
-function searchVideoSheet(url) {
-  openSheet(t("search_video_actions"), [
-    h("p", { class: "muted small" }, t("search_video_hint")),
-    h("div", { class: "row wrap" },
-      h("button", { class: "btn primary", onclick: () => qualitySheet("video", url) }, t("search_video_public")),
-      h("button", { class: "btn ghost", onclick: () => { closeSheet(); go("live_web", { name: t("live_title"), url }); } }, t("search_video_private"))),
-  ]);
-}
-
 function resultCard(item) {
   return h("article", { class: "card result" },
     h("button", { class: "result-main", onclick: () => go("reader", { url: item.url }) },
@@ -1073,7 +1075,7 @@ function resultCard(item) {
       h("b", {}, plain(item.title)),
       item.snippet ? h("p", { class: "clamp" }, plain(item.snippet)) : null),
     h("div", { class: "result-tools" },
-      searchVideoCandidate(item.url) ? iconButton("video", t("search_video_actions"), () => searchVideoSheet(item.url), "tiny") : null,
+      liveAddressAllowed(item.url) ? h("button", { class: "btn small ghost result-live", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")) : null,
       iconButton("pdf", "PDF", () => runAction("pdf", item.url), "tiny"),
       iconButton("camera", t("act_capture"), () => runAction("capture", item.url), "tiny"),
       iconButton("copy", t("copy_link"), () => copyText(item.url), "tiny")));
@@ -1081,24 +1083,27 @@ function resultCard(item) {
 
 function resultList(data) {
   if (!data.results.length) return [empty(t("no_results"), "search")];
-  return data.results.map((item) => (data.engine === "videos" ? videoCard(item) : resultCard(item)));
+  return data.results.map(resultCard);
+}
+
+function liveAddressBox() {
+  const input = field({ type: "url", inputmode: "url", maxlength: "4096", enterkeyhint: "go",
+    placeholder: t("live_entry_placeholder"), "aria-label": t("live_entry_label") });
+  const open = () => { if (input.value.trim()) openLiveAddress(input.value); };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); open(); }
+  });
+  return h("div", { class: "live-entry" },
+    h("p", { class: "muted small" }, t("live_entry_hint")),
+    h("div", { class: "search-field live-entry-field" }, icon("link"), input,
+      h("button", { class: "btn primary small", onclick: open }, t("live_open"))));
 }
 
 VIEWS.web = {
   title: () => t("tab_web"),
   render(main) {
-    const recent = store.get("recent", []);
-    const visited = store.get("visited", []);
-    add(main, searchBox(),
-      h("button", { class: "btn ghost wide", onclick: () => go("accounts") }, icon("user"), t("accounts_title")),
-      recent.length ? section(t("recent"), h("div", { class: "chips" }, recent.map((item) =>
-        h("button", { class: "chip", onclick: () => go(item.engine === "videos" ? "youtube" : "results", item) }, icon(item.engine === "videos" ? "youtube" : "search"), item.q)))) : null,
-      section(null, headRow(t("visited"), visited.length ? iconButton("trash", t("clear"), () => { store.set("visited", []); swap("web"); }) : null),
-        visited.length ? h("div", { class: "card list" }, visited.map((item) =>
-          h("button", { class: "list-row", onclick: () => go("reader", { url: item.url }) }, icon("web"),
-            h("span", { class: "grow" }, h("b", { class: "clamp1" }, item.title), h("small", { class: "muted" }, hostOf(item.url))),
-            h("small", { class: "muted" }, fmtTime(item.ts))))) : empty(t("visited_none"), "web")),
-      h("p", { class: "note" }, icon("info"), t("web_hint")));
+    add(main, section(t("web_search_title"), searchBox()),
+      section(t("live_entry_title"), liveAddressBox()));
   },
 };
 
@@ -1107,8 +1112,9 @@ VIEWS.results = {
   title: (params) => params.q,
   render(main, params) {
     const box = h("div", { class: "stack" });
-    add(main, searchBox(params, true), box);
-    fetchView(box, "search", { q: params.q, engine: params.engine, mode: params.mode }, (data) => fill(box,
+    const engine = searchEngine(params.engine);
+    add(main, searchBox({ ...params, engine }, true), box);
+    fetchView(box, "search", { q: params.q, engine, mode: params.mode }, (data) => fill(box,
       data.mode === "advanced" ? h("p", { class: "note" }, icon("bolt"), data.left ? t("mode_left", { n: data.left }) : t("mode_empty")) : null,
       ...resultList(data)), { label: t("searching") });
   },
@@ -1155,238 +1161,6 @@ VIEWS.reader = {
     fetchView(box, "read", { url: params.url, page: params.page || 1 }, (data) => drawPage(box, data, params), { label: t("loading_page") });
   },
 };
-
-// ---------------------------------------------------------------------------
-// YouTube facade.
-// ---------------------------------------------------------------------------
-function videoCard(item) {
-  return h("article", { class: "card video" },
-    h("div", { class: "video-art" }, icon("youtube")),
-    h("div", { class: "video-body" },
-      h("b", { class: "clamp" }, plain(item.title)),
-      h("small", { class: "muted" }, [item.source, item.date].filter(Boolean).join(" · ")),
-      item.snippet ? h("p", { class: "clamp small" }, plain(item.snippet)) : null,
-      h("div", { class: "chips" },
-        h("button", { class: "chip action", onclick: () => qualitySheet("video", item.url) }, icon("video"), t("act_video")),
-        h("button", { class: "chip action", onclick: () => qualitySheet("audio", item.url) }, icon("audio"), t("act_audio")),
-        h("button", { class: "chip action", onclick: () => go("transcript", { url: item.url }) }, icon("subtitles"), t("act_transcript")),
-        h("button", { class: "chip action", onclick: () => runAction("info", item.url) }, icon("info"), t("act_info")))));
-}
-
-VIEWS.youtube = {
-  tab: "apps",
-  title: () => "YouTube",
-  render(main, params) {
-    const input = field({ type: "search", placeholder: t("youtube_placeholder"), value: params.q || "", enterkeyhint: "search" });
-    const submit = () => {
-      const q = input.value.trim();
-      if (!q) return;
-      if (isUrl(q)) {
-        openSheet(t("video_link"), [h("p", { class: "muted small clamp1" }, q), actionBar(normalUrl(q), true)]);
-        return;
-      }
-      remember("recent", { q, engine: "videos" });
-      swap("youtube", { q });
-    };
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        submit();
-      }
-    });
-    const box = h("div", { class: "stack" });
-    add(main, h("div", { class: "searchbox" }, h("div", { class: "search-field" }, icon("youtube"), input,
-      h("button", { class: "btn primary small", onclick: submit }, t("go")))),
-      h("button", { class: "btn ghost wide", onclick: () => go("youtube_account") }, icon("user"), t("yt_account")), box);
-    if (params.q) {
-      fetchView(box, "search", { q: params.q, engine: "videos" }, (data) => fill(box, ...resultList(data)), { label: t("searching") });
-    } else {
-      add(box, empty(t("youtube_hint"), "youtube"));
-    }
-  },
-};
-
-const MANUAL_SITES = [
-  ["YouTube", "https://www.youtube.com/"],
-  ["Instagram", "https://www.instagram.com/"],
-  ["Facebook", "https://www.facebook.com/"],
-  ["TikTok", "https://www.tiktok.com/"],
-  ["DeepSeek Chat", "https://chat.deepseek.com/"],
-  ["Arena.ai", "https://arena.ai/"],
-  ["Revolico", "https://www.revolico.com/"],
-  ["Z.AI", "https://chat.z.ai/"],
-];
-
-VIEWS.accounts = {
-  tab: "web",
-  title: () => t("accounts_title"),
-  render(main) {
-    add(main, h("p", { class: "note" }, icon("info"), t("live_accounts_hint")),
-      askBox({ placeholder: t("live_other_placeholder"), iconName: "web", label: t("live_open"), onsubmit: (value) => {
-        const url = normalUrl(value);
-        try { liveSite(url); go("live_web", { name: t("live_title"), url }); }
-        catch (error) { toast(t("live_bad_url"), "bad"); }
-      } }),
-      ...MANUAL_SITES.map(([name, url]) => h("button", { class: "card space-card", onclick: () => go("live_web", { name, url }) },
-        icon("web"), h("span", { class: "grow" }, h("b", {}, name), h("small", {}, t("live_open_hint"))), icon("next"))),
-      h("p", { class: "muted small" }, t("live_optional_api")),
-      h("button", { class: "card space-card", onclick: () => go("youtube_account") },
-        icon("youtube"), h("span", { class: "grow" }, h("b", {}, t("yt_account")), h("small", {}, t("yt_account_hint"))), icon("next")),
-      ...[["facebook_account", "fb_account"], ["tiktok_account", "tt_account"]].map(([view, label]) =>
-        h("button", { class: "card space-card", onclick: () => go(view) },
-          icon("user"), h("span", { class: "grow" }, h("b", {}, t(label)), h("small", {}, t("social_official_hint"))), icon("next"))));
-  },
-};
-
-VIEWS.youtube_account = {
-  tab: "web",
-  title: () => t("yt_account"),
-  render(main) {
-    const box = h("div", { class: "stack" });
-    const results = h("div", { class: "stack" });
-    let current = {};
-    add(main, box, results);
-    const act = async (operation) => {
-      try {
-        const data = await bridge.call("youtube_account", { do: operation });
-        if (operation === "channels" || operation === "subscriptions") {
-          fill(results, h("p", { class: "note" }, t("yt_first_page")),
-            ...(data.items.length ? data.items.map((item) => card(h("b", {}, item.title),
-              item.description ? h("p", { class: "muted" }, item.description) : null)) : [empty(t("yt_no_results"), "youtube")]));
-          return;
-        }
-        if (operation === "disconnect") {
-          current = { configured: !!current.configured, connected: false, pending: false, stored: false, vault_error: false };
-          fill(results);
-          if (!data.revoked) toast(t("yt_revocation_failed"), "bad");
-        } else if (operation === "poll" && data.pending) {
-          current = { ...current, ...data };
-          toast(t("yt_pending"));
-        } else {
-          current = { ...current, ...data };
-          if (data.expired) { current.pending = false; toast(t("yt_expired"), "bad"); }
-          if (data.denied) { current.pending = false; toast(t("yt_denied"), "bad"); }
-        }
-        draw();
-      } catch (error) {
-        if (!error.cancelled) {
-          if (operation === "status") fill(box, failure(error.message, () => act("status")));
-          else toast(error.message, "bad");
-        }
-      }
-    };
-    const disconnect = () => h("button", { class: "btn ghost", onclick: async () => {
-      if (await confirmBox(t("yt_disconnect"), t("yt_disconnect_q"), t("yt_disconnect"))) act("disconnect");
-    } }, t("yt_disconnect"));
-    const draw = () => {
-      if (!current.configured || current.vault_error) {
-        fill(box, card(h("p", {}, t(current.vault_error ? "yt_vault_error" : "yt_not_configured")),
-          current.stored ? disconnect() : null));
-      } else if (current.pending && current.url && current.user_code) {
-        fill(box, card(h("p", {}, t("yt_instructions")),
-          h("div", { class: "row wrap" }, h("b", { class: "site-address" }, current.url),
-            h("button", { class: "btn small ghost", onclick: () => copyText(current.url) }, icon("copy"), t("accounts_copy"))),
-          h("p", {}, t("yt_code"), ": ", h("b", {}, current.user_code)),
-          h("div", { class: "row wrap" },
-            h("button", { class: "btn small ghost", onclick: () => copyText(current.user_code) }, icon("copy"), t("copy")),
-            h("button", { class: "btn primary", onclick: () => act("poll") }, t("yt_approved")))));
-      } else if (current.connected) {
-        fill(box, card(h("p", {}, t("yt_connected")),
-          h("div", { class: "row wrap" },
-            h("button", { class: "btn primary", onclick: () => act("channels") }, t("yt_channels")),
-            h("button", { class: "btn ghost", onclick: () => act("subscriptions") }, t("yt_subscriptions")),
-            disconnect())));
-      } else {
-        fill(box, card(h("p", {}, t("yt_disconnected")),
-          h("button", { class: "btn primary", onclick: () => act("start") }, t("yt_connect"))));
-      }
-    };
-    fill(box, loading());
-    act("status");
-  },
-};
-
-function socialAccountView(service) {
-  const facebook = service === "facebook";
-  const label = facebook ? "Facebook" : "TikTok";
-  const operationName = `${service}_account`;
-  return {
-    tab: "web",
-    title: () => t(facebook ? "fb_account" : "tt_account"),
-    render(main) {
-      const box = h("div", { class: "stack" });
-      const results = h("div", { class: "stack" });
-      let current = {};
-      add(main, box, results);
-      const act = async (operation) => {
-        try {
-          const data = await bridge.call(operationName, { do: operation });
-          if (["profile", "posts", "videos"].includes(operation)) {
-            const items = Array.isArray(data.items) ? data.items : [];
-            fill(results, h("p", { class: "note" }, t("yt_first_page")),
-              ...(items.length ? items.map((item) => card(h("b", {}, item.title),
-                item.description ? h("p", { class: "muted" }, item.description) : null)) : [empty(t("yt_no_results"), "user")]));
-            return;
-          }
-          if (operation === "disconnect") {
-            current = { configured: !!current.configured, connected: false, pending: false, stored: false };
-            fill(results);
-            if (!data.revoked) toast(t("social_revocation_failed"), "bad");
-          } else if (operation === "cancel") {
-            current = data;
-          } else {
-            current = { ...current, ...data };
-            if (operation === "poll" && data.pending) toast(t("social_pending"));
-            if (data.expired && !data.pending) toast(t("social_expired"), "bad");
-          }
-          draw();
-        } catch (error) {
-          if (!error.cancelled) {
-            if (operation === "status") fill(box, failure(error.message, () => act("status")));
-            else toast(error.message, "bad");
-          }
-        }
-      };
-      const disconnect = () => h("button", { class: "btn ghost", onclick: async () => {
-        if (await confirmBox(t("yt_disconnect"), t("social_disconnect_q"), t("yt_disconnect"))) act("disconnect");
-      } }, t("yt_disconnect"));
-      const draw = () => {
-        if (!current.configured || current.vault_error) {
-          fill(box, card(h("p", {}, t(current.vault_error ? "social_vault_error" : "social_not_configured")),
-            current.stored ? disconnect() : null));
-        } else if (current.pending && (facebook ? current.url && current.user_code : current.qr_png)) {
-          const code = facebook ? [
-            h("p", {}, t("fb_instructions")),
-            h("div", { class: "row wrap" }, h("b", { class: "site-address" }, current.url),
-              h("button", { class: "btn small ghost", onclick: () => copyText(current.url) }, icon("copy"), t("accounts_copy"))),
-            h("p", {}, t("fb_code"), ": ", h("b", {}, current.user_code)),
-          ] : [h("p", {}, t("tt_instructions")),
-            h("img", { class: "social-qr", alt: t("tt_qr_alt"), src: "data:image/png;base64," + current.qr_png })];
-          fill(box, card(...code, h("div", { class: "row wrap" },
-            h("button", { class: "btn primary", onclick: () => act("poll") }, t("social_approved")),
-            h("button", { class: "btn ghost", onclick: () => act("cancel") }, t("social_cancel")))));
-        } else if (current.connected) {
-          fill(box, card(h("p", {}, t("social_connected")), h("p", { class: "muted" }, t("social_limited")),
-            h("div", { class: "row wrap" },
-              h("button", { class: "btn primary", onclick: () => act("profile") }, t("social_profile")),
-              facebook && current.posts_granted ? h("button", { class: "btn ghost", onclick: () => act("posts") }, t("fb_posts")) : null,
-              !facebook && current.videos_granted ? h("button", { class: "btn ghost", onclick: () => act("videos") }, t("tt_videos")) : null,
-              disconnect())));
-        } else {
-          fill(box, card(h("p", {}, t("social_disconnected")), h("p", { class: "muted" }, t("social_limited")),
-            h("div", { class: "row wrap" },
-              h("button", { class: "btn primary", onclick: () => act("start") }, t("social_connect", { name: label })),
-              current.stored ? disconnect() : null)));
-        }
-      };
-      fill(box, loading());
-      act("status");
-    },
-  };
-}
-
-VIEWS.facebook_account = socialAccountView("facebook");
-VIEWS.tiktok_account = socialAccountView("tiktok");
 
 VIEWS.transcript = {
   tab: "apps",
@@ -2049,7 +1823,7 @@ VIEWS.settings = {
           savePrefs();
           applyLook();
         })),
-        appRow(t("set_engine"), select(prefs.engine, ENGINES.map((key) => [key, t("engine_" + key)]), (value) => {
+        appRow(t("set_engine"), select(searchEngine(prefs.engine), ENGINES.map((key) => [key, t("engine_" + key)]), (value) => {
           prefs.engine = value;
           savePrefs();
         })))),

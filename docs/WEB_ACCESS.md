@@ -1,8 +1,8 @@
-# Web access and official account connections
+# Web search and Live browser
 
 ## Interactive web sessions
 
-The **Web → Accounts and sites** screen opens an interactive, isolated Playwright-controlled Chromium browser. The account owner enters their own login and completes any verification; no website-specific API registration is required. It works only in a supported Delta Chat client with the experimental WebXDC realtime channel and in an authorized individual encrypted chat. Frames and typed input go over that ephemeral channel, not WebXDC status updates; the server processes them in memory and delivery may fail or be delayed. A phone was observed opening public pages in disposable staging; that does not establish compatibility with every client or an authenticated social login.
+**Web** provides internet search and a field to paste an HTTPS address into the interactive, isolated Playwright-controlled Chromium browser. HTTPS search results also have an **Open in Live** action, while the title still opens the lightweight reader. The current miniapp no longer shows preset site cards or the previous official account-connection cards. The account owner may enter their own login and must complete any verification; no website-specific API registration is needed for Live. It works only in a supported Delta Chat client with the experimental WebXDC realtime channel and in an authorized individual encrypted chat. Frames and typed input go over that ephemeral channel, not WebXDC status updates; the server processes them in memory and delivery may fail or be delayed. A phone was observed opening public pages in disposable staging; that does not establish compatibility with every client or an authenticated social login.
 
 **Sharper** frames use up to 960×1520 pixels while taps still address a 480×760 CSS viewport. Very complex frames automatically fall back to 480×760 to fit the channel; **Less data** uses that smaller size from the start. Magnification is local to the displayed image: pan it to see hidden portions, and use the arrows above the view to scroll the remote page. The first frame is brought into view automatically. Still-frame refresh every five seconds is opt-in and uses data; it is not video streaming. The address bar accepts a direct address for the same service; provider-driven redirects and sign-in pop-ups may visit other domains. For a different service, close the browser and open a separate session.
 
@@ -24,41 +24,12 @@ A proxy or Cloudflare WARP can change the network path but is neither a browser 
 
 The production workflow exports `MEDIA_PROXY=socks5://127.0.0.1:40000` only after its WARP trace reports `warp=on`; if WARP was not verified and no other proxy is configured, Live starts directly and says so. If a configured proxy is unreachable or becomes unavailable, Live reports an error and **does not silently retry direct**. The indicator says only whether a proxy is configured; it does not prove WARP is on. To check the current browser path, open `https://www.cloudflare.com/cdn-cgi/trace` as a separate site in Live and look for `warp=on`. This intentionally displays the current public IP to the account holder; do not share it unnecessarily. DNS validation still uses the runner's resolver, and other bot features need not use the same proxy. Separate connections or runner jobs can have different public IPs. No IP rotation or alternate-route/client retry is attempted after a recognized verification challenge, and geographic IP spoofing in the ordinary downloader is disabled.
 
-`YTDLP_COOKIES` remains a single administrator-only facility for the older public-link downloader, not a per-person session; never place other people's cookies there. Official connections below remain optional and are separate from the browser.
+`YTDLP_COOKIES` remains a single administrator-only facility for the older public-link downloader, not a per-person session; never place other people's cookies there. The Downloads tab is independent of the removed platform cards.
 
-## Optional social API connections
+## Previous account connections and stored sessions
 
-YouTube, Facebook and TikTok have separate, opt-in, sender-specific flows using official APIs. They are **not automatically connected**: provider app registration, configuration, and each account holder's approval are necessary, and the provider may restrict or reject an application. WebXDC has no direct network access. No passwords, cookies, refresh tokens, or access tokens should be pasted into a chat or sent to WebXDC. Device/QR approvals are temporary and remain tied to the requesting sender. The implementation is read-only apart from token lifecycle operations such as revocation; it does not grant arbitrary private feeds or a general browser session.
+The current miniapp no longer presents platform-specific shortcuts or the previous YouTube, Facebook and TikTok API connection screens. This interface change **does not delete saved browser sessions or API tokens, revoke provider permissions, alter the server's existing operations, or erase backups**. Previously delivered app messages retain their old appearance; open the newest miniapp from the private chat. Older builds are not allowed to perform normal operations against the current backend.
 
-The server stores tokens in `CONFIG_DIR/web-sessions` using a key derived from the separate, stable high-entropy `WEB_SESSION_KEY` (at least 32 characters). Filenames and encryption domains differ by service and sender. The outer state backup encrypts these files again. Losing/rotating `WEB_SESSION_KEY` makes old sessions unreadable. Disconnect removes the local encrypted file and requests provider revocation; if not confirmed, the account holder must revoke the app at the provider. Previously made encrypted backups can still contain an older copy until rotation; provider revocation is important to invalidate it.
+Browser sessions and older API tokens are stored separately per person and site, encrypted using `WEB_SESSION_KEY`, and may also exist in encrypted backups. Losing or rotating that key makes existing data unreadable. To forget a browser session, open that site in Live and use **Forget session**; that does not revoke the session at the provider or erase historical backups. For a previously authorized official account connection, revoke the app directly in the provider's account permissions if it is no longer wanted. Removing a card alone does not disconnect anything.
 
-### YouTube
-
-1. Enable YouTube Data API v3 and create a Google OAuth client of type **TVs and limited-input devices**. Complete the consent-screen setup and any required verification.
-2. Configure server secrets `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` and `WEB_SESSION_KEY`.
-3. In **Web → Accounts and sites → My YouTube account**, choose Connect. Open the displayed Google device address in a browser, enter the short code, and authorize `youtube.readonly` on Google. Return and select **I have authorized**.
-4. The first page of the account's own channel and subscriptions can be read, up to 20 results. This is not arbitrary private video access or a logged-in website.
-
-The code is documented by [Google's device authorization guide](https://developers.google.com/youtube/v3/guides/auth/devices). If disconnect does not confirm revocation, use `https://myaccount.google.com/permissions`.
-
-### Facebook
-
-1. Create a Meta app, enable **Facebook Login for Devices**, and comply with Meta's review and allowed-use requirements. Configure `FACEBOOK_APP_ID`, `FACEBOOK_CLIENT_TOKEN` and `WEB_SESSION_KEY` as secrets.
-2. The default request is only `public_profile`; the account owner opens `https://www.facebook.com/device`, enters the displayed code, and grants permission. Return and select **I have authorized**. The bot can then read the authorized account's basic profile.
-3. Optionally set repository variable `FACEBOOK_READ_POSTS=1` only if the app and use are approved for `user_posts`. The owner must grant it; only their own posts are requested, and availability is subject to Meta's restrictions. No posting or deletion permission is requested.
-
-The endpoint and error codes follow [Facebook Login for Devices](https://developers.facebook.com/documentation/facebook-login/for-devices). Device tokens can expire or be revoked and are not assumed valid just because a ciphertext file exists.
-
-### TikTok
-
-1. Register a TikTok developer app with Login Kit, configure an approved HTTPS redirect URI, and complete applicable review. Configure `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_OAUTH_REDIRECT_URI` (exactly the registered URI, without query or fragment), and `WEB_SESSION_KEY` as secrets.
-2. In **My TikTok account**, choose Connect and scan the temporary QR using TikTok on another device. Approve the request there and return to select **I have authorized**. The backend verifies `client_ticket`, random `state` and the registered redirect before exchanging a code; the authorization code and tokens do not enter WebXDC.
-3. The default permission is `user.info.basic`, which permits basic account information. `TIKTOK_READ_VIDEOS=1` optionally requests `video.list` **only after** the app and scope are approved; this allows the authorized user's own video list, not their private For You feed. Permissions can be declined and API availability depends on TikTok.
-
-See TikTok's [QR authorization](https://developers.tiktok.com/docs/en/login-kit-qr-code-authorization) and [token management](https://developers.tiktok.com/docs/en/oauth-user-access-token-management) guides. The QR flow is implemented and mock-tested; without real app credentials and approval, actual provider behavior and review remain unverified.
-
-## Other requested services
-
-The interactive browser offers links for Instagram, Revolico, Arena.ai, DeepSeek Chat and Z.AI, but login and restoration on those services have **not** been verified. Provider rules and technical blocks still apply. Instagram's [official platform](https://developers.facebook.com/docs/instagram-platform/overview/) targets professional accounts; Arena.ai's [terms](https://help.arena.ai/articles/5629909088-terms-of-use) restrict programmatic use without applicable authorization. The [DeepSeek API](https://api-docs.deepseek.com/) and the bot's Z.AI API route are separate from those websites' browser sessions. Do not treat an API connection, a saved state, or a displayed login form as proof of a working website login.
-
-Mock tests and simulated browser screenshots do not establish a real social connection. Confirm each provider app and account authorization individually before claiming operational access.
+Named sites may be entered manually, but provider rules and technical blocks still apply; login and restoration have not been verified for every service. Do not interpret an API connection, saved state, or displayed login form as proof of successful website login. Do not paste passwords, cookies, refresh tokens or access tokens into chat or search fields, and do not bypass CAPTCHA.
