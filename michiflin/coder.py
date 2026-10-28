@@ -610,11 +610,19 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
             sticky = sticky or _sticky_key(result)
             actions = parse(result.text)
             if not actions:
-                if step == 0 and not files:
+                # A free router may return a safety classifier rather than a
+                # coding model (e.g. "User Safety: safe"). An explicit build
+                # request must not silently finish as an empty project. For
+                # ordinary questions, keep the existing plain-answer behavior.
+                build_requested = bool(ORDER.search(request) or BUILD.search(request)) and not looks_like_question(request)
+                if step == 0 and not files and not build_requested:
                     summary = result.text.strip()[:3000]
                     break
+                if not model_key:
+                    sticky = ""  # let the fair router try a different provider
                 messages += [{"role": "assistant", "content": result.text[:3000]},
-                             {"role": "user", "content": "Use only the action blocks described above."}]
+                             {"role": "user", "content": "Use only the action blocks described above. "
+                              "For a build request, write the requested files and verify them when possible."}]
                 continue
             results, done, failed = [], "", False
             for kind, arg, body in actions:
