@@ -482,6 +482,31 @@ def tools_result(url):
 
 @unittest.skipUnless(os.getenv("MICHIFLIN_SANDBOX_TESTS") == "1", "requires Linux namespaces, sudo, ffmpeg, openssl and socat")
 class RealSandboxTests(unittest.TestCase):
+    def test_worker_starts_with_restrictive_parent_umask(self):
+        """The private runner must work even when its parent uses umask 077."""
+        original = sandbox.shutil.copyfile
+        code = ("import json,os,stat\n"
+                "open('/work/permission-probe','w').write('x')\n"
+                "print(json.dumps({'uid':os.getuid(),'mode':stat.S_IMODE(os.stat('/work/permission-probe').st_mode),"
+                "'system_accessible':os.path.isfile('/usr/bin/env')}),flush=True)\n")
+        def copy(src, dst, *args, **kwargs):
+            if Path(src).name == "media_worker.py":
+                Path(dst).write_text(code)
+                return dst
+            return original(src, dst, *args, **kwargs)
+        with mock.patch.object(sandbox.shutil, "copyfile", side_effect=copy):
+            previous = os.umask(0o077)
+            try:
+                worker = sandbox.BrowserProcess("media_worker.py")
+            finally:
+                os.umask(previous)
+            with worker:
+                self.assertTrue(select.select([worker.process.stdout], [], [], 45)[0])
+                line = worker.process.stdout.readline()
+                self.assertTrue(line, "worker exited before producing a result under umask 077")
+                result = json.loads(line)
+                self.assertEqual(result, {"uid": 65533, "mode": 0o600, "system_accessible": True})
+
     @unittest.skipUnless(shutil.which("deno"), "Deno is not installed on this runner")
     def test_real_deno_runs_inside_media_sandbox(self):
         """Exercise the actual Deno binary via the same private worker jail."""
@@ -571,6 +596,9 @@ class RealSandboxTests(unittest.TestCase):
                                                          '"device_scale_factor": 2, "ignore_https_errors": True,')
                     Path(dst).write_text(text); return dst
                 return original_copy(src, dst, *args, **kwargs)
+            # Exercise the entire browser -> vault -> queue -> media route with
+            # the restrictive mask used by security-conscious deployments.
+            previous_umask = os.umask(0o077)
             try:
                 with mock.patch.object(egress, "_connect", side_effect=connect), \
                      mock.patch.object(sandbox.shutil, "copyfile", side_effect=copy), \
@@ -638,6 +666,7 @@ class RealSandboxTests(unittest.TestCase):
                         self.assertEqual(Image.open(io.BytesIO(base64.b64decode(scrolled["image"]))).height,
                                          scrolled["height"] * 2)
             finally:
+                os.umask(previous_umask)
                 server.shutdown(); server.server_close(); thread.join(timeout=3)
 
 
