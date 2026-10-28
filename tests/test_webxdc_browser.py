@@ -221,6 +221,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                   ctx.fillStyle = '#18375a'; ctx.font = '48px sans-serif'; ctx.fillText('SIMULATED FRAME', 40, 120);
                   const image = c.toDataURL('image/jpeg', 0.7).split(',')[1];
                   window.__liveActions = [];
+                  window.__liveRoute = 'proxy';
+                  window.__proxyWarning = '';
                   window.webxdc.joinRealtimeChannel = () => {
                     let listener;
                     return {
@@ -230,7 +232,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                         window.__liveActions.push(req);
                         if (req.t !== 'start' && req.t !== 'action') return;
                         const msg = {v:1, sid:req.sid, t:'frame', seq:req.seq || 0,
-                                     image, width:480, height:760, rendered:req.detail || 'sharp'};
+                                     image, width:480, height:760, rendered:req.detail || 'sharp',
+                                     route:window.__liveRoute, warning:window.__proxyWarning};
                         setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), 15);
                       },
                       leave() {},
@@ -264,6 +267,17 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 settings.click()
                 page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
                 page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 960")
+                route_label = page.locator(".live-route")
+                self.assertIn("proxy configurado" if language == "es" else "proxy configured", route_label.inner_text().lower())
+                self.assertNotIn("127.0.0.1", route_label.inner_text())
+                refresh = page.get_by_role("button", name="Actualizar vista" if language == "es" else "Refresh view")
+                page.evaluate("window.__proxyWarning = 'proxy_unavailable'")
+                refresh.click()
+                page.get_by_text("No se usó salida directa" if language == "es" else "Direct access was not used", exact=False).wait_for()
+                page.evaluate("window.__proxyWarning = ''; window.__liveRoute = 'direct'")
+                refresh.click()
+                page.get_by_text("Salida: directa, sin proxy." if language == "es" else "Route: direct, no proxy.").wait_for()
+                page.evaluate("window.__liveRoute = 'proxy'")
                 page.locator(".live-zoom").get_by_role("tab", name="150%").click()
                 screen, box = page.locator(".live-screen"), page.locator(".live-screen-box")
                 self.assertAlmostEqual(screen.bounding_box()["width"], (box.bounding_box()["width"] - 2) * 1.5, delta=3)

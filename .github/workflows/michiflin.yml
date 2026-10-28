@@ -104,6 +104,8 @@ jobs:
       - name: Media egress
         continue-on-error: true
         run: |
+          WARP_READY=0
+          trap 'if [ "$WARP_READY" != 1 ]; then echo "WARP not verified; no workflow proxy was configured."; fi' EXIT
           curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
           sudo apt-get update && sudo apt-get install --yes cloudflare-warp
@@ -112,9 +114,10 @@ jobs:
           warp-cli --accept-tos proxy port 40000
           warp-cli --accept-tos connect
           for i in $(seq 1 15); do
-            if curl -s --max-time 10 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "warp=on"; then
+            if curl -s --max-time 5 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "^warp=on$"; then
               echo "MEDIA_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
-              echo "Media egress ready"
+              WARP_READY=1
+              echo "WARP proxy verified for media and Live"
               break
             fi
             sleep 2

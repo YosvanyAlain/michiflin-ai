@@ -410,7 +410,7 @@ class BrowserFrameTests(unittest.TestCase):
 
     def test_cross_site_address_is_rejected_before_reaching_browser(self):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/")
-        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()))
+        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()), route="direct", gateway=None)
         sent = []
         def send(_instance, _sid, message):
             sent.append(message)
@@ -427,7 +427,7 @@ class BrowserFrameTests(unittest.TestCase):
             factory.return_value.__enter__.return_value = worker
             session.run()
         self.assertEqual(exchange.call_count, 1)  # opening only, no external goto
-        self.assertIn({"t": "error", "seq": 1, "error": "different_site"}, sent)
+        self.assertIn({"t": "error", "seq": 1, "error": "different_site", "route": "direct"}, sent)
 
 
 class EgressAndResearchTests(unittest.TestCase):
@@ -457,6 +457,113 @@ class EgressAndResearchTests(unittest.TestCase):
                    (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
         with mock.patch.object(egress.socket, "getaddrinfo", return_value=answers), self.assertRaises(egress.EgressError):
             egress._connect("fixture.example", 443)
+
+    def test_proxy_parser_rejects_bad_urls_without_exposing_credentials(self):
+        selected = egress._proxy("socks5://user:fixture-secret@127.0.0.1:40000")
+        self.assertEqual((selected.scheme, selected.host, selected.port), ("socks5", "127.0.0.1", 40000))
+        self.assertNotIn("fixture-secret", repr(selected))
+        self.assertEqual(egress._proxy("socks5h://localhost:1080").scheme, "socks5h")
+        self.assertEqual(egress._proxy("http://localhost:8080/").scheme, "http")
+        for value in ("https://user:fixture-secret@host:443", "socks5://user:fixture-secret@host:0",
+                      "socks5://user:fixture-secret@host:1080/path", "socks5://user%0A:secret@host:1080"):
+            with self.subTest(scheme=value.split(":", 1)[0]), self.assertRaises(egress.EgressError) as caught:
+                egress._proxy(value)
+            self.assertEqual(str(caught.exception), "proxy_invalid")
+            self.assertNotIn("fixture-secret", str(caught.exception))
+
+    def test_proxy_receives_only_a_vetted_numeric_destination(self):
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        remote = mock.Mock()
+        upstream = egress._proxy("socks5h://localhost:1080")
+        with mock.patch.object(egress.socket, "getaddrinfo", return_value=answers), \
+             mock.patch.object(egress, "_via_socks", return_value=remote) as connect:
+            self.assertIs(egress._connect("fixture.example", 443, upstream), remote)
+        self.assertEqual(connect.call_args.args[:3], (upstream, "8.8.8.8", 443))
+        remote.settimeout.assert_called_once_with(None)
+        mixed = answers + [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443))]
+        with mock.patch.object(egress.socket, "getaddrinfo", return_value=mixed), \
+             mock.patch.object(egress, "_via_socks") as connect, self.assertRaisesRegex(egress.EgressError, "private"):
+            egress._connect("fixture.example", 443, upstream)
+        connect.assert_not_called()
+
+    def test_unavailable_proxy_never_falls_back_to_direct(self):
+        answers = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 443))]
+        upstream = egress._proxy("socks5://localhost:1080")
+        with mock.patch.object(egress.socket, "getaddrinfo", return_value=answers), \
+             mock.patch.object(egress, "_via_socks", side_effect=egress.EgressError("proxy_unavailable")), \
+             mock.patch.object(egress.socket, "socket") as direct, self.assertRaisesRegex(egress.EgressError, "proxy_unavailable"):
+            egress._connect("fixture.example", 443, upstream)
+        direct.assert_not_called()
+        with tempfile.TemporaryDirectory() as directory, \
+             mock.patch.object(egress.socket, "create_connection", side_effect=ConnectionRefusedError()), \
+             self.assertRaisesRegex(egress.EgressError, "proxy_unavailable"):
+            egress.Gateway(Path(directory) / "gateway.sock", upstream="socks5://localhost:1080")
+
+    def test_browser_and_private_media_share_selected_gateway_route(self):
+        cases = (("", "", "", "direct"), ("", "socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000", "proxy"),
+                 ("http://u:fixture-secret@127.0.0.1:8080", "socks5://127.0.0.1:40000",
+                  "http://u:fixture-secret@127.0.0.1:8080", "proxy"))
+        for web, media_proxy, expected, route in cases:
+            for filename in ("remote_worker.py", "media_worker.py"):
+                with self.subTest(route=route, filename=filename), \
+                     mock.patch.object(config, "WEB_PROXY", web), mock.patch.object(config, "MEDIA_PROXY", media_proxy), \
+                     mock.patch.object(sandbox, "available", return_value=True), \
+                     mock.patch.object(sandbox, "browser_cache", return_value=Path(tempfile.gettempdir())), \
+                     mock.patch.object(sandbox.egress, "Gateway") as gateway, \
+                     mock.patch.object(sandbox.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+                     mock.patch.object(sandbox.subprocess, "Popen") as popen:
+                    with sandbox.BrowserProcess(filename) as worker:
+                        self.assertEqual(worker.route, route)
+                        self.assertEqual(gateway.call_args.kwargs["upstream"], expected)
+                        cmd, options = popen.call_args.args[0], popen.call_args.kwargs
+                        self.assertNotIn("fixture-secret", repr(cmd))
+                        self.assertNotIn("fixture-secret", repr(options["env"]))
+                        self.assertNotIn("WEB_PROXY", options["env"])
+
+    def test_browser_launch_targets_local_gateway_not_host_proxy(self):
+        playwright = mock.MagicMock()
+        context = playwright.__enter__.return_value.chromium.launch.return_value.new_context.return_value
+        context.new_page.return_value = mock.MagicMock()
+        with mock.patch.object(remote_worker, "sync_playwright", return_value=playwright), \
+             mock.patch.object(remote_worker, "read", side_effect=[{"url": "https://fixture.example/"}, None]), \
+             mock.patch.object(remote_worker, "frame", return_value={"kind": "frame"}), \
+             mock.patch.object(remote_worker, "emit"):
+            self.assertEqual(remote_worker.main(), 0)
+        launch = playwright.__enter__.return_value.chromium.launch
+        self.assertEqual(launch.call_args.kwargs["proxy"], {"server": "http://127.0.0.1:18080"})
+        self.assertIn("--proxy-bypass-list=<-loopback>", launch.call_args.kwargs["args"])
+
+    def test_media_failure_logs_neither_proxy_credentials_nor_provider_url(self):
+        upstream = "socks5://fixture-user:fixture-password@localhost:1080"
+        provider_url = "https://fixture.example/private?cookie=fixture-secret"
+        ydl = mock.MagicMock()
+        ydl.__enter__.return_value.extract_info.side_effect = RuntimeError(provider_url)
+        with mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
+             mock.patch.object(media, "supported", return_value=True), \
+             mock.patch.object(media, "_routes", return_value=[upstream]), \
+             mock.patch.object(media, "_options", return_value={}), \
+             mock.patch.object(private_media, "storage_for", return_value=None), \
+             mock.patch.object(media.yt_dlp, "YoutubeDL", return_value=ydl), \
+             self.assertLogs("michiflin", level="INFO") as captured, self.assertRaises(ValueError):
+            media.inspect("https://fixture.example/video")
+        output = " ".join(captured.output)
+        self.assertIn("proxy", output)
+        self.assertNotIn("fixture-password", output)
+        self.assertNotIn("fixture-secret", output)
+        self.assertNotIn("fixture.example", output)
+
+    def test_route_status_reports_only_mode_and_proxy_failures(self):
+        gateway = mock.Mock()
+        gateway.take_proxy_failure.return_value = True
+        worker = SimpleNamespace(route="proxy", gateway=gateway)
+        reply = live_web.Session._route_reply({"t": "frame", "image": "fixture"}, worker)
+        self.assertEqual(reply, {"t": "frame", "image": "fixture", "route": "proxy", "warning": "proxy_unavailable"})
+        gateway.take_proxy_failure.return_value = False
+        self.assertEqual(live_web.Session._route_reply({"t": "frame"}, worker), {"t": "frame", "route": "proxy"})
+        direct = SimpleNamespace(route="direct", gateway=None)
+        self.assertEqual(live_web.Session._route_reply({"t": "frame"}, direct), {"t": "frame", "route": "direct"})
+        self.assertEqual(private_media._sandbox_error(sandbox.SandboxError("proxy_invalid")), "proxy_invalid")
+        self.assertIn("proxy", media.describe_error("proxy_unavailable", "en"))
 
     def test_coder_research_restricts_query_and_url(self):
         request = "Build example using Python"
@@ -635,10 +742,10 @@ class RealSandboxTests(unittest.TestCase):
             server.socket = context.wrap_socket(server.socket, server_side=True)
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             original_connect, original_copy = egress._connect, sandbox.shutil.copyfile
-            def connect(host, port):
-                if host == "fixture.example" and port == 443:
+            def connect(host, port, upstream=None):
+                if host == "fixture.example" and port == 443 and upstream is None:
                     return socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
-                return original_connect(host, port)
+                return original_connect(host, port, upstream)
             def copy(src, dst, *args, **kwargs):
                 if Path(src).name == "media_worker.py":
                     # A disposable worker alone accepts this self-signed fixture certificate.
