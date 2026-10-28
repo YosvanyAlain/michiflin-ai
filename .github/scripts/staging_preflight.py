@@ -30,8 +30,8 @@ def main() -> int:
     if not ai.providers():
         print("RESULT: no configured test model", flush=True)
         return 0
-    # Four rounds are sufficient for this small request and cap quota usage.
-    coder.MAX_STEPS = 4
+    # Allow search, opening sources, writing and testing, with a hard network cap below.
+    coder.MAX_STEPS = 7
     coder.ANSWER_TOKENS = 1800
     original_call = ai._call
     calls = 0
