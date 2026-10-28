@@ -27,7 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, images, links, mail_profiles, media, perf, queue, reader, state, tools, usage, web
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tools, usage, web, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -312,7 +312,7 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     chat.send_update(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "action", "command", "tool", "translate", "rates"}
+WORK_OPS = {"ask", "image", "code", "read", "search", "action", "command", "tool", "translate", "rates", "youtube_account"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "translate": 90, "code": 900}
@@ -356,9 +356,13 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         reply(None, tr(locale, "Michiflin está en mantenimiento y solo lo puede usar su dueño.",
                                            "Michiflin is under maintenance and available only to its owner."))
         return
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    # Disconnecting an existing authorization is a safety operation, even
+    # while work is paused; other YouTube actions remain kill-switch guarded.
+    kill_safe = op in KILL_SAFE_OPS or (op == "youtube_account" and args.get("do") == "disconnect")
     generation = int(request.get("_kill_generation", state.kill_generation(address)))
     was_killed = bool(request.get("_kill_at_admission", state.get_kill_switch(address)))
-    if op not in KILL_SAFE_OPS and (was_killed or state.work_interrupted(address, generation)):
+    if not kill_safe and (was_killed or state.work_interrupted(address, generation)):
         reply(None, kill_message(locale))
         return
     # Older packages may only run hello so the bot can replace them; other ops stay blocked.
@@ -370,7 +374,6 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     if function is None:
         reply(None, tr(locale, "Operación desconocida.", "Unknown operation."))
         return
-    args = request.get("args") if isinstance(request.get("args"), dict) else {}
 
     def run() -> Any:
         # Re-check when a worker actually starts: revocation can happen after
@@ -384,7 +387,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         if gate is not None and not gate.acquire(blocking=False):
             raise AppError(tr(locale, "Espera a que termine tu consulta anterior.", "Wait until your previous request finishes."))
         try:
-            if op in KILL_SAFE_OPS:
+            if kill_safe:
                 answer = function(chat_id, args, locale)
             else:
                 with state.guard_work(address, generation):
@@ -774,7 +777,7 @@ def op_models(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     text = _clean(args.get("text"))[:6000]
     space = str(args.get("space") or "agent")
-    attachment = args.get("file") if isinstance(args.get("file"), dict) and space != "agent" else None
+    attachment = args.get("file") if isinstance(args.get("file"), dict) and space not in {"agent", "smart_agent"} else None
     if not text and not attachment:
         raise AppError(tr(locale, "Escribe algo primero.", "Write something first."))
     media_parts: list[tuple[str, bytes]] = []
@@ -783,6 +786,13 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if space == "agent":
         return run_captured(lambda: agent.handle(chat_id, text, locale), locale)
     history = args.get("history") if isinstance(args.get("history"), list) else []
+    if space == "smart_agent":
+        try:
+            answer = smart_agent.run(text, locale, history)
+        except smart_agent.AgentError as exc:
+            raise AppError(str(exc)) from exc
+        answer["models"] = models_view()
+        return answer
     messages = [{"role": "system", "content": agent.system_prompt(locale)}]
     budget = 8000
     for turn in reversed(history[-12:]):
@@ -800,6 +810,36 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if not result.ok:
         raise AppError(ai.describe_error(result.error, locale, result, "" if space == "auto" else space).replace("⚠️ IA: ", "").replace("⚠️ ", ""))
     return {"text": result.text, "sig": result.signature(), "model": result.model, "models": models_view()}
+
+
+@op("youtube_account")
+def op_youtube_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    """Read-only, per-sender Google device authorization; no tokens enter the app."""
+    address, action = chat.sender(), str(args.get("do") or "status")
+    try:
+        if action == "status":
+            return youtube_account.status(address)
+        if action == "start":
+            return youtube_account.start(address)
+        if action == "poll":
+            return youtube_account.poll(address)
+        if action in {"channels", "subscriptions"}:
+            return youtube_account.read(address, action)
+        if action == "disconnect":
+            return youtube_account.disconnect(address)
+    except youtube_account.AccountError as exc:
+        messages = {
+            "not_configured": ("Falta configurar la conexión de YouTube en el servidor.", "The YouTube connection is not configured on the server."),
+            "not_connected": ("Todavía no has conectado YouTube.", "You have not connected YouTube yet."),
+            "network": ("No pude contactar con Google. Inténtalo de nuevo.", "Could not reach Google. Please retry."),
+            "reauthorize": ("La autorización caducó o fue revocada. Conecta tu cuenta de nuevo.", "Authorization expired or was revoked. Connect your account again."),
+            "vault": ("No se pudo abrir la sesión cifrada. Comprueba la clave del servidor.", "Could not open the encrypted session. Check the server key."),
+            "scope": ("Google no concedió el permiso de solo lectura requerido.", "Google did not grant the required read-only scope."),
+        }
+        spanish, english = messages.get(str(exc), ("Google no completó la operación. Revisa la configuración e inténtalo otra vez.",
+                                                       "Google did not complete the operation. Check the configuration and retry."))
+        raise AppError(tr(locale, spanish, english)) from None
+    raise AppError(tr(locale, "Operación desconocida.", "Unknown operation."))
 
 
 @op("code")

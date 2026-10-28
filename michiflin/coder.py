@@ -12,11 +12,13 @@ import posixpath
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -146,39 +148,62 @@ def safe_path(raw: str) -> str:
 
 
 
-def _safe_write_text(target: Path, content: str, limit: int) -> bool:
-    """Write under folder without following symlinks (reject link targets)."""
+def _has_symlink(path: Path) -> bool:
+    """Check existing components before creating directories or touching a target."""
+    return any(part.is_symlink() for part in (path, *path.parents))
+
+
+@contextmanager
+def _safe_parent(folder: Path, raw: str, create: bool = False):
+    """Traverse project directories by descriptor, never following a symlink."""
+    path = safe_path(raw)
+    if not path or not hasattr(os, "O_NOFOLLOW") or _has_symlink(folder):
+        raise OSError("unsafe path")
+    parts = path.split("/")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(folder, flags)
     try:
-        if target.is_symlink() or (target.exists() and not target.is_file()):
-            if target.is_symlink():
-                target.unlink()
-            else:
-                return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # Reject if any parent component is a symlink escaping intent
-        for parent in [target.parent, *target.parent.parents]:
-            if parent == target.anchor or not str(parent):
-                break
-            if parent.is_symlink():
-                return False
-        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o666)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(content[:limit])
+        for name in parts[:-1]:
+            if create:
+                try:
+                    os.mkdir(name, mode=0o777, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            next_fd = os.open(name, flags, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        yield fd, parts[-1]
+    finally:
+        os.close(fd)
+
+
+def _safe_write_text(folder: Path, raw: str, content: str, limit: int) -> bool:
+    return _safe_write_bytes(folder, raw, content[:limit].encode("utf-8"))
+
+
+def _safe_write_bytes(folder: Path, raw: str, data: bytes) -> bool:
+    try:
+        with _safe_parent(folder, raw, create=True) as (parent, name):
+            flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK
+            fd = os.open(name, flags, 0o666, dir_fd=parent)
+            with os.fdopen(fd, "wb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    return False
+                os.ftruncate(handle.fileno(), 0)
+                handle.write(data)
         return True
     except OSError:
         return False
 
 
-def _safe_write_bytes(target: Path, data: bytes) -> bool:
+def _safe_delete(folder: Path, raw: str) -> bool:
     try:
-        if target.is_symlink():
-            target.unlink()
-        if target.exists() and not target.is_file():
-            return False
-        target.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o666)
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
+        with _safe_parent(folder, raw) as (parent, name):
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            os.unlink(name, dir_fd=parent)
         return True
     except OSError:
         return False
@@ -200,23 +225,42 @@ def write_files(folder: Path, files: list[dict[str, Any]]) -> None:
         path = safe_path(str(item.get("path", "")))
         if not path:
             continue
-        target = folder / path
         if "b64" in item:
             try:
                 data = base64.b64decode(str(item["b64"]), validate=True)[:MAX_BINARY]
             except (ValueError, TypeError):
                 continue
-            _safe_write_bytes(target, data)
+            _safe_write_bytes(folder, path, data)
         else:
-            _safe_write_text(target, str(item.get("text", "")), MAX_FILE)
+            _safe_write_text(folder, path, str(item.get("text", "")), MAX_FILE)
     _open_up(folder)
 
 
 def _open_up(folder: Path) -> None:
-    for path in [folder, *folder.rglob("*")]:
+    try:
+        if not _has_symlink(folder):
+            fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                if os.fstat(fd).st_uid == os.getuid():
+                    os.fchmod(fd, 0o777)
+            finally:
+                os.close(fd)
+    except OSError:
+        return
+    for index, path in enumerate(folder.rglob("*")):
+        if index >= 3000:
+            break
         try:
-            if path.stat().st_uid == os.getuid():
-                path.chmod(0o777 if path.is_dir() else 0o666)
+            relative = path.relative_to(folder).as_posix()
+            with _safe_parent(folder, relative) as (parent, name):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    info = os.fstat(fd)
+                    if info.st_uid == os.getuid() and (stat.S_ISDIR(info.st_mode) or
+                                                        (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)):
+                        os.fchmod(fd, 0o777 if stat.S_ISDIR(info.st_mode) else 0o666)
+                finally:
+                    os.close(fd)
         except OSError:
             continue
 
@@ -226,10 +270,21 @@ def read_files(folder: Path) -> list[dict[str, Any]]:
     total = 0
     for path in sorted(folder.rglob("*")):
         relative = path.relative_to(folder)
-        if not path.is_file() or path.is_symlink() or any(part in SKIP_DIRS for part in relative.parts) or path.suffix == ".pyc":
+        if any(part in SKIP_DIRS for part in relative.parts) or path.suffix == ".pyc":
             continue
         try:
-            data = path.read_bytes()
+            with _safe_parent(folder, relative.as_posix()) as (parent, name):
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+                try:
+                    info = os.fstat(fd)
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE:
+                        continue
+                    with os.fdopen(fd, "rb", closefd=False) as handle:
+                        data = handle.read(MAX_FILE + 1)
+                    if len(data) > MAX_FILE:
+                        continue
+                finally:
+                    os.close(fd)
         except OSError:
             continue
         if total + len(data) > MAX_TOTAL or len(found) >= MAX_FILES:
@@ -541,16 +596,16 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                     if PLACEHOLDER.match(content.strip() or "..."):
                         results.append(f"! {path} was NOT written: send the complete file content, never a placeholder.")
                         continue
-                    target = folder / path
-                    if not _safe_write_text(target, content, MAX_FILE):
+                    if not _safe_write_text(folder, path, content, MAX_FILE):
                         results.append(f"! Skipped unsafe write: {path}")
                         continue
                     steps.append({"kind": "write", "path": path, "lines": content.count("\n") + 1})
                 elif kind == "DELETE":
                     path = safe_path(arg)
-                    if path and (folder / path).is_file():
-                        (folder / path).unlink()
+                    if path and _safe_delete(folder, path):
                         steps.append({"kind": "delete", "path": path})
+                    else:
+                        results.append(f"! Skipped unsafe or missing delete: {arg}")
                 elif kind == "DONE":
                     done = (body or arg).strip()
             _open_up(folder)

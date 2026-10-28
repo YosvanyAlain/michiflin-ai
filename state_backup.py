@@ -26,6 +26,7 @@ import sqlite3
 import sys
 import tarfile
 import tempfile
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
 
@@ -95,7 +96,7 @@ def archive(source: Path) -> bytes:
             if path.is_file() and not path.name.endswith(("-wal", "-shm", "-journal")) and _is_sqlite(path):
                 target = scratch / f"{len(snapshots)}.db"
                 try:
-                    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as connection:
+                    with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as connection:
                         connection.execute("VACUUM INTO ?", (str(target),))
                     snapshots[str(path.relative_to(source))] = target
                 except sqlite3.Error as exc:

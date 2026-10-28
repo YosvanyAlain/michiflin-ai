@@ -50,6 +50,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_logic.py -v
           python -m unittest tests.test_safety -v
+          python -m unittest discover -s tests -p test_new_features.py -v
 
       - name: WebXDC behavior and package tests
         run: python tests/test_webxdc.py
@@ -59,8 +60,8 @@ jobs:
 
       - name: Static checks
         run: |
-          ruff check michiflin state_backup.py bot.py tests/test_logic.py tests/test_safety.py tests/test_webxdc_browser.py --select F,E9
-          python -m compileall -q michiflin state_backup.py bot.py tests/test_logic.py tests/test_safety.py tests/test_webxdc_browser.py
+          ruff check michiflin state_backup.py bot.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_webxdc_browser.py --select F,E9
+          python -m compileall -q michiflin state_backup.py bot.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_webxdc_browser.py
           node tests/coder_history.js
           for file in webxdc/*.js; do node --check "$file"; done
           git diff --check
