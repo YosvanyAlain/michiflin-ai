@@ -2352,7 +2352,7 @@ VIEWS.notes = {
   tab: "apps",
   title: () => t("tile_notes"),
   render(main) {
-    const input = field({ type: "text", placeholder: t("ask_placeholder"), enterkeyhint: "go" });
+    const input = field({ type: "text", placeholder: t("nota_placeholder"), "aria-label": t("nota_placeholder"), enterkeyhint: "go" });
     const list = h("div", { class: "stack" });
     const onAdd = async () => {
       const text = input.value.trim();
@@ -2370,7 +2370,7 @@ VIEWS.notes = {
       try {
         const data = await bridge.call("notas", { do: "list" });
         fill(list, ...(data.notes && data.notes.length ? data.notes.map((n) =>
-          h("div", { class: "list-row" }, h("span", { class: "grow clamp1" }, n.text),
+          h("div", { class: "list-row note-row" }, h("span", { class: "grow note-text" }, n.text),
             h("small", { class: "muted" }, fmtTime(n.ts)),
             iconButton("close", t("delete"), () => {
               bridge.call("notas", { do: "delete", id: n.id }).then(() => { toast(t("nota_deleted"), "ok"); load(); }).catch((e) => { if (!e.cancelled) toast(e.message, "bad"); });
@@ -2380,7 +2380,7 @@ VIEWS.notes = {
       }
     };
     const cardEl = card(h("div", { class: "search-field" }, icon("notes"), input,
-      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("done"))));
+      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("nota_save"))));
     add(main, cardEl, section(null, list));
     load();
   },

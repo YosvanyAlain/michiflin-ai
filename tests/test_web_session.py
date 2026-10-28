@@ -145,6 +145,51 @@ class VaultAndBridgeTests(unittest.TestCase):
         entry["build"] = "outdated"
         self.assertIsNone(live_web._authorized(10))
 
+    def test_paused_browser_explains_denial_without_starting_worker(self):
+        entry, rpc = self._authorization()
+        state.get_kill_switch.return_value = True
+        live_web._advertised.clear()
+        payload = {"v": 1, "sid": "a" * 32, "t": "start", "url": "https://example.org/", "lang": "en"}
+        with mock.patch.object(live_web.Session, "start") as start:
+            live_web.advertisement(10)
+            live_web.receive(10, list(json.dumps(payload).encode()))
+        rpc.send_webxdc_realtime_advertisement.assert_called_once_with(3, 10)
+        data = json.loads(bytes(rpc.send_webxdc_realtime_data.call_args.args[2]))
+        self.assertEqual(data, {"v": 1, "sid": "a" * 32, "t": "error", "error": "paused"})
+        self.assertIsNone(live_web._authorized(10))
+        start.assert_not_called()
+
+    def test_stale_browser_gets_bounded_notice_but_no_private_work(self):
+        entry, rpc = self._authorization()
+        entry["build"] = "old-build"
+        live_web._stale_notices.clear()
+        self.addCleanup(live_web._stale_notices.clear)
+        payload = {"v": 1, "sid": "b" * 32, "t": "start", "url": "https://example.org/private", "lang": "es"}
+        with mock.patch.object(chat, "send", return_value=20) as send, \
+             mock.patch.object(live_web.Session, "start") as start:
+            live_web.receive(10, list(json.dumps(payload).encode()))
+            live_web.receive(10, list(json.dumps(payload).encode()))
+        data = json.loads(bytes(rpc.send_webxdc_realtime_data.call_args.args[2]))
+        self.assertEqual(data, {"v": 1, "sid": "b" * 32, "t": "error", "error": "stale_app"})
+        self.assertNotIn("example.org", json.dumps(data))
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("Sincronizar ahora", send.call_args.args[1])
+        start.assert_not_called()
+
+    def test_stale_or_paused_denial_never_reaches_unauthorized_chat(self):
+        entry, rpc = self._authorization()
+        entry["build"] = "old-build"
+        state.get_kill_switch.return_value = True
+        rpc.get_basic_chat_info.return_value.is_encrypted = False
+        live_web._advertised.clear()
+        payload = {"v": 1, "sid": "c" * 32, "t": "start", "url": "https://example.org/"}
+        with mock.patch.object(chat, "send") as send:
+            live_web.advertisement(10)
+            live_web.receive(10, list(json.dumps(payload).encode()))
+        rpc.send_webxdc_realtime_advertisement.assert_not_called()
+        rpc.send_webxdc_realtime_data.assert_not_called()
+        send.assert_not_called()
+
     def test_action_retries_do_not_repeat_side_effects(self):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
         action = {"seq": 1, "action": "click", "x": 10, "y": 20}
@@ -407,6 +452,20 @@ class BrowserFrameTests(unittest.TestCase):
                     "https://name:pass@youtube.com/", "https://youtube.com:444/", None, "x" * 4097):
             with self.subTest(url=str(url)[:40]):
                 self.assertFalse(live_web._same_site_url(url, "youtube"))
+
+    def test_idle_expiration_notifies_client_before_leaving(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/")
+        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()), route="direct", gateway=None)
+        with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()), \
+             mock.patch.object(live_web, "_send", return_value=True) as send, \
+             mock.patch.object(live_web, "IDLE_SECONDS", 0), \
+             mock.patch.object(web_vault, "load", return_value=None), \
+             mock.patch.object(sandbox, "BrowserProcess") as factory, \
+             mock.patch.object(session, "_exchange", return_value={"kind": "frame", "image": ""}), \
+             mock.patch.object(chat, "rpc"):
+            factory.return_value.__enter__.return_value = worker
+            session.run()
+        self.assertIn(mock.call(10, "a" * 32, {"t": "closed", "reason": "expired"}), send.call_args_list)
 
     def test_cross_site_address_is_rejected_before_reaching_browser(self):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/")

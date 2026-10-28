@@ -18,7 +18,7 @@ function liveSite(value) {
 }
 
 window.liveWeb = {
-  channel: null, sid: "", seq: 0, pending: null, ready: false, detail: "sharp",
+  channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "sharp",
   startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null,
   send(body) {
     if (!this.channel) return;
@@ -33,6 +33,7 @@ window.liveWeb = {
     this.sid = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
     this.seq = 0;
     this.ready = false;
+    this.openingSeen = false;
     this.onMessage = listener;
     this.channel = window.webxdc.joinRealtimeChannel();
     this.channel.setListener((data) => {
@@ -40,6 +41,7 @@ window.liveWeb = {
       try { message = JSON.parse(new TextDecoder().decode(data)); } catch (error) { return; }
       if (!message || message.v !== 1 || message.sid !== this.sid) return;
       if (message.t === "opening" && this.ready) return;
+      if (message.t === "opening") this.openingSeen = true;
       // Duplicate replies can arrive after a retry; do not put an old image or
       // status over a newer action, and never acknowledge an unknown sequence.
       if (Number.isInteger(message.seq) && message.seq > 0 && (!this.pending || message.seq !== this.pending.seq)) return;
@@ -69,7 +71,7 @@ window.liveWeb = {
     hello();
     this.startTimer = setInterval(hello, 3500);
     this.startDeadline = setTimeout(() => {
-      if (!this.ready && this.onMessage) this.onMessage({ t: "error", error: "timeout" });
+      if (!this.ready && this.onMessage) this.onMessage({ t: "error", error: this.openingSeen ? "timeout" : "channel_timeout" });
     }, 110000);
   },
   action(action, args = {}) {
@@ -119,6 +121,7 @@ window.liveWeb = {
     this.channel = null;
     this.pending = null;
     this.ready = false;
+    this.openingSeen = false;
     this.onMessage = null;
     this.sid = "";
   },
@@ -140,11 +143,14 @@ VIEWS.live_web = {
     const secret = field({ type: "password", placeholder: t("live_type_placeholder"), autocomplete: "off" });
     const address = field({ type: "url", value: params.url, maxlength: "4096", placeholder: t("live_address") });
     const controls = h("div", { class: "stack", hidden: true });
+    const navigation = h("div", { class: "row wrap live-navigation", hidden: true });
+    let positionedFirstFrame = false;
     const auto = h("input", { type: "checkbox", disabled: true, onchange: (event) => window.liveWeb.setAuto(event.target.checked) });
     const errKey = (code) => ({ bad_url: "live_bad_url", not_configured: "live_not_configured", vault: "live_vault",
       too_large: "live_too_large", site_limit: "live_site_limit", busy: "live_busy", unsupported: "live_unsupported",
       isolation_unavailable: "live_isolation", python_unavailable: "live_isolation", browser_missing: "live_isolation",
       proxy_unavailable: "live_proxy_unavailable", proxy_invalid: "live_proxy_invalid",
+      paused: "live_paused", stale_app: "live_stale_app", channel_timeout: "live_channel_timeout",
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
       different_site: "live_same_site", frame_too_large: "live_frame_large",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
@@ -170,13 +176,14 @@ VIEWS.live_web = {
       try {
         const result = await bridge.call("browser_session", { do: "status", site });
         if (stored.isConnected) stored.textContent = t(result.stored ? "live_stored" : "live_not_stored");
-      } catch (error) { if (stored.isConnected) stored.textContent = t("live_status_unknown"); }
+      } catch (error) { if (stored.isConnected) stored.textContent = error.message || t("live_status_unknown"); }
     };
     const clearView = () => {
       window.liveWeb.setAuto(false);
       auto.checked = false; auto.disabled = true;
       picture.removeAttribute("src"); picture.hidden = true; screenBox.hidden = true;
-      controls.hidden = true; secret.value = "";
+      controls.hidden = true; navigation.hidden = true; closeButton.hidden = true; secret.value = "";
+      start.hidden = false; positionedFirstFrame = false;
       route.hidden = true; route.textContent = "";
     };
     const receive = (message) => {
@@ -193,9 +200,16 @@ VIEWS.live_web = {
         screenBox.hidden = false;
         auto.disabled = false;
         controls.hidden = false;
+        navigation.hidden = false;
+        closeButton.hidden = false;
+        start.hidden = true;
         status.textContent = t(message.warning === "proxy_unavailable" ? "live_proxy_unavailable"
           : message.warning ? "live_action_warning"
           : window.liveWeb.detail === "sharp" && message.rendered === "economy" ? "live_reduced" : "live_ready");
+        if (message.seq === 0 && !positionedFirstFrame) {
+          positionedFirstFrame = true;
+          requestAnimationFrame(() => { if (main.isConnected && !navigation.hidden) navigation.scrollIntoView({ block: "start" }); });
+        }
       } else if (message.t === "saved") {
         stored.textContent = t("live_stored");
         status.textContent = t("live_saved");
@@ -204,7 +218,7 @@ VIEWS.live_web = {
       } else if (message.t === "queued") {
         status.textContent = t("live_queued", { id: message.id });
       } else if (message.t === "closed") {
-        status.textContent = t("live_closed");
+        status.textContent = t(message.reason === "expired" ? "live_expired" : "live_closed");
         window.liveWeb.stop();
         start.disabled = false;
         clearView();
@@ -228,6 +242,7 @@ VIEWS.live_web = {
       try { liveSite(params.url); window.liveWeb.start(params.url, receive); status.textContent = t("live_wait"); start.disabled = true; }
       catch (error) { status.textContent = t(errKey(error.message)); }
     } }, t("live_start"));
+    const closeButton = h("button", { class: "btn small ghost", hidden: true, "aria-label": t("live_close"), onclick: () => run("close") }, t("close"));
     const openAddress = () => {
       const value = address.value.trim();
       try {
@@ -238,7 +253,7 @@ VIEWS.live_web = {
     address.addEventListener("keydown", (event) => {
       if (event.key === "Enter") { event.preventDefault(); openAddress(); }
     });
-    const disconnect = h("button", { class: "btn ghost", onclick: async () => {
+    const disconnect = h("button", { class: "btn small ghost", onclick: async () => {
       if (!await confirmBox(t("live_forget"), t("live_forget_q"), t("live_forget"))) return;
       window.liveWeb.stop();
       start.disabled = false;
@@ -249,14 +264,17 @@ VIEWS.live_web = {
         status.textContent = t("live_forgotten");
       } catch (error) { status.textContent = t("live_closed"); toast(error.message, "bad"); }
     } }, t("live_forget"));
+    add(navigation,
+      h("small", { class: "muted" }, t("live_page_scroll")),
+      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_up"), onclick: () => run("scroll", { amount: -240 }) }, "↑"),
+      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_down"), onclick: () => run("scroll", { amount: 240 }) }, "↓"),
+      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_up"), onclick: () => run("scroll", { amount: -600 }) }, "↑↑"),
+      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_down"), onclick: () => run("scroll", { amount: 600 }) }, "↓↓"),
+      closeButton);
     add(controls,
       h("div", { class: "row wrap" },
         h("button", { class: "btn small ghost", onclick: () => run("back") }, "← ", t("back")),
         h("button", { class: "btn small ghost", onclick: () => run("forward") }, t("next"), " →"),
-        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_up"), onclick: () => run("scroll", { amount: -240 }) }, "↑"),
-        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_down"), onclick: () => run("scroll", { amount: 240 }) }, "↓"),
-        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_up"), onclick: () => run("scroll", { amount: -600 }) }, "↑↑"),
-        h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_down"), onclick: () => run("scroll", { amount: 600 }) }, "↓↓"),
         h("button", { class: "btn small ghost", "aria-label": t("refresh"), onclick: () => run("reload") }, "↻"),
         h("button", { class: "btn small ghost", onclick: () => run("frame") }, t("live_refresh"))),
       h("small", { class: "muted" }, t("live_address_hint")),
@@ -284,12 +302,15 @@ VIEWS.live_web = {
         } }, t("live_capture")),
         h("button", { class: "btn ghost", onclick: async () => {
           if (await confirmBox(t("live_download"), t("live_download_q"), t("live_download"))) run("download");
-        } }, t("live_download")),
-        h("button", { class: "btn ghost", onclick: () => run("close") }, t("live_close"))));
-    add(main, h("p", { class: "note" }, t("live_privacy")), h("small", { class: "site-address" }, params.url),
-      h("p", { class: "muted small" }, t("live_personal_hint")),
-      h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")), stored,
-      h("div", { class: "row wrap" }, start, disconnect), status, route, viewSettings, screenBox, controls);
+        } }, t("live_download"))));
+    const privacy = h("details", { class: "live-privacy" }, h("summary", {}, t("live_privacy_more")),
+      h("p", { class: "muted small" }, t("live_privacy")), h("p", { class: "muted small" }, t("live_personal_hint")));
+    const siteRow = h("div", { class: "row" }, h("small", { class: "site-address" }, params.url),
+      h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")));
+    add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy,
+      siteRow, stored,
+      h("div", { class: "row wrap" }, start, disconnect), status, route,
+      navigation, screenBox, viewSettings, controls);
     updateStored();
   },
 };

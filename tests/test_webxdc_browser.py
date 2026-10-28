@@ -39,6 +39,7 @@ BRIDGE = r"""
   };
   window.__modes = { kill_switch: true, nauta_strict: true };
   window.__links = [];
+  window.__notes = [];
   window.__failNext = {};
   window.__delay = 0;
   window.__ytConfigured = false;
@@ -67,6 +68,10 @@ BRIDGE = r"""
           { level: "ERROR", last: Date.now() / 1000, count: 3, logger: "michiflin.test", message: "Example failure",
             detail: "Traceback: detailed example" }
         ] };
+      case "notas":
+        if (request.args.do === "add") window.__notes.push({ id: window.__notes.length + 1, text: request.args.text, ts: Date.now() / 1000 });
+        if (request.args.do === "delete") window.__notes = window.__notes.filter(item => item.id !== request.args.id);
+        return { notes: window.__notes };
       case "enlaces":
         if (request.args.do === "add") window.__links.push({ id: window.__links.length + 1, title: request.args.url, url: request.args.url, ts: Date.now() / 1000 });
         if (request.args.do === "delete") window.__links = window.__links.filter(item => item.id !== request.args.id);
@@ -267,6 +272,9 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 settings.click()
                 page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
                 page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 960")
+                page.wait_for_function("document.querySelector('.live-navigation')?.getBoundingClientRect().top < 150")
+                self.assertTrue(page.get_by_role("button", name="Cerrar navegador" if language == "es" else "Close browser").is_visible())
+                self.assertLess(page.locator(".live-screen-box").bounding_box()["y"], 250)
                 route_label = page.locator(".live-route")
                 self.assertIn("proxy configurado" if language == "es" else "proxy configured", route_label.inner_text().lower())
                 self.assertNotIn("127.0.0.1", route_label.inner_text())
@@ -310,6 +318,22 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 screenshot_if_requested(page, f"navegador-{language}")
                 page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").uncheck()
                 self.assertFalse(page.evaluate("searchVideoCandidate('https://tiktok.com.evil.test/@sample/video/12345')"))
+                self.assertEqual(errors, [])
+
+    def test_notes_are_labelled_and_long_text_wraps_in_both_languages(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 375, "height": 640}) as (page, errors):
+                page.locator('.tab[data-tab="apps"]:visible').click()
+                page.locator(".tile-notes").click()
+                placeholder = "Escribe una nota" if language == "es" else "Write a note"
+                text = "A long test note should remain completely readable on a narrow screen without being clipped."
+                page.get_by_placeholder(placeholder).fill(text)
+                page.get_by_role("button", name="Guardar" if language == "es" else "Save", exact=True).click()
+                note = page.get_by_text(text, exact=True)
+                note.wait_for(state="visible")
+                self.assertEqual(note.get_attribute("class"), "grow note-text")
+                self.assertGreater(note.bounding_box()["height"], 40)
+                self.assertEqual(note.evaluate("e => getComputedStyle(e).overflow"), "visible")
                 self.assertEqual(errors, [])
 
     def test_new_agent_and_account_views_are_honest_and_bilingual(self) -> None:

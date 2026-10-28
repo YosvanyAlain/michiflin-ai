@@ -56,7 +56,7 @@ class Translations(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.i18n = dictionaries()
-        cls.code = (APP / "app.js").read_text() + (APP / "core.js").read_text() + (APP / "coder.js").read_text()
+        cls.code = "\n".join((APP / name).read_text() for name in ("app.js", "core.js", "coder.js", "live.js"))
 
     def test_same_keys(self):
         self.assertEqual(set(self.i18n["es"]) ^ set(self.i18n["en"]), set())
