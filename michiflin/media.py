@@ -192,7 +192,9 @@ def inspect(url: str) -> MediaInfo:
                 break
             except Exception as exc:  # yt-dlp raises many types
                 last = exc
-                log.info("media inspect via %s failed: %s", route or "direct", str(exc)[:200])
+                # Neither the upstream URL nor provider errors (which can
+                # contain private media URLs or cookies) belong in logs.
+                log.info("media inspect via %s failed: %s", "proxy" if route else "direct", error_code(exc))
                 if error_code(exc) == "bot_check":
                     # Do not switch routes or identities to evade a provider challenge.
                     raise ValueError("bot_check") from None
@@ -315,7 +317,7 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
                     raise InterruptedError() from exc
                 last = exc
                 code = error_code(exc)
-                log.info("media download via %s/%s failed: %s", route or "direct", client or "default", str(exc)[:200])
+                log.info("media download via %s/%s failed: %s", "proxy" if route else "direct", client or "default", code)
                 if code in FINAL_ERRORS or code == "bot_check":
                     # Do not try a different route or client after an explicit challenge.
                     raise ValueError(code) from None
@@ -335,6 +337,8 @@ def describe_error(code: str, locale: str) -> str:
         "disk_full": ("no hay espacio suficiente para descargar con seguridad", "there is not enough space to download safely"),
         "ytdlp_missing": ("yt-dlp no está instalado", "yt-dlp is not installed"),
         "vault": ("no pude abrir tu sesión cifrada", "could not open your encrypted session"),
+        "proxy_unavailable": ("el proxy no está disponible o rechazó la conexión; no se usó salida directa", "the proxy is unavailable or refused the connection; direct access was not used"),
+        "proxy_invalid": ("la configuración del proxy no es compatible", "the proxy configuration is unsupported"),
         "isolation_unavailable": ("no está disponible el entorno aislado para usar tu sesión", "the isolated environment for your session is unavailable"),
     }
     pair = messages.get(code, ("no pude obtener el medio", "could not fetch the media"))

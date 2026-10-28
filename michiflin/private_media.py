@@ -102,13 +102,23 @@ def _read(worker: sandbox.BrowserProcess, *, stop: Callable[[], bool] | None = N
     return result
 
 
+def _sandbox_error(exc: sandbox.SandboxError) -> str:
+    code = str(exc)
+    return code if code in {"proxy_unavailable", "proxy_invalid"} else "isolation_unavailable"
+
+
 def inspect(url: str, storage: dict[str, Any]) -> dict[str, Any]:
     try:
         with sandbox.BrowserProcess("media_worker.py", max_bytes=80_000_000, lifetime=180) as worker:
             _send_input(worker, {"operation": "inspect", "url": url, "storage": storage})
-            result = _read(worker, timeout=160)
-    except sandbox.SandboxError:
-        raise ValueError("isolation_unavailable") from None
+            try:
+                result = _read(worker, timeout=160)
+            except ValueError as exc:
+                if str(exc) == "media_error" and worker.gateway is not None and worker.gateway.take_proxy_failure():
+                    raise ValueError("proxy_unavailable") from None
+                raise
+    except sandbox.SandboxError as exc:
+        raise ValueError(_sandbox_error(exc)) from None
     info = result.get("info")
     if result.get("kind") != "info" or not isinstance(info, dict):
         raise ValueError("media_error")
@@ -181,9 +191,14 @@ def download(url: str, storage: dict[str, Any], folder: Path, kind: str, quality
             _send_input(worker, {"operation": "download", "url": url, "storage": storage, "kind": kind,
                                  "quality": quality, "audio_format": audio_format,
                                  "max_bytes": maximum, "max_minutes": config.MAX_MEDIA_MINUTES})
-            result = _read(worker, stop=stop, progress=progress, timeout=1190)
+            try:
+                result = _read(worker, stop=stop, progress=progress, timeout=1190)
+            except ValueError as exc:
+                if str(exc) == "media_error" and worker.gateway is not None and worker.gateway.take_proxy_failure():
+                    raise ValueError("proxy_unavailable") from None
+                raise
             if result.get("kind") != "done":
                 raise ValueError("media_error")
             return _claim(worker, str(result.get("file") or ""), folder, stop)
-    except sandbox.SandboxError:
-        raise ValueError("isolation_unavailable") from None
+    except sandbox.SandboxError as exc:
+        raise ValueError(_sandbox_error(exc)) from None

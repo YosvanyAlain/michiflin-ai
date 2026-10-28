@@ -263,6 +263,18 @@ class Session:
             raise sandbox.SandboxError("browser_failed")
         return result
 
+    @staticmethod
+    def _route_reply(reply: dict[str, Any], worker: sandbox.BrowserProcess) -> dict[str, Any]:
+        # Report only the selected route, never the proxy address or credentials.
+        # A connected upstream does not itself prove WARP or a site is working.
+        reply["route"] = worker.route
+        if worker.gateway is not None and worker.gateway.take_proxy_failure():
+            if reply.get("t") == "frame":
+                reply["warning"] = "proxy_unavailable"
+            elif reply.get("t") == "error" and reply.get("error") in {"browser_failed", "action_failed"}:
+                reply["error"] = "proxy_unavailable"
+        return reply
+
     def _reply(self, result: dict[str, Any], seq: int) -> dict[str, Any]:
         kind = result.get("kind")
         if kind == "frame":
@@ -351,11 +363,15 @@ class Session:
             with sandbox.BrowserProcess() as worker:
                 if worker.process is None or worker.process.stdout is None:
                     raise sandbox.SandboxError("browser_failed")
+                opening = {"t": "opening", "route": worker.route}
+                with self.mutex:
+                    self.last_reply = opening
+                _send(self.instance, self.sid, opening)
                 reader = io.BufferedReader(worker.process.stdout, buffer_size=65536)
                 first = self._exchange(worker, reader, {"url": self.url, "storage": storage, "detail": self.detail}, 50)
                 if not self._allowed():
                     return
-                reply = self._reply(first, 0)
+                reply = self._route_reply(self._reply(first, 0), worker)
                 with self.mutex:
                     self.last_reply = reply
                 _send(self.instance, self.sid, reply)
@@ -377,7 +393,7 @@ class Session:
                         result = self._exchange(worker, reader, worker_request, 45)
                     if not self._allowed():
                         return
-                    reply = self._reply(result, seq)
+                    reply = self._route_reply(self._reply(result, seq), worker)
                     with self.mutex:
                         self.last_seq, self.inflight, self.last_reply = seq, 0, reply
                     _send(self.instance, self.sid, reply)

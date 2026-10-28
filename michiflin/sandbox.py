@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from . import egress
+from . import config, egress
 
 UID = "65533"
 RUNNER = r'''#!/bin/sh
@@ -125,6 +125,10 @@ class BrowserProcess:
         self.root.chmod(0o711)  # the relay must traverse this random name to reach its socket
         self.gateway: egress.Gateway | None = None
         self.process: subprocess.Popen[bytes] | None = None
+        # Browser and private media use the same route, because saved cookies
+        # may be bound to the browser's network. The worker never sees this URL.
+        upstream = config.WEB_PROXY or config.MEDIA_PROXY
+        self.route = "proxy" if upstream else "direct"
         self._closed = False
         try:
             work, jail = self.root / "work", self.root / "jail"
@@ -141,7 +145,11 @@ class BrowserProcess:
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
             if changed.returncode:
                 raise SandboxError("isolation_unavailable")
-            self.gateway = egress.Gateway(self.root / "gate.sock", max_bytes=max_bytes)
+            try:
+                self.gateway = egress.Gateway(self.root / "gate.sock", max_bytes=max_bytes, upstream=upstream)
+            except egress.EgressError as exc:
+                # Only short, non-sensitive error codes cross into the UI.
+                raise SandboxError(str(exc)) from None
             python = str(Path(sys.executable).resolve())
             if not python.startswith(("/usr/", "/opt/")):
                 raise SandboxError("python_unavailable")

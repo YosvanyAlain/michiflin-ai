@@ -132,6 +132,7 @@ VIEWS.live_web = {
     try { site = liveSite(params.url); } catch (error) { add(main, failure(t("live_bad_url"))); return; }
     window.liveWeb.detail = "sharp";
     const status = h("div", { class: "note", role: "status" }, t("live_click_start"));
+    const route = h("small", { class: "muted live-route", hidden: true });
     const stored = h("small", { class: "muted" }, t("live_checking"));
     const picture = h("img", { class: "live-screen", alt: t("live_screen"), hidden: true, draggable: "false" });
     const screenBox = h("div", { class: "live-screen-box", hidden: true, tabindex: "0", role: "region", "aria-label": t("live_screen") }, picture);
@@ -143,6 +144,7 @@ VIEWS.live_web = {
     const errKey = (code) => ({ bad_url: "live_bad_url", not_configured: "live_not_configured", vault: "live_vault",
       too_large: "live_too_large", site_limit: "live_site_limit", busy: "live_busy", unsupported: "live_unsupported",
       isolation_unavailable: "live_isolation", python_unavailable: "live_isolation", browser_missing: "live_isolation",
+      proxy_unavailable: "live_proxy_unavailable", proxy_invalid: "live_proxy_invalid",
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
       different_site: "live_same_site", frame_too_large: "live_frame_large",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
@@ -175,9 +177,14 @@ VIEWS.live_web = {
       auto.checked = false; auto.disabled = true;
       picture.removeAttribute("src"); picture.hidden = true; screenBox.hidden = true;
       controls.hidden = true; secret.value = "";
+      route.hidden = true; route.textContent = "";
     };
     const receive = (message) => {
       if (!main.isConnected) return;
+      if (message.route === "proxy" || message.route === "direct") {
+        route.textContent = t(message.route === "proxy" ? "live_route_proxy" : "live_route_direct");
+        route.hidden = false;
+      }
       if (message.t === "opening") status.textContent = t("live_opening");
       else if (message.t === "frame") {
         if (typeof message.image !== "string" || message.image.length > 120000) return;
@@ -186,7 +193,8 @@ VIEWS.live_web = {
         screenBox.hidden = false;
         auto.disabled = false;
         controls.hidden = false;
-        status.textContent = t(message.warning ? "live_action_warning"
+        status.textContent = t(message.warning === "proxy_unavailable" ? "live_proxy_unavailable"
+          : message.warning ? "live_action_warning"
           : window.liveWeb.detail === "sharp" && message.rendered === "economy" ? "live_reduced" : "live_ready");
       } else if (message.t === "saved") {
         stored.textContent = t("live_stored");
@@ -281,7 +289,7 @@ VIEWS.live_web = {
     add(main, h("p", { class: "note" }, t("live_privacy")), h("small", { class: "site-address" }, params.url),
       h("p", { class: "muted small" }, t("live_personal_hint")),
       h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")), stored,
-      h("div", { class: "row wrap" }, start, disconnect), status, viewSettings, screenBox, controls);
+      h("div", { class: "row wrap" }, start, disconnect), status, route, viewSettings, screenBox, controls);
     updateStored();
   },
 };
