@@ -824,8 +824,7 @@ def op_browser_session(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             return {"stored": web_vault.load(chat.sender(), site) is not None}
         if action == "disconnect":
             from . import live_web
-            live_web.stop_site(chat.sender().strip().casefold(), site)
-            return {"removed": web_vault.remove(chat.sender(), site)}
+            return {"removed": live_web.forget_site(chat.sender().strip().casefold(), site)}
     except web_vault.VaultError:
         raise AppError(tr(locale, "No pude acceder a la sesión cifrada del sitio.",
                           "Could not access the site's encrypted session.")) from None

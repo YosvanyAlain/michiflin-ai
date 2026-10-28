@@ -33,6 +33,10 @@ jobs:
         with:
           node-version: "20"
 
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install test toolchains
         run: |
           sudo apt-get update
