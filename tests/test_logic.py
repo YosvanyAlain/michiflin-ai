@@ -937,39 +937,39 @@ class ToolTests(unittest.TestCase):
             agent.handle(1, "¿cuánto son 100 usd en cup?", "es")
         self.assertTrue(sent[0].startswith("💱 100 USD ≈ 78.500 CUP"))
 
-    def test_bot_check_rotates_egress_and_retries(self) -> None:
-        from michiflin import media
+    def test_bot_check_stops_without_changing_proxy_or_client(self) -> None:
+        from michiflin import media, private_media
 
-        attempts: list[str] = []
-
+        attempts: list[tuple[str, object]] = []
         class FakeYDL:
             def __init__(self, options):
                 self.options = options
-
             def __enter__(self):
                 return self
-
             def __exit__(self, *exc):
                 return False
-
-            def download(self, urls):
-                attempts.append(self.options.get("proxy", ""))
-                if len(attempts) == 1:
-                    raise Exception("Sign in to confirm you're not a bot")
-                Path(self.options["outtmpl"].replace("%(ext)s", "m4a")).write_bytes(b"audio")
+            def download(self, _urls):
+                attempts.append((self.options.get("proxy", ""), self.options.get("extractor_args")))
+                raise Exception("Sign in to confirm you're not a bot")
+            def extract_info(self, *_args, **_kwargs):
+                attempts.append((self.options.get("proxy", ""), self.options.get("extractor_args")))
+                raise Exception("CAPTCHA required")
 
         folder = Path(tempfile.mkdtemp(dir=_TMP))
-        done = mock.Mock(stdout="Status update: Connected")
+        url = "https://www.youtube.com/watch?v=abc"
         with mock.patch.object(media.config, "MEDIA_PROXY", "socks5://127.0.0.1:40000"), \
-                mock.patch.object(media.shutil, "which", return_value="/usr/bin/warp-cli"), \
-                mock.patch.object(media.subprocess, "run", return_value=done) as run, \
-                mock.patch.object(media.time, "sleep"), \
-                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL), \
-                mock.patch.object(media, "_last_rotation", 0.0):
-            result = media.download("https://www.youtube.com/watch?v=abc", folder, "audio", 64, "m4a")
-        self.assertEqual(result.name, "media.m4a")
-        self.assertEqual(attempts, ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000"])
-        self.assertIn(["warp-cli", "--accept-tos", "registration", "new"], [c.args[0] for c in run.call_args_list])
+                mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
+                mock.patch.object(media, "supported", return_value=True), \
+                mock.patch.object(private_media, "storage_for", return_value=None), \
+                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL):
+            with self.assertRaisesRegex(ValueError, "bot_check"):
+                media.download(url, folder, "audio", 64, "m4a")
+            self.assertEqual(attempts, [("socks5://127.0.0.1:40000", None)])
+            attempts.clear()
+            with self.assertRaisesRegex(ValueError, "bot_check"):
+                media.inspect(url)
+            self.assertEqual(attempts, [("socks5://127.0.0.1:40000", None)])
+            self.assertFalse(media._options()["geo_bypass"])
 
     def test_image_intent(self) -> None:
         self.assertTrue(images.is_image_request("dibuja un gato astronauta"))

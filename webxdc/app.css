@@ -657,6 +657,13 @@ details[open] .caret { transform: rotate(180deg); }
 .social-qr { display: block; width: min(100%, 300px); height: auto; margin: 12px auto; background: #fff; border: 8px solid #fff; border-radius: 8px; image-rendering: pixelated; }
 
 /* The picture is ephemeral and contains private pages; it is never stored by the app. */
-.live-screen { display: block; width: 100%; max-width: 480px; height: auto; margin: 10px auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; cursor: crosshair; }
-.live-screen[hidden] { display: none; }
+.live-screen-box { width: 100%; max-width: 480px; max-height: 76vh; margin: 10px auto; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; overscroll-behavior: contain; }
+.live-screen-box[hidden], .live-screen[hidden] { display: none; }
+.live-screen { display: block; width: 100%; max-width: none; height: auto; margin: 0; cursor: crosshair; }
+.live-settings { max-width: 480px; margin: 8px auto 0; }
+.live-zoom .segmented { flex: 1; }
+.live-options { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
+.live-options summary { cursor: pointer; font-size: 13px; font-weight: 650; }
+.live-options .segmented, .live-auto { margin-top: 8px; }
+.live-auto input { flex: 0 0 auto; }
 .agent-mode { gap: 5px; margin-bottom: 10px; }

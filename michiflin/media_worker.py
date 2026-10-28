@@ -25,7 +25,8 @@ def emit(value: dict[str, Any]) -> None:
 
 def fail(exc: Exception) -> str:
     text = str(exc).lower()
-    if "sign in to confirm" in text or "not a bot" in text or "captcha" in text:
+    if any(marker in text for marker in ("sign in to confirm", "not a bot", "captcha", "verify you are human",
+                                         "verify you're human", "confirm you're human", "anti-bot")):
         return "bot_check"
     if "private" in text or "login" in text or "sign in" in text:
         return "private"
@@ -103,7 +104,7 @@ def main() -> int:
     options: dict[str, Any] = {
         "quiet": True, "no_warnings": True, "noprogress": True, "noplaylist": True,
         "socket_timeout": 45, "retries": 2, "fragment_retries": 2, "concurrent_fragment_downloads": 2,
-        "proxy": "http://127.0.0.1:18080", "cookiefile": "/work/session.txt",
+        "geo_bypass": False, "proxy": "http://127.0.0.1:18080", "cookiefile": "/work/session.txt",
         "js_runtimes": {"deno": {}, "node": {}},
     }
     agent = str(storage.get("_michiflin_user_agent") or "") if isinstance(storage, dict) else ""

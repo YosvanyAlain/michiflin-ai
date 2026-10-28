@@ -4,11 +4,8 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 import threading
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -116,7 +113,7 @@ def _options(proxy: str = "") -> dict[str, Any]:
         "fragment_retries": 5,
         "concurrent_fragment_downloads": 3,
         "noprogress": True,
-        "geo_bypass": True,
+        "geo_bypass": False,
     }
     if proxy:
         options["proxy"] = proxy
@@ -134,37 +131,6 @@ def _routes(url: str) -> list[str]:
     host = (urlparse(url).hostname or "").lower()
     return [proxy, ""] if PROXY_FIRST.search(host) else ["", proxy]
 
-
-
-_rotation_lock = threading.Lock()
-_last_rotation = 0.0
-
-
-def rotate_egress() -> bool:
-    """Ask the local WARP client for a fresh exit address after a bot check (at most every 10 min)."""
-    global _last_rotation
-    if not config.MEDIA_PROXY or not shutil.which("warp-cli"):
-        return False
-    with _rotation_lock:
-        if time.time() - _last_rotation < 600:
-            return False
-        _last_rotation = time.time()
-        port = str(urlparse(config.MEDIA_PROXY).port or 40000)
-        steps = (["disconnect"], ["registration", "delete"], ["registration", "new"],
-                 ["mode", "proxy"], ["proxy", "port", port], ["connect"])
-        try:
-            for args in steps:
-                subprocess.run(["warp-cli", "--accept-tos", *args], capture_output=True, timeout=30)
-            for _ in range(15):
-                status = subprocess.run(["warp-cli", "--accept-tos", "status"], capture_output=True, text=True, timeout=10).stdout
-                if "Connected" in status:
-                    time.sleep(2)
-                    log.info("media egress rotated")
-                    return True
-                time.sleep(2)
-        except (OSError, subprocess.SubprocessError) as exc:
-            log.info("egress rotation failed: %s", exc)
-    return False
 
 def _size(item: dict[str, Any], duration: int) -> int:
     size = item.get("filesize") or item.get("filesize_approx")
@@ -227,8 +193,9 @@ def inspect(url: str) -> MediaInfo:
             except Exception as exc:  # yt-dlp raises many types
                 last = exc
                 log.info("media inspect via %s failed: %s", route or "direct", str(exc)[:200])
-                if route and error_code(exc) == "bot_check" and rotate_egress():
-                    routes.insert(0, route)
+                if error_code(exc) == "bot_check":
+                    # Do not switch routes or identities to evade a provider challenge.
+                    raise ValueError("bot_check") from None
         if info is None:
             raise ValueError(error_code(last))
     if info.get("_type") == "playlist":
@@ -258,7 +225,8 @@ def inspect(url: str) -> MediaInfo:
 
 def error_code(exc: Exception | None) -> str:
     text = str(exc or "").lower()
-    if "sign in to confirm" in text or "not a bot" in text:
+    if any(marker in text for marker in ("sign in to confirm", "not a bot", "captcha", "verify you are human",
+                                         "verify you're human", "confirm you're human", "anti-bot")):
         return "bot_check"
     if "private" in text or "login" in text or "sign in" in text:
         return "private"
@@ -348,12 +316,9 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
                 last = exc
                 code = error_code(exc)
                 log.info("media download via %s/%s failed: %s", route or "direct", client or "default", str(exc)[:200])
-                if code in FINAL_ERRORS:
-                    raise ValueError(code)
-                if code == "bot_check":
-                    if route and rotate_egress():
-                        routes.insert(0, route)
-                    break
+                if code in FINAL_ERRORS or code == "bot_check":
+                    # Do not try a different route or client after an explicit challenge.
+                    raise ValueError(code) from None
     raise ValueError(error_code(last))
 
 
@@ -361,7 +326,7 @@ def describe_error(code: str, locale: str) -> str:
     from .util import tr
 
     messages = {
-        "bot_check": ("el sitio pidió verificación anti-bots; reintenta más tarde o configura cookies (YTDLP_COOKIES)", "the site asked for a bot check; retry later or configure cookies (YTDLP_COOKIES)"),
+        "bot_check": ("el sitio pidió verificación; complétala personalmente en un navegador que el proveedor acepte", "the site requested verification; complete it yourself in a browser the provider accepts"),
         "private": ("el contenido es privado o requiere iniciar sesión", "the content is private or requires login"),
         "unavailable": ("el contenido no está disponible", "the content is unavailable"),
         "geo": ("el contenido está bloqueado por región", "the content is region-blocked"),

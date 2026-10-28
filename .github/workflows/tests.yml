@@ -70,5 +70,6 @@ jobs:
           ruff check michiflin state_backup.py bot.py .github/scripts/trim_action_logs.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_web_session.py tests/test_webxdc_browser.py --select F,E9
           python -m compileall -q michiflin state_backup.py bot.py .github/scripts/trim_action_logs.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_web_session.py tests/test_webxdc_browser.py
           node tests/coder_history.js
+          node tests/live_web.js
           for file in webxdc/*.js; do node --check "$file"; done
           git diff --check

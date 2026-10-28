@@ -75,7 +75,7 @@ BRIDGE = r"""
       case "health": return health;
       case "settings": return settings;
       case "rates": return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() };
-      case "search": return { engine: request.args.engine || "web", results: [] };
+      case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
       case "ask": return { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
@@ -210,6 +210,94 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_live_view_zoom_quality_navigation_and_search_video_with_simulated_realtime(self) -> None:
+        # The bridge and picture below are deliberately simulated; the separate
+        # sandbox integration verifies real Chromium screenshots and clicks.
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.evaluate(r"""() => {
+                  const c = document.createElement('canvas'); c.width = 960; c.height = 1520;
+                  const ctx = c.getContext('2d'); ctx.fillStyle = 'white'; ctx.fillRect(0,0,c.width,c.height);
+                  ctx.fillStyle = '#18375a'; ctx.font = '48px sans-serif'; ctx.fillText('SIMULATED FRAME', 40, 120);
+                  const image = c.toDataURL('image/jpeg', 0.7).split(',')[1];
+                  window.__liveActions = [];
+                  window.webxdc.joinRealtimeChannel = () => {
+                    let listener;
+                    return {
+                      setListener(fn) { listener = fn; },
+                      send(data) {
+                        const req = JSON.parse(new TextDecoder().decode(data));
+                        window.__liveActions.push(req);
+                        if (req.t !== 'start' && req.t !== 'action') return;
+                        const msg = {v:1, sid:req.sid, t:'frame', seq:req.seq || 0,
+                                     image, width:480, height:760, rendered:req.detail || 'sharp'};
+                        setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), 15);
+                      },
+                      leave() {},
+                    };
+                  };
+                  window.__searchResults = [{url:'https://www.tiktok.com/@sample/video/12345',
+                    title:'SIMULATED video', source:'TikTok', snippet:'Fixture'}];
+                  go('results', {q:'fixture video', engine:'web'});
+                }""")
+                options = "Opciones para este posible video" if language == "es" else "Options for this possible video"
+                page.get_by_role("button", name=options).click(timeout=15000)
+                page.get_by_text("se usa tu sesión guardada" if language == "es" else "uses your saved session", exact=False).wait_for()
+                page.get_by_role("button", name="Intentar descargar" if language == "es" else "Try downloading").click()
+                page.get_by_role("button", name="360p", exact=True).click()
+                page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'action' && x.payload?.args?.kind === 'video')")
+                page.get_by_role("button", name=options).click()
+                page.get_by_role("button", name="Abrir en navegador privado" if language == "es" else "Open in private browser").click()
+                page.evaluate("""() => {
+                  Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{writeText:() => Promise.reject(new Error('blocked'))}});
+                  document.execCommand = () => false;
+                }""")
+                page.get_by_role("button", name="Copiar enlace" if language == "es" else "Copy link").click()
+                page.get_by_text("No se pudo copiar" if language == "es" else "Could not copy", exact=False).wait_for()
+                settings = page.get_by_text("Calidad y actualización" if language == "es" else "Quality and refresh")
+                settings.click()
+                auto_name = "Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)"
+                self.assertTrue(page.get_by_label(auto_name).is_disabled())
+                page.get_by_role("tab", name="Menos datos" if language == "es" else "Less data").click()
+                self.assertEqual(page.evaluate("window.liveWeb.detail"), "economy")
+                page.get_by_role("tab", name="Más nitidez" if language == "es" else "Sharper").click()
+                settings.click()
+                page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
+                page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 960")
+                page.locator(".live-zoom").get_by_role("tab", name="150%").click()
+                screen, box = page.locator(".live-screen"), page.locator(".live-screen-box")
+                self.assertAlmostEqual(screen.bounding_box()["width"], (box.bounding_box()["width"] - 2) * 1.5, delta=3)
+                box.evaluate("e => { e.scrollLeft = 100; e.scrollTop = 100; }")
+                self.assertGreater(box.evaluate("e => e.scrollLeft"), 0)
+                self.assertGreater(box.evaluate("e => e.scrollTop"), 0)
+                box.scroll_into_view_if_needed()
+                bounds, image_bounds = box.bounding_box(), screen.bounding_box()
+                x, y = bounds["x"] + 30, bounds["y"] + 30
+                expected_x = int((x - image_bounds["x"]) / image_bounds["width"] * 480)
+                expected_y = int((y - image_bounds["y"]) / image_bounds["height"] * 760)
+                page.mouse.click(x, y)
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'click')")
+                click = page.evaluate("window.__liveActions.filter(x => x.action === 'click').at(-1)")
+                self.assertAlmostEqual(click["x"], expected_x, delta=1)
+                self.assertAlmostEqual(click["y"], expected_y, delta=1)
+                page.get_by_text("Calidad y actualización" if language == "es" else "Quality and refresh").click()
+                page.get_by_role("tab", name="Menos datos" if language == "es" else "Less data").click()
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'frame' && x.detail === 'economy')")
+                input_address = page.get_by_placeholder("Dirección HTTPS del mismo sitio" if language == "es" else "HTTPS address on this site")
+                input_address.fill("https://facebook.com/")
+                input_address.press("Enter")
+                page.get_by_text("solo acepta direcciones del mismo sitio" if language == "es" else "only accepts addresses on the same site", exact=False).wait_for()
+                self.assertFalse(page.evaluate("window.__liveActions.some(x => x.action === 'goto')"))
+                input_address.fill("https://www.tiktok.com/@sample/video/67890")
+                input_address.press("Enter")
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'goto' && x.url.includes('67890'))")
+                page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").check()
+                page.wait_for_function("window.__liveActions.filter(x => x.action === 'frame').length >= 2", timeout=8000)
+                screenshot_if_requested(page, f"navegador-{language}")
+                page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").uncheck()
+                self.assertFalse(page.evaluate("searchVideoCandidate('https://tiktok.com.evil.test/@sample/video/12345')"))
+                self.assertEqual(errors, [])
+
     def test_new_agent_and_account_views_are_honest_and_bilingual(self) -> None:
         for language in ("es", "en"):
             viewport = {"width": 390, "height": 844} if language == "es" else {"width": 1280, "height": 900}
