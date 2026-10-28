@@ -4,6 +4,13 @@ name: Private web staging
 
 on:
   workflow_dispatch:
+    inputs:
+      purpose:
+        description: 'Run bounded online checks or start a private owner session'
+        type: choice
+        options: [checks, session]
+        default: checks
+        required: true
 
 permissions:
   contents: read
@@ -14,8 +21,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    if: github.ref_name == 'arena/qa-private-web' && inputs.purpose == 'checks'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CONFIG_DIR: ${{ github.workspace }}/.coder-check-state
+      JOB_DIR: ${{ github.workspace }}/.coder-check-jobs
+      PREVIEW_DIR: ${{ github.workspace }}/.coder-check-tmp
+      OWNER_ONLY: "1"
+      FREE_GATEWAYS: "0"
+      AI_HORDE: "0"
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends socat iproute2 util-linux
+          python -m pip install -r requirements.txt
+      - name: Check public search and a real free-tier model
+        run: python .github/scripts/staging_preflight.py
+
   staging:
-    if: github.ref_name == 'arena/qa-private-web'
+    if: github.ref_name == 'arena/qa-private-web' && inputs.purpose == 'session'
     runs-on: ubuntu-latest
     timeout-minutes: 110
     env:
