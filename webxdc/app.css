@@ -389,18 +389,17 @@ details[open] .caret { transform: rotate(180deg); }
 .viewer { display: block; width: 100%; max-height: 60vh; object-fit: contain; border-radius: 14px; background: #000; }
 
 /* Web */
+.live-entry { display: flex; flex-direction: column; gap: 10px; }
+.live-entry p { margin: 0; }
+.live-entry-field .input { flex: 1; min-width: 0; }
+.live-entry-field .btn { flex: none; }
 .result { padding: 0; overflow: hidden; }
 .result > * + * { margin-top: 0; }
 .result-main { display: block; width: 100%; padding: 14px 14px 4px; border: 0; background: none; text-align: left; }
 .result-main b { display: block; margin: 3px 0 4px; font-size: 16px; color: var(--accent-strong); }
 .result-main p { margin: 0; font-size: 14px; color: var(--muted); }
-.result-tools { display: flex; justify-content: flex-end; gap: 2px; padding: 0 8px 6px; color: var(--muted); }
-.video { display: grid; grid-template-columns: 104px 1fr; gap: 12px; align-items: start; }
-.video > * + * { margin-top: 0; }
-.video-art { display: grid; place-items: center; aspect-ratio: 16 / 11; border-radius: 12px; color: #fff; background: linear-gradient(135deg, #f0565b, #a61e22); }
-.video-art .ic { width: 32px; height: 32px; }
-.video-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.video-body p { margin: 0; color: var(--muted); }
+.result-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 2px; padding: 0 8px 6px; color: var(--muted); }
+.result-live { margin-right: auto; }
 .page-head h2 { margin: 2px 0 4px; font-size: 22px; }
 .actions-bar { margin: 4px 0 6px; }
 .page-body { font-size: 16.5px; line-height: 1.65; overflow-wrap: anywhere; }
@@ -654,9 +653,6 @@ details[open] .caret { transform: rotate(180deg); }
 .saved-link .actions-bar { margin: 0; }
 .note-row { align-items: flex-start; }
 .note-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-/* Ephemeral TikTok authorization image stays local to the WebXDC view. */
-.social-qr { display: block; width: min(100%, 300px); height: auto; margin: 12px auto; background: #fff; border: 8px solid #fff; border-radius: 8px; image-rendering: pixelated; }
 
 /* The picture is ephemeral and contains private pages; it is never stored by the app. */
 .live-brief { margin: 0; }
