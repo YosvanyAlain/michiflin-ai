@@ -13,7 +13,7 @@ from deltachat2 import IOTransport, Rpc
 
 # This is only a PUBLIC transfer key; its private half never leaves the
 # operator's local temporary machine. A new one is used for each staging run.
-PUBLIC_HEX = "834f75700039373f8a7dcb7ccfd6000c96ec8d959116e421bc8b46dbe9ea9247"
+PUBLIC_HEX = "2c2ffa1fd66e778b3af262b9ff3a802d3bdb4fb56b355fdee40c6bcd37975f0a"
 MAGIC = b"MICHIFLIN-STAGE-1\0"
 
 
