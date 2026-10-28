@@ -655,3 +655,8 @@ details[open] .caret { transform: rotate(180deg); }
 
 /* Ephemeral TikTok authorization image stays local to the WebXDC view. */
 .social-qr { display: block; width: min(100%, 300px); height: auto; margin: 12px auto; background: #fff; border: 8px solid #fff; border-radius: 8px; image-rendering: pixelated; }
+
+/* The picture is ephemeral and contains private pages; it is never stored by the app. */
+.live-screen { display: block; width: 100%; max-width: 480px; height: auto; margin: 10px auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; cursor: crosshair; }
+.live-screen[hidden] { display: none; }
+.agent-mode { gap: 5px; margin-bottom: 10px; }

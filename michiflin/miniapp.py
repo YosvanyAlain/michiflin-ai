@@ -27,12 +27,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
-APP_FILES = ("index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "coder.js")
+APP_FILES = ("index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js")
 CHUNK = 90_000
 _pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app")
 # Emergency control must not wait behind long-running app operations.
@@ -87,8 +87,10 @@ def _apps() -> dict[str, dict[str, Any]]:
 
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "") -> int:
     if updated:
-        text = tr(locale, "✨ Michiflin AI se actualizó. Abre esta app nueva; la anterior se retiró.",
-                  "✨ Michiflin AI was updated. Open this new app; the old one was removed.")
+        text = tr(locale, "✨ Michiflin AI se actualizó. La app anterior se conserva con sus proyectos e historial; "
+                          "esta nueva instancia tiene almacenamiento independiente.",
+                  "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
+                  "this new instance has separate storage.")
     else:
         text = tr(locale, "👋 ¡Hola! Soy Michiflin AI.\n\n"
                           "Todo el bot vive en esta mini app: toca «Iniciar» (o el icono de la app) para abrirla. Dentro tienes la IA, la búsqueda, "
@@ -107,9 +109,9 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(),
                                     "build": app_build(), "epoch": config.BOT_EPOCH,
                                     "access_session": access.session_stamp(recipient)}
-            for key in sorted((key for key, entry in _apps().items() if entry["chat"] == chat_id
-                               and access.bound_allowed(entry)), key=int)[:-3]:
-                _apps().pop(key, None)
+            # Every WebXDC instance owns its local storage. Dropping an old binding can
+            # lead the history pruner to delete its bot-side message and strand projects.
+            # Keep even older instances until the user explicitly deletes them.
         state.save()
     return msg_id
 
@@ -149,8 +151,8 @@ def latest_instance(chat_id: int) -> int:
             message = None
         if message is not None and int(message.chat_id) == chat_id:
             return msg_id
-        with state.lock:
-            _apps().pop(str(msg_id), None)
+        # An RPC failure is not evidence that an app or its local data disappeared.
+        # Preserve the binding so a transient error cannot make it eligible for pruning.
     return 0
 
 
@@ -195,6 +197,7 @@ UPGRADE_GAP = 1800.0    # at most one automatic app replacement per chat in this
 _answers: dict[str, dict[str, Any]] = {}
 _answers_lock = threading.Lock()
 _upgraded: dict[int, float] = {}
+_upgrade_lock = threading.Lock()
 
 
 def _seen() -> dict[str, list[float]]:
@@ -360,7 +363,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     # Local authorization status and disconnection remain available while work
     # is paused; starting, polling or reading providers is kill-switch guarded.
-    social_ops = {"youtube_account", "facebook_account", "tiktok_account"}
+    social_ops = {"youtube_account", "facebook_account", "tiktok_account", "browser_session"}
     kill_safe = op in KILL_SAFE_OPS or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
     generation = int(request.get("_kill_generation", state.kill_generation(address)))
     was_killed = bool(request.get("_kill_at_admission", state.get_kill_switch(address)))
@@ -437,24 +440,26 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 
 def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None:
-    """An instance sent with older app code is replaced by a fresh one (and removed), once per window."""
-    if entry.get("build") == app_build():
+    """Offer one new instance per build, without deleting any previous instance."""
+    current_build = app_build()
+    if entry.get("build") == current_build:
         return
     chat_id = int(entry["chat"])
-    if time.time() - _upgraded.get(chat_id, 0.0) < UPGRADE_GAP:
-        return
-    _upgraded[chat_id] = time.time()
-    replace_app(instance_id, chat_id, locale, str(entry.get("addr", "")))
+    with _upgrade_lock:
+        with state.lock:
+            already_sent = any(int(other.get("chat", 0)) == chat_id and other.get("build") == current_build
+                               and access.bound_allowed(other) for other in _apps().values())
+        if already_sent or time.time() - _upgraded.get(chat_id, 0.0) < UPGRADE_GAP:
+            return
+        if replace_app(instance_id, chat_id, locale, str(entry.get("addr", ""))):
+            _upgraded[chat_id] = time.time()
 
 
 def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") -> int:
+    """Send an upgrade while keeping the old message and its instance-local storage."""
     new_id = send_app(chat_id, locale, updated=True, address=address)
     if new_id:
-        log.info("app instance %s replaced by %s", instance_id, new_id)
-        chat.delete_for_all([instance_id])
-        with state.lock:
-            _apps().pop(str(instance_id), None)
-        state.save()
+        log.info("app instance %s preserved; new instance %s sent", instance_id, new_id)
     return new_id
 
 
@@ -753,7 +758,7 @@ def op_repair(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("reinstall")
 def op_reinstall(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    """Send a fresh app and remove every older instance of this chat (what deleting the chat used to fix)."""
+    """Send a fresh app but keep all older instances and their local data."""
     with state.lock:
         old = [(int(key), str(entry.get("addr", ""))) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
                and access.bound_allowed(entry)]
@@ -761,12 +766,6 @@ def op_reinstall(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if not new_id:
         raise AppError(tr(locale, "No pude enviar la app nueva. Inténtalo otra vez.", "Could not send the new app. Please try again."))
     _upgraded[chat_id] = time.time()
-    ids = [key for key, _address in old if key != new_id]
-    chat.delete_for_all(ids)
-    with state.lock:
-        for key in ids:
-            _apps().pop(str(key), None)
-    state.save()
     return {"sent": True}
 
 
@@ -812,6 +811,25 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if not result.ok:
         raise AppError(ai.describe_error(result.error, locale, result, "" if space == "auto" else space).replace("⚠️ IA: ", "").replace("⚠️ ", ""))
     return {"text": result.text, "sig": result.signature(), "model": result.model, "models": models_view()}
+
+
+@op("browser_session")
+def op_browser_session(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    """Report or erase a saved browser state; never expose its contents to updates."""
+    site, action = str(args.get("site") or ""), str(args.get("do") or "status")
+    if not web_vault.valid_site(site):
+        raise AppError(tr(locale, "Sitio no válido.", "Invalid site."))
+    try:
+        if action == "status":
+            return {"stored": web_vault.load(chat.sender(), site) is not None}
+        if action == "disconnect":
+            from . import live_web
+            live_web.stop_site(chat.sender().strip().casefold(), site)
+            return {"removed": web_vault.remove(chat.sender(), site)}
+    except web_vault.VaultError:
+        raise AppError(tr(locale, "No pude acceder a la sesión cifrada del sitio.",
+                          "Could not access the site's encrypted session.")) from None
+    raise AppError(tr(locale, "Operación desconocida.", "Unknown operation."))
 
 
 @op("youtube_account")

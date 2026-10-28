@@ -20,16 +20,20 @@ from deltachat2 import (
     EventTypeIncomingMsg,
     EventTypeSecurejoinInviterProgress,
     EventTypeWebxdcStatusUpdate,
+    EventTypeWebxdcRealtimeAdvertisementReceived,
+    EventTypeWebxdcRealtimeData,
     EventTypeWarning,
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, links, miniapp, names, perf, profile, progress, queue, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, links, live_web, miniapp, names, perf, profile, progress, queue, state
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
 cli = BotCli(config.APP_NAME)
 _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="worker")      # app updates and welcomes
+_realtime_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="realtime")
+_realtime_slots = threading.BoundedSemaphore(32)
 _chat_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chat")   # one drainer per busy chat
 _chat_locks: dict[int, threading.Lock] = {}
 _intake_lock = threading.Lock()
@@ -304,6 +308,7 @@ def _graceful(signum: int, _frame: Any) -> None:
 
 def _shutdown(reason: str) -> None:
     log.info("stopping (%s): finishing work in progress", reason)
+    live_web.shutdown()
     deadline = time.time() + DRAIN_SECONDS
     while time.time() < deadline and (_busy() or miniapp.busy()):
         time.sleep(1)
@@ -403,6 +408,25 @@ def on_app_update(bot: Any, accid: int, event: Any) -> None:
     if not chat.ready():
         chat.bind(bot, accid)
     _pool.submit(miniapp.on_status_update, int(event.msg_id))
+
+
+@cli.on(events.RawEvent(func=lambda event: isinstance(event, (EventTypeWebxdcRealtimeAdvertisementReceived, EventTypeWebxdcRealtimeData))))
+def on_app_realtime(bot: Any, accid: int, event: Any) -> None:
+    if _draining.is_set():
+        return
+    if not chat.ready():
+        chat.bind(bot, accid)
+    if not _realtime_slots.acquire(blocking=False):
+        return
+    def dispatch() -> None:
+        try:
+            if isinstance(event, EventTypeWebxdcRealtimeAdvertisementReceived):
+                live_web.advertisement(int(event.msg_id))
+            elif len(event.data) <= live_web.MAX_MESSAGE:
+                live_web.receive(int(event.msg_id), event.data)
+        finally:
+            _realtime_slots.release()
+    _realtime_pool.submit(dispatch)
 
 
 @cli.on(events.NewMessage)

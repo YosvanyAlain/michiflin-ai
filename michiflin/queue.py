@@ -606,7 +606,7 @@ def _preparer() -> None:
                 if state.work_interrupted(owner, generation) or job.get("status") == "cancelled":
                     _interrupted_preparation(job)
                     continue
-                code = str(exc) if str(exc) in {"too_large", "network", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error"} else exc.__class__.__name__
+                code = str(exc) if str(exc) in {"too_large", "disk_full", "network", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable"} else exc.__class__.__name__
                 log.warning("job %s failed: %s", job["id"], exc)
                 update(job, status="failed", error=code)
                 shutil.rmtree(folder(job), ignore_errors=True)
@@ -632,7 +632,7 @@ def _interrupted_preparation(job: dict[str, Any]) -> None:
 
 
 def _error_text(code: str, locale: str) -> str:
-    if code in {"bot_check", "private", "unavailable", "geo", "media_error", "too_large"}:
+    if code in {"bot_check", "private", "unavailable", "geo", "media_error", "too_large", "disk_full", "vault", "isolation_unavailable"}:
         return media.describe_error(code, locale).removeprefix("⚠️ ")
     if code.startswith("http_"):
         return tr(locale, f"el servidor respondió {code[5:]}", f"the server answered {code[5:]}")

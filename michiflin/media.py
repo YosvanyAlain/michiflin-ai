@@ -206,24 +206,31 @@ def inspect(url: str) -> MediaInfo:
         raise ValueError("ytdlp_missing")
     if not supported(url):
         raise ValueError("unsupported")
-    last: Exception | None = None
-    routes = _routes(url)
-    info = None
-    while routes:
-        route = routes.pop(0)
-        options = _options(route)
-        options.update({"skip_download": True, "extract_flat": "in_playlist", "noplaylist": "list=" not in url or "watch?v=" in url})
-        try:
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=False)
-            break
-        except Exception as exc:  # yt-dlp raises many types
-            last = exc
-            log.info("media inspect via %s failed: %s", route or "direct", str(exc)[:200])
-            if route and error_code(exc) == "bot_check" and rotate_egress():
-                routes.insert(0, route)
-    if info is None:
-        raise ValueError(error_code(last))
+    # A saved browser state is never exposed to the regular shared process or
+    # another user: inspect it in a network-isolated worker for this sender.
+    from . import private_media
+    storage = private_media.storage_for(url)
+    if storage is not None:
+        info = private_media.inspect(url, storage)
+    else:
+        last: Exception | None = None
+        routes = _routes(url)
+        info = None
+        while routes:
+            route = routes.pop(0)
+            options = _options(route)
+            options.update({"skip_download": True, "extract_flat": "in_playlist", "noplaylist": "list=" not in url or "watch?v=" in url})
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                break
+            except Exception as exc:  # yt-dlp raises many types
+                last = exc
+                log.info("media inspect via %s failed: %s", route or "direct", str(exc)[:200])
+                if route and error_code(exc) == "bot_check" and rotate_egress():
+                    routes.insert(0, route)
+        if info is None:
+            raise ValueError(error_code(last))
     if info.get("_type") == "playlist":
         entries = []
         for entry in (info.get("entries") or [])[:30]:
@@ -291,6 +298,10 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
     if not supported(url):
         raise ValueError("unsupported")
     folder.mkdir(parents=True, exist_ok=True)
+    from . import private_media
+    storage = private_media.storage_for(url)
+    if storage is not None:
+        return private_media.download(url, storage, folder, kind, quality, audio_format, progress, stop)
 
     def hook(data: dict[str, Any]) -> None:
         if stop and stop():
@@ -355,8 +366,11 @@ def describe_error(code: str, locale: str) -> str:
         "unavailable": ("el contenido no está disponible", "the content is unavailable"),
         "geo": ("el contenido está bloqueado por región", "the content is region-blocked"),
         "unsupported": ("el enlace no es compatible", "the link is not supported"),
-        "too_large": ("el archivo supera el máximo permitido", "the file exceeds the allowed maximum"),
+        "too_large": ("el archivo supera el máximo permitido o el espacio disponible", "the file exceeds the allowed maximum or available space"),
+        "disk_full": ("no hay espacio suficiente para descargar con seguridad", "there is not enough space to download safely"),
         "ytdlp_missing": ("yt-dlp no está instalado", "yt-dlp is not installed"),
+        "vault": ("no pude abrir tu sesión cifrada", "could not open your encrypted session"),
+        "isolation_unavailable": ("no está disponible el entorno aislado para usar tu sesión", "the isolated environment for your session is unavailable"),
     }
     pair = messages.get(code, ("no pude obtener el medio", "could not fetch the media"))
     return "⚠️ " + tr(locale, *pair)

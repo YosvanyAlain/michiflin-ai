@@ -126,12 +126,12 @@ def uncharge() -> None:
 
 @contextmanager
 def person(address: str):
-    previous = acting_as()
+    previous = (acting_as(), request_sender(), bool(getattr(_acting, "charged", False)))
     act_as(address)
     try:
         yield
     finally:
-        _acting.address = previous
+        _acting.address, _acting.sender, _acting.charged = previous
 
 
 def _shared(key: str) -> Any:

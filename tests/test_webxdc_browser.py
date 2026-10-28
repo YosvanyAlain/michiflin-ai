@@ -215,23 +215,38 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             viewport = {"width": 390, "height": 844} if language == "es" else {"width": 1280, "height": 900}
             with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
                 page.locator('.tab[data-tab="ai"]:visible').click()
-                page.get_by_role("button", name="Agente IA" if language == "es" else "AI Agent", exact=False).first.click()
+                page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
+                self.assertTrue(page.get_by_role("tab", name="Sin cuota de modelos" if language == "es" else "No model quota").is_visible())
+                page.locator("#view textarea").fill("free-mode question")
+                page.locator("#view .composer button").click()
+                page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
+                sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
+                self.assertEqual(sent, "agent")
+                page.get_by_role("tab", name="Con IA / API" if language == "es" else "With AI / API").click()
                 page.locator("#view .intro").wait_for(state="visible")
                 self.assertIn("no inicia" if language == "es" else "cannot log in", page.locator("#view .intro").inner_text().lower())
+                self.assertEqual(page.get_by_text("free-mode question").count(), 0)
                 screenshot_if_requested(page, language + "-new-agent")
                 page.locator("#view textarea").fill("Weather in Havana")
                 page.locator("#view .composer button").click()
                 page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
                 sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
                 self.assertEqual(sent, "smart_agent")
+                page.get_by_role("tab", name="Sin cuota de modelos" if language == "es" else "No model quota").click()
+                self.assertTrue(page.get_by_text("free-mode question").is_visible())
+                self.assertEqual(page.get_by_text("Weather in Havana").count(), 0)
 
                 page.locator('.tab[data-tab="web"]:visible').click()
                 page.get_by_role("button", name="Cuentas y sitios" if language == "es" else "Accounts and sites").click()
                 for site in ("Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
                     self.assertTrue(page.get_by_text(site, exact=True).is_visible())
-                self.assertIn("no conectado" if language == "es" else "not connected", page.locator("#view").inner_text().lower())
-                self.assertTrue(page.locator("#view .site-address").first.evaluate("e => {const a=e.getBoundingClientRect(), b=e.nextElementSibling.getBoundingClientRect(); return a.right <= b.left || a.bottom <= b.top}"))
-                screenshot_if_requested(page, language + "-accounts-manual")
+                self.assertIn("inicia sesión tú mismo" if language == "es" else "sign in yourself", page.locator("#view").inner_text().lower())
+                screenshot_if_requested(page, language + "-accounts-browser")
+                page.get_by_role("button", name="Instagram", exact=False).first.click()
+                self.assertIn("canal cifrado" if language == "es" else "encrypted channel", page.locator("#view").inner_text().lower())
+                self.assertTrue(page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").is_visible())
+                screenshot_if_requested(page, language + "-browser-before-start")
+                page.locator("#back").click()
                 page.get_by_role("button", name="Mi cuenta de YouTube" if language == "es" else "My YouTube account", exact=False).first.click()
                 page.get_by_text("El servidor aún no tiene" if language == "es" else "The server has not configured", exact=False).wait_for(state="visible")
                 self.assertEqual(page.get_by_role("button", name="Conectar con Google" if language == "es" else "Connect with Google").count(), 0)
@@ -444,6 +459,21 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 picker.select_option("")
                 self.assertEqual(picker.input_value(), "")
                 screenshot_if_requested(page, language + "-coder-automatic")
+                self.assertEqual(errors, [])
+
+    def test_oversized_coder_project_is_kept_and_never_sent_as_empty(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.evaluate("""() => {
+                  const project = coder.get();
+                  project.files = [{path:'important.txt', text:'x'.repeat(95000)}];
+                  coder.set(project);
+                }""")
+                before = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'code').length")
+                self.assertFalse(page.evaluate("coderSend('continue')"))
+                self.assertEqual(before, page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'code').length"))
+                self.assertEqual(page.evaluate("coder.get().files[0].text.length"), 95000)
+                self.assertEqual(page.evaluate("coder.get().files[0].path"), "important.txt")
                 self.assertEqual(errors, [])
 
     def test_tabs_and_all_app_tiles_render_without_browser_errors(self) -> None:
