@@ -1,0 +1,248 @@
+name: Michiflin AI
+
+on:
+  schedule:
+    - cron: "5 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  models: read
+
+concurrency:
+  group: michiflin-session
+  cancel-in-progress: false
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 358
+    env:
+      CONFIG_DIR: ${{ github.workspace }}/.michiflin-state
+      BOT_TIMEZONE: America/Havana
+      SESSION_DURATION_SECONDS: "19200"
+      OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      OWNER_ONLY: "1"
+      PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
+      # The previous root SHA is the stable fallback for existing app instances.
+      BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+      MAINTENANCE_MODE: "0"
+      MAILBOX_PROFILES_JSON: ${{ secrets.MAILBOX_PROFILES_JSON }}
+      OWNER_NOTICE: ${{ secrets.OWNER_NOTICE }}
+      ALLOWED_SENDERS: ${{ secrets.ALLOWED_SENDERS }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_AI_TOKEN: ${{ secrets.CLOUDFLARE_AI_TOKEN }}
+      POLLINATIONS_API_KEY: ${{ secrets.POLLINATIONS_API_KEY }}
+      GITHUB_MODELS_TOKEN: ${{ secrets.GITHUB_MODELS_TOKEN || github.token }}
+      LLM7_API_KEY: ${{ secrets.LLM7_API_KEY }}
+      KILO_API_KEY: ${{ secrets.KILO_API_KEY }}
+      AI_HORDE_API_KEY: ${{ secrets.AI_HORDE_API_KEY }}
+      BAZAARLINK_API_KEY: ${{ secrets.BAZAARLINK_API_KEY }}
+      ORCAROUTER_API_KEY: ${{ secrets.ORCAROUTER_API_KEY }}
+      SAMBANOVA_API_KEY: ${{ secrets.SAMBANOVA_API_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      YDC_API_KEY: ${{ secrets.YDC_API_KEY }}
+      EXTRA_PROVIDERS: ${{ secrets.EXTRA_PROVIDERS }}
+      AI_EXTRA_ALLOWED_HOSTS: ${{ secrets.AI_EXTRA_ALLOWED_HOSTS }}
+      ELTOQUE_API_TOKEN: ${{ secrets.ELTOQUE_API_TOKEN }}
+      GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
+      FACEBOOK_CLIENT_TOKEN: ${{ secrets.FACEBOOK_CLIENT_TOKEN }}
+      FACEBOOK_READ_POSTS: ${{ vars.FACEBOOK_READ_POSTS || '0' }}
+      TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+      TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+      TIKTOK_OAUTH_REDIRECT_URI: ${{ secrets.TIKTOK_OAUTH_REDIRECT_URI }}
+      TIKTOK_READ_VIDEOS: ${{ vars.TIKTOK_READ_VIDEOS || '0' }}
+      WEB_SESSION_KEY: ${{ secrets.WEB_SESSION_KEY }}
+      MICHIFLIN_GITHUB_TOKEN: ${{ secrets.MICHIFLIN_GITHUB_TOKEN }}
+      YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+      GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+      STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+      STATE_BACKUP_REQUIRED: "1"
+      STATE_BACKUP_STORAGE: releases
+      STATE_BACKUP_PASSPHRASE: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
+      CHATMAIL_RELAY: nine.testrun.org
+      RUNNING_SHA: ${{ github.sha }}
+      UPDATE_CHECK_TOKEN: ${{ github.token }}
+      RESTART_MARKER: ${{ github.workspace }}/.michiflin-restart
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: |
+          echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf > /dev/null
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg p7zip-full socat iproute2 util-linux
+          pip install -r requirements.txt
+          pip install -U --pre "yt-dlp[default]"
+          echo "PW_VERSION=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PW_VERSION }}
+
+      - name: Install browser
+        run: python -m playwright install --with-deps --only-shell chromium
+
+      - name: Media egress
+        continue-on-error: true
+        run: |
+          WARP_READY=0
+          trap 'if [ "$WARP_READY" != 1 ]; then echo "WARP not verified; no workflow proxy was configured."; fi' EXIT
+          curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor -o /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install --yes cloudflare-warp
+          warp-cli --accept-tos registration new
+          warp-cli --accept-tos mode proxy
+          warp-cli --accept-tos proxy port 40000
+          warp-cli --accept-tos connect
+          for i in $(seq 1 15); do
+            if curl -s --max-time 5 --socks5-hostname 127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -q "^warp=on$"; then
+              echo "MEDIA_PROXY=socks5://127.0.0.1:40000" >> "$GITHUB_ENV"
+              WARP_READY=1
+              echo "WARP proxy verified for media and Live"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Restore state
+        run: python state_backup.py restore
+
+      - name: Initialize account
+        run: |
+          if [ ! -d "$CONFIG_DIR" ]; then
+            python bot.py --config-dir "$CONFIG_DIR" init "DCACCOUNT:${CHATMAIL_RELAY}"
+          fi
+
+      - name: Configure profile
+        run: |
+          python bot.py --config-dir "$CONFIG_DIR" config displayname "Michiflin AI"
+          python bot.py --config-dir "$CONFIG_DIR" config selfavatar "$GITHUB_WORKSPACE/assets/michiflin-avatar.png"
+
+      - name: Apply profile status
+        id: profile_status
+        run: |
+          if python -m michiflin.profile "$CONFIG_DIR"; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Profile status could not be verified; the bot will start anyway."
+          fi
+
+      - name: Profile status verified
+        if: steps.profile_status.outputs.ready == 'true'
+        run: echo "Bot profile status verified"
+
+      - name: Apply authorized one-time cleanup
+        id: purge
+        if: env.PURGE_NON_OWNER_ONCE == '1'
+        shell: bash
+        run: |
+          set -e
+          test "$CONFIG_DIR" = "$GITHUB_WORKSPACE/.michiflin-state"
+          cp -a "$CONFIG_DIR" "$RUNNER_TEMP/purge-original"
+          if python -m michiflin.purge_users apply "$CONFIG_DIR" "$RUNNER_TEMP/purge-proof.json"; then
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Cleanup failed; restoring original state without removing backups."
+            rm -rf -- "$CONFIG_DIR"
+            mv "$RUNNER_TEMP/purge-original" "$CONFIG_DIR"
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Back up configured account
+        run: python state_backup.py save
+
+      - name: Verify backup recovery
+        shell: bash
+        run: |
+          set -e
+          CONFIG_DIR="$RUNNER_TEMP/backup-recovery-check" python state_backup.py restore
+          rm -rf -- "$RUNNER_TEMP/backup-recovery-check"
+
+      - name: Verify sanitized backup or roll back
+        id: purge_verified
+        if: steps.purge.outputs.applied == 'true'
+        shell: bash
+        run: |
+          set -e
+          test "$CONFIG_DIR" = "$GITHUB_WORKSPACE/.michiflin-state"
+          if CONFIG_DIR="$RUNNER_TEMP/purge-check" python state_backup.py restore && \
+             python -m michiflin.purge_users verify "$RUNNER_TEMP/purge-check" "$RUNNER_TEMP/purge-proof.json"; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+            # The old deployment allow-list may contain the people just removed.
+            # Runtime sharing uses new, individually approved session grants.
+            echo "ALLOWED_SENDERS=" >> "$GITHUB_ENV"
+            rm -rf -- "$RUNNER_TEMP/purge-original" "$RUNNER_TEMP/purge-check"
+          else
+            echo "Sanitized backup not verified; restoring original state and retaining old backups."
+            rm -rf -- "$CONFIG_DIR" "$RUNNER_TEMP/purge-check"
+            mv "$RUNNER_TEMP/purge-original" "$CONFIG_DIR"
+            python state_backup.py save
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for serialized backup history cleanup
+        if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'legacy-git'
+        run: python .github/scripts/wait_for_clean_backup.py
+
+      - name: Note retained recovery snapshots after one-time cleanup
+        if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'releases'
+        run: echo "The sanitized snapshot was verified; older recovery snapshots remain under the retention policy. Do not claim their immediate erasure."
+
+      - name: Private session
+        shell: bash
+        run: |
+          set +e
+          (
+            while true; do
+              sleep 1800
+              python state_backup.py save || echo "Periodic state backup failed."
+            done
+          ) &
+          BACKUP_PID=$!
+          STARTED=$(date +%s)
+          finish() {
+            kill "$BACKUP_PID" 2>/dev/null || true
+            wait "$BACKUP_PID" 2>/dev/null || true
+            if ! python state_backup.py save; then
+              echo "Final encrypted backup failed; automatic handover is stopped."
+              return 1
+            fi
+            echo "SESSION_SECONDS_RUN=$(( $(date +%s) - STARTED ))" >> "$GITHUB_ENV"
+            if [ -f "$RESTART_MARKER" ]; then echo "BOT_RESTART=1" >> "$GITHUB_ENV"; fi
+          }
+          trap 'kill "$BOT_PID" 2>/dev/null; wait "$BOT_PID"; sleep 1; finish; exit 130' INT TERM
+          timeout --foreground --signal=TERM --kill-after=150 "$SESSION_DURATION_SECONDS" python bot.py --config-dir "$CONFIG_DIR" serve &
+          BOT_PID=$!
+          wait "$BOT_PID"
+          BOT_EXIT=$?
+          trap - INT TERM
+          if ! finish; then exit 1; fi
+          if [ "$BOT_EXIT" -ne 0 ] && [ "$BOT_EXIT" -ne 124 ]; then
+            exit "$BOT_EXIT"
+          fi
+
+      - name: Next session
+        if: "!cancelled() && (env.BOT_RESTART == '1' || (env.SESSION_SECONDS_RUN != '' && env.SESSION_SECONDS_RUN > 1800))"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run michiflin.yml --ref "${{ github.ref_name }}"
