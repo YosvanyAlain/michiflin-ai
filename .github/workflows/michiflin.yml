@@ -56,4 +56,4 @@ jobs:
           echo 'WARP was not verified; stopping the diagnostic'
           exit 1
       - name: Verify Live sandbox through WARP
-        run: python .github/scripts/warp_probe.py
+        run: PYTHONPATH="$GITHUB_WORKSPACE" python .github/scripts/warp_probe.py
