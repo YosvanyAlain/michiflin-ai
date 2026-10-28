@@ -30,6 +30,7 @@ jobs:
       JOB_DIR: ${{ github.workspace }}/.coder-check-jobs
       PREVIEW_DIR: ${{ github.workspace }}/.coder-check-tmp
       OWNER_ONLY: "1"
+      OWNER_ADDRESS: qa-owner@example.invalid
       FREE_GATEWAYS: "0"
       AI_HORDE: "0"
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
