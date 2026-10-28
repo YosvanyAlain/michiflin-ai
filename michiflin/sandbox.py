@@ -19,6 +19,9 @@ from . import egress
 UID = "65533"
 RUNNER = r'''#!/bin/sh
 set -eu
+# Mountpoint directories contain only read-only system runtimes. They must be
+# traversable by the isolated UID even when the parent uses a restrictive umask.
+umask 022
 ROOT="$1"
 WORK="$2"
 SOCK="$3"
@@ -75,6 +78,8 @@ mount -o remount,bind,ro "$ROOT/browsers"
 # Unix socket is reachable from outside the chroot by this unprivileged relay.
 # Use a distinct UID: a worker must not traverse /proc/<relay-pid>/root to
 # reach the relay's host filesystem, even though they share a PID namespace.
+# Worker-generated files stay private regardless of the parent's umask.
+umask 077
 setpriv --reuid=65532 --regid=65532 --clear-groups --no-new-privs \
   socat TCP-LISTEN:18080,bind=127.0.0.1,reuseaddr,fork UNIX-CONNECT:"$SOCK" &
 relay=$!
@@ -125,6 +130,7 @@ class BrowserProcess:
             work, jail = self.root / "work", self.root / "jail"
             work.mkdir(mode=0o700)
             jail.mkdir(mode=0o755)
+            jail.chmod(0o755)  # mkdir's mode was filtered by the calling process's umask
             source = Path(__file__).with_name(worker_file)
             shutil.copyfile(source, work / "worker.py")
             (work / "worker.py").chmod(0o644)
