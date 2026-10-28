@@ -53,12 +53,20 @@ jobs:
       ELTOQUE_API_TOKEN: ${{ secrets.ELTOQUE_API_TOKEN }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
       GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+      FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
+      FACEBOOK_CLIENT_TOKEN: ${{ secrets.FACEBOOK_CLIENT_TOKEN }}
+      FACEBOOK_READ_POSTS: ${{ vars.FACEBOOK_READ_POSTS || '0' }}
+      TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+      TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+      TIKTOK_OAUTH_REDIRECT_URI: ${{ secrets.TIKTOK_OAUTH_REDIRECT_URI }}
+      TIKTOK_READ_VIDEOS: ${{ vars.TIKTOK_READ_VIDEOS || '0' }}
       WEB_SESSION_KEY: ${{ secrets.WEB_SESSION_KEY }}
       MICHIFLIN_GITHUB_TOKEN: ${{ secrets.MICHIFLIN_GITHUB_TOKEN }}
       YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
       GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
       STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
       STATE_BACKUP_REQUIRED: "1"
+      STATE_BACKUP_STORAGE: releases
       STATE_BACKUP_PASSPHRASE: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
       CHATMAIL_RELAY: nine.testrun.org
       RUNNING_SHA: ${{ github.sha }}
@@ -160,6 +168,13 @@ jobs:
       - name: Back up configured account
         run: python state_backup.py save
 
+      - name: Verify backup recovery
+        shell: bash
+        run: |
+          set -e
+          CONFIG_DIR="$RUNNER_TEMP/backup-recovery-check" python state_backup.py restore
+          rm -rf -- "$RUNNER_TEMP/backup-recovery-check"
+
       - name: Verify sanitized backup or roll back
         id: purge_verified
         if: steps.purge.outputs.applied == 'true'
@@ -183,8 +198,12 @@ jobs:
           fi
 
       - name: Wait for serialized backup history cleanup
-        if: steps.purge_verified.outputs.verified == 'true'
+        if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'legacy-git'
         run: python .github/scripts/wait_for_clean_backup.py
+
+      - name: Note retained recovery snapshots after one-time cleanup
+        if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'releases'
+        run: echo "The sanitized snapshot was verified; older recovery snapshots remain under the retention policy. Do not claim their immediate erasure."
 
       - name: Private session
         shell: bash
@@ -200,7 +219,11 @@ jobs:
           STARTED=$(date +%s)
           finish() {
             kill "$BACKUP_PID" 2>/dev/null || true
-            python state_backup.py save
+            wait "$BACKUP_PID" 2>/dev/null || true
+            if ! python state_backup.py save; then
+              echo "Final encrypted backup failed; automatic handover is stopped."
+              return 1
+            fi
             echo "SESSION_SECONDS_RUN=$(( $(date +%s) - STARTED ))" >> "$GITHUB_ENV"
             if [ -f "$RESTART_MARKER" ]; then echo "BOT_RESTART=1" >> "$GITHUB_ENV"; fi
           }
@@ -210,7 +233,7 @@ jobs:
           wait "$BOT_PID"
           BOT_EXIT=$?
           trap - INT TERM
-          finish
+          if ! finish; then exit 1; fi
           if [ "$BOT_EXIT" -ne 0 ] && [ "$BOT_EXIT" -ne 124 ]; then
             exit "$BOT_EXIT"
           fi

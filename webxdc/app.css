@@ -652,3 +652,6 @@ details[open] .caret { transform: rotate(180deg); }
 .saved-link { display: grid; gap: 9px; }
 .saved-link .saved-url { overflow-wrap: anywhere; }
 .saved-link .actions-bar { margin: 0; }
+
+/* Ephemeral TikTok authorization image stays local to the WebXDC view. */
+.social-qr { display: block; width: min(100%, 300px); height: auto; margin: 12px auto; background: #fff; border: 8px solid #fff; border-radius: 8px; image-rendering: pixelated; }

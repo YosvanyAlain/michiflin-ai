@@ -11,6 +11,7 @@ pypdf>=5,<7
 beautifulsoup4>=4.12,<5
 lxml>=5
 Pillow>=10
+qrcode>=7.4,<9
 playwright>=1.48
 PySocks>=1.7
 gradio_client>=1.5

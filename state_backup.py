@@ -12,20 +12,28 @@ Required environment variables:
   STATE_BACKUP_PASSPHRASE   unique long secret, different from GitHub password
 Optional environment variables:
   CONFIG_DIR, STATE_BACKUP_PATH, STATE_BACKUP_BRANCH
+  STATE_BACKUP_STORAGE (releases by default; legacy-git only for rollback)
 
 Usage: python state_backup.py save | restore
 """
 from __future__ import annotations
 
 import base64
+import contextlib
+from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import io
+import json
 import os
+import re
+import secrets
 import shutil
 import sqlite3
 import sys
 import tarfile
 import tempfile
+import tomllib
 from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
@@ -41,6 +49,15 @@ MAX_BACKUP_BYTES = 90_000_000
 MAX_CONTENTS_BACKUP_BYTES = 950_000
 # Attachment copies above this size are not needed to resume the account.
 MAX_BLOB_BYTES = 200_000
+RELEASE_TAG = "michiflin-state-releases-v1"
+READY_TAG = "michiflin-state-release-ready-v1"
+RELEASE_MARKER = "Managed encrypted Michiflin state snapshots v1"
+ASSET_PREFIX = "michiflin-state-"
+PENDING_PREFIX = "michiflin-pending-"
+ASSET_PATTERN = re.compile(r"^michiflin-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
+KEEP_RECENT = 12
+KEEP_DAILY = 7
+KEEP_WEEKLY = 4
 
 
 def configuration() -> tuple[str, str, str] | None:
@@ -100,7 +117,9 @@ def archive(source: Path) -> bytes:
                         connection.execute("VACUUM INTO ?", (str(target),))
                     snapshots[str(path.relative_to(source))] = target
                 except sqlite3.Error as exc:
-                    print(f"[backup] snapshot skipped for {path.name}: {exc}")
+                    # Never publish a possibly inconsistent live database in place
+                    # of its snapshot, and never prune an older backup afterward.
+                    raise RuntimeError("could not safely snapshot a state database; old backups kept") from exc
 
         def pick(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             member = _skip_bulky(member)
@@ -115,6 +134,8 @@ def archive(source: Path) -> bytes:
         with tarfile.open(fileobj=data, mode="w:gz") as tar:
             tar.add(str(source), arcname="michiflin", recursive=False)
             for path in sorted(source.rglob("*")):
+                if path.is_symlink():
+                    raise ValueError("state directory contains a symbolic link; old backups kept")
                 relative = str(path.relative_to(source))
                 name = f"michiflin/{relative}"
                 if relative in snapshots:
@@ -220,7 +241,7 @@ def _save_contents(token: str, repo: str, encrypted: bytes, branch: str) -> None
     response.raise_for_status()
 
 
-def save() -> None:
+def _save_legacy() -> None:
     """Encrypt the current state and store it as one file in the private repository."""
     settings = configuration()
     if not settings:
@@ -241,7 +262,7 @@ def save() -> None:
     print(f"[backup] encrypted state saved to {repo} ({len(encrypted) // 1024} KB)")
 
 
-def restore() -> None:
+def _restore_legacy() -> None:
     """Restore state only when no local state exists yet."""
     settings = configuration()
     required = os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1"
@@ -271,23 +292,379 @@ def restore() -> None:
     blob = response.content
     if not blob.startswith(MAGIC) and response.headers.get("Content-Type", "").startswith("application/json"):
         blob = base64.b64decode(str(response.json().get("content", "")).replace("\n", ""))
+    plaintext = decrypt_backup(blob, passphrase)
+    _install_restored(plaintext, target)
+    print(f"[backup] state restored from {repo} (legacy Git snapshot)")
+
+
+
+def _repo_base(repo: str) -> str:
+    return f"https://api.github.com/repos/{repo}"
+
+
+def _get_ref(token: str, repo: str, tag: str) -> str | None:
+    response = requests.get(f"{_git_api(repo)}/ref/tags/{quote(tag, safe='')}",
+                            headers=headers(token), timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return str(response.json()["object"]["sha"])
+
+
+def _assert_private(token: str, repo: str) -> None:
+    response = requests.get(_repo_base(repo), headers=headers(token), timeout=30)
+    response.raise_for_status()
+    data = response.json()
+    if data.get("private") is not True or data.get("archived") is True:
+        raise ValueError("backup repository must be private and writable; old backups were kept")
+
+
+def _release(token: str, repo: str) -> dict | None:
+    response = requests.get(f"{_repo_base(repo)}/releases/tags/{RELEASE_TAG}",
+                            headers=headers(token), timeout=30)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    item = response.json()
+    if not isinstance(item, dict) or not str(item.get("body") or "").startswith(RELEASE_MARKER):
+        raise ValueError("the reserved backup release does not belong to this application")
+    if not isinstance(item.get("id"), int) or item["id"] <= 0:
+        raise ValueError("invalid release metadata")
+    return item
+
+
+def _make_ref(token: str, repo: str, tag: str, sha: str) -> None:
+    response = requests.post(f"{_git_api(repo)}/refs", headers=headers(token), timeout=30,
+                             json={"ref": "refs/tags/" + tag, "sha": sha})
+    if response.status_code == 422 and _get_ref(token, repo, tag) == sha:
+        return
+    response.raise_for_status()
+
+
+def _ensure_release(token: str, repo: str) -> dict:
+    existing = _release(token, repo)
+    if existing is not None:
+        return existing
+    # A no-parent, state-free anchor prevents the release tag from retaining the old
+    # Git backup chain. It is never the default branch, and no force-push occurs.
+    anchor = _get_ref(token, repo, RELEASE_TAG)
+    if anchor is None:
+        base = _git_api(repo)
+        tree = requests.post(base + "/trees", headers=headers(token), timeout=30,
+                             json={"tree": [{"path": ".michiflin-backup-anchor", "mode": "100644", "type": "blob",
+                                             "content": "Anchor for encrypted release assets; no account state.\n"}]})
+        tree.raise_for_status()
+        commit = requests.post(base + "/commits", headers=headers(token), timeout=30,
+                               json={"message": "Encrypted state release anchor", "tree": tree.json()["sha"], "parents": []})
+        commit.raise_for_status()
+        anchor = str(commit.json()["sha"])
+        try:
+            _make_ref(token, repo, RELEASE_TAG, anchor)
+        except requests.HTTPError:
+            # Another authorized worker may have created the anchor first.
+            anchor = _get_ref(token, repo, RELEASE_TAG)
+            if not anchor:
+                raise
+    response = requests.post(f"{_repo_base(repo)}/releases", headers=headers(token), timeout=60,
+                             json={"tag_name": RELEASE_TAG, "name": "Encrypted Michiflin state",
+                                   "body": RELEASE_MARKER + ". Only managed encrypted snapshots are rotated.",
+                                   "draft": False, "prerelease": False})
+    if response.status_code == 422:
+        found = _release(token, repo)
+        if found is not None:
+            return found
+    response.raise_for_status()
+    created = _release(token, repo)
+    if created is None:
+        raise RuntimeError("new backup release could not be verified")
+    return created
+
+
+def _assets(token: str, repo: str, release_id: int) -> list[dict]:
+    result: list[dict] = []
+    for page in range(1, 21):
+        response = requests.get(f"{_repo_base(repo)}/releases/{release_id}/assets", headers=headers(token),
+                                params={"per_page": 100, "page": page}, timeout=60)
+        response.raise_for_status()
+        batch = response.json()
+        if not isinstance(batch, list):
+            raise ValueError("invalid backup asset listing")
+        result.extend(item for item in batch if isinstance(item, dict))
+        if len(batch) < 100:
+            return result
+    raise RuntimeError("too many backup assets to safely rotate")
+
+
+def _created(item: dict) -> datetime | None:
+    try:
+        value = datetime.fromisoformat(str(item["created_at"]).replace("Z", "+00:00"))
+        return value.astimezone(timezone.utc) if value.tzinfo else None
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _managed(item: dict, prefix: str = ASSET_PREFIX) -> bool:
+    name = item.get("name")
+    return (isinstance(name, str) and name.startswith(prefix) and ASSET_PATTERN.fullmatch(name) is not None
+            and isinstance(item.get("id"), int) and item["id"] > 0
+            and item.get("state") == "uploaded" and _created(item) is not None)
+
+
+def retention_ids(items: list[dict]) -> set[int]:
+    """Keep the newest 12, plus up to 7 distinct days and 4 distinct weeks."""
+    ordered = sorted((x for x in items if _managed(x)), key=lambda x: (_created(x), x["id"]), reverse=True)
+    keep = {x["id"] for x in ordered[:KEEP_RECENT]}
+    days: set[object] = set()
+    weeks: set[tuple[int, int]] = set()
+    for item in ordered:
+        when = _created(item)
+        assert when is not None
+        day = when.date()
+        year, week, _weekday = when.isocalendar()
+        if day not in days and len(days) < KEEP_DAILY:
+            keep.add(item["id"])
+            days.add(day)
+        if (year, week) not in weeks and len(weeks) < KEEP_WEEKLY:
+            keep.add(item["id"])
+            weeks.add((year, week))
+    return keep
+
+
+def decrypt_backup(blob: bytes, passphrase: str) -> bytes:
     if not blob.startswith(MAGIC) or len(blob) <= len(MAGIC) + SALT_BYTES:
         raise ValueError("remote file is not a valid Michiflin AI backup")
     salt_at = len(MAGIC)
     salt = blob[salt_at : salt_at + SALT_BYTES]
-    encrypted = blob[salt_at + SALT_BYTES :]
     try:
-        plaintext = fernet_from(passphrase, salt).decrypt(encrypted)
+        return fernet_from(passphrase, salt).decrypt(blob[salt_at + SALT_BYTES :])
     except InvalidToken as exc:
         raise ValueError("could not decrypt backup; check STATE_BACKUP_PASSPHRASE") from exc
+
+
+def _verify_plaintext(plaintext: bytes) -> None:
+    """Prove the encrypted download is extractable and SQLite snapshots are sound."""
+    with tempfile.TemporaryDirectory(prefix=".backup-verify-") as directory:
+        root = Path(directory)
+        safely_extract(plaintext, root)
+        state_dir = root / "michiflin"
+        if not state_dir.is_dir():
+            raise ValueError("backup is missing its state directory")
+        state_json = state_dir / "michiflin-state.json"
+        if state_json.exists():
+            with state_json.open("r", encoding="utf-8") as handle:
+                if not isinstance(json.load(handle), dict):
+                    raise ValueError("invalid state metadata")
+        accounts = state_dir / "accounts"
+        manifest = accounts / "accounts.toml"
+        if manifest.exists():
+            data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+            for entry in data.get("accounts", []):
+                folder = entry.get("dir") if isinstance(entry, dict) else None
+                if not isinstance(folder, str) or not folder or Path(folder).name != folder:
+                    raise ValueError("invalid account manifest")
+                database = accounts / folder / "dc.db"
+                if not database.is_file() or not _is_sqlite(database):
+                    raise ValueError("account database is missing or invalid")
+        for path in state_dir.rglob("*"):
+            if path.is_file() and _is_sqlite(path):
+                with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as connection:
+                    result = connection.execute("PRAGMA quick_check").fetchone()
+                if not result or result[0] != "ok":
+                    raise ValueError("state database failed its integrity check")
+
+
+def _download_asset(token: str, repo: str, asset_id: int) -> bytes:
+    response = requests.get(f"{_repo_base(repo)}/releases/assets/{asset_id}",
+                            headers={**headers(token), "Accept": "application/octet-stream"}, timeout=180)
+    response.raise_for_status()
+    if len(response.content) > MAX_BACKUP_BYTES:
+        raise ValueError("remote backup exceeds the safe size limit")
+    return response.content
+
+
+def _mark_ready(token: str, repo: str) -> None:
+    anchor = _get_ref(token, repo, RELEASE_TAG)
+    if not anchor:
+        raise RuntimeError("backup release anchor is missing")
+    ready = _get_ref(token, repo, READY_TAG)
+    if ready is None:
+        _make_ref(token, repo, READY_TAG, anchor)
+    elif ready != anchor:
+        raise RuntimeError("backup release marker does not match its anchor")
+
+
+def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphrase: str) -> None:
+    items = _assets(token, repo, release_id)
+    candidates = sorted((x for x in items if _managed(x) and x["id"] != newly_verified),
+                        key=lambda x: (_created(x), x["id"]), reverse=True)
+    # The new snapshot and at least one independently downloaded prior snapshot
+    # must both decrypt and pass integrity checks before any deletion.
+    prior_verified = False
+    for item in candidates[:5]:
+        try:
+            _verify_plaintext(decrypt_backup(_download_asset(token, repo, item["id"]), passphrase))
+            prior_verified = True
+            break
+        except requests.RequestException:
+            raise  # a network outage is not proof that a previous copy is corrupt
+        except (ValueError, tarfile.TarError, sqlite3.Error, OSError):
+            continue
+    if not prior_verified:
+        print("[backup] rotation deferred until two independently verified copies exist")
+        return
+    keep = retention_ids(items)
+    now = datetime.now(timezone.utc)
+    removed = 0
+    for item in items:
+        when = _created(item)
+        old_snapshot = _managed(item) and item["id"] not in keep
+        old_pending = _managed(item, PENDING_PREFIX) and when is not None and when < now - timedelta(days=2)
+        if not (old_snapshot or old_pending):
+            continue
+        if removed >= 200:
+            break
+        response = requests.delete(f"{_repo_base(repo)}/releases/assets/{item['id']}",
+                                   headers=headers(token), timeout=60)
+        if response.status_code not in (204, 404):
+            response.raise_for_status()
+        removed += 1
+    print(f"[backup] rotation kept up to {KEEP_RECENT} recent, {KEEP_DAILY} daily and {KEEP_WEEKLY} weekly snapshots; removed {removed}")
+
+
+def _save_release(token: str, repo: str, passphrase: str) -> None:
+    _assert_private(token, repo)
+    plaintext = archive(config_dir())
+    salt = os.urandom(SALT_BYTES)
+    encrypted = MAGIC + salt + fernet_from(passphrase, salt).encrypt(plaintext)
+    if len(encrypted) > MAX_BACKUP_BYTES:
+        raise ValueError("encrypted state is too large; previous backups were kept")
+    release = _ensure_release(token, repo)
+    rid = release["id"]
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(8) + ".bin"
+    pending_name, final_name = PENDING_PREFIX + stamp, ASSET_PREFIX + stamp
+    # Construct the upload URL ourselves; never send credentials to a URL from a response.
+    upload = f"https://uploads.github.com/repos/{repo}/releases/{rid}/assets"
+    response = requests.post(upload, headers={**headers(token), "Content-Type": "application/octet-stream"},
+                             params={"name": pending_name}, data=encrypted, timeout=180, allow_redirects=False)
+    response.raise_for_status()
+    asset = response.json()
+    if not isinstance(asset.get("id"), int) or asset["id"] <= 0:
+        raise ValueError("backup upload returned invalid metadata; previous copies were kept")
+    asset_id = asset["id"]
+    downloaded = _download_asset(token, repo, asset_id)
+    if not secrets.compare_digest(hashlib.sha256(downloaded).digest(), hashlib.sha256(encrypted).digest()):
+        raise ValueError("uploaded backup did not match its download; previous copies were kept")
+    _verify_plaintext(decrypt_backup(downloaded, passphrase))
+    response = requests.patch(f"{_repo_base(repo)}/releases/assets/{asset_id}", headers=headers(token),
+                              json={"name": final_name}, timeout=60)
+    response.raise_for_status()
+    renamed = response.json()
+    if renamed.get("name") != final_name or renamed.get("id") != asset_id or renamed.get("state") != "uploaded":
+        raise RuntimeError("verified backup could not be marked ready; old copies were kept")
+    _mark_ready(token, repo)
+    print(f"[backup] encrypted and verified snapshot saved ({len(encrypted) // 1024} KB)")
+    try:
+        _prune(token, repo, rid, asset_id, passphrase)
+    except (requests.RequestException, ValueError, tarfile.TarError, sqlite3.Error, OSError, RuntimeError) as exc:
+        # A maintenance failure must never invalidate an already verified backup.
+        print(f"[backup] rotation deferred ({exc.__class__.__name__}); old copies were kept where possible")
+
+
+def _install_restored(plaintext: bytes, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=target.parent))
     try:
         safely_extract(plaintext, staging)
-        (staging / "michiflin").replace(target)
+        state_dir = staging / "michiflin"
+        if not state_dir.is_dir():
+            raise ValueError("backup is missing its state directory")
+        if target.exists():
+            raise FileExistsError("local state appeared while restoring; it was not overwritten")
+        state_dir.replace(target)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    print(f"[backup] state restored from {repo}")
+
+
+@contextlib.contextmanager
+def _save_lock():
+    # The periodic job and the final shutdown hook may overlap locally.
+    target = config_dir().absolute()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    name = ".michiflin-backup-" + hashlib.sha256(str(target).encode()).hexdigest()[:16] + ".lock"
+    fd = os.open(str(target.parent / name), os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def save() -> None:
+    settings = configuration()
+    if not settings:
+        if os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1":
+            raise RuntimeError("required backup secrets are missing; no backup was saved")
+        print("[backup] disabled: backup secrets are missing")
+        return
+    storage = os.getenv("STATE_BACKUP_STORAGE", "releases").strip()
+    with _save_lock():
+        if storage == "legacy-git":
+            _save_legacy()
+        elif storage == "releases":
+            _save_release(*settings)
+        else:
+            raise ValueError("unknown backup storage mode")
+
+
+def restore() -> None:
+    settings = configuration()
+    required = os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1"
+    if not settings:
+        if required:
+            raise RuntimeError("required backup secrets are missing; refusing to initialize a fresh account")
+        print("[backup] restoration disabled: backup secrets are missing")
+        return
+    target = config_dir()
+    if target.exists():
+        print("[backup] local state already exists; it will not be overwritten")
+        return
+    storage = os.getenv("STATE_BACKUP_STORAGE", "releases").strip()
+    if storage == "legacy-git":
+        _restore_legacy()
+        return
+    if storage != "releases":
+        raise ValueError("unknown backup storage mode")
+    token, repo, passphrase = settings
+    ready = _get_ref(token, repo, READY_TAG)
+    release = _release(token, repo)
+    if ready:
+        anchor = _get_ref(token, repo, RELEASE_TAG)
+        if not anchor or anchor != ready or release is None:
+            raise RuntimeError("verified release backup is missing; refusing stale Git fallback")
+    if release is not None:
+        snapshots = sorted((x for x in _assets(token, repo, release["id"]) if _managed(x)),
+                           key=lambda x: (_created(x), x["id"]), reverse=True)
+        for index, item in enumerate(snapshots):
+            # Network failures are not mistaken for corruption or an empty account.
+            blob = _download_asset(token, repo, item["id"])
+            try:
+                plaintext = decrypt_backup(blob, passphrase)
+                _verify_plaintext(plaintext)
+            except (ValueError, tarfile.TarError, sqlite3.Error, OSError):
+                print("[backup] an invalid encrypted snapshot was skipped")
+                continue
+            _install_restored(plaintext, target)
+            print("[backup] restored a verified release snapshot" + (" (older recovery copy)" if index else ""))
+            return
+        if snapshots or ready:
+            raise RuntimeError("no verified release snapshot could be restored; old copies were kept")
+    if ready:
+        raise RuntimeError("verified release backup is missing; refusing stale Git fallback")
+    # Bootstrap only: once the ready marker exists, the old Git snapshot cannot
+    # silently overwrite newer work if release assets are missing.
+    print("[backup] release storage not initialized; trying the existing Git snapshot once")
+    _restore_legacy()
 
 
 def main() -> int:
@@ -300,7 +677,9 @@ def main() -> int:
         else:
             restore()
     except Exception as exc:
-        print(f"[backup] error: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        # A request exception may contain a signed asset URL. Never log it.
+        detail = "remote request failed; previous backups were kept" if isinstance(exc, requests.RequestException) else str(exc)
+        print(f"[backup] error: {exc.__class__.__name__}: {detail}", file=sys.stderr)
         return 1
     return 0
 
