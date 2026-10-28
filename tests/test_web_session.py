@@ -374,6 +374,30 @@ class RealSandboxTests(unittest.TestCase):
                         self.assertTrue(private_media.inspect(url, mine).get("title"))
                         result = private_media.download(url, mine, root / "result", "video", 360, "m4a")
                     self.assertEqual(hashlib.sha256(result.read_bytes()).digest(), hashlib.sha256(video.read_bytes()).digest())
+                    # Exercise the real browser-to-queue path, then prepare the
+                    # queued media as Alice; the fixture/network overrides exist
+                    # only inside this test process.
+                    session = live_web.Session(10, "a" * 32, ALICE, "host:fixture.example", url)
+                    with mock.patch.object(session, "_allowed", return_value=True), \
+                         mock.patch.object(live_web, "_authorized", return_value=({"chat": 7}, ALICE)), \
+                         mock.patch.object(config, "service_access_allowed", return_value=True), \
+                         mock.patch.object(config, "JOB_ROOT", root / "jobs"), \
+                         mock.patch.object(media, "supported", return_value=True), \
+                         mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
+                         mock.patch.object(queue.access, "job_allowed", return_value=True), \
+                         mock.patch.object(queue, "_capacity_error", return_value=""), \
+                         mock.patch.object(queue.usage, "note"), mock.patch.object(state, "save"), \
+                         mock.patch.dict(state.data, {"jobs": {}, "flags": {}}):
+                        ack = session._queue_video(url, 1)
+                        self.assertEqual(ack["t"], "queued")
+                        job = state.data["jobs"][ack["id"]]
+                        self.assertEqual(job["addr"], ALICE)
+                        self.assertEqual(job["origin"], "app")
+                        with state.person(ALICE):
+                            queue._prepare(job)
+                        self.assertIn(job["status"], {"ready", "sending"})
+                        part = Path(job["part_files"][0])
+                        self.assertEqual(hashlib.sha256(part.read_bytes()).digest(), hashlib.sha256(video.read_bytes()).digest())
                     # A live frame stays small, but the explicit capture covers
                     # the whole long page at twice the CSS resolution.
                     from PIL import Image
@@ -393,6 +417,12 @@ class RealSandboxTests(unittest.TestCase):
                         self.assertEqual(capture.width, 960)
                         self.assertEqual(capture.height, image["height"] * 2)
                         self.assertGreater(capture.height, 3000)
+                        self.assertEqual(exchange({"action": "scroll", "amount": 600, "seq": 2})["kind"], "frame")
+                        scrolled = exchange({"action": "capture", "seq": 3})
+                        self.assertEqual(scrolled["kind"], "capture")
+                        self.assertLess(scrolled["height"], image["height"])
+                        self.assertEqual(Image.open(io.BytesIO(base64.b64decode(scrolled["image"]))).height,
+                                         scrolled["height"] * 2)
             finally:
                 server.shutdown(); server.server_close(); thread.join(timeout=3)
 

@@ -98,10 +98,12 @@ def main() -> int:
                         emit({"kind": "state", "seq": seq, "storage": storage})
                         continue
                     if action == "capture":
-                        height = max(HEIGHT, min(3000, int(page.evaluate("document.documentElement.scrollHeight || window.innerHeight"))))
+                        total = max(HEIGHT, int(page.evaluate("document.documentElement.scrollHeight || window.innerHeight")))
+                        top = max(0, min(total - HEIGHT, int(page.evaluate("window.scrollY || 0"))))
+                        height = max(HEIGHT, min(3000, total - top))
                         for quality in (60, 35):
                             data = page.screenshot(type="jpeg", quality=quality, full_page=True,
-                                                   clip={"x": 0, "y": 0, "width": WIDTH, "height": height},
+                                                   clip={"x": 0, "y": top, "width": WIDTH, "height": height},
                                                    timeout=15_000, animations="disabled", caret="hide", scale="device")
                             if len(data) <= 1_000_000:
                                 break
