@@ -135,10 +135,10 @@ function coderSend(text) {
     toast(t("coder_model_unavailable"), "bad");
     return false;
   }
-  let files = project.files;
+  const files = project.files;
   if (new Blob([JSON.stringify(files)]).size > CODER_SEND_MAX) {
-    files = [];
     toast(t("coder_too_big"), "bad");
+    return false; // never send an empty substitute that could overwrite the project
   }
   const { id } = bridge.request("code", { text, files, model: prefs.coderModel || "" });
   if (!id) return false;
@@ -354,6 +354,9 @@ function previewSheet(html) {
 }
 
 function stepRow(step) {
+  if (step.kind === "research") {
+    return h("div", { class: "step" }, h("span", {}, step.cmd === "open" ? t("coder_open_public") : t("coder_search_public")));
+  }
   if (step.kind === "run") {
     return h("div", { class: `step ${step.code === 0 ? "ok" : "bad"}` },
       h("b", {}, "$ ", step.cmd), h("small", {}, step.code === 0 ? t("coder_ok") : t("coder_exit", { code: step.code })),

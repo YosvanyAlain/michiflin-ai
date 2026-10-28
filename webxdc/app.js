@@ -133,6 +133,7 @@ function back() {
 }
 
 function render(scroll = 0) {
+  if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
   bus.local = [];
   $("#title").textContent = definition.title(current.params);
@@ -565,8 +566,7 @@ function modelInfo(key) {
 }
 
 function spaceTitle(space) {
-  if (space === "agent") return t("agent");
-  if (space === "smart_agent") return t("smart_agent");
+  if (space === "agent" || space === "smart_agent") return t("agent");
   if (space === "auto") return t("auto");
   const info = modelInfo(space);
   return info ? info.model.title : space.split(":").pop();
@@ -654,8 +654,9 @@ VIEWS.ai = {
     const refresh = iconButton("refresh", t("refresh"), () => refreshModels(refresh));
     add(main, 
       h("div", { class: "stack" },
-        spaceCard("ai", t("smart_agent"), t("smart_agent_hint"), () => go("chat", { space: "smart_agent" })),
-        spaceCard("bolt", t("agent"), t("agent_hint"), () => go("chat", { space: "agent" }), t("no_quota")),
+        spaceCard("bolt", t("agent"), t("agent_unified_hint"), () => go("chat", {
+          space: prefs.agentMode === "smart_agent" ? "smart_agent" : "agent"
+        })),
         spaceCard("ai", t("auto"), t("auto_hint"), () => go("chat", { space: "auto" })),
         spaceCard("code", t("coder"), t("coder_hint"), () => go("coder")),
         spaceCard("image", t("tile_images"), t("images_hint"), () => go("images")),
@@ -871,7 +872,15 @@ VIEWS.chat = {
     bus.on("models", drawMeta);
     bus.on("quota", drawMeta);
     bus.on("chat:" + space, drawList);
-    add(main, meta, list, h("div", { class: "composer-wrap" }, tray, h("div", { class: "composer" },
+    const mode = space === "agent" || space === "smart_agent" ? h("div", { class: "stack agent-mode" },
+      h("small", { class: "muted" }, t("agent_mode")),
+      segmented(space, [["agent", t("agent_mode_free")], ["smart_agent", t("agent_mode_ai")]], (value) => {
+        if (value === space) return;
+        prefs.agentMode = value;
+        savePrefs();
+        swap("chat", { space: value });
+      }), h("small", { class: "muted" }, t("agent_mode_privacy"))) : null;
+    add(main, mode, meta, list, h("div", { class: "composer-wrap" }, tray, h("div", { class: "composer" },
       space !== "agent" && space !== "smart_agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
       area, h("button", { class: "btn primary round", "aria-label": t("send"), onclick: () => submit() }, icon("send")))));
     drawMeta();
@@ -1173,6 +1182,7 @@ VIEWS.youtube = {
 };
 
 const MANUAL_SITES = [
+  ["YouTube", "https://www.youtube.com/"],
   ["Instagram", "https://www.instagram.com/"],
   ["Facebook", "https://www.facebook.com/"],
   ["TikTok", "https://www.tiktok.com/"],
@@ -1186,16 +1196,20 @@ VIEWS.accounts = {
   tab: "web",
   title: () => t("accounts_title"),
   render(main) {
-    add(main, h("p", { class: "note" }, icon("info"), t("accounts_hint")),
+    add(main, h("p", { class: "note" }, icon("info"), t("live_accounts_hint")),
+      askBox({ placeholder: t("live_other_placeholder"), iconName: "web", label: t("live_open"), onsubmit: (value) => {
+        const url = normalUrl(value);
+        try { liveSite(url); go("live_web", { name: t("live_title"), url }); }
+        catch (error) { toast(t("live_bad_url"), "bad"); }
+      } }),
+      ...MANUAL_SITES.map(([name, url]) => h("button", { class: "card space-card", onclick: () => go("live_web", { name, url }) },
+        icon("web"), h("span", { class: "grow" }, h("b", {}, name), h("small", {}, t("live_open_hint"))), icon("next"))),
+      h("p", { class: "muted small" }, t("live_optional_api")),
       h("button", { class: "card space-card", onclick: () => go("youtube_account") },
         icon("youtube"), h("span", { class: "grow" }, h("b", {}, t("yt_account")), h("small", {}, t("yt_account_hint"))), icon("next")),
       ...[["facebook_account", "fb_account"], ["tiktok_account", "tt_account"]].map(([view, label]) =>
         h("button", { class: "card space-card", onclick: () => go(view) },
-          icon("user"), h("span", { class: "grow" }, h("b", {}, t(label)), h("small", {}, t("social_official_hint"))), icon("next"))),
-      ...MANUAL_SITES.map(([name, url]) => card(
-        h("b", {}, name), h("small", { class: "muted block" }, t("accounts_manual")),
-        h("div", { class: "row wrap" }, h("small", { class: "site-address" }, url),
-          h("button", { class: "btn small ghost", onclick: () => copyText(url) }, icon("copy"), t("accounts_copy"))))));
+          icon("user"), h("span", { class: "grow" }, h("b", {}, t(label)), h("small", {}, t("social_official_hint"))), icon("next"))));
   },
 };
 

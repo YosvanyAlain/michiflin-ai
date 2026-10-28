@@ -93,6 +93,40 @@ class SafetyTests(unittest.TestCase):
         nonce = access.snapshot()["nonce"]
         self.assertTrue(access.set_owner_only(False, minutes, nonce))
 
+    def test_app_upgrades_and_reinstall_keep_every_bound_instance(self) -> None:
+        # Repeated deliveries must not silently evict the first project-bearing app.
+        with (mock.patch.object(miniapp, "app_build", return_value="build-1"),
+              mock.patch.object(miniapp, "build", return_value=Path("/tmp/fake.xdc")),
+              mock.patch.object(chat, "send", side_effect=[101, 102, 103, 104, 105, 106]),
+              mock.patch.object(chat, "delete_for_all") as delete):
+            for _ in range(4):
+                miniapp.send_app(91, "en", address=OWNER)
+            self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104})
+            miniapp.replace_app(101, 91, "en", OWNER)
+            miniapp.op_reinstall(91, {}, "en")
+            self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104, 105, 106})
+            delete.assert_not_called()
+        # A temporary RPC outage is not evidence of a deleted message.
+        with mock.patch.object(chat, "rpc", side_effect=RuntimeError("temporary")):
+            self.assertEqual(miniapp.latest_instance(91), 0)
+        self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104, 105, 106})
+
+    def test_upgrade_is_not_repeated_after_restart_or_window_expiry(self) -> None:
+        old = {"chat": 92, "addr": OWNER, "build": "old", "access_session": access.session_stamp(OWNER)}
+        state.data["apps"]["150"] = old
+        miniapp._upgraded.clear()
+        with (mock.patch.object(miniapp, "app_build", return_value="new"),
+              mock.patch.object(miniapp, "build", return_value=Path("/tmp/fake.xdc")),
+              mock.patch.object(chat, "send", return_value=151) as send,
+              mock.patch.object(chat, "delete_for_all") as delete):
+            miniapp._maybe_upgrade(150, old, "en")
+            self.assertIn("150", state.data["apps"])
+            self.assertIn("151", state.data["apps"])
+            miniapp._upgraded.clear()  # simulate a new bot session, not a new build
+            miniapp._maybe_upgrade(150, old, "en")
+            send.assert_called_once()
+            delete.assert_not_called()
+
     def test_unknown_coder_model_is_rejected_without_fallback(self) -> None:
         with (mock.patch.object(ai, "model_by_key", return_value=None),
               mock.patch.object(coder, "run") as run):

@@ -8,7 +8,9 @@ page can only be opened if the user supplied it or search returned it.
 """
 from __future__ import annotations
 
+import gzip
 import http.client
+import io
 import ipaddress
 import json
 import re
@@ -130,6 +132,17 @@ def _read(url: str) -> str:
             raw = response.read(1_000_001)
             if len(raw) > 1_000_000:
                 return "Page exceeds the size limit."
+            encoding = (response.getheader("Content-Encoding") or "identity").lower().strip()
+            if encoding == "gzip":
+                try:
+                    with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                        raw = compressed.read(1_000_001)
+                except (OSError, EOFError):
+                    return "Invalid compressed page."
+                if len(raw) > 1_000_000:
+                    return "Page exceeds the size limit."
+            elif encoding not in {"", "identity"}:
+                return "Unsupported page encoding."
             break
         finally:
             connection.close()

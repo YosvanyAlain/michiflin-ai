@@ -1797,21 +1797,20 @@ class AppSyncTests(Base):
         self.push({"t": "req", "id": "d1", "op": "echo_test", "args": {}, "lang": "es", "retry": 1})
         self.assertEqual(len([payload for _instance, payload in self.out if payload.get("t") == "chunk"]), len(chunks))
 
-    def test_outdated_instance_is_replaced_once(self) -> None:
+    def test_outdated_instance_is_preserved_and_upgraded_once(self) -> None:
         state.data["apps"]["500"]["build"] = "old"
         with mock.patch.object(self.m, "op_hello", lambda chat_id, args, locale: {"ok": True}), \
                 mock.patch.dict(self.m.OPS, {"hello": lambda chat_id, args, locale: {"ok": True}}), \
                 mock.patch.object(self.m, "build", lambda: Path(__file__)):
             self.push({"t": "req", "id": "e1", "op": "hello", "args": {}, "lang": "es"})
-            self.assertEqual(self.deleted, [500])
-            self.assertNotIn("500", state.data["apps"])
-            new_key = next(iter(state.data["apps"]))
+            self.assertEqual(self.deleted, [])
+            self.assertEqual(state.data["apps"]["500"]["build"], "old")
+            new_key = next(key for key in state.data["apps"] if key != "500")
             self.assertEqual(state.data["apps"][new_key]["build"], self.m.app_build())
             self.assertIn("actualizó", self.sent.items[-1]["text"])
             count = len(self.sent.items)
-            state.data["apps"]["500"] = {"chat": 7, "serial": 0, "addr": "owner@example.org", "build": "old"}
             self.push({"t": "req", "id": "e2", "op": "hello", "args": {}, "lang": "es"})
-            self.assertEqual(len(self.sent.items), count)  # rate limited
+            self.assertEqual(len(self.sent.items), count)  # no duplicate replacement
 
 
 
