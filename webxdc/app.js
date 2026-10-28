@@ -566,6 +566,7 @@ function modelInfo(key) {
 
 function spaceTitle(space) {
   if (space === "agent") return t("agent");
+  if (space === "smart_agent") return t("smart_agent");
   if (space === "auto") return t("auto");
   const info = modelInfo(space);
   return info ? info.model.title : space.split(":").pop();
@@ -653,6 +654,7 @@ VIEWS.ai = {
     const refresh = iconButton("refresh", t("refresh"), () => refreshModels(refresh));
     add(main, 
       h("div", { class: "stack" },
+        spaceCard("ai", t("smart_agent"), t("smart_agent_hint"), () => go("chat", { space: "smart_agent" })),
         spaceCard("bolt", t("agent"), t("agent_hint"), () => go("chat", { space: "agent" }), t("no_quota")),
         spaceCard("ai", t("auto"), t("auto_hint"), () => go("chat", { space: "auto" })),
         spaceCard("code", t("coder"), t("coder_hint"), () => go("coder")),
@@ -702,7 +704,7 @@ const DOC_FILE = /\.(txt|md|rst|csv|tsv|json|xml|ya?ml|html?|log|srt|vtt|ini|tom
 const AUDIO_TYPES = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", opus: "audio/ogg", wav: "audio/wav", flac: "audio/flac" };
 
 function spaceAccepts(space) {
-  if (space === "agent") return [];
+  if (space === "agent" || space === "smart_agent") return [];
   if (space === "auto") return ["document", "image"];
   const info = modelInfo(space);
   return info && info.model.accepts ? info.model.accepts : ["document", "image", "pdf", "audio"]; // unknown yet: the bot decides
@@ -776,6 +778,7 @@ bridge.handlers.ask = (data, error, ctx, rid) => {
 
 function spaceMeta(space) {
   if (space === "agent") return [h("span", { class: "chip ok" }, icon("bolt"), t("no_quota")), h("span", { class: "chip subtle" }, t("agent_meta"))];
+  if (space === "smart_agent") return [h("span", { class: "chip" }, icon("ai"), t("smart_agent_meta")), quotaChip("ask")];
   if (space === "auto") return [h("span", { class: "chip" }, icon("ai"), t("auto_meta")), quotaChip("ask")];
   const info = modelInfo(space);
   if (!info) return [h("span", { class: "chip warn" }, t("model_unknown"))];
@@ -816,7 +819,7 @@ function chatIntro(space, send) {
   const info = modelInfo(space);
   const brand = info ? brandOf(info.model, info.provider) : "";
   return h("div", { class: "intro" }, brand ? brandMark(brand, "big") : icon(space === "agent" ? "bolt" : "ai", "big"),
-    h("p", {}, t(space === "agent" ? "intro_agent" : "intro_ai")),
+    h("p", {}, t(space === "agent" ? "intro_agent" : space === "smart_agent" ? "smart_agent_intro" : "intro_ai")),
     h("div", { class: "chips center" }, keys.map((key) => h("button", { class: "chip", onclick: () => send(t(key)) }, t(key)))));
 }
 
@@ -869,7 +872,7 @@ VIEWS.chat = {
     bus.on("quota", drawMeta);
     bus.on("chat:" + space, drawList);
     add(main, meta, list, h("div", { class: "composer-wrap" }, tray, h("div", { class: "composer" },
-      space !== "agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
+      space !== "agent" && space !== "smart_agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
       area, h("button", { class: "btn primary round", "aria-label": t("send"), onclick: () => submit() }, icon("send")))));
     drawMeta();
     drawList();
@@ -1053,6 +1056,7 @@ VIEWS.web = {
     const recent = store.get("recent", []);
     const visited = store.get("visited", []);
     add(main, searchBox(),
+      h("button", { class: "btn ghost wide", onclick: () => go("accounts") }, icon("user"), t("accounts_title")),
       recent.length ? section(t("recent"), h("div", { class: "chips" }, recent.map((item) =>
         h("button", { class: "chip", onclick: () => go(item.engine === "videos" ? "youtube" : "results", item) }, icon(item.engine === "videos" ? "youtube" : "search"), item.q)))) : null,
       section(null, headRow(t("visited"), visited.length ? iconButton("trash", t("clear"), () => { store.set("visited", []); swap("web"); }) : null),
@@ -1158,12 +1162,105 @@ VIEWS.youtube = {
     });
     const box = h("div", { class: "stack" });
     add(main, h("div", { class: "searchbox" }, h("div", { class: "search-field" }, icon("youtube"), input,
-      h("button", { class: "btn primary small", onclick: submit }, t("go")))), box);
+      h("button", { class: "btn primary small", onclick: submit }, t("go")))),
+      h("button", { class: "btn ghost wide", onclick: () => go("youtube_account") }, icon("user"), t("yt_account")), box);
     if (params.q) {
       fetchView(box, "search", { q: params.q, engine: "videos" }, (data) => fill(box, ...resultList(data)), { label: t("searching") });
     } else {
       add(box, empty(t("youtube_hint"), "youtube"));
     }
+  },
+};
+
+const MANUAL_SITES = [
+  ["Instagram", "https://www.instagram.com/"],
+  ["Facebook", "https://www.facebook.com/"],
+  ["TikTok", "https://www.tiktok.com/"],
+  ["DeepSeek Chat", "https://chat.deepseek.com/"],
+  ["Arena.ai", "https://arena.ai/"],
+  ["Revolico", "https://www.revolico.com/"],
+  ["Z.AI", "https://chat.z.ai/"],
+];
+
+VIEWS.accounts = {
+  tab: "web",
+  title: () => t("accounts_title"),
+  render(main) {
+    add(main, h("p", { class: "note" }, icon("info"), t("accounts_hint")),
+      h("button", { class: "card space-card", onclick: () => go("youtube_account") },
+        icon("youtube"), h("span", { class: "grow" }, h("b", {}, t("yt_account")), h("small", {}, t("yt_account_hint"))), icon("next")),
+      ...MANUAL_SITES.map(([name, url]) => card(
+        h("b", {}, name), h("small", { class: "muted block" }, t("accounts_manual")),
+        h("div", { class: "row wrap" }, h("small", { class: "site-address" }, url),
+          h("button", { class: "btn small ghost", onclick: () => copyText(url) }, icon("copy"), t("accounts_copy"))))));
+  },
+};
+
+VIEWS.youtube_account = {
+  tab: "web",
+  title: () => t("yt_account"),
+  render(main) {
+    const box = h("div", { class: "stack" });
+    const results = h("div", { class: "stack" });
+    let current = {};
+    add(main, box, results);
+    const act = async (operation) => {
+      try {
+        const data = await bridge.call("youtube_account", { do: operation });
+        if (operation === "channels" || operation === "subscriptions") {
+          fill(results, h("p", { class: "note" }, t("yt_first_page")),
+            ...(data.items.length ? data.items.map((item) => card(h("b", {}, item.title),
+              item.description ? h("p", { class: "muted" }, item.description) : null)) : [empty(t("yt_no_results"), "youtube")]));
+          return;
+        }
+        if (operation === "disconnect") {
+          current = { configured: !!current.configured, connected: false, pending: false, stored: false, vault_error: false };
+          fill(results);
+          if (!data.revoked) toast(t("yt_revocation_failed"), "bad");
+        } else if (operation === "poll" && data.pending) {
+          current = { ...current, ...data };
+          toast(t("yt_pending"));
+        } else {
+          current = { ...current, ...data };
+          if (data.expired) { current.pending = false; toast(t("yt_expired"), "bad"); }
+          if (data.denied) { current.pending = false; toast(t("yt_denied"), "bad"); }
+        }
+        draw();
+      } catch (error) {
+        if (!error.cancelled) {
+          if (operation === "status") fill(box, failure(error.message, () => act("status")));
+          else toast(error.message, "bad");
+        }
+      }
+    };
+    const disconnect = () => h("button", { class: "btn ghost", onclick: async () => {
+      if (await confirmBox(t("yt_disconnect"), t("yt_disconnect_q"), t("yt_disconnect"))) act("disconnect");
+    } }, t("yt_disconnect"));
+    const draw = () => {
+      if (!current.configured || current.vault_error) {
+        fill(box, card(h("p", {}, t(current.vault_error ? "yt_vault_error" : "yt_not_configured")),
+          current.stored ? disconnect() : null));
+      } else if (current.pending && current.url && current.user_code) {
+        fill(box, card(h("p", {}, t("yt_instructions")),
+          h("div", { class: "row wrap" }, h("b", { class: "site-address" }, current.url),
+            h("button", { class: "btn small ghost", onclick: () => copyText(current.url) }, icon("copy"), t("accounts_copy"))),
+          h("p", {}, t("yt_code"), ": ", h("b", {}, current.user_code)),
+          h("div", { class: "row wrap" },
+            h("button", { class: "btn small ghost", onclick: () => copyText(current.user_code) }, icon("copy"), t("copy")),
+            h("button", { class: "btn primary", onclick: () => act("poll") }, t("yt_approved")))));
+      } else if (current.connected) {
+        fill(box, card(h("p", {}, t("yt_connected")),
+          h("div", { class: "row wrap" },
+            h("button", { class: "btn primary", onclick: () => act("channels") }, t("yt_channels")),
+            h("button", { class: "btn ghost", onclick: () => act("subscriptions") }, t("yt_subscriptions")),
+            disconnect())));
+      } else {
+        fill(box, card(h("p", {}, t("yt_disconnected")),
+          h("button", { class: "btn primary", onclick: () => act("start") }, t("yt_connect"))));
+      }
+    };
+    fill(box, loading());
+    act("status");
   },
 };
 

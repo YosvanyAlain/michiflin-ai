@@ -41,6 +41,8 @@ BRIDGE = r"""
   window.__links = [];
   window.__failNext = {};
   window.__delay = 0;
+  window.__ytConfigured = false;
+  window.__ytConnected = false;
   const responseFor = (request) => {
     switch (request.op) {
       case "hello": return { version: "browser-smoke", admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
@@ -71,6 +73,13 @@ BRIDGE = r"""
       case "search": return { engine: request.args.engine || "web", results: [] };
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
+      case "ask": return { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
+      case "youtube_account":
+        if (request.args.do === "start") return { configured: true, connected: false, pending: true, url: "https://www.google.com/device", user_code: "TEST-CODE" };
+        if (request.args.do === "poll") { window.__ytConnected = true; return { configured: true, connected: true, pending: false }; }
+        if (request.args.do === "disconnect") { window.__ytConnected = false; return { connected: false, revoked: true }; }
+        if (request.args.do === "channels" || request.args.do === "subscriptions") return { items: [{ title: "SIMULATED channel", description: "Mock account data" }] };
+        return { configured: window.__ytConfigured, connected: window.__ytConnected };
       case "queue": return { jobs: [] };
       case "action": return { title: "Smoke test", text: "smoke test result" };
       default: return {};
@@ -183,6 +192,42 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_new_agent_and_account_views_are_honest_and_bilingual(self) -> None:
+        for language in ("es", "en"):
+            viewport = {"width": 390, "height": 844} if language == "es" else {"width": 1280, "height": 900}
+            with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
+                page.locator('.tab[data-tab="ai"]:visible').click()
+                page.get_by_role("button", name="Agente IA" if language == "es" else "AI Agent", exact=False).first.click()
+                page.locator("#view .intro").wait_for(state="visible")
+                self.assertIn("no inicia" if language == "es" else "cannot log in", page.locator("#view .intro").inner_text().lower())
+                screenshot_if_requested(page, language + "-new-agent")
+                page.locator("#view textarea").fill("Weather in Havana")
+                page.locator("#view .composer button").click()
+                page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
+                sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
+                self.assertEqual(sent, "smart_agent")
+
+                page.locator('.tab[data-tab="web"]:visible').click()
+                page.get_by_role("button", name="Cuentas y sitios" if language == "es" else "Accounts and sites").click()
+                for site in ("Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
+                    self.assertTrue(page.get_by_text(site, exact=True).is_visible())
+                self.assertIn("no conectado" if language == "es" else "not connected", page.locator("#view").inner_text().lower())
+                self.assertTrue(page.locator("#view .site-address").first.evaluate("e => {const a=e.getBoundingClientRect(), b=e.nextElementSibling.getBoundingClientRect(); return a.right <= b.left || a.bottom <= b.top}"))
+                screenshot_if_requested(page, language + "-accounts-manual")
+                page.get_by_role("button", name="Mi cuenta de YouTube" if language == "es" else "My YouTube account", exact=False).first.click()
+                page.get_by_text("El servidor aún no tiene" if language == "es" else "The server has not configured", exact=False).wait_for(state="visible")
+                self.assertEqual(page.get_by_role("button", name="Conectar con Google" if language == "es" else "Connect with Google").count(), 0)
+                screenshot_if_requested(page, language + "-youtube-not-configured")
+                page.evaluate("window.__ytConfigured = true; go('youtube_account')")
+                page.get_by_role("button", name="Conectar con Google" if language == "es" else "Connect with Google").click()
+                page.get_by_text("TEST-CODE").wait_for(state="visible")
+                self.assertTrue(page.locator("#view .site-address").evaluate("e => {const a=e.getBoundingClientRect(), b=e.nextElementSibling.getBoundingClientRect(); return a.right <= b.left || a.bottom <= b.top}"))
+                screenshot_if_requested(page, language + "-youtube-device-SIMULATED")
+                page.get_by_role("button", name="Ya autoricé" if language == "es" else "I have authorized").click()
+                page.get_by_role("button", name="Mi canal" if language == "es" else "My channel").click()
+                page.get_by_text("SIMULATED channel").wait_for(state="visible")
+                self.assertEqual(errors, [])
+
     def test_bilingual_mode_status_chat_and_private_admin(self) -> None:
         cases = [("es", {"width": 390, "height": 844}), ("en", {"width": 1280, "height": 800})]
         for language, viewport in cases:
@@ -338,7 +383,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(page.locator("html").get_attribute("lang"), language)
                 page.evaluate("prefs.coderModel = 'retired:model'")
                 page.locator('.tab[data-tab="ai"]:visible').click()
-                page.locator('#view .space-card').nth(2).click()
+                page.get_by_role("button", name="Programador" if language == "es" else "Coder", exact=False).first.click()
                 picker = page.locator("#view select")
                 self.assertEqual(picker.input_value(), "retired:model")
                 self.assertIn("no disponible" if language == "es" else "unavailable", picker.inner_text().lower())
