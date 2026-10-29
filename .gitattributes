@@ -1,0 +1,2 @@
+# PDF files are binary even when their compressed streams start with ASCII.
+*.pdf binary

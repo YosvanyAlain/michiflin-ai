@@ -119,7 +119,7 @@ Use `.env.example` as a template for environment variables and export them into 
 - **Chat mode:** `CHAT_MODE` is `app` (mini app only, the default) or `full` (classic commands too).
 - **Defaults and limits:** every setting above has an environment default (`DEFAULT_VIDEO_HEIGHT`, `CHUNK_MB`, `READER_PAGE_KB`, `NOTIFY_MODE`…), and `MAX_FILE_MB`, `MAX_QUEUE_MB` and `MIN_FREE_DISK_MB` protect the disk.
 
-The account state (Delta Chat keys, settings, notes and queue metadata) lives in `CONFIG_DIR`. `state_backup.py save|restore` keeps an encrypted copy in a private repository (`STATE_BACKUP_REPO`, `STATE_BACKUP_PASSPHRASE`); larger attachment copies are excluded, not necessarily every conversation or token. Restore only while the bot is stopped and after preserving the current state: restoration runs only when `CONFIG_DIR` is absent and does not automatically overwrite it. Never publish the passphrase or backup token.
+The account state (Delta Chat keys, settings, notes and queue metadata) lives in `CONFIG_DIR`. `state_backup.py save|restore` keeps an encrypted copy in a private repository (`STATE_BACKUP_REPO`, `STATE_BACKUP_PASSPHRASE`); larger attachment copies and the default `/tmp/michiflin-queue` partials are excluded. A new Actions runner can therefore lose downloaded bytes and recent progress, and state snapshots are attempted every 30 minutes but can be older if a save fails. This is not a complete archive. Restore only while the bot is stopped and after preserving the current state: restoration runs only when `CONFIG_DIR` is absent and does not automatically overwrite it. Never publish the passphrase or backup token.
 
 ## Running
 
@@ -136,11 +136,15 @@ Each session lasts `SESSION_DURATION_SECONDS` (the GitHub Actions deployment use
 
 ### Emergency pause
 
+The owner can enable **Maintenance and notice** in Administration, set Spanish and English messages, then turn it off when work may resume. Authorized users receive the notice; cooperative work pauses without changing grants or personal holds. In-flight requests, charges and mail handoffs may still finish. An app update keeps the old instance but invalidates its ordinary operations; storage is per instance and project migration has not been demonstrated.
+
 Use **Apps → Kill switch** or `/kill_switch yes|no` (also available in app-only chat mode). While on, new work is refused; active downloads and packaging stop at cooperative checkpoints and return to the queue. Turning it off lets queued jobs continue; interrupted AI/agent requests must be retried. A request already sent to a remote provider cannot be recalled, and a network read may take until its timeout to stop. A part already entering the Delta Chat handoff may still be delivered. Delivery intent is recorded before handoff; uncertain outcomes pause instead of being blindly resent. A stale backup or an interruption during transport still cannot guarantee exactly-once delivery: check the chat before retrying. Pending outbox mail is not automatically purged. Inspecting or purging historical state requires the owner's separate permission.
+
+**My APIs and models** lets each authorized person register and explicitly choose their own provider. Compatible clients encrypt the key before sending it; the server encrypts the per-user vault with the stable `WEB_SESSION_KEY`. The chosen endpoint receives the key and prompts and may charge; model metadata does not prove that every capability works. Losing or rotating the master key makes the old vault unreadable without the original key and backup.
 
 ### Reliable delivery
 
-- **Every message is taken exactly once.** Live core events are backed by the core's bot cursor (`get_next_msgs` / `markseen_msgs`) and a small inbox kept in the state, checked every 20 seconds. A message whose event was missed, or that arrived while the bot was offline, is still answered; one interrupted by a crash is run again (at most twice).
+- **Inbox recovery, not exactly-once processing.** Live core events are backed by the core's bot cursor (`get_next_msgs` / `markseen_msgs`) and a small inbox in the saved state, checked every 20 seconds. A missed event or interrupted request can be recovered or retried, but a stale backup, network failure or crash can still lose recent state or repeat effects. Review uncertain deliveries before retrying; third-party charges cannot be reversed by the bot.
 - **Per-chat order without blocking.** Each chat has its own queue, so a slow request never holds the threads that serve app updates or other chats.
 - **Graceful stop.** On `SIGTERM` or `SIGINT` the bot stops taking new work, lets running requests finish (up to 75 s), waits for outgoing mail to leave and saves the state before closing the core. Unstarted requests stay unread for the next session.
 - **Self-update.** The bot checks the deployed branch every five minutes; when a new commit appears and nothing is running, it hands over to a fresh session (the job writes `RESTART_MARKER` and starts the next run).
@@ -174,6 +178,10 @@ Account state and encrypted backups can contain contact and message metadata, no
 ## Temporary hosting and backups
 
 The current GitHub Actions deployment is temporary. GitHub says hosted Actions should be related to producing, testing, deploying, or publishing the repository software; using it as a permanent server risks restrictions or account suspension. The workflow fails closed if established encrypted state is missing. New backups are independently verified private release assets, not accumulating Git commits; bounded recent/daily/weekly rotation starts only after two verified copies exist. Attachment copies above 200 KB remain excluded, so this is not a complete archive. GitHub controls physical garbage collection. See [backup maintenance and recovery](docs/BACKUP_MAINTENANCE.md).
+
+## Owner's manual
+
+The [Spanish owner and developer manual](docs/Manual_Michiflin.pdf) covers operation, source structure, limitations and migration. To rebuild it from source, install the DejaVu fonts and `pip install -r docs/requirements-manual.txt`, then run `python tools/build_manual.py`. Its screenshots use synthetic data and are labelled as real or simulated.
 
 ## License
 

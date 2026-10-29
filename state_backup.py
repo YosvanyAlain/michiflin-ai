@@ -531,7 +531,7 @@ def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphra
     print(f"[backup] rotation kept up to {KEEP_RECENT} recent, {KEEP_DAILY} daily and {KEEP_WEEKLY} weekly snapshots; removed {removed}")
 
 
-def _save_release(token: str, repo: str, passphrase: str) -> None:
+def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True) -> None:
     _assert_private(token, repo)
     plaintext = archive(config_dir())
     salt = os.urandom(SALT_BYTES)
@@ -563,11 +563,12 @@ def _save_release(token: str, repo: str, passphrase: str) -> None:
         raise RuntimeError("verified backup could not be marked ready; old copies were kept")
     _mark_ready(token, repo)
     print(f"[backup] encrypted and verified snapshot saved ({len(encrypted) // 1024} KB)")
-    try:
-        _prune(token, repo, rid, asset_id, passphrase)
-    except (requests.RequestException, ValueError, tarfile.TarError, sqlite3.Error, OSError, RuntimeError) as exc:
-        # A maintenance failure must never invalidate an already verified backup.
-        print(f"[backup] rotation deferred ({exc.__class__.__name__}); old copies were kept where possible")
+    if rotate:
+        try:
+            _prune(token, repo, rid, asset_id, passphrase)
+        except (requests.RequestException, ValueError, tarfile.TarError, sqlite3.Error, OSError, RuntimeError) as exc:
+            # A maintenance failure must never invalidate an already verified backup.
+            print(f"[backup] rotation deferred ({exc.__class__.__name__}); old copies were kept where possible")
 
 
 def _install_restored(plaintext: bytes, target: Path) -> None:
@@ -600,7 +601,8 @@ def _save_lock():
         os.close(fd)
 
 
-def save() -> None:
+def save(*, rotate: bool = True) -> None:
+    """Save state; short-lived delivery checkpoints may retain all old copies."""
     settings = configuration()
     if not settings:
         if os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1":
@@ -612,7 +614,7 @@ def save() -> None:
         if storage == "legacy-git":
             _save_legacy()
         elif storage == "releases":
-            _save_release(*settings)
+            _save_release(*settings, rotate=rotate)
         else:
             raise ValueError("unknown backup storage mode")
 
