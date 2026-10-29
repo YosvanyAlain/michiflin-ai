@@ -42,7 +42,8 @@ def test_translation_fallback_preserves_whole_multibyte_text_and_limits_bytes():
 
 
 def test_translation_detection_never_guesses_or_returns_partial_text():
-    with mock.patch.object(extras.requests, "get", side_effect=requests.ConnectionError()) as get:
+    with mock.patch.object(extras.requests, "get", side_effect=requests.ConnectionError()) as get, \
+         mock.patch.object(config, "APERTIUM_ENABLED", False):
         result = extras.translate_detailed("bonjour", "es", "auto")
     assert result["text"] == "" and result["detected"] == "auto"
     assert get.call_count == 1  # no untrusted public translation-memory fallback
@@ -186,13 +187,14 @@ def test_timed_maintenance_is_explicit_and_expires_without_grant_changes():
 
 
 def test_untrusted_translation_memory_is_not_used_and_failed_chunks_do_not_leak_partial():
-    with mock.patch.object(config, "LIBRETRANSLATE_URL", ""), \
+    with mock.patch.object(config, "LIBRETRANSLATE_URL", ""), mock.patch.object(config, "APERTIUM_ENABLED", False), \
          mock.patch.object(extras.requests, "get", side_effect=requests.ConnectionError()) as get, \
          mock.patch.object(extras.requests, "post") as post:
         assert extras.translate_detailed("hello", "es", "en")["text"] == ""
         assert get.call_count == 1
         post.assert_not_called()
     with mock.patch.object(config, "LIBRETRANSLATE_URL", "http://example.org/translate"), \
+         mock.patch.object(config, "APERTIUM_ENABLED", False), \
          mock.patch.object(extras.requests, "get", side_effect=requests.ConnectionError()), \
          mock.patch.object(extras.requests, "post") as post:
         assert extras.translate_detailed("hello", "es", "en")["text"] == ""
@@ -203,7 +205,7 @@ def test_untrusted_translation_memory_is_not_used_and_failed_chunks_do_not_leak_
         calls += 1
         if calls == 2: raise requests.ConnectionError()
         return Response([[[kwargs["params"]["q"].upper()]], None, "en"])
-    with mock.patch.object(config, "LIBRETRANSLATE_URL", ""), \
+    with mock.patch.object(config, "LIBRETRANSLATE_URL", ""), mock.patch.object(config, "APERTIUM_ENABLED", False), \
          mock.patch.object(extras.requests, "get", side_effect=get), mock.patch.object(state, "check_work_allowed"):
         assert extras.translate_detailed("hello " * 730, "es", "en")["text"] == ""
         assert calls == 2

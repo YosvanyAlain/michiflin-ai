@@ -78,6 +78,8 @@ jobs:
       ELTOQUE_DERIVED_CALCULATIONS: ${{ vars.ELTOQUE_DERIVED_CALCULATIONS || '1' }}
       LIBRETRANSLATE_URL: ${{ vars.LIBRETRANSLATE_URL }}
       LIBRETRANSLATE_API_KEY: ${{ secrets.LIBRETRANSLATE_API_KEY }}
+      APERTIUM_URL: ${{ vars.APERTIUM_URL || 'https://beta.apertium.org/apy' }}
+      APERTIUM_ENABLED: ${{ vars.APERTIUM_ENABLED || '1' }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
       GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
       FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
@@ -106,6 +108,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
 
       - uses: denoland/setup-deno@v2
         with:

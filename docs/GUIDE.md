@@ -8,7 +8,7 @@ This guide walks through the mini app and the chat features. For setup and confi
 - [Web](#web)
 - [Apps](#apps)
 - [Downloads](#downloads)
-- [Joining parts on iPhone and iPad](#joining-parts-on-iphone-and-ipad)
+- [File kit and joining parts](#file-kit-and-joining-parts)
 - [Settings](#settings)
 - [Status and administration](#status-and-administration)
 - [Classic chat mode](#classic-chat-mode)
@@ -104,6 +104,8 @@ The default engine and the reader page size can be changed in Settings.
 
 Each app asks the bot only for what it needs, to save data. Weather uses [Open-Meteo](https://open-meteo.com/); exchange rates and history use the [elTOQUE API](https://tasas.eltoque.com/docs/) under its [terms](https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso). The translation service receives the submitted text. External services may impose limits or be unavailable.
 
+The translator sends the text to an external provider: the existing Google endpoint, configured LibreTranslate, or Apertium beta as an independent fallback. Do not submit secrets. Apertium is approximate, marks unknown words with `*`, and supports only its available language pairs; if automatic detection is uncertain, choose the source language. The app displays the provider, respects rate limits and does not consume the configured AI model quota. None of the services is guaranteed available or unlimited.
+
 The rates app never uses the public website to work around API errors. A shared monitor refreshes approximately every five minutes while the bot runs (120–3600 seconds), saves received observations and can notify the verified owner about errors. The home banner opens the same rates view and shows real age; failures show saved values with a stale warning. Histories use real queried windows and mark gaps. The API's timezone is undocumented and it can return fewer currencies than the website.
 
 Original provider codes are retained. `ECU` is presented as EUR based on the provider's published euro value, although the alias is not defined in the API contract. BTC and USDT (TRC20) are CUP per USD represented in the cryptocurrency, not per whole coin; TRX is per unit. For represented-USD conversions use `USD_BTC` or `USD_USDT_TRC20`. The converter and illustrative scenario are enabled by operator request and explicitly identified as Michiflin calculations, not elTOQUE quotes or forecasts; permission for derivatives is not confirmed. Review the provider's terms or set `ELTOQUE_DERIVED_CALCULATIONS=0`. Official links can be copied where external navigation is blocked.
@@ -118,7 +120,7 @@ For a newly authorized chat message, the bot uses Delta Chat's read-receipt mech
 | **Weather** | Open-Meteo current conditions, five-day forecast and location selection |
 | **News** | Headlines by topic or by search |
 | **Utilities** | Unit converter, local time and calculator |
-| **Join parts** | Joins and verifies split files (see below) |
+| **File kit** | In Downloads: organizes copies, archives and the existing joiner (see below) |
 | **Status** | Server, services and quotas; the short status summarizes the real current state |
 | **Notes** | Personal notes; existing notes are not deleted by a navigation change |
 | **Administration** | Owner controls and recent diagnostics |
@@ -150,7 +152,11 @@ In Downloads choose the download queue or **Saved links**. Paste a link and choo
 
 Reactions on your message show the state: ⏳ while working, then ✅ or ❌.
 
-## Joining parts on iPhone and iPad
+## File kit and joining parts
+
+Open **Downloads → File kit** for local offline copies or the authorized user's temporary server workspace. The tree supports folders, multiple selection, rename, copy, move, delete and undo/redo. It creates ZIP/7z and opens supported ZIP/7z/RAR variants. Archive processing is bounded by memory and the remote sandbox must be available. Originals on your phone are not changed. Read the [detailed bilingual guide](FILE_KIT.md) for import drafts, sizes, privacy and storage limitations.
+
+The existing **Join parts** tool is inside the kit and can load selected local copies or files you choose from the device. The screenshots below show an earlier navigation layout.
 
 <p align="center">
   <img src="media/en/clip-join.gif" width="260" alt="Joining parts">
@@ -158,11 +164,11 @@ Reactions on your message show the state: ⏳ while working, then ✅ or ❌.
 </p>
 <p align="center"><sub><a href="media/en/clip-join.mp4">MP4 version</a></sub></p>
 
-iOS has no app that joins `.001` parts. **Join parts** does it inside the mini app:
+On supported Android and iOS clients, **Join parts** can join `.001` parts inside the mini app:
 
 1. Tap **Choose parts** and select them all from the chat or from Files. Save parts to **Files**, not Photos: Photos renames them and may re-encode videos.
 2. The app puts them in order by itself, using the bot's fingerprint of each part, the number stored inside video and audio segments, or the file name. Each row says how its place was found, and media rows show a thumbnail and the duration. Missing parts are listed. You can still move parts by hand.
-3. Tap **Join**. The app compares the result with the bot's SHA-256 fingerprint and tells you if it is identical, or which parts are damaged. If the original download is no longer listed, the file is joined but cannot be verified, and the app says so.
+3. Tap **Join**. When the corresponding fingerprints are available and the client can calculate them, the app compares the result and reports mismatches. Without the necessary fingerprints it cannot verify the original, and the app says so.
 4. **Export** the file to the gallery, Files or another chat.
 
 Media segments play on their own, but joining gives one file: MP4, M4A and MP3 segments are joined without re-encoding (WebM and MKV are not supported). On desktop and Android any archive tool or `cat` works too.

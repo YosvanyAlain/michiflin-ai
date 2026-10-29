@@ -29,12 +29,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
-APP_FILES = ("index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js")
+APP_FILES = (
+    "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
+    "filekit-store.js", "filekit-worker.js", "filekit.js",
+    "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
+    "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
+    "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
+    "vendor/noble/LICENSE-hashes.txt", "vendor/noble/NOTICE.txt",
+)
 CHUNK = 90_000
 _pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app")
 # Emergency control must not wait behind long-running app operations.
@@ -551,10 +558,10 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
 
 
 WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
-            "youtube_account", "facebook_account", "tiktok_account"}
+            "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
-OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150}
+OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 240}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control-op")
 _ai_gates: dict[str, threading.Lock] = {}
@@ -1634,9 +1641,29 @@ def op_translate(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         raise AppError(tr(locale, "Idioma no disponible.", "Language unavailable."))
     result = extras.translate_detailed(text, target, source)
     if not result["text"]:
-        raise AppError(tr(locale, "Los traductores no respondieron. Si usabas detección automática, elige el idioma de origen e inténtalo otra vez.",
-                          "Translation services did not answer. If using detection, choose the source language and try again."))
+        messages = {
+            "detection_uncertain": ("No pude identificar el idioma con suficiente seguridad. Elige el idioma de origen e inténtalo otra vez.",
+                                    "Could not identify the language confidently. Select the source language and try again."),
+            "pair_unavailable": ("Apertium no dispone de ese par de idiomas y los demás servicios no respondieron. Prueba más tarde.",
+                                 "Apertium does not support this language pair and the other services did not answer. Try later."),
+            "rate_limited": ("Los servicios están limitando las solicitudes o no responden. Espera unos minutos e inténtalo de nuevo.",
+                             "Services are rate-limiting requests or not responding. Wait a few minutes and try again."),
+        }
+        es, en = messages.get(result.get("error", ""),
+                              ("Los traductores no respondieron. Si usabas detección automática, elige el idioma de origen e inténtalo otra vez.",
+                               "Translation services did not answer. If using detection, choose the source language and try again."))
+        raise AppError(tr(locale, es, en))
     return result
+
+
+@op("filekit")
+def op_filekit(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    try:
+        return filekit_api.dispatch(chat_id, args, locale)
+    except filekit.FileKitError as exc:
+        raise AppError(filekit.error_text(str(exc), locale)) from None
+    except filekit_api.DeliveryRefused as exc:
+        raise AppError(str(exc)) from None
 
 
 @op("queue")

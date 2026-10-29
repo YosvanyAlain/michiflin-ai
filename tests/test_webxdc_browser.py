@@ -126,8 +126,11 @@ BRIDGE = r"""
               error = request.lang === "en" ? "The bot restarted; check provider charges before retrying." : "El bot se reinició; revisa los cargos antes de repetir.";
               code = "session_changed";
             } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
-                (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op))) {
-              const result = await fetch(window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access",
+                (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op)) ||
+                (window.__realFilekit && request.op === "filekit")) {
+              const endpoint = request.op === "filekit" ? "/api/filekit" :
+                window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access";
+              const result = await fetch(endpoint,
                 { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
               const body = await result.json();
               data = body.data;
@@ -154,11 +157,13 @@ BRIDGE = r"""
 
 
 @contextmanager
-def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False):
+def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False,
+                    real_filekit: bool = False, engine: str = "chromium"):
     """Fake Delta bridge; optionally connect access UI to real Python handlers, not a live bot."""
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
         root = Path(temporary)
         for name in miniapp.APP_FILES:
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(miniapp.APP_DIR / name, root / name)
         (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
 
@@ -167,7 +172,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                 pass
 
             def do_POST(self) -> None:
-                if not ((self.path == "/api/access" and real_access) or (self.path == "/api/personal" and real_personal)):
+                if not ((self.path == "/api/access" and real_access) or (self.path == "/api/personal" and real_personal) or
+                        (self.path == "/api/filekit" and real_filekit)):
                     self.send_error(404)
                     return
                 try:
@@ -202,9 +208,9 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
         errors = []
         try:
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch(args=["--no-sandbox"])
+                browser = getattr(playwright, engine).launch(**({"args": ["--no-sandbox"]} if engine == "chromium" else {}))
                 page = browser.new_page(viewport=viewport, locale=language)
-                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()};")
+                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()};")
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)
@@ -871,6 +877,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="michiflin-webxdc-smoke-") as temporary:
             root = Path(temporary)
             for name in miniapp.APP_FILES:
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(miniapp.APP_DIR / name, root / name)
             (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
 

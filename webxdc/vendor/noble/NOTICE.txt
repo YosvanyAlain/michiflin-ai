@@ -1,0 +1,12 @@
+Password-envelope dependencies
+
+The bundled filekit-crypto.js contains selected modules from:
+- @noble/curves 2.4.0
+- @noble/hashes 2.4.0
+- @noble/ciphers 2.4.0
+Copyright Paul Miller and contributors, licensed under MIT. The corresponding
+license texts are included in this directory.
+
+The small application adapter and pinned npm lock file are in the
+accompanying Michiflin source tree under tools/filekit_crypto. To rebuild, run
+npm ci and npm run build there with Node 20.19 or later.

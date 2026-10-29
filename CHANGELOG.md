@@ -1,5 +1,14 @@
 # Changelog
 
+## 5.4.0
+
+- Add an ES/EN file kit under Downloads, with a scrollable tree, offline copies, a temporary authenticated server workspace, folder organization, text editing, preview, undo/redo and explicit history cleanup. The existing parts joiner is nested under the kit and can open selected local copies.
+- Add ZIP/7z creation and extraction, optional passwords and volumes, and RAR extraction using separately licensed 7-Zip 26.05 WebAssembly. Local operations have an adjustable memory budget. Remote extraction requires a short-lived, networkless Linux sandbox and fails closed if isolation is unavailable. Supported variants and practical sizes depend on the client and memory.
+- Keep originals untouched. Server imports use one-use, session- and sender-bound attachment drafts and verify the chosen file's size and SHA-256. Finished downloads are copied only when integrity can be verified; playable media segments and archive volumes are checked against their individual hashes. File-kit exports use the existing queue and mailbox ceilings, without remuxing the file.
+- Protect archive passwords, remote text edits and previews with ephemeral encrypted envelopes. File names and operation metadata remain in the encrypted chat updates. Local storage is per miniapp instance and can be reclaimed; the server workspace is temporary and is not part of the state backup.
+- Add synthetic adversarial, process-locking, Chromium, WebKit, bridge and isolated-worker checks to CI. Browser-engine tests are not a substitute for testing WebXDC on physical Android and iOS devices.
+- Restore a no-AI-quota translation path when the unofficial Google endpoint is unavailable or rate-limited: use the configured LibreTranslate service, then independently operated Apertium beta where the language pair is available. Apertium is rule-based, approximate and may mark unknown words with `*`; uncertain language detection requires an explicit source. Respect provider `Retry-After`, show which service was used, prevent duplicate clicks, and never return a partially translated text. All services receive submitted text and can impose limits.
+
 ## 5.3.1
 
 - Coordinate automatic welcome, chat fallback and upgrade deliveries so overlapping paths do not create duplicate app instances. A failed message lookup is not proof that existing data disappeared; `/app` still explicitly requests a new copy. Previously sent apps are never deleted.

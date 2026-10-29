@@ -1,0 +1,15 @@
+{
+  "name": "michiflin-filekit-crypto-build",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rebuild the offline password envelope bundle",
+  "scripts": {
+    "build": "esbuild src.mjs --bundle --format=iife --global-name=FileKitCrypto --platform=browser --target=safari15,chrome100 --legal-comments=inline --outfile=../../webxdc/vendor/noble/filekit-crypto.js"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "esbuild": "0.28.2"
+  }
+}
