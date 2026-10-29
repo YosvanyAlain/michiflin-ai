@@ -1,6 +1,7 @@
 """Delta Chat bot wiring: access control, threaded dispatch and startup tasks."""
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -26,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, links, live_web, miniapp, names, perf, profile, progress, queue, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, identity_guard, links, live_web, miniapp, names, perf, profile, progress, queue, rates_monitor, state
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -66,9 +67,11 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
     lock = _chat_locks.setdefault(chat_id, threading.Lock())
     with _intake_lock:
         ticket = _work_tickets.get(int(msg.id))
-    with lock:
+    with lock, chat.recipient_guard(chat_id, address, int(getattr(msg, "from_id", 0)), msg):
         chat.set_sender(address)
         queue.set_locale(locale)
+        if not chat.recipient_allowed(chat_id):
+            return  # queued work must not start after the verified contact changes
         # Safe commands from a revoked/re-granted guest must not replay either.
         if not admin.is_admin(address) and not admin.is_allowed(address):
             return
@@ -138,6 +141,11 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     if not text and not getattr(msg, "file", None):
         return None
     address = str(bot.rpc.get_contact(accid, msg.from_id).address or "").lower()
+    # A new identity can opt into a fail-closed key pin. The address alone is
+    # not proof that this message came from the intended owner.
+    if not identity_guard.authorized_chat(bot.rpc, accid, int(msg.chat_id), address,
+                                          contact_id=int(msg.from_id), message=msg):
+        return None
     grant_stamp = access.session_stamp(address)
     state.act_as(address)
     locale = _locale(text or str(getattr(msg, "file_name", "")), msg.chat_id)
@@ -159,7 +167,9 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     if parsed and parsed[0] == "maintenance" and address == config.OWNER_ADDRESS:
         # Do not queue the emergency control behind another request from this chat.
         chat.set_sender(address)
-        commands.cmd_maintenance(msg.chat_id, parsed[1], parsed[2], locale)
+        with chat.recipient_guard(msg.chat_id, address, int(msg.from_id), msg):
+            if chat.recipient_allowed(msg.chat_id):
+                commands.cmd_maintenance(msg.chat_id, parsed[1], parsed[2], locale)
         return None
     owner_control = bool(address == config.OWNER_ADDRESS and parsed and (
         parsed[0] in {"app", "kill_switch", "estado", "health", "owner_only"}
@@ -378,12 +388,39 @@ def _welcome(bot: Any, accid: int, contact_id: int) -> None:
         if not admin.is_allowed(address):
             return
         chat_id = int(bot.rpc.create_chat_by_contact_id(accid, contact_id))
+        if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
+            return
         lock = _chat_locks.setdefault(chat_id, threading.Lock())
         with lock:
             chat.set_sender(address)
             miniapp.welcome(chat_id, _locale("", chat_id))
     except Exception as exc:
         log.warning("welcome failed: %s", exc)
+
+
+def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
+    """Offer the new miniapp in the already verified owner chat, once bound."""
+    if not (config.BOT_EPOCH_STRICT and config.BOT_VERIFIED_CONTACTS_ONLY and config.OWNER_ONLY):
+        return
+    try:
+        marker = json.loads((config.CONFIG_DIR / ".verified-identity-v1.json").read_text(encoding="utf-8"))
+        if (marker.get("confirmed") is not True or marker.get("epoch") != config.BOT_EPOCH
+                or str(marker.get("owner_address") or "").casefold() != config.OWNER_ADDRESS.casefold()
+                or identity_guard.normalize_fingerprint(marker.get("owner_fingerprint", ""))
+                   != identity_guard.normalize_fingerprint(config.OWNER_PGP_FINGERPRINT)):
+            return
+        chat_id = int(marker["owner_chat"])
+        members = bot.rpc.get_chat_contacts(accid, chat_id)
+        if len(members) != 1 or not identity_guard.authorized_chat(bot.rpc, accid, chat_id, config.OWNER_ADDRESS,
+                                                                    contact_id=int(members[0])):
+            return
+        lock = _chat_locks.setdefault(chat_id, threading.Lock())
+        with lock, chat.recipient_guard(chat_id, config.OWNER_ADDRESS, int(members[0])):
+            chat.set_sender(config.OWNER_ADDRESS)
+            if chat.recipient_allowed(chat_id) and not miniapp.latest_instance(chat_id):
+                miniapp.welcome(chat_id, _locale("", chat_id))
+    except Exception as exc:
+        log.warning("verified-owner startup deferred (%s)", type(exc).__name__)
 
 
 _core_seen: dict[str, float] = {}
@@ -531,8 +568,10 @@ def on_start(bot: Any, args: Any) -> None:
     if browser.available():
         threading.Thread(target=_background_after_maintenance, args=(browser.warm_up,), name="browser-warmup", daemon=True).start()
     threading.Thread(target=maintenance.scheduler, name="maintenance-scheduler", daemon=True).start()
+    threading.Thread(target=rates_monitor.run, args=(_draining,), name="eltoque-monitor", daemon=True).start()
     queue.start()
     _start_cursor(bot, accid)
+    _pool.submit(_bootstrap_verified_owner, bot, accid)
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()
     threading.Thread(target=_watch_updates, name="update-watch", daemon=True).start()
     threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()

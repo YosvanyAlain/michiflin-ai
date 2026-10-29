@@ -970,6 +970,7 @@ class ToolTests(unittest.TestCase):
         sent: list[str] = []
         with mock.patch.object(agent.chat, "text", side_effect=lambda _chat, text, *a, **k: sent.append(text)), \
                 mock.patch.object(agent.tools, "_rates", return_value={"USD": 785.0, "EUR": 885.0}), \
+                mock.patch.object(config, "ELTOQUE_DERIVED_CALCULATIONS", True), \
                 mock.patch.object(agent, "ask", side_effect=AssertionError("AI must not be used")):
             agent.handle(1, "¿cuánto son 100 usd en cup?", "es")
         self.assertTrue(sent[0].startswith("💱 100 USD ≈ 78.500 CUP"))

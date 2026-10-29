@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import re
+import secrets
 import threading
 import time
 import traceback
@@ -180,10 +181,51 @@ def admin_chats() -> list[int]:
             if contact:
                 chat_id = chat.rpc().get_chat_id_by_contact_id(chat.account(), contact)
                 if chat_id:
-                    found.append(int(chat_id))
+                    # In a sealed deployment an address lookup alone is not
+                    # proof that this chat still belongs to the owner.
+                    from . import identity_guard
+                    if identity_guard.authorized_chat(chat.rpc(), chat.account(), int(chat_id), address, contact_id=int(contact)):
+                        found.append(int(chat_id))
         except Exception:
             continue
     return found
+
+
+def grant_one(address: str, minutes: int, nonce: str) -> bool:
+    """From owner-only mode, temporarily authorize exactly one named contact."""
+    address = (address or "").strip().lower()
+    mode = access.snapshot()
+    if (not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address) or address == config.OWNER_ADDRESS
+            or type(minutes) is not int or minutes not in access.DURATIONS or state.maintenance_active()
+            or mode["maintenance"] or not mode["owner_only"]
+            or not secrets.compare_digest(str(nonce), mode["nonce"])):
+        return False
+    # Do not admit anyone merely by unblocking a Delta Chat contact. The
+    # nonce-checked access transition below is still mandatory.
+    if not _set_blocked_contact(address, False):
+        return False
+    revision = access.open_one_guest(address, minutes, nonce)
+    if revision is None:
+        if is_blocked(address):
+            _set_blocked_contact(address, True)
+        return False
+    was_blocked = False
+    try:
+        with state.lock:
+            blocked = _access()["blocked"]
+            was_blocked = address in blocked
+            if was_blocked:
+                blocked.remove(address)
+        state.save()
+    except Exception:
+        access.rollback_one_guest(address, revision)
+        with state.lock:
+            if was_blocked and address not in _access()["blocked"]:
+                _access()["blocked"].append(address)
+        if was_blocked:
+            _set_blocked_contact(address, True)
+        raise
+    return True
 
 
 def grant(address: str) -> bool:

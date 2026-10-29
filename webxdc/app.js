@@ -436,6 +436,12 @@ async function sync(force) {
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
       jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
     saveCache();
+    rateDerivedApproved = data.rates_derived_allowed === true;
+    if (data.rates_summary && data.rates_summary.rates) {
+      const currentRates = store.get("rates", null);
+      if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) store.set("rates", data.rates_summary);
+    }
+    bus.emit("rates");
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
   } catch (error) {
@@ -550,11 +556,68 @@ function noticeList() {
   return box;
 }
 
+// An old local cache cannot grant permission in a new miniapp session.
+let rateDerivedApproved = false;
+let sharedRateRefresh = null;
+
+function refreshSharedRates() {
+  if (sharedRateRefresh) return sharedRateRefresh;
+  sharedRateRefresh = bridge.call("rates").then((data) => {
+    rateDerivedApproved = data.derived_allowed === true;
+    store.set("rates", data);
+    bus.emit("rates");
+    return data;
+  }).catch((error) => {
+    const saved = store.get("rates", null);
+    if (saved && saved.rates) {
+      store.set("rates", { ...saved, stale: true });
+      bus.emit("rates");
+    }
+    throw error;
+  }).finally(() => { sharedRateRefresh = null; });
+  return sharedRateRefresh;
+}
+
+function watchVisibleRates(element) {
+  let nextAttempt = 0;
+  const check = async () => {
+    if (!element.isConnected) return;
+    const saved = store.get("rates", null);
+    const age = saved ? now() - Number(saved.at || 0) : Infinity;
+    const interval = Math.max(120, Number((saved || {}).refresh_seconds || 300));
+    if (document.visibilityState !== "hidden" && age >= interval && now() >= nextAttempt) {
+      nextAttempt = now() + interval;  // back off even when the bridge or API fails
+      try {
+        const result = await refreshSharedRates();
+        nextAttempt = now() + Math.max(interval, Number(result.retry_after || 0));
+      } catch (_error) { /* last saved rate remains explicitly marked */ }
+    }
+    if (element.isConnected) setTimeout(check, 30000);
+  };
+  setTimeout(check, 8000);
+}
+
+function homeRatesBanner() {
+  const data = store.get("rates", null);
+  const valid = data && data.rates && typeof data.rates === "object";
+  const stale = valid && (data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300));
+  const picks = valid ? ["USD", "ECU", "MLC"].filter((code) => Number(data.rates[code]) > 0) : [];
+  return h("button", { class: `rate-banner${stale ? " is-stale" : ""}`, onclick: () => go("rates") },
+    h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
+      h("span", { class: "rate-banner-brand" }, "elTOQUE", icon("next"))),
+    picks.length ? h("div", { class: "rate-banner-values" }, picks.map((code) =>
+      h("span", {}, h("small", {}, code), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
+      h("span", { class: "rate-banner-empty" }, t("rates_banner_empty")),
+    h("span", { class: "rate-banner-foot" }, valid ? [t(stale ? "rates_saved_status" : "rates_live_status"), " · ", fmtTime(data.at), " · ", since(data.at)] : t("rates_banner_sub")));
+}
+
 VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
     const status = h("div", { class: "chips" });
     const advisory = h("div");
+    const ratesBanner = h("div", { class: "rates-banner-slot" });
+    const drawRates = () => fill(ratesBanner, homeRatesBanner());
     const drawStatus = () => fill(status, ...statusChips());
     const drawAdvisory = () => {
       const item = cache.maintenance_notice;
@@ -563,18 +626,21 @@ VIEWS.home = {
     };
     ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
     ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
-    drawStatus(); drawAdvisory();
+    ["hello", "rates"].forEach((kind) => bus.on(kind, drawRates));
+    drawStatus(); drawAdvisory(); drawRates();
     add(main, 
       h("div", { class: "hero" },
         h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
         h("div", { class: "hero-art" }, icon("cat"))),
       status,
       advisory,
+      ratesBanner,
       searchBox(),
       section(t("shortcuts"), tiles([], ["health"])),
       section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })), noticeList()),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
+    watchVisibleRates(ratesBanner);
   },
 };
 
@@ -1660,6 +1726,31 @@ function askBox({ placeholder, value = "", onsubmit, iconName = "search", label 
   return h("div", { class: "search-field" }, icon(iconName), input, h("button", { class: "btn primary small", onclick: submit }, label || t("go")));
 }
 
+// Preserve source denominations. In particular, elTOQUE's BTC/USDT values
+// are per USD represented in the crypto, not per whole crypto coin. Older
+// cached payloads have no metadata, so the conservative fallback matters too.
+function rateUnit(data, code) {
+  // Legacy caches may have guessed the unit of an API suffix; keep those
+  // variants unconfirmed until the provider documents the exact field.
+  if (code === "BTC" || code === "USDT") return "usd_crypto";
+  if (code.startsWith("USDT_")) return "unknown";
+  const supplied = data && data.units && data.units[code];
+  if (["unit", "usd_crypto", "unknown"].includes(supplied)) return supplied;
+  if (["USD", "EUR", "MLC", "TRX", "CAD", "MXN", "CUP"].includes(code)) return "unit";
+  return "unknown";
+}
+
+function fmtRate(value) {
+  return Number(value).toLocaleString(lang(), { maximumFractionDigits: 20 });
+}
+
+function rateLabel(data, code) {
+  const kind = rateUnit(data, code);
+  if (kind === "usd_crypto") return t("rates_crypto_unit", { code });
+  if (kind === "unknown") return t("rates_unknown_unit", { code });
+  return `1 ${code}`;
+}
+
 function rateHistory() {
   const container = h("div", { class: "stack" });
   let history = store.get("rates.history", null);
@@ -1673,52 +1764,75 @@ function rateHistory() {
     const codes = [...new Set(history.history.flatMap((point) => Object.keys(point.rates || {})))];
     if (!codes.includes(code)) code = codes[0] || "USD";
     const points = history.history.filter((point) => Number.isFinite(Number(point.rates && point.rates[code])) && Number(point.rates[code]) > 0)
-      .map((point) => ({ date: point.date, value: Number(point.rates[code]) }));
+      .map((point) => ({ date: point.date, value: Number(point.rates[code]), queried_at: point.queried_at }));
     if (!points.length) { fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return; }
     const vals = points.map((point) => point.value);
     const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
     const chart = h("div", { class: "rate-chart" + (points.length <= 7 ? " chart-short" : ""), role: "img", "aria-label": t("history_chart", { code }) },
-      points.map((point) => h("div", { class: "chart-day", title: `${point.date}: ${fmtNumber(point.value, 2)} CUP` },
-        h("span", { class: "chart-value" }, fmtNumber(point.value, 1)),
+      points.map((point) => h("div", { class: "chart-day", title: `${point.date}: ${fmtRate(point.value)} CUP` },
+        h("span", { class: "chart-value" }, fmtRate(point.value)),
         h("span", { class: "chart-bar", style: `height:${30 + 70 * (point.value - min) / span}%` }),
         h("small", {}, point.date.slice(5)))));
-    // The separate scenario is a linear extrapolation, not a published elTOQUE forecast.
+    let scenario = null;
     const consecutive = points.length >= 5 && points.every((point, index) => !index ||
       (Date.parse(point.date + "T00:00:00Z") - Date.parse(points[index - 1].date + "T00:00:00Z")) === 86400000);
-    let scenario = null;
-    if (consecutive && history.complete) {
+    if (rateDerivedApproved && history.derived_allowed === true && consecutive && history.complete && !history.stale && rateUnit(history, code) !== "unknown") {
       const n = points.length, meanX = (n - 1) / 2, meanY = vals.reduce((a, b) => a + b, 0) / n;
       const numerator = vals.reduce((sum, value, i) => sum + (i - meanX) * (value - meanY), 0);
       const denominator = vals.reduce((sum, _value, i) => sum + (i - meanX) ** 2, 0);
       const estimated = vals[n - 1] + (numerator / denominator) * 3;
       if (Number.isFinite(estimated) && estimated > 0) scenario = estimated;
     }
+    const details = h("details", { class: "rate-history-table" },
+      h("summary", {}, t("history_table"), icon("down", "caret")),
+      h("div", { class: "history-rows" },
+        h("div", { class: "history-row heading" }, h("span", {}, t("history_date")), h("span", {}, t("history_value"))),
+        points.map((point) => h("div", { class: "history-row" }, h("span", {}, point.date),
+          h("b", {}, `${fmtRate(point.value)} CUP`)))));
     fill(body,
       h("div", { class: "row between wrap" }, h("b", {}, t("history_chart", { code })),
         select(code, codes.map((item) => [item, item]), (value) => { code = value; draw(); })),
-      chart, points.length > 7 ? h("small", { class: "muted" }, t("history_scroll")) : null,
-      !history.complete ? h("p", { class: "note warn" }, icon("alert"), t("history_incomplete")) : null,
-      h("small", { class: "muted" }, t("history_source")),
-      h("div", { class: "scenario" }, h("b", {}, t("history_forecast")),
-        scenario == null ? h("p", { class: "muted small" }, t("history_insufficient")) :
-          h("p", {}, h("strong", {}, `≈ ${fmtNumber(scenario, 0)} CUP / ${code}`)),
-        h("small", { class: "muted" }, t("history_estimate"))));
+      h("small", { class: "muted" }, rateLabel(history, code)),
+      chart, h("small", { class: "muted" }, t("history_scale")),
+      points.length > 7 ? h("small", { class: "muted" }, t("history_scroll")) : null,
+      !history.complete ? h("p", { class: "note warn" }, icon("alert"), t("history_incomplete"),
+        history.error === "rate_limit" ? " " + t("history_limited") : "") : null,
+      history.stale ? h("p", { class: "note warn" }, icon("clock"), t("history_saved")) : null,
+      details, h("small", { class: "muted" }, t("history_source")),
+      rateDerivedApproved && history.derived_allowed === true ? h("div", { class: "scenario" }, h("b", {}, t("history_forecast")),
+        scenario == null ? h("p", { class: "muted small" }, t(rateUnit(history, code) === "unknown" ? "history_unit_unknown" : "history_insufficient")) :
+          h("p", {}, h("strong", {}, `≈ ${fmtNumber(scenario, 0)} CUP / ${rateLabel(history, code)}`)),
+        h("small", { class: "muted" }, t("history_estimate"))) :
+        h("p", { class: "note" }, icon("info"), t("rates_derived_disabled")));
   };
   const load = async () => {
     loadButton.disabled = true;
     fill(body, loading());
     try {
       history = await bridge.call("rates", { history: true, days: Number(days) });
+      rateDerivedApproved = history.derived_allowed === true;
       store.set("rates.history", history);
+      bus.emit("rates");
       if (body.isConnected) draw();
     } catch (error) {
-      if (!error.cancelled && body.isConnected) fill(body, failure(error.message));
+      if (!error.cancelled && body.isConnected) {
+        if (history && history.history && history.history.length) {
+          history = { ...history, stale: true };
+          store.set("rates.history", history);
+          draw();
+          toast(error.message, "bad");
+        } else fill(body, failure(error.message));
+      }
     } finally { loadButton.disabled = false; }
   };
   const loadButton = h("button", { class: "btn primary small", onclick: load }, icon("refresh"), t("history_load"));
   add(container, contextHelp(t("history_notice")),
-    h("div", { class: "row wrap" }, select(days, [["7", t("history_7")], ["14", t("history_14")]], (value) => { days = value; }), loadButton), body,
-    h("button", { class: "btn ghost small", onclick: () => openLiveAddress("https://eltoque.com/tasas-de-cambio-cuba") }, icon("web"), t("history_official")));
+    h("div", { class: "row wrap" }, select(days, [["7", t("history_7")], ["14", t("history_14")], ["30", t("history_30")]], (value) => { days = value; }), loadButton), body,
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn ghost small", onclick: () => openLiveAddress("https://eltoque.com/tasas-de-cambio-cuba") }, icon("web"), t("history_official")),
+      h("button", { class: "btn ghost small", onclick: () => copyText("https://eltoque.com/tasas-de-cambio-cuba") }, icon("copy"), t("rates_copy_source"))),
+    h("small", { class: "rate-source-url" }, "https://eltoque.com/tasas-de-cambio-cuba"));
+  bus.on("rates", () => { if (body.isConnected) draw(); });
   draw();
   return container;
 }
@@ -1730,57 +1844,81 @@ VIEWS.rates = {
     const saved = store.get("rates", null);
     const board = h("div", { class: "stack" });
     const result = h("div", { class: "convert-out" });
+    const derivedNotice = h("p", { class: "note", hidden: true }, icon("info"), t("rates_derived_disabled"));
     let amount = store.get("rates.amount", "100");
     let code = store.get("rates.code", "USD");
     let toCup = store.get("rates.toCup", true);
     const convert = () => {
       const data = store.get("rates", null);
-      if (!data || !data.rates[code]) {
-        result.textContent = "";
-        return;
+      if (!rateDerivedApproved || !data || data.derived_allowed !== true || data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300)
+          || !data.rates || rateUnit(data, code) !== "unit" || !(Number(data.rates[code]) > 0)) {
+        result.textContent = ""; return;
       }
-      const value = Number(String(amount).replace(",", ".")) || 0;
+      const value = Number(String(amount).replace(",", "."));
+      if (!Number.isFinite(value) || value < 0) { result.textContent = ""; return; }
       const out = toCup ? value * data.rates[code] : value / data.rates[code];
       fill(result, h("b", {}, `${fmtNumber(value, 2)} ${toCup ? code : "CUP"}`), " = ", h("b", { class: "accent" }, `${fmtNumber(out, 2)} ${toCup ? "CUP" : code}`));
-      store.set("rates.amount", amount);
-      store.set("rates.code", code);
-      store.set("rates.toCup", toCup);
+      store.set("rates.amount", amount); store.set("rates.code", code); store.set("rates.toCup", toCup);
     };
     const codes = h("div", { class: "row" });
+    const amountInput = field({ type: "number", inputmode: "decimal", min: "0", value: amount, oninput: (event) => { amount = event.target.value; convert(); } });
+    const swapButton = iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); });
     const draw = (data) => {
-      const entries = Object.entries(data.rates);
-      fill(board, 
-        h("div", { class: "rate-grid" }, entries.map(([name, value]) => h("div", { class: "card rate" }, h("small", { class: "muted" }, `1 ${name}`),
-          h("b", {}, fmtNumber(value, 2)), h("small", { class: "muted" }, "CUP")))),
-        h("p", { class: "muted small" }, icon("clock"), t("rates_consulted"), " ", since(data.at), " · elTOQUE"));
-      if (!data.rates[code]) code = entries.length ? entries[0][0] : "USD";
-      fill(codes, select(code, entries.map(([name]) => [name, name]), (value) => { code = value; convert(); }));
+      if (!data || !data.rates) return;
+      const entries = Object.entries(data.rates).filter(([_name, value]) => Number.isFinite(Number(value)) && Number(value) > 0);
+      const convertible = entries.filter(([name]) => rateUnit(data, name) === "unit");
+      const stale = !!data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300);
+      fill(board,
+        h("div", { class: "rates-summary" },
+          h("div", { class: "row between wrap" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
+            h("span", { class: `rate-status ${stale ? "stale" : "fresh"}` }, h("i"), t(stale ? "rates_saved_status" : "rates_live_status"))),
+          h("strong", {}, "elTOQUE"),
+          h("small", {}, t("rates_consulted"), " ", fmtTime(data.at), " · ", since(data.at), " · ", data.source || "elTOQUE"),
+          h("p", {}, t("rates_reference_note"))),
+        stale ? h("p", { class: "note warn", role: "status" }, icon("alert"), t("rates_saved_warning")) : null,
+        h("div", { class: "rate-grid" }, entries.map(([name, value]) => h("div", { class: "card rate" }, h("small", { class: "muted" }, rateLabel(data, name)),
+          h("b", {}, fmtRate(value)), h("small", { class: "muted" }, "CUP")))),
+        h("p", { class: "muted small" }, icon("clock"), t("rates_poll_hint", { minutes: Math.round(Number(data.refresh_seconds || 300) / 60) })));
+      if (!convertible.some(([name]) => name === code)) code = convertible.length ? convertible[0][0] : "";
+      const allowed = rateDerivedApproved && data.derived_allowed === true && !stale;
+      amountInput.disabled = !allowed || !convertible.length;
+      swapButton.disabled = !allowed || !convertible.length;
+      derivedNotice.hidden = allowed;
+      if (!allowed) fill(derivedNotice, icon("info"), t(data.derived_allowed === true && stale ? "rates_calc_stale" : "rates_derived_disabled"));
+      fill(codes, allowed && convertible.length ? select(code, convertible.map(([name]) => [name, name]), (value) => { code = value; convert(); }) :
+        allowed ? h("small", { class: "muted" }, t("rates_no_convertible")) : null);
       convert();
     };
     const refresh = async (button) => {
       if (button) button.classList.add("busy");
       if (!store.get("rates", null)) fill(board, loading());
       try {
-        const data = await bridge.call("rates");
-        store.set("rates", data);
+        const data = await refreshSharedRates();
         if (board.isConnected) draw(data);
       } catch (error) {
         if (!error.cancelled) {
           toast(error.message, "bad");
           if (board.isConnected && !store.get("rates", null)) fill(board, failure(error.message, () => refresh()));
         }
-      } finally {
-        if (button) button.classList.remove("busy");
-      }
+      } finally { if (button) button.classList.remove("busy"); }
     };
-    const amountInput = field({ type: "number", inputmode: "decimal", value: amount, oninput: (event) => { amount = event.target.value; convert(); } });
     const refreshButton = iconButton("refresh", t("refresh"), () => refresh(refreshButton));
+    const methodology = "https://eltoque.com/metodologia-de-la-tasa-representativa-del-mercado-informal-de-eltoque";
+    const about = h("details", { class: "card rate-about" },
+      h("summary", {}, icon("info"), h("b", {}, t("rates_about_title")), icon("down", "caret")),
+      h("div", { class: "stack" }, h("p", {}, t("rates_about_offers")), h("p", {}, t("rates_about_crypto")),
+        h("p", {}, t("rates_about_time")), h("b", {}, t("rates_about_sources")),
+        h("div", { class: "row wrap" },
+          h("button", { class: "btn ghost small", onclick: () => openLiveAddress(methodology) }, icon("web"), t("rates_open_source")),
+          h("button", { class: "btn ghost small", onclick: () => copyText(methodology) }, icon("copy"), t("rates_copy_source"))),
+        h("small", { class: "rate-source-url" }, methodology)));
+    bus.on("rates", () => { const data = store.get("rates", null); if (board.isConnected && data) draw(data); });
     add(main, headRow(t("rates_title"), refreshButton), board,
-      section(t("converter"), card(h("div", { class: "row convert-row" }, amountInput, codes,
-        iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); })), result)),
-      section(t("history_title"), card(rateHistory())));
+      section(t("converter"), card(derivedNotice, h("div", { class: "row convert-row" }, amountInput, codes, swapButton), result)),
+      section(t("history_title"), card(rateHistory())), about);
     if (saved) draw(saved);
-    if (!saved || now() - saved.at > 1800) refresh();
+    if (!saved || now() - saved.at > Number(saved.refresh_seconds || 300)) refresh();
+    watchVisibleRates(board);
   },
 };
 
@@ -2656,6 +2794,24 @@ function ownerAccessSection(box, data) {
   return section(t("owner_control"), card);
 }
 
+function singleGuestSection(box, data) {
+  if (data.owner_only !== true || data.maintenance || !data.control_nonce) return null;
+  const address = field({ type: "email", placeholder: t("admin_address"), "aria-label": t("admin_address") });
+  let minutes = "60";
+  const duration = select(minutes, [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
+    ["1440", t("owner_24h")], ["0", t("owner_manual")]], (value) => { minutes = value; });
+  const approve = () => {
+    const value = address.value.trim();
+    if (!value) return;
+    adminOp(box, { do: "allow_one", address: value, minutes: Number(minutes), nonce: data.control_nonce },
+      t("admin_quick_guest_q", { address: value, duration: duration.selectedOptions[0].textContent }));
+  };
+  return section(t("admin_quick_guest_title"), h("div", { class: "card stack single-guest" },
+    h("p", { class: "muted small" }, t("admin_quick_guest_hint")), address,
+    h("label", { class: "stack small" }, t("owner_duration"), duration),
+    h("button", { class: "btn primary", onclick: approve }, icon("plus"), t("admin_quick_guest_button"))));
+}
+
 function maintenanceSection(snapshot) {
   const holder = h("div", { class: "card stack maintenance-settings" });
   const draw = (data) => {
@@ -2702,6 +2858,7 @@ function drawAdmin(box, data) {
   fill(box,
     headRow(t("admin_live"), iconButton("refresh", t("refresh"), () => adminOp(box, {}))),
     ownerAccessSection(box, data),
+    singleGuestSection(box, data),
     maintenanceSection(data.maintenance_notice || cache.maintenance_notice),
     data.perf ? perfSection(data.perf) : null,
     data.usage ? usageSection(box, data.usage, data.private_mode, data.preserve_history) : null,
@@ -2717,7 +2874,10 @@ function drawAdmin(box, data) {
         data.private_mode ? null : h("div", { class: "row add-row" }, address, h("button", { class: "btn primary small", onclick: () => address.value.trim() && adminOp(box, { do: "allow", address: address.value.trim() }, t("admin_grant_q", { address: address.value.trim() })) }, icon("plus"), t("admin_allow"))))),
     section(t("admin_attempts"), data.attempts.length ? h("div", { class: "card list" }, data.attempts.map((item) =>
       person({ address: item.address, sub: `${t("admin_tries", { n: item.count })} · ${fmtTime(item.last)}` },
-        data.private_mode ? h("button", { class: "btn small ghost", disabled: true, title: t("admin_private_no_grant"), "aria-label": t("admin_private_no_grant") }, icon("shield"), t("admin_allow"))
+        data.private_mode ? (data.owner_only && !data.maintenance && data.control_nonce
+          ? iconButton("check", t("admin_quick_guest_button"), () => adminOp(box,
+            { do: "allow_one", address: item.address, minutes: 60, nonce: data.control_nonce }, t("admin_quick_guest_q", { address: item.address, duration: t("owner_1h") })), "tiny")
+          : h("button", { class: "btn small ghost", disabled: true, title: t("admin_private_no_grant"), "aria-label": t("admin_private_no_grant") }, icon("shield"), t("admin_allow")))
           : iconButton("check", t("admin_allow"), () => adminOp(box, { do: "allow", address: item.address }, t("admin_grant_q", { address: item.address })), "tiny"),
         iconButton("ban", t("admin_block"), () => adminOp(box, { do: "block", address: item.address }), "tiny")))) : h("p", { class: "empty small" }, t("admin_no_attempts"))),
     !data.private_mode && data.blocked.length ? section(t("admin_blocked"), h("div", { class: "card list" }, data.blocked.map((item) =>

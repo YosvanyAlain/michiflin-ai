@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Any, Callable
 
-from . import access, admin, chat, config, files, media, names, progress, state, usage, mail_profiles
+from . import access, admin, chat, config, files, identity_guard, media, names, progress, state, usage, mail_profiles
 from .config import MIB
 from .util import clean_filename, duration_text, human_size, local_time, tr
 
@@ -128,7 +128,7 @@ def _new_job(chat_id: int, kind: str, url: str, title: str, size: int, **extra: 
         "hold": False, "parts": 0, "todo": [], "sent": 0, "sha": "", "created": time.time(), "updated": time.time(),
         "error": "", "not_before": 0.0, "retries": 0, "progress": 0, "messages": [], "resumable": False,
         "locale": _locale, "source_msg": progress.hand_off(), "origin": "app" if chat.capturing() else "chat",
-        "addr": address,
+        "addr": address, "epoch": config.BOT_EPOCH,
     }
     job.update(extra)
     job["access_session"] = access.session_stamp(address)
@@ -238,8 +238,27 @@ def attach_notice(job: dict[str, Any], msg_id: int, head: str) -> None:
         update(job, status_msg=msg_id, status_head=head)
 
 
+def _verified_target(job: dict[str, Any]) -> bool:
+    """Revalidate a persisted job's target before any outbound delivery."""
+    if not access.job_allowed(job):
+        return False
+    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+        return True
+    try:
+        address = str(job.get("addr") or "").strip().lower()
+        return bool(address and admin.is_allowed(address) and chat.ready() and
+                    identity_guard.authorized_chat(chat.rpc(), chat.account(), int(job["chat"]), address))
+    except Exception:
+        return False
+
+
+def _finish_job(job: dict[str, Any], outcome: str) -> None:
+    if _verified_target(job):
+        progress.finish_job(job.get("source_msg", 0), outcome)
+
+
 def _status(job: dict[str, Any], line: str, timer: bool = True) -> None:
-    if (not access.job_allowed(job) or not progress.enabled()
+    if (not _verified_target(job) or not progress.enabled()
             or not chat.ready() or job.get("origin") == "app"):
         return
     head = job.get("status_head") or f"📥 #{job['id']} {(job.get('name') or job['title'])[:100]}"
@@ -250,7 +269,8 @@ def _status(job: dict[str, Any], line: str, timer: bool = True) -> None:
         return  # the confirmation message is about to be attached
     if notice is None or notice.closed:
         notice = progress.Notice(int(job["chat"]), job.get("locale", "es"), body, delay=0, msg_id=int(job.get("status_msg") or 0),
-                                 on_shown=lambda msg_id: update(job, status_msg=msg_id), since=float(job.get("created") or 0))
+                                 on_shown=lambda msg_id: update(job, status_msg=msg_id), since=float(job.get("created") or 0),
+                                 interrupted=lambda: not _verified_target(job))
         _notices[job["id"]] = notice
     notice.set(body, timer)
 
@@ -259,9 +279,9 @@ def _status_done(job: dict[str, Any]) -> None:
     notice = _notices.pop(job["id"], None)
     if notice is not None:
         notice.close()
-    elif job.get("status_msg"):
+    elif job.get("status_msg") and _verified_target(job):
         chat.delete_for_all([int(job["status_msg"])])
-    if job.get("status_msg"):
+    if job.get("status_msg") and _verified_target(job):
         update(job, status_msg=0)
 
 
@@ -703,7 +723,7 @@ def _preparer() -> None:
                 # Keep reusable sources and partials for an explicit retry; normal
                 # expiry or a user-requested cleanup still controls storage.
                 _status_done(job)
-                progress.finish_job(job.get("source_msg", 0), "failed")
+                _finish_job(job, "failed")
                 _notify(job, tr(job.get("locale", "es"), f"❌ #{job['id']} {job['title'][:60]}: {_error_text(code, 'es')}",
                                 f"❌ #{job['id']} {job['title'][:60]}: {_error_text(code, 'en')}") + "\n" + names.cmd(job.get("locale", "es"), "retry", job["id"]))
             _wake.set()
@@ -827,8 +847,9 @@ def _viewtype(job: dict[str, Any]) -> str:
 
 
 def _notify(job: dict[str, Any], message: str) -> None:
-    if access.job_allowed(job) and chat.ready():
-        chat.text(int(job["chat"]), message)
+    if _verified_target(job) and chat.ready():
+        # Recheck after acquiring the send lock; the recipient may have changed.
+        chat.send(int(job["chat"]), message, interrupted=lambda: not _verified_target(job))
 
 
 def _deliverable() -> dict[str, Any] | None:
@@ -882,6 +903,8 @@ def _send_one(job: dict[str, Any]) -> None:
         generation = _delivery_generations.pop(str(job["id"]), state.kill_generation(owner))
         if _blocked(job) or state.work_interrupted(owner, generation) or job.get("hold"):
             return
+    if not _verified_target(job):
+        return  # old/mismatched chat IDs must not receive data
     inflight = job.get("inflight") if isinstance(job.get("inflight"), dict) else None
     index = int(inflight["index"]) if inflight else int(job["todo"][0])
     locale = job.get("locale", "es")
@@ -933,14 +956,17 @@ def _send_one(job: dict[str, Any]) -> None:
         _status(job, tr(locale, f"📤 Enviando{label} · {human_size(size)}", f"📤 Sending{label} · {human_size(size)}"))
         # Recheck immediately before handing a part to Delta Chat without holding
         # state.lock during the RPC. A persisted intent prevents blind resends.
-        interrupted = lambda: (_blocked(job) or state.work_interrupted(owner, generation)
-                               or job.get("hold") or job.get("status") != "sending")
+        basic_interrupted = lambda: (_blocked(job) or state.work_interrupted(owner, generation)
+                                     or job.get("hold") or job.get("status") != "sending")
+        interrupted = lambda: basic_interrupted() or not _verified_target(job)
         if interrupted():
             return
 
         def mark_handoff() -> bool:
+            # The chat was verified just before this callback by chat.send;
+            # do not run RPC/GPG while holding the state lock.
             with state.lock:
-                if interrupted():
+                if basic_interrupted():
                     return False
                 job["inflight"] = {"index": index, "size": size, "msg_id": 0}
             state.save()
@@ -981,7 +1007,7 @@ def _send_one(job: dict[str, Any]) -> None:
         batch = int(delivery["batch"])
         if not job["todo"]:
             _status_done(job)
-            progress.finish_job(job.get("source_msg", 0), "done")
+            _finish_job(job, "done")
             return
         if batch and int(job["sent"]) % batch == 0:
             update(job, hold=True)
@@ -1346,7 +1372,7 @@ def cancel(job_id: str, locale: str) -> str:
     update(job, status="cancelled", hold=False)
     shutil.rmtree(folder(job), ignore_errors=True)
     _status_done(job)
-    progress.finish_job(job.get("source_msg", 0), "")
+    _finish_job(job, "")
     return tr(locale, f"🚫 #{job['id']} cancelado.", f"🚫 #{job['id']} cancelled.")
 
 
@@ -1356,7 +1382,7 @@ def retry(job_id: str, locale: str) -> str:
         return tr(locale, "⚠️ Solo se reintentan trabajos fallidos o cancelados.", "⚠️ Only failed or cancelled jobs can be retried.")
     _stop_flags.pop(job["id"], None)
     update(job, status="sending" if job.get("inflight") else "queued", error="", hold=False, not_before=0)
-    progress.finish_job(job.get("source_msg", 0), "working")
+    _finish_job(job, "working")
     _wake.set()
     return tr(locale, f"🔁 #{job['id']} en cola de nuevo.", f"🔁 #{job['id']} queued again.")
 

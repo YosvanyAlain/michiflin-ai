@@ -40,7 +40,7 @@ jobs:
       - name: Install test toolchains
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg default-jdk-headless socat iproute2 util-linux
+          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg default-jdk-headless socat iproute2 util-linux gnupg
 
       - name: Install Python dependencies
         run: |
@@ -61,7 +61,7 @@ jobs:
           python -m unittest tests.test_personal_maintenance -v
           python -m unittest tests.test_operational_maintenance -v
           python -m unittest tests.test_owner_delivery -v
-          python -m pytest -q tests/test_5_1_features.py tests/test_relay_migration.py
+          python -m pytest -q tests/test_5_1_features.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py
           MICHIFLIN_SANDBOX_TESTS=1 python -m unittest tests.test_web_session tests.test_proxy_gateway -v
 
       - name: WebXDC behavior and package tests
@@ -70,12 +70,12 @@ jobs:
       - name: WebXDC browser smoke test
         run: |
           python -m unittest tests.test_webxdc_browser -v
-          python -m pytest -q tests/test_5_1_browser.py
+          python -m pytest -q tests/test_5_1_browser.py tests/test_offline_owner_data.py
 
       - name: Static checks
         run: |
-          ruff check michiflin state_backup.py bot.py tools/build_manual.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py --select F,E9
-          python -m compileall -q michiflin state_backup.py bot.py tools/build_manual.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py
+          ruff check michiflin state_backup.py bot.py tools/build_manual.py tools/cutover_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py --select F,E9
+          python -m compileall -q michiflin state_backup.py bot.py tools/build_manual.py tools/cutover_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py
           node tests/coder_history.js
           node tests/live_web.js
           for file in webxdc/*.js; do node --check "$file"; done

@@ -35,8 +35,17 @@ jobs:
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
+      # A separately verified candidate is imported only for an exact reviewed revision.
+      IDENTITY_CUTOVER_REVISION: ${{ vars.IDENTITY_CUTOVER_REVISION }}
+      CANDIDATE_BUNDLE_ASSET_ID: ${{ secrets.CANDIDATE_BUNDLE_ASSET_ID }}
+      CANDIDATE_BUNDLE_KEY: ${{ secrets.CANDIDATE_BUNDLE_KEY }}
       # The previous root SHA is the stable fallback for existing app instances.
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+      # Enable only together with a verified fresh-identity cutover; do not strand legacy instances early.
+      BOT_EPOCH_STRICT: ${{ vars.BOT_EPOCH_STRICT || '0' }}
+      # Off for the existing account; a new identity must pin the owner's verified public key.
+      BOT_VERIFIED_CONTACTS_ONLY: ${{ vars.BOT_VERIFIED_CONTACTS_ONLY || '0' }}
+      OWNER_PGP_FINGERPRINT: ${{ secrets.OWNER_PGP_FINGERPRINT }}
       MAINTENANCE_MODE: "0"
       MAILBOX_PROFILES_JSON: ${{ secrets.MAILBOX_PROFILES_JSON }}
       OWNER_NOTICE: ${{ secrets.OWNER_NOTICE }}
@@ -61,6 +70,9 @@ jobs:
       EXTRA_PROVIDERS: ${{ secrets.EXTRA_PROVIDERS }}
       AI_EXTRA_ALLOWED_HOSTS: ${{ secrets.AI_EXTRA_ALLOWED_HOSTS }}
       ELTOQUE_API_TOKEN: ${{ secrets.ELTOQUE_API_TOKEN }}
+      ELTOQUE_REFRESH_SECONDS: ${{ vars.ELTOQUE_REFRESH_SECONDS || '300' }}
+      # Enable only when the provider has explicitly authorized these uses.
+      ELTOQUE_DERIVED_CALCULATIONS: ${{ vars.ELTOQUE_DERIVED_CALCULATIONS || '0' }}
       LIBRETRANSLATE_URL: ${{ vars.LIBRETRANSLATE_URL }}
       LIBRETRANSLATE_API_KEY: ${{ secrets.LIBRETRANSLATE_API_KEY }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
@@ -100,7 +112,7 @@ jobs:
         run: |
           echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg p7zip-full socat iproute2 util-linux
+          sudo apt-get install --yes --no-install-recommends ffmpeg p7zip-full socat iproute2 util-linux gnupg
           pip install -r requirements.txt
           pip install -U --pre "yt-dlp[default]"
           echo "PW_VERSION=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_ENV"
@@ -137,6 +149,13 @@ jobs:
 
       - name: Restore state
         run: python state_backup.py restore
+
+      - name: Import the separately verified identity
+        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.IDENTITY_CUTOVER_REVISION != '' && env.IDENTITY_CUTOVER_REVISION == github.sha }}
+        run: python tools/cutover_identity_once.py cutover
+
+      - name: Enforce identity isolation and prevent downgrade
+        run: python tools/cutover_identity_once.py activate
 
       - name: Initialize account
         run: |

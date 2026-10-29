@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,31 @@ def account() -> int:
     return _accid
 
 
+@contextmanager
+def recipient_guard(chat_id: int, address: str, contact_id: int, message: Any = None):
+    """Revalidate a strict chat's recipient before each ordinary outbound handoff."""
+    previous = getattr(_thread, "recipient_guard", None)
+    if config.BOT_VERIFIED_CONTACTS_ONLY:
+        def allowed(target: int) -> bool:
+            try:
+                from . import admin, identity_guard
+                return bool(int(target) == int(chat_id) and ready() and admin.is_allowed(address)
+                            and identity_guard.authorized_chat(rpc(), account(), chat_id, address,
+                                                               contact_id=contact_id, message=message))
+            except Exception:
+                return False
+        _thread.recipient_guard = allowed
+    try:
+        yield
+    finally:
+        _thread.recipient_guard = previous
+
+
+def recipient_allowed(chat_id: int) -> bool:
+    guard = getattr(_thread, "recipient_guard", None)
+    return not guard or bool(guard(chat_id))
+
+
 def send(chat_id: int, text: str = "", file: str | Path | None = None, filename: str = "", html: str = "",
          viewtype: str | None = None, quote: int | None = None, interrupted: Any = None,
          before_handoff: Any = None) -> int:
@@ -62,7 +88,7 @@ def send(chat_id: int, text: str = "", file: str | Path | None = None, filename:
     with _lock:
         # A request may have waited for another RPC after its first guard check.
         state.check_work_allowed()
-        if interrupted is not None and interrupted():
+        if not recipient_allowed(chat_id) or (interrupted is not None and interrupted()):
             return 0
         # Persist the delivery intent before the RPC. If the process crashes
         # after this point, do not blindly send the same attachment again.
@@ -103,7 +129,9 @@ def text(chat_id: int, message: str, quote: int | None = None) -> int:
     while message:
         cut = message.rfind("\n\n", 0, limit)
         cut = cut if cut > limit // 2 else limit
-        first = first or send(chat_id, message[:cut].strip(), quote=quote)
+        sent = send(chat_id, message[:cut].strip(), quote=quote)
+        if not first:
+            first = sent
         message = message[cut:].strip()
     return first
 
@@ -123,14 +151,17 @@ def capturing() -> bool:
     return getattr(_thread, "capture", None) is not None
 
 
-def send_update(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
-    """Status update to a webxdc instance; notify maps addresses to a user-visible notification text."""
+def send_update(instance_id: int, payload: Any, notify: dict[str, str] | None = None,
+                *, interrupted: Any = None) -> bool:
+    """Queue an update only while its current recipient remains authorized."""
     import json
 
     update: dict[str, Any] = {"payload": payload}
     if notify:
         update["notify"] = notify
     with _lock:
+        if interrupted is not None and interrupted():
+            return False
         try:
             _bot.rpc.send_webxdc_status_update(_accid, instance_id, json.dumps(update, ensure_ascii=False, separators=(",", ":")), "")
             return True

@@ -32,7 +32,9 @@ def elapsed_text(seconds: float) -> str:
 
 class Notice:
     def __init__(self, chat_id: int, locale: str, text: str, delay: float | None = None,
-                 on_shown: Callable[[int], None] | None = None, msg_id: int = 0, since: float = 0.0) -> None:
+                 on_shown: Callable[[int], None] | None = None, msg_id: int = 0, since: float = 0.0,
+                 interrupted: Callable[[], bool] | None = None) -> None:
+        self.interrupted = interrupted
         self.chat_id = chat_id
         self.locale = locale
         self.text = text
@@ -66,13 +68,13 @@ class Notice:
             time.sleep(1)
             now = time.monotonic()
             with self.lock:
-                if self.closed:
+                if self.closed or (self.interrupted is not None and self.interrupted()):
                     return
                 body = self.render(now)
                 if not self.msg_id:
                     if now - self.started < self.delay:
                         continue
-                    self.msg_id = chat.send(self.chat_id, body)
+                    self.msg_id = chat.send(self.chat_id, body, interrupted=self.interrupted) if self.interrupted is not None else chat.send(self.chat_id, body)
                     self.shown, self.last_edit = body, now
                     if self.msg_id and self.on_shown:
                         self.on_shown(self.msg_id)
@@ -89,7 +91,7 @@ class Notice:
         with self.lock:
             self.closed = True
             msg_id = self.msg_id
-        if msg_id and delete:
+        if msg_id and delete and (self.interrupted is None or not self.interrupted()):
             chat.delete_for_all([msg_id])
 
 

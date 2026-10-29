@@ -65,10 +65,10 @@ def test_weather_and_real_history_charts_are_data_driven(language):
         page.locator(".rate-chart").wait_for(state="visible")
         assert page.locator(".chart-bar").count() == 7
         assert page.locator(".rate-chart").evaluate("e => e.scrollWidth <= e.clientWidth")
-        assert page.locator(".scenario strong").count() == 1
-        assert "elTOQUE" in page.locator(".scenario").inner_text()
+        assert page.locator(".scenario").count() == 0  # provider permission not assumed
+        assert ("pendientes" if language == "es" else "await") in page.locator(".rate-chart").locator("..").inner_text()
         assert page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'rates' && x.payload.args.history).length") == 1
-        page.locator(".scenario").scroll_into_view_if_needed()
+        page.locator(".rate-history-table").scroll_into_view_if_needed()
         screenshot_if_requested(page, f"{language}-rates-5-1")
         assert errors == []
 
@@ -145,3 +145,112 @@ def test_retry_never_silently_drops_lost_attachment(language):
                          "The attachment is no longer in memory. Attach it again to retry.").wait_for()
         assert page.evaluate("window.__sentUpdates.filter(x => x.payload && x.payload.op === 'ask').length") == 0
         assert errors == []
+
+
+@pytest.mark.parametrize("language", ["es", "en"])
+def test_eltoque_crypto_units_and_unconfirmed_codes_are_never_converted(language):
+    # Synthetic explicit opt-in exercises unit restrictions, not provider approval.
+    with browser_fixture(language, {"width": 320, "height": 800}) as (page, errors):
+        page.evaluate("""() => {
+          const rates = {USD:855, BTC:780.65, USDT_TRC20:1095, TRX:424.69, ECU:950};
+          rateDerivedApproved = true; // simulate a fresh policy response from this bot session
+          store.set('rates',{rates, at:Date.now()/1000, source:'elTOQUE API', derived_allowed:true});
+          store.set('rates.history',{history:Array.from({length:7},(_,i)=>({
+            date:new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates
+          })), complete:true, source:'elTOQUE API', days:7, derived_allowed:true});
+          go('rates');
+        }""")
+        cards = page.locator(".rate-grid")
+        assert ("1 USD en BTC" if language == "es" else "1 USD in BTC") in cards.inner_text()
+        assert ("USDT_TRC20 · unidad por confirmar" if language == "es" else "USDT_TRC20 · unit unconfirmed") in cards.inner_text()
+        assert ("unidad por confirmar" if language == "es" else "unit unconfirmed") in cards.inner_text()
+        options = page.locator(".convert-row select option").all_text_contents()
+        assert "USD" in options and "TRX" in options
+        assert not {"BTC", "USDT_TRC20", "ECU"}.intersection(options)
+        assert page.locator("#view select option[value='30']").count() == 1
+        history = page.locator(".rate-chart").locator("..")
+        history.locator("select").select_option("BTC")
+        scenario = history.locator(".scenario").inner_text()
+        assert ("1 USD en BTC" if language == "es" else "1 USD in BTC") in scenario
+        history.locator("select").select_option("ECU")
+        assert history.locator(".scenario strong").count() == 0
+        assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
+        screenshot_if_requested(page, f"{language}-eltoque-units")
+        assert errors == []
+
+
+@pytest.mark.parametrize("language,width", [("es", 320), ("en", 375)])
+def test_home_rates_banner_stale_and_provider_policy_fail_closed(language, width):
+    with browser_fixture(language, {"width": width, "height": 800}) as (page, errors):
+        # Cache contains an obsolete approval from an earlier session. A hello
+        # without current approval must never re-enable derived calculations.
+        page.evaluate("""() => {
+          const rates = {USD:855, ECU:950, MLC:727.23, BTC:780.65};
+          rateDerivedApproved = false;
+          store.set('rates',{rates, at:Date.now()/1000, source:'elTOQUE API', refresh_seconds:300, derived_allowed:true});
+          store.set('rates.history',{history:Array.from({length:7},(_,i)=>({
+            date:new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates
+          })),complete:true,source:'elTOQUE API',days:7,derived_allowed:true});
+          go('home');
+        }""")
+        banner = page.locator(".rate-banner")
+        assert "elTOQUE" in banner.inner_text() and "855" in banner.inner_text()
+        assert "[object" not in banner.inner_text() and banner.locator("[data-since]").count() == 1
+        assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
+        screenshot_if_requested(page, f"{language}-rates-banner-fresh")
+        banner.click()
+        assert page.locator(".rates-summary").is_visible()
+        assert "[object" not in page.locator(".rates-summary").inner_text()
+        assert page.locator(".convert-row input").is_disabled()
+        assert page.locator(".convert-out").inner_text() == ""
+        assert page.locator(".scenario").count() == 0
+        page.locator(".rate-history-table summary").click()
+        assert page.locator(".history-row").count() == 8
+        assert "855" in page.locator(".history-rows").inner_text()
+        page.locator(".rate-about summary").click()
+        assert "https://eltoque.com/" in page.locator(".rate-about .rate-source-url").inner_text()
+        page.evaluate("""() => {
+          const item = store.get('rates'); store.set('rates',{...item, stale:true}); bus.emit('rates');
+        }""")
+        assert page.locator(".rate-status.stale").is_visible()
+        assert ("guardad" if language == "es" else "saved") in page.locator("#view .note.warn").first.inner_text().lower()
+        page.evaluate("go('home')")
+        assert page.locator(".rate-banner.is-stale").is_visible()
+        assert ("guardad" if language == "es" else "saved") in page.locator(".rate-banner").inner_text().lower()
+        assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
+        screenshot_if_requested(page, f"{language}-rates-banner-stale")
+        assert errors == []
+
+
+@pytest.mark.parametrize("language", ["es", "en"])
+def test_single_guest_mobile_uses_real_access_handlers(language, monkeypatch):
+    from michiflin import access, admin, config, miniapp, state
+    access.reset()
+    monkeypatch.setattr(config, "OWNER_ADDRESS", "owner@example.org")
+    monkeypatch.setattr(config, "OWNER_ONLY", True)
+    monkeypatch.setattr(config, "MAINTENANCE_MODE", False)
+    monkeypatch.setattr(state, "save", lambda: None)
+    monkeypatch.setattr(state, "maintenance_active", lambda: False)
+    monkeypatch.setattr(admin, "_set_blocked_contact", lambda *_: True)
+    monkeypatch.setattr(miniapp.perf, "snapshot", lambda: None)
+    monkeypatch.setattr(miniapp.usage, "report", lambda: None)
+    monkeypatch.setitem(state.data, "access", {"allowed": ["historical@example.org"], "blocked": [], "attempts": {}, "alerts": True})
+    try:
+        with browser_fixture(language, {"width": 320, "height": 800}, real_access=True) as (page, errors):
+            page.evaluate("go('admin')")
+            card = page.locator(".single-guest")
+            card.wait_for(state="visible")
+            card.locator("input").fill("guest@example.org")
+            card.locator("select").select_option("60")
+            assert not admin.is_allowed("guest@example.org")
+            card.locator("button").click()
+            assert not admin.is_allowed("guest@example.org")  # confirmation is deliberate
+            page.locator("#sheet .btn.danger").click()
+            page.get_by_text("guest@example.org", exact=True).wait_for(state="visible")
+            assert admin.is_allowed("guest@example.org") and not admin.is_allowed("historical@example.org")
+            assert access.snapshot()["guests"] == ["guest@example.org"]
+            assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
+            screenshot_if_requested(page, f"{language}-single-guest")
+            assert errors == []
+    finally:
+        access.reset()

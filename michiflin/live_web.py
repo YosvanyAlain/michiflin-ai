@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import access, admin, chat, config, sandbox, state, web_vault
+from . import access, admin, chat, config, identity_guard, sandbox, state, web_vault
 
 MAX_MESSAGE = 16_000
 MAX_RESPONSE = 125_000
@@ -63,7 +63,7 @@ def _identity(instance: int) -> tuple[dict[str, Any], str] | None:
         if len(contacts) != 1:
             return None
         actual = str(rpc.get_contact(account, int(contacts[0])).address or "").strip().casefold()
-        if actual != owner:
+        if actual != owner or not identity_guard.authorized_entry(rpc, account, entry):
             return None
     except Exception:
         return None

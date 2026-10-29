@@ -79,7 +79,11 @@ def test_weather_selects_only_search_candidates_and_builds_forecast():
         with pytest.raises(tools.WeatherError): tools.weather_data("Santiago", "en", 55)
 
 
-def test_history_official_windows_cached_and_missing_token():
+def test_history_official_windows_cached_and_missing_token(monkeypatch):
+    monkeypatch.setitem(state.data, "eltoque", {})
+    monkeypatch.setattr(state, "save", lambda: None)
+    monkeypatch.setattr(tools, "_eltoque_blocked_until", 0.0)
+    monkeypatch.setattr(tools, "_eltoque_next_request", 0.0)
     tools._cache.clear()
     observed = []
     def get(url, **kwargs):
@@ -96,12 +100,19 @@ def test_history_official_windows_cached_and_missing_token():
         assert all(date.fromisoformat(day) for day in observed)
         assert tools.historical_rates(7) == data
         assert len(observed) == 7
-    with mock.patch.object(config, "ELTOQUE_API_TOKEN", ""):
-        with pytest.raises(tools.RateError, match="authorization"): tools.historical_rates(7)
+    with mock.patch.object(config, "ELTOQUE_API_TOKEN", ""), \
+         mock.patch.object(tools.requests, "get", side_effect=AssertionError("no scraping or API call without a token")):
+        saved = tools.historical_rates(7)
+        assert saved["stale"] and saved["error"] == "authorization"
+        assert [x["rates"] for x in saved["history"]] == [x["rates"] for x in data["history"]]
     tools._cache.clear()
 
 
-def test_history_stops_on_rate_limit_and_never_fabricates_missing_points():
+def test_history_stops_on_rate_limit_and_never_fabricates_missing_points(monkeypatch):
+    monkeypatch.setitem(state.data, "eltoque", {})
+    monkeypatch.setattr(state, "save", lambda: None)
+    monkeypatch.setattr(tools, "_eltoque_blocked_until", 0.0)
+    monkeypatch.setattr(tools, "_eltoque_next_request", 0.0)
     tools._cache.clear()
     responses = [Response({"tasas":{"USD": 500}}), Response({}, 429)]
     with mock.patch.object(config, "ELTOQUE_API_TOKEN", "synthetic-token"), mock.patch.object(tools.requests, "get", side_effect=responses) as get, mock.patch.object(state, "check_work_allowed"):
