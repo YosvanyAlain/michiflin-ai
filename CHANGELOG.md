@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.3.1
+
+- Coordinate automatic welcome, chat fallback and upgrade deliveries so overlapping paths do not create duplicate app instances. A failed message lookup is not proof that existing data disappeared; `/app` still explicitly requests a new copy. Previously sent apps are never deleted.
+- Remember the language observed in an authorized app request for later notices. The app's own automatic or manually selected language remains local to that instance. Delivery after a crash or stale backup cannot be guaranteed exactly once.
+- Add synthetic concurrency, transient-lookup, identity-isolation and language regressions to CI. This server-only fix does not change the WebXDC package hash.
+
 ## 5.3.0
 
 - Preserve all elTOQUE codes while presenting ECU as EUR, the confirmed USDT TRC20 and BTC USD-denominated rates, and TRX per unit. Unify the compact home banner and rates view. Enable clearly labelled local conversions and scenarios at the operator’s request; permission for derivative uses is unconfirmed and they can be disabled. Original provider data remain unchanged.
