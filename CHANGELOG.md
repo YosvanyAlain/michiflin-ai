@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.2.0
+
+- Hardened the authorized elTOQUE API integration: preserve provider codes, display confirmed cryptocurrency denominations without guessing suffixed fields, stop on rate limits, persist received observations and windows, and show only real partial history. A shared monitor and home banner show honest freshness; verified-owner anomaly notices are coalesced. Derived calculations are off by default until provider approval. Website scraping is no longer a fallback; a valid application token is required for current rates and history. The optional 30-day view is on demand. Enable derived calculations only with explicit provider approval.
+- Added a guarded, one-time cutover for a separately created and owner-verified identity. It retains and independently restores a full encrypted legacy snapshot before replacement, quarantines old bindings, verifies the new snapshot, and seals against silent fallback to the old account. The fresh identity pins the verified owner key and uses a new strict epoch. Old queued jobs remain stored but do not resume against prior chat IDs.
+- Added a single-confirmation temporary named-guest flow, without reactivating historic grants.
+- Rechecked epoch, access and verified contact at each WebXDC fragment and outgoing handoff in strict mode, and fixed long chat replies that previously stopped after their first part. Revocation cannot recall a message already submitted to the mail core.
+- Added API, mobile, disk-restart, offline project recovery, queue-target and identity-binding isolation regressions; tests against synthetic accounts are not proof of a production migration.
+
 ## 5.1.0
 
 - Unified the agent into **No model quota** and **With AI / API** modes. Automatic routing is in the latter; the previous automatic conversation remains accessible without being erased. The free mode recognizes capability questions and selected follow-ups. The AI mode supports an explicit model and compatible attachments, with bounded public tools when no attachment is sent.

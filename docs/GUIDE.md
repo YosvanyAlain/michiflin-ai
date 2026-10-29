@@ -102,13 +102,15 @@ The default engine and the reader page size can be changed in Settings.
   <img src="media/en/translator.png" width="230" alt="Translator">
 </p>
 
-Each app asks the bot only for what it needs, to save data. Weather uses [Open-Meteo](https://open-meteo.com/); exchange-rate history uses the [elTOQUE API](https://tasas.eltoque.com/docs/) under its [terms](https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso). The translation service receives the submitted text. External services may impose limits or be unavailable.
+Each app asks the bot only for what it needs, to save data. Weather uses [Open-Meteo](https://open-meteo.com/); exchange rates and history use the [elTOQUE API](https://tasas.eltoque.com/docs/) under its [terms](https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso). The translation service receives the submitted text. External services may impose limits or be unavailable.
+
+The rates app never uses the public website to work around API errors. One shared background monitor refreshes approximately every five minutes while the bot runs (configurable to 120–3600 seconds), saves the last observation and yesterday's queried window, and can notify the directly verified owner about errors. The home banner refreshes while visible and shows the real age; a failed refresh shows only saved values with a stale warning. Requested 7/14/30-day histories reuse saved real windows and clearly mark gaps; the API's timezone is not documented. BTC and unsuffixed USDT represent USD 1 in the cryptocurrency, not one whole coin; TRX is per unit. Codes with unconfirmed units, such as `ECU` and `USDT_TRC20`, are shown without assuming their denomination. `ELTOQUE_DERIVED_CALCULATIONS` defaults to 0: conversions and scenarios remain disabled unless the provider explicitly approves them. Official links are shown as selectable text for clients that block external links.
 
 | App | What it does |
 |---|---|
 | **YouTube** | Search videos, then download video or audio in the chosen quality, or read the transcript |
 | **Translator** | Without AI model quota; automatic detection, external services and limits |
-| **elTOQUE** | Informal reference rates and converter; official history requires an authorized token, while the illustrative scenario is not an official forecast |
+| **elTOQUE** | Informal reference rates and real 7/14/30-day history require an authorized token; conversions and scenarios are disabled pending provider permission |
 | **Weather** | Open-Meteo current conditions, five-day forecast and location selection |
 | **News** | Headlines by topic or by search |
 | **Utilities** | Unit converter, local time and calculator |
@@ -180,7 +182,7 @@ Media segments play on their own, but joining gives one file: MP4, M4A and MP3 s
 
 **Status** shows uptime, time until the planned restart, free disk, the queue, the state of each service (search, browser, media) and AI quotas. The server restarts by itself every few hours; downloads may continue afterward, while uncertain deliveries pause for review.
 
-**Administration** (owner only) shows recent foreign contact attempts, bounded session warnings and errors, performance and server controls. In private mode only the owner is active; historical access records remain stored but are hidden. In private or controlled sessions, only attempts from the last 24 hours are shown, without message text. The owner can explicitly open a temporary controlled session and authorize specific guests; the authorize button is disabled while private mode is enforced. Unknown senders receive no reply; the owner may receive an alert. Diagnostics are redacted on a best-effort basis and must be reviewed before sharing; clearing the session buffer does not erase server logs. See [session access control](ACCESS_CONTROL.md).
+**Administration** (owner only) shows recent foreign contact attempts, bounded session warnings and errors, performance and server controls. In private mode only the owner is active; historical access records remain stored but are hidden. In private or controlled sessions, only attempts from the last 24 hours are shown, without message text. The owner can explicitly approve one named guest and open a temporary controlled session in one confirmed action, or open a session first and then approve individuals. Neither action revives previous grants. Unknown senders receive no reply; the owner may receive an alert. Diagnostics are redacted on a best-effort basis and must be reviewed before sharing; clearing the session buffer does not erase server logs. See [session access control](ACCESS_CONTROL.md).
 
 It also includes:
 

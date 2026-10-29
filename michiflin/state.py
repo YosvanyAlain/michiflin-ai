@@ -44,6 +44,7 @@ data: dict[str, Any] = {
     "kill_switch": {},
     "maintenance_notice": {},
     "personal_ai_budgets": {},
+    "eltoque": {},  # received public rates and monitor status only; never API credentials
 }
 
 # Settings each person keeps for themselves; everything else is shared and changed only by administrators.

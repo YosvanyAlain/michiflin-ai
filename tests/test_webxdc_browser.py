@@ -79,8 +79,8 @@ BRIDGE = r"""
       case "settings": return settings;
       case "rates":
         if (request.args.history) return { history: Array.from({length:request.args.days}, (_,i)=>({
-          date: new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates:{USD:390+i,EUR:420+i*2} })), complete:true, days:request.args.days, source:"elTOQUE API" };
-        return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() / 1000 };
+          date: new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates:{USD:390+i,EUR:420+i*2} })), complete:true, days:request.args.days, source:"elTOQUE API", derived_allowed:false };
+        return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() / 1000, source:"elTOQUE API", refresh_seconds:300, derived_allowed:false };
       case "weather": return {query: request.args.city, place:{id:1,label:"Havana, Cuba"}, candidates:[{id:1,label:"Havana, Cuba"},{id:2,label:"Havana, USA"}],
         timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"sunny"},
         days:[{date:"2026-10-29",code:0,description:"clear",high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",high:29,low:24,rain:65}],source:"Open-Meteo"};

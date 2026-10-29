@@ -11,13 +11,15 @@ import unicodedata
 from defusedxml import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from decimal import Decimal
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, quote_plus, urlsplit
 
 import requests
 
-from . import config, links, state
+from . import config, links, rate_store, state
 from .util import compact, local_time, tr, unlinked, host_of
 
 try:
@@ -489,137 +491,261 @@ def weather_text(query: str, locale: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# elTOQUE informal exchange rates: official API when a token exists, public table otherwise.
+# elTOQUE informal exchange rates through the authorized API only.
 # ---------------------------------------------------------------------------
 ELTOQUE_ENDPOINT = "https://tasas.eltoque.com/v1/trmi"
-ELTOQUE_PAGE = "https://eltoque.com/"
+# The provider documents per-minute and per-second limits; serialize all
+# requests in this process and stay below the lower published steady rate.
+ELTOQUE_MIN_SECONDS = 1.1
+ELTOQUE_FALLBACK_COOLDOWN = 60
+ELTOQUE_HISTORY_BUDGET = 90.0  # return actual partial points before the bridge timeout
+_eltoque_request_lock = threading.Lock()
+_eltoque_current_lock = threading.Lock()
+_eltoque_history_lock = threading.Lock()
+_eltoque_next_request = 0.0
+_eltoque_blocked_until = 0.0
 
 
 class RateError(Exception):
-    pass
+    def __init__(self, reason: str, retry_after: int | None = None):
+        super().__init__(reason)
+        self.retry_after = retry_after
 
 
-def _public_rates() -> dict[str, float]:
-    """Read the rate table shown on elTOQUE's home page."""
-    from bs4 import BeautifulSoup
+def rate_unit(code: str) -> str:
+    """Return a conservative denomination, not an assumed exchange rate.
 
-    def run() -> dict[str, float]:
+    elTOQUE states BTC and USDT represent the CUP price of USD 1 in that
+    crypto, unlike TRX which is quoted per unit. The API does not publish a
+    field dictionary for every ticker (including ECU), so unknowns are not
+    made available to the currency converter.
+    """
+    code = str(code).upper()
+    if code in {"BTC", "USDT"}:
+        return "usd_crypto"
+    # The provider has not documented the denomination of each suffixed API
+    # variant (for example USDT_TRC20); do not extrapolate its unit.
+    if code.startswith("USDT_"):
+        return "unknown"
+    if code in {"USD", "EUR", "MLC", "TRX", "CAD", "MXN", "CUP"}:
+        return "unit"
+    return "unknown"
+
+
+def rate_units(rates: dict[str, float]) -> dict[str, str]:
+    return {code: rate_unit(code) for code in rates}
+
+
+def _parse_eltoque_rates(payload: Any) -> dict[str, float]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("tasas"), dict):
+        raise RateError("invalid")
+    rates = {}
+    for code, value in payload["tasas"].items():
+        code = str(code).upper()
+        if not re.fullmatch(r"[A-Z0-9_-]{2,32}", code) or isinstance(value, bool):
+            continue
         try:
-            response = requests.get(ELTOQUE_PAGE, timeout=25, headers={"User-Agent": "Mozilla/5.0 (Linux; Android 14) Mobile"})
-            response.raise_for_status()
+            number = float(str(value).replace(",", "."))
+        except (ValueError, TypeError):
+            continue
+        if math.isfinite(number) and number > 0:
+            rates[code] = number
+    if not rates:
+        raise RateError("empty")
+    return rates
+
+
+def _retry_after(headers: Any) -> int:
+    """Honor a valid Retry-After. Invalid/negative headers get a safe pause.
+
+    HTTP dates are compared against the server's Date when present, which
+    also avoids depending on synchronized local/server clocks.
+    """
+    raw = str((headers or {}).get("Retry-After") or "").strip()
+    try:
+        number = float(raw)
+        if math.isfinite(number) and number > 0:
+            return max(1, math.ceil(number))
+    except ValueError:
+        pass
+    try:
+        target = parsedate_to_datetime(raw)
+        date_header = (headers or {}).get("Date")
+        origin = parsedate_to_datetime(date_header) if date_header else datetime.now(timezone.utc)
+        delay = (target - origin).total_seconds()
+        if math.isfinite(delay) and delay > 0:
+            return max(1, math.ceil(delay))
+    except (TypeError, ValueError, OverflowError):
+        pass
+    return ELTOQUE_FALLBACK_COOLDOWN
+
+
+def _eltoque_request(params: dict[str, str] | None = None, *, deadline: float | None = None) -> dict[str, float]:
+    """Make one bounded authenticated request without redirects or fallback."""
+    global _eltoque_next_request, _eltoque_blocked_until
+    state.check_work_allowed()
+    remaining = deadline - time.monotonic() if deadline is not None else None
+    if remaining is not None:
+        if remaining <= 0 or not _eltoque_request_lock.acquire(timeout=remaining):
+            raise RateError("timeout")
+    else:
+        _eltoque_request_lock.acquire()
+    try:
+        state.check_work_allowed()
+        now = time.monotonic()
+        if deadline is not None and now >= deadline:
+            raise RateError("timeout")
+        if now < _eltoque_blocked_until:
+            raise RateError("rate_limit", max(1, math.ceil(_eltoque_blocked_until - now)))
+        delay = max(0.0, _eltoque_next_request - now)
+        if deadline is not None and now + delay >= deadline:
+            raise RateError("timeout")
+        if delay:
+            time.sleep(delay)
+            state.check_work_allowed()
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RateError("timeout")
+        remaining = deadline - time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
+            raise RateError("timeout")
+        _eltoque_next_request = time.monotonic() + ELTOQUE_MIN_SECONDS
+        # requests' connect and read timeouts are separate, so divide the
+        # remaining budget between them instead of promising a hard 25 s total.
+        timeout = 25.0 if remaining is None else max(0.01, min(10.0, remaining / 2))
+        try:
+            response = requests.get(ELTOQUE_ENDPOINT, timeout=timeout, params=params,
+                headers={"Authorization": f"Bearer {config.ELTOQUE_API_TOKEN}", "Accept": "application/json"},
+                allow_redirects=False)
         except requests.RequestException as exc:
             raise RateError("connection") from exc
-        rates: dict[str, float] = {}
-        for row in BeautifulSoup(response.text, "lxml").select("table tr"):
-            text = " ".join(row.get_text(" ", strip=True).split())
-            match = re.match(r"1\s+([A-Z]{2,6})\b.*?([\d.,]+)\s*CUP", text)
-            if match and match.group(1) not in rates:
-                rates[match.group(1)] = float(match.group(2).replace(",", ""))
-        if not rates:
-            raise RateError("empty")
-        return rates
-
-    return _cached("public_rates", 600, run)
+        if response.status_code in {401, 403}:
+            raise RateError("authorization")
+        if response.status_code == 422:
+            # The live service returns {"msg": ...} for malformed JWTs, but
+            # 422 can also mean invalid input; do not label every 422 as auth.
+            try:
+                body = response.json()
+            except (ValueError, TypeError):
+                body = None
+            message = str(body.get("msg") or "").lower() if isinstance(body, dict) else ""
+            auth_error = any(part in message for part in ("jwt", "token", "segment", "signature", "invalid header", "invalid claim", "expired", "authorization"))
+            raise RateError("authorization" if auth_error else "http")
+        if response.status_code == 429:
+            wait = _retry_after(getattr(response, "headers", {}))
+            _eltoque_blocked_until = time.monotonic() + wait
+            raise RateError("rate_limit", wait)
+        # In particular, never follow a redirect with the bearer token.
+        if response.status_code != 200:
+            raise RateError("http")
+        try:
+            return _parse_eltoque_rates(response.json())
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise RateError("invalid") from exc
+    finally:
+        _eltoque_request_lock.release()
 
 
 def _rates() -> dict[str, float]:
     if not config.ELTOQUE_API_TOKEN:
-        return _public_rates()
-
-    def run() -> dict[str, float]:
-        try:
-            response = requests.get(ELTOQUE_ENDPOINT, timeout=25,
-                                    headers={"Authorization": f"Bearer {config.ELTOQUE_API_TOKEN}", "Accept": "application/json"})
-        except requests.RequestException as exc:
-            raise RateError("connection") from exc
-        if response.status_code in {401, 422}:
-            raise RateError("authorization")
-        if response.status_code == 429:
-            raise RateError("rate_limit")
-        if not response.ok:
-            raise RateError("http")
-        payload = response.json()
-        rates = {}
-        for code, value in (payload.get("tasas") or {}).items():
-            try:
-                number = float(str(value).replace(",", "."))
-            except ValueError:
-                continue
-            if number > 0 and re.fullmatch(r"[A-Z0-9]{2,12}", str(code).upper()):
-                rates[str(code).upper()] = number
-        if not rates:
-            raise RateError("empty")
-        return rates
-
-    return _cached("rates", 120, run)
+        raise RateError("authorization")
+    with _eltoque_current_lock:
+        return _cached("rates", config.ELTOQUE_REFRESH_SECONDS, _eltoque_request)
 
 
 def current_rates() -> dict[str, float]:
+    # A rejected/rate-limited official call must not silently use another
+    # endpoint to bypass the provider's control or mislabel the source.
+    return _rates()
+
+
+def rates_observed_at() -> float:
+    """Wall-clock time of the last successful fetch, not the current refresh."""
+    hit = _cache.get("rates")
+    return time.time() - max(0.0, time.monotonic() - hit[0]) if hit else time.time()
+
+
+def saved_rates_snapshot() -> dict[str, Any] | None:
+    """Read shared data without contacting the API (for the home banner)."""
+    previous = rate_store.latest()
+    if not previous:
+        return None
+    health = rate_store.status()
+    stale = bool(health.get("error")) or time.time() - previous["at"] > 2 * config.ELTOQUE_REFRESH_SECONDS
+    return {**previous, "units": rate_units(previous["rates"]), "stale": stale, "monitor": health,
+            "persisted": True, "source": "elTOQUE API", "refresh_seconds": config.ELTOQUE_REFRESH_SECONDS,
+            "derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS}
+
+
+def rates_snapshot() -> dict[str, Any]:
+    """Share one API snapshot; clearly mark the last saved quote on failure."""
     try:
-        return _rates()
-    except RateError:
-        return _public_rates()
+        rates = current_rates()
+    except RateError as exc:
+        previous = rate_store.latest()
+        if not previous:
+            raise
+        return {**previous, "stale": True, "error": str(exc), "retry_after": exc.retry_after,
+                "persisted": True, "source": "elTOQUE API"}
+    at = rates_observed_at()
+    saved = rate_store.save_latest(rates, at)
+    return {"rates": rates, "at": at, "stale": False, "error": "", "retry_after": None,
+            "persisted": saved, "source": "elTOQUE API"}
 
 
 def historical_rates(days: int = 7) -> dict[str, Any]:
-    """Daily elTOQUE API medians; each request covers less than 24 h.
-
-    No inferred or fabricated points. The official API requires an application
-    token. Stop on rate limits, and mark incomplete intervals explicitly.
-    """
-    if not config.ELTOQUE_API_TOKEN:
-        raise RateError("authorization")
-    if type(days) is not int or days not in {7, 14}:
+    """Use saved real day windows and fetch only gaps, respecting cooldowns."""
+    if type(days) is not int or days not in {7, 14, 30}:
         raise RateError("range")
     end = datetime.now(config.LOCAL_ZONE).date() - timedelta(days=1)
-    today_key = end.isoformat()
-
-    def run() -> dict[str, Any]:
-        series, error = [], ""
+    key = f"rates_history:{end.isoformat()}:{days}"
+    if not _eltoque_history_lock.acquire(blocking=False):
+        raise RateError("busy")
+    deadline = time.monotonic() + ELTOQUE_HISTORY_BUDGET
+    try:
+        state.check_work_allowed()
+        hit = _cache.get(key)
+        if config.ELTOQUE_API_TOKEN and hit and time.monotonic() - hit[0] < 3600:
+            return hit[1]
+        series: list[dict[str, Any]] = []
+        new_days: dict[str, dict[str, Any]] = {}
+        error, retry_after = ("" if config.ELTOQUE_API_TOKEN else "authorization"), None
         for age in range(days - 1, -1, -1):
             state.check_work_allowed()
-            date = end - timedelta(days=age)
-            try:
-                response = requests.get(ELTOQUE_ENDPOINT, timeout=10, params={
-                    "date_from": date.isoformat() + " 00:00:00", "date_to": date.isoformat() + " 23:59:59"},
-                    headers={"Authorization": f"Bearer {config.ELTOQUE_API_TOKEN}", "Accept": "application/json"})
-                if response.status_code in {401, 422}:
-                    error = "authorization"
-                    break
-                if response.status_code == 429:
-                    error = "rate_limit"
-                    break  # do not circumvent or hammer the service
-                if not response.ok:
-                    error = "http"
+            day = (end - timedelta(days=age)).isoformat()
+            day_key = f"rates_day:{day}"
+            hit = _cache.get(day_key)
+            saved = rate_store.day(day)
+            if hit and time.monotonic() - hit[0] < 3600:
+                rates, observed = hit[1], (saved or {}).get("at", time.time())
+            elif saved:
+                rates, observed = saved["rates"], saved["at"]
+                _cache[day_key] = (time.monotonic(), rates)
+            elif error:
+                continue  # still return later saved dates; do not bypass the cooldown
+            else:
+                try:
+                    rates = _eltoque_request({"date_from": day + " 00:00:00", "date_to": day + " 23:59:59"}, deadline=deadline)
+                except RateError as exc:
+                    error, retry_after = str(exc), exc.retry_after
                     continue
-                payload = response.json()
-                rates = {}
-                for code, value in (payload.get("tasas") or {}).items():
-                    try:
-                        number = float(str(value).replace(",", "."))
-                    except (ValueError, TypeError):
-                        continue
-                    if math.isfinite(number) and number > 0 and re.fullmatch(r"[A-Z0-9]{2,12}", str(code).upper()):
-                        rates[str(code).upper()] = number
-                if rates:
-                    series.append({"date": date.isoformat(), "rates": rates})
-                else:
-                    error = "incomplete"
-            except (requests.RequestException, ValueError, TypeError, AttributeError):
-                error = "connection"
-                break
+                observed = time.time()
+                new_days[day] = {"rates": rates, "at": observed}
+                _cache[day_key] = (time.monotonic(), rates)
+            series.append({"date": day, "rates": rates, "queried_at": observed})
+        persisted = rate_store.save_days(new_days)
         if not series:
-            raise RateError(error or "empty")
-        return {"history": series, "complete": len(series) == days, "error": error, "source": "elTOQUE API", "days": days}
-    # Cache only completed responses. Partial errors may recover on the next deliberate request.
-    key = f"rates_history:{today_key}:{days}"
-    hit = _cache.get(key)
-    if hit and time.monotonic() - hit[0] < 3600:
-        return hit[1]
-    result = run()
-    if result["complete"]:
-        _cache[key] = (time.monotonic(), result)
-    return result
+            raise RateError(error or "empty", retry_after)
+        all_codes = {code for item in series for code in item["rates"]}
+        result = {"history": series, "complete": len(series) == days, "error": error,
+                  "retry_after": retry_after, "stale": bool(error), "persisted": persisted,
+                  "units": {code: rate_unit(code) for code in sorted(all_codes)},
+                  "source": "elTOQUE API", "days": days,
+                  "derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS}
+        if result["complete"] and not error:
+            _cache[key] = (time.monotonic(), result)
+        return result
+    finally:
+        _eltoque_history_lock.release()
 
 
 def _number(value: float, locale: str) -> str:
@@ -628,40 +754,78 @@ def _number(value: float, locale: str) -> str:
     return text.replace(",", "X").replace(".", ",").replace("X", ".") if locale != "en" else text
 
 
+def _rate_number(value: float, locale: str) -> str:
+    """Format the received rate without forcing it to two decimals."""
+    text = format(Decimal(str(value)), ",f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text.replace(",", "X").replace(".", ",").replace("X", ".") if locale != "en" else text
+
+
 def rate_text(argument: str, locale: str) -> str:
     usage = tr(locale, "Uso: /tasa · /tasa USD · /tasa 100 USD · /tasa 5000 CUP USD", "Usage: /rate · /rate USD · /rate 100 USD · /rate 5000 CUP USD")
     parts = argument.upper().replace(",", ".").split()
     try:
-        rates = _rates()
+        snapshot = rates_snapshot()
+        rates = snapshot["rates"]
     except RateError as exc:
-        reason = str(exc)
-        try:
-            rates = _public_rates()
-        except (RateError, ValueError):
-            if reason == "authorization":
-                return tr(locale, "⚠️ elTOQUE rechazó el token configurado.", "⚠️ elTOQUE rejected the configured token.")
-            if reason == "rate_limit":
-                return tr(locale, "⏳ elTOQUE alcanzó su límite de consultas; prueba en un minuto.", "⏳ elTOQUE rate limit reached; try in a minute.")
-            return tr(locale, "⚠️ No pude consultar elTOQUE ahora.", "⚠️ elTOQUE is unavailable right now.")
+        if str(exc) == "authorization":
+            return tr(locale, "⚠️ La API de elTOQUE necesita una clave válida para esta aplicación.", "⚠️ The elTOQUE API requires a valid key for this application.")
+        if str(exc) == "rate_limit":
+            return tr(locale, "⏳ elTOQUE limitó las consultas; espera y vuelve a intentarlo.", "⏳ elTOQUE rate limit reached; wait before trying again.")
+        return tr(locale, "⚠️ No pude consultar elTOQUE ahora.", "⚠️ elTOQUE is unavailable right now.")
     except (ValueError, requests.RequestException):
         return tr(locale, "⚠️ elTOQUE devolvió datos inválidos.", "⚠️ elTOQUE returned invalid data.")
-    footer = tr(locale, f"elTOQUE · mercado informal · {local_time(time.time())}", f"elTOQUE · informal market · {local_time(time.time())}")
+    footer = tr(locale, f"elTOQUE · mercado informal · {local_time(snapshot['at'])}", f"elTOQUE · informal market · {local_time(snapshot['at'])}")
+    if snapshot.get("stale"):
+        footer += tr(locale, " · último dato guardado; la API no respondió ahora", " · last saved value; the API is unavailable now")
+    def label(code: str) -> str:
+        kind = rate_unit(code)
+        if kind == "usd_crypto":
+            return tr(locale, f"1 USD en {code}", f"1 USD in {code}")
+        if kind == "unknown":
+            return tr(locale, f"{code} (unidad por confirmar)", f"{code} (unit unconfirmed)")
+        return f"1 {code}"
     if not parts:
-        preferred = ["USD", "EUR", "MLC", "ZELLE", "USDT", "CAD", "MXN", "BTC", "TRX"]
+        preferred = ["USD", "EUR", "ECU", "MLC", "ZELLE", "USDT", "USDT_TRC20", "CAD", "MXN", "BTC", "TRX"]
         ordered = [code for code in preferred if code in rates] + sorted(code for code in rates if code not in preferred)
-        return "\n".join([tr(locale, "💱 CUP por unidad", "💱 CUP per unit")] + [f"{code}: {_number(rates[code], locale)}" for code in ordered] + ["", footer])
+        return "\n".join([tr(locale, "💱 Tasas de referencia de elTOQUE", "💱 elTOQUE reference rates")]
+                         + [f"{label(code)}: {_rate_number(rates[code], locale)} CUP" for code in ordered] + ["", footer])
     try:
         if len(parts) == 1:
             amount, source, target = 1.0, parts[0], "CUP"
         elif len(parts) == 2:
             amount, source, target = float(parts[0]), parts[1], "CUP"
-        else:
+        elif len(parts) == 3:
             amount, source, target = float(parts[0]), parts[1], parts[2]
+        else:
+            return usage
     except ValueError:
+        return usage
+    if not math.isfinite(amount) or amount < 0:
         return usage
     value = {"CUP": 1.0, **rates}
     if source not in value or target not in value:
         return tr(locale, f"⚠️ Sin tasa para {source if source not in value else target}.", f"⚠️ No rate for {source if source not in value else target}.")
+    for code in (source, target):
+        kind = rate_unit(code)
+        if kind == "usd_crypto":
+            quote = f"{label(code)} ≈ {_rate_number(rates[code], locale)} CUP"
+            if len(parts) == 1:
+                return f"💱 {quote}\n\n{footer}"
+            return tr(locale, f"⚠️ {quote}. Esta tasa corresponde a un dólar en {code}, no a una unidad de {code}; no puedo convertir esa cantidad.",
+                      f"⚠️ {quote}. This rate is for one dollar in {code}, not one {code}; I cannot convert that amount.")
+        if kind == "unknown":
+            return tr(locale, f"⚠️ {code}: {_rate_number(rates[code], locale)}. La unidad de este código no está confirmada; no puedo convertirla.",
+                      f"⚠️ {code}: {_rate_number(rates[code], locale)}. The unit for this code is unconfirmed; I cannot convert it.")
+    if len(parts) == 1 or (len(parts) == 2 and amount == 1 and target == "CUP"):
+        return f"💱 {label(source)} ≈ {_rate_number(value[source], locale)} CUP\n\n{footer}"
+    if snapshot.get("stale"):
+        return tr(locale, "La conversión está pausada porque la tasa guardada puede estar desactualizada.",
+                  "Conversion is paused because the saved rate may be out of date.")
+    if not config.ELTOQUE_DERIVED_CALCULATIONS:
+        return tr(locale, "Las tasas se muestran sin alterar. Las conversiones estarán disponibles tras confirmar su autorización con elTOQUE.",
+                  "Rates are displayed unchanged. Conversions will be available after elTOQUE's authorization is confirmed.")
     converted = amount * value[source] / value[target]
     return f"💱 {_number(amount, locale)} {source} ≈ {_number(converted, locale)} {target}\n\n{footer}"
 

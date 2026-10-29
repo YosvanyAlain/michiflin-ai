@@ -41,6 +41,13 @@ ADMIN_ADDRESSES = {OWNER_ADDRESS} if OWNER_ADDRESS else set(ALLOWED_SENDERS)
 MAILBOX_PROFILES_JSON = env("MAILBOX_PROFILES_JSON")
 # Opaque deployment epoch: miniapps built under another epoch are rejected (no migration path).
 BOT_EPOCH = env("BOT_EPOCH") or env("RUNNING_SHA", "local")[:12]
+# A newly provisioned identity must reject even legacy bindings with no epoch.
+# Keep compatibility with existing instances until the owner verifies a cutover.
+BOT_EPOCH_STRICT = env("BOT_EPOCH_STRICT", "0").lower() in {"1", "true", "yes", "on"}
+# Optional fail-closed guard for a new identity. Configure the owner's public
+# primary OpenPGP fingerprint independently before enabling it.
+BOT_VERIFIED_CONTACTS_ONLY = env("BOT_VERIFIED_CONTACTS_ONLY", "0").lower() in {"1", "true", "yes", "on"}
+OWNER_PGP_FINGERPRINT = env("OWNER_PGP_FINGERPRINT")
 if (MAINTENANCE_MODE or OWNER_ONLY) and not OWNER_ADDRESS:
     raise RuntimeError("OWNER_ONLY/MAINTENANCE_MODE requires OWNER_ADDRESS; refusing to start without an owner")
 
@@ -108,6 +115,10 @@ AI_SYSTEM_PROMPT = env(
 
 # Optional services.
 ELTOQUE_API_TOKEN = env("ELTOQUE_API_TOKEN")
+# One shared poll for all users, never faster than the documented quota permits.
+ELTOQUE_REFRESH_SECONDS = max(120, min(3600, env_int("ELTOQUE_REFRESH_SECONDS", 300)))
+# Keep derived calculations off until the application has provider approval.
+ELTOQUE_DERIVED_CALCULATIONS = env("ELTOQUE_DERIVED_CALCULATIONS", "0").lower() in {"1", "true", "yes", "on"}
 LIBRETRANSLATE_URL = env("LIBRETRANSLATE_URL")
 LIBRETRANSLATE_API_KEY = env("LIBRETRANSLATE_API_KEY")
 MICHIFLIN_GITHUB_TOKEN = env("MICHIFLIN_GITHUB_TOKEN")

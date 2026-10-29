@@ -778,3 +778,44 @@ details[open] .caret { transform: rotate(180deg); }
 }
 
 @media (max-width: 350px) { .tabs .tab { font-size: 10px; } }
+
+/* elTOQUE: compact home entry, honest freshness and accessible real data. */
+.rate-banner { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; padding: 17px;
+  border: 0; border-radius: 20px; color: #fff; text-align: left; overflow: hidden;
+  background: linear-gradient(125deg, #07584f, #087e70 65%, #21a797); box-shadow: var(--shadow); }
+.rate-banner:active { transform: scale(.99); }
+.rate-banner.is-stale { background: linear-gradient(125deg, #604810, #876617 68%, #aa8535); }
+.rate-banner-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rate-kicker { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 750; letter-spacing: .035em; text-transform: uppercase; }
+.rate-kicker .ic { width: 17px; height: 17px; }
+.rate-banner-brand { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 750; opacity: .88; }
+.rate-banner-brand .ic { width: 16px; height: 16px; }
+.rate-banner-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.rate-banner-values > span { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 5px; min-width: 0; }
+.rate-banner-values small:first-child { flex-basis: 100%; opacity: .8; font-size: 11px; }
+.rate-banner-values b { font-size: clamp(17px, 4vw, 22px); letter-spacing: -.03em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rate-banner-values small:last-child { font-size: 10px; opacity: .82; }
+.rate-banner-foot, .rate-banner-empty { font-size: 12px; opacity: .88; }
+.rates-summary { display: flex; flex-direction: column; gap: 5px; padding: 19px; border-radius: 20px;
+  color: #fff; background: linear-gradient(130deg, #07584f, #0e8d7d); }
+.rates-summary strong { font-size: 28px; letter-spacing: -.04em; line-height: 1.1; }
+.rates-summary small { opacity: .85; }
+.rates-summary p { margin: 7px 0 0; max-width: 48rem; font-size: 13px; opacity: .92; }
+.rate-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; }
+.rate-status i { width: 7px; height: 7px; border-radius: 50%; background: #aff2cb; }
+.rate-status.stale i { background: #ffdd83; }
+.rate-about { padding: 0; overflow: hidden; }
+.rate-about summary, .rate-history-table summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.rate-about summary { padding: 15px; }
+.rate-about summary .caret, .rate-history-table summary .caret { margin-left: auto; }
+.rate-about[open] summary .caret, .rate-history-table[open] summary .caret { transform: rotate(180deg); }
+.rate-about > .stack { padding: 0 15px 15px; }
+.rate-about p { margin: 0; color: var(--muted); font-size: 13.5px; }
+.rate-source-url { display: block; color: var(--muted); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.rate-history-table { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.rate-history-table summary { padding: 10px 12px; font-size: 13px; font-weight: 700; }
+.history-rows { display: flex; flex-direction: column; }
+.history-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 12px; border-top: 1px solid var(--line); font-size: 13px; font-variant-numeric: tabular-nums; }
+.history-row.heading { color: var(--muted); font-size: 11px; }
+.history-row b { text-align: right; overflow-wrap: anywhere; }
+@media (max-width: 350px) { .rate-banner { padding: 14px; } .rate-banner-values { gap: 4px; } }

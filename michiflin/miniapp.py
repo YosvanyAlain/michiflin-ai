@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, maintenance, mail_profiles, media, music, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -87,7 +87,19 @@ def _apps() -> dict[str, dict[str, Any]]:
     return state.data.setdefault("apps", {})
 
 
+def _verified_binding(entry: dict[str, Any]) -> bool:
+    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+        return True
+    try:
+        return identity_guard.authorized_entry(chat.rpc(), chat.account(), entry)
+    except Exception:
+        return False
+
+
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None) -> int:
+    recipient = address or chat.sender()
+    if not _verified_binding({"chat": chat_id, "addr": recipient}):
+        return 0
     if updated:
         text = tr(locale, "✨ Michiflin AI se actualizó. La app anterior se conserva con sus proyectos e historial; "
                           "esta nueva instancia tiene almacenamiento independiente.",
@@ -108,7 +120,12 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
     if advisory:
         text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
-    if interrupted is not None:
+    if config.BOT_VERIFIED_CONTACTS_ONLY:
+        def interrupted_or_changed() -> bool:
+            return bool((interrupted is not None and interrupted()) or not admin.is_allowed(recipient)
+                        or not _verified_binding({"chat": chat_id, "addr": recipient}))
+        send_args["interrupted"] = interrupted_or_changed
+    elif interrupted is not None:
         send_args["interrupted"] = interrupted
     msg_id = chat.send(chat_id, text, **send_args)
     if msg_id:
@@ -151,7 +168,7 @@ def latest_instance(chat_id: int) -> int:
     """Newest app message of this chat that still exists, or 0."""
     with state.lock:
         keys = sorted((int(key) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
-                       and access.bound_allowed(entry)), reverse=True)
+                       and _instance(int(key)) is not None and access.bound_allowed(entry)), reverse=True)
     for msg_id in keys:
         try:
             message = chat.rpc().get_message(chat.account(), msg_id)
@@ -192,7 +209,8 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     if entry is None:
         return None
     # Another deployment's packages must not drive this bot at all.
-    if entry.get("epoch") and entry.get("epoch") != config.BOT_EPOCH:
+    epoch = entry.get("epoch")
+    if (config.BOT_EPOCH_STRICT and epoch != config.BOT_EPOCH) or (epoch and epoch != config.BOT_EPOCH):
         return None
     return entry
 
@@ -345,8 +363,8 @@ def on_status_update(msg_id: int) -> None:
     lock = _instance_locks.setdefault(msg_id, threading.Lock())
     with lock:
         entry = _instance(msg_id)
-        if entry is None or not access.bound_allowed(entry):
-            return  # old or revoked guest instances cannot replay pending requests
+        if entry is None or not access.bound_allowed(entry) or not _verified_binding(entry):
+            return  # old, revoked or unverified instances cannot replay pending requests
         try:
             raw = chat.rpc().get_webxdc_status_updates(chat.account(), msg_id, int(entry.get("serial", 0)))
             updates = json.loads(raw or "[]")
@@ -449,15 +467,39 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             "There are too many recent requests to guarantee safe retries. Wait before starting another."))
 
 
+def _status_allowed(instance_id: int) -> bool:
+    """Recheck epoch, access grant and verified contact at the actual handoff."""
+    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY):
+        return True  # preserve existing deployments until a deliberate cutover
+    try:
+        entry = _instance(instance_id)
+        if entry is None:
+            return False
+        address = str(entry.get("addr") or "").strip().lower()
+        return bool(address and access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry))
+    except Exception:
+        return False
+
+
+def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
+    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY:
+        return chat.send_update(instance_id, payload, notify, interrupted=lambda: not _status_allowed(instance_id))
+    return chat.send_update(instance_id, payload, notify) if notify else chat.send_update(instance_id, payload)
+
+
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
-    if entry is not None and not access.bound_allowed(entry):
+    if entry is not None and (not access.bound_allowed(entry) or not _verified_binding(entry)):
         return
+    if config.BOT_VERIFIED_CONTACTS_ONLY and entry is None:
+        current = _instance(instance_id)
+        if current is None or not _verified_binding(current):
+            return
     with _answers_lock:
         item = _answers.get(rid)
         if not item or item["state"] != "running" or (not force and item["acked"]) or time.time() - item["acked"] < 20:
             return
         item["acked"] = time.time()
-    chat.send_update(instance_id, {"t": "ack", "re": rid})
+    _send_status(instance_id, {"t": "ack", "re": rid})
 
 
 WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
@@ -499,11 +541,11 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     address = str(entry.get("addr", "")).strip().lower()
 
     def reply(data: Any, error: str = "") -> None:
-        if access.bound_allowed(entry) and admin.is_allowed(address):
+        if access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry):
             respond(instance_id, rid, data, error)
 
-    if not access.bound_allowed(entry):
-        return  # never replay commands from, or respond to, a stale guest instance
+    if not access.bound_allowed(entry) or not _verified_binding(entry):
+        return  # never replay or respond to a stale or unverified instance
     if not address or not admin.is_allowed(address):
         reply(None, tr(locale, "Acceso revocado. Solicita una nueva autorización.",
                                            "Access revoked. Please request authorization again."))
@@ -544,7 +586,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     def run() -> Any:
         # Re-check when a worker actually starts: revocation can happen after
         # an app request was admitted but before it leaves the executor queue.
-        if not access.bound_allowed(entry) or not admin.is_allowed(address):
+        if not access.bound_allowed(entry) or not admin.is_allowed(address) or not _verified_binding(entry):
             raise AppError(tr(locale, "Acceso revocado.", "Access revoked."))
         if not config.service_access_allowed(address):
             raise AppError(tr(locale, "Michiflin está en mantenimiento.", "Michiflin is under maintenance."))
@@ -669,8 +711,10 @@ def respond(instance_id: int, rid: str, data: Any, error: str = "", *, code: str
 
 
 def _deliver(instance_id: int, rid: str, text: str) -> None:
+    if not _status_allowed(instance_id):
+        return
     if len(text.encode("utf-8")) <= CHUNK:
-        chat.send_update(instance_id, json.loads(text))
+        _send_status(instance_id, json.loads(text))
         return
     # The string is embedded in another JSON object: its characters can take
     # up to four UTF-8 bytes (or require escaping) in that outer update. Keep
@@ -678,7 +722,9 @@ def _deliver(instance_id: int, rid: str, text: str) -> None:
     width = CHUNK // 4
     pieces = [text[start:start + width] for start in range(0, len(text), width)]
     for index, piece in enumerate(pieces):
-        chat.send_update(instance_id, {"t": "chunk", "re": rid, "i": index, "n": len(pieces), "s": piece})
+        # The recipient, grant or epoch can change between fragments.
+        if not _send_status(instance_id, {"t": "chunk", "re": rid, "i": index, "n": len(pieces), "s": piece}):
+            break
 
 
 def proactive_upgrades() -> None:
@@ -747,14 +793,14 @@ def push(chat_id: int, kind: str, data: Any, notify: str = "") -> bool:
     """Queue a push for the newest app; True means accepted locally, not delivered."""
     with state.lock:
         found = [(int(key), entry) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
-                 and access.bound_allowed(entry)]
+                 and _instance(int(key)) is not None and access.bound_allowed(entry)]
     if not found or not chat.ready():
         return False
     instance_id, entry = max(found, key=lambda item: item[0])
     address = str(entry.get("addr", ""))
-    if not address or not access.bound_allowed(entry) or not admin.is_allowed(address):
+    if not address or not access.bound_allowed(entry) or not admin.is_allowed(address) or not _verified_binding(entry):
         return False
-    return chat.send_update(instance_id, {"t": "push", "kind": kind, "data": data}, {address: notify[:120]} if notify and address else None)
+    return _send_status(instance_id, {"t": "push", "kind": kind, "data": data}, {address: notify[:120]} if notify and address else None)
 
 
 def _on_job(job: dict[str, Any], values: dict[str, Any]) -> None:
@@ -1001,7 +1047,8 @@ def settings_view(locale: str) -> list[dict[str, Any]]:
 def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
-            "maintenance_notice": maintenance.get(),
+            "maintenance_notice": maintenance.get(), "rates_summary": tools.saved_rates_snapshot(),
+            "rates_derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS,
             "modes": {"kill_switch": op_kill_switch(chat_id, {}, locale), "nauta_strict": op_nauta_strict(chat_id, {}, locale)}}
 
 
@@ -1489,22 +1536,29 @@ def op_tool(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("rates")
 def op_rates(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    if args.get("history") is True:
-        try:
-            return tools.historical_rates(args.get("days", 7))
-        except tools.RateError as exc:
-            reason = str(exc)
-            if reason == "authorization":
-                raise AppError(tr(locale, "El historial requiere la clave de API de elTOQUE de esta aplicación. También puedes consultar el gráfico en su sitio oficial.",
-                                  "History requires this application's elTOQUE API key. You can also view the chart on their official site.")) from None
-            raise AppError(tr(locale, "No pude consultar el historial de elTOQUE ahora. Inténtalo más tarde.",
-                              "Could not retrieve elTOQUE history right now. Try again later.")) from None
+    history = args.get("history") is True
     try:
-        rates = tools.current_rates()
+        if history:
+            return tools.historical_rates(args.get("days", 7))
+        snapshot = tools.rates_snapshot()
+    except tools.RateError as exc:
+        reason = str(exc)
+        if reason == "authorization":
+            raise AppError(tr(locale, "La API de elTOQUE requiere una clave válida de esta aplicación.",
+                              "The elTOQUE API requires a valid key for this application.")) from None
+        if reason == "rate_limit":
+            raise AppError(tr(locale, "elTOQUE limitó las consultas. Espera y vuelve a intentarlo; no se sustituyen sus datos.",
+                              "elTOQUE limited requests. Wait before trying again; no substitute data are used.")) from None
+        raise AppError(tr(locale, "No pude consultar elTOQUE ahora. Inténtalo más tarde.",
+                          "Could not retrieve elTOQUE rates right now. Try again later.")) from None
+    except state.WorkPaused:
+        raise
     except Exception:
-        raise AppError(tr(locale, "No pude consultar elTOQUE ahora. Su API requiere una clave y el sitio público puede bloquear solicitudes.",
-                          "elTOQUE is unavailable. Its API requires a key and the public site may block requests.")) from None
-    return {"rates": rates, "at": time.time(), "source": "elTOQUE"}
+        raise AppError(tr(locale, "No pude consultar elTOQUE ahora. Inténtalo más tarde.",
+                          "Could not retrieve elTOQUE rates right now. Try again later.")) from None
+    return {**snapshot, "units": tools.rate_units(snapshot["rates"]), "monitor": rate_store.status(),
+            "refresh_seconds": config.ELTOQUE_REFRESH_SECONDS,
+            "derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS}
 
 
 @op("weather")
@@ -1752,7 +1806,8 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
                     kind = getattr(getattr(info, "chat_type", ""), "value", getattr(info, "chat_type", ""))
                     actual = str(chat.rpc().get_contact(chat.account(), contact).address or "").strip().lower()
                     if (target and str(kind) == "Single" and not getattr(info, "is_contact_request", False)
-                            and not getattr(info, "is_self_talk", False) and actual == address):
+                            and not getattr(info, "is_self_talk", False) and actual == address
+                            and identity_guard.authorized_chat(chat.rpc(), chat.account(), target, address, contact_id=contact)):
                         with state.person(address):
                             locale = "en" if state.setting("language") == "en" else "es"
                         chats[target] = (address, locale, False, access.session_stamp(address))
@@ -1773,7 +1828,8 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
             else:
                 def interrupted() -> bool:
                     return (maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address)
-                            or access.session_stamp(address) != stamp)
+                            or access.session_stamp(address) != stamp
+                            or not _verified_binding({"chat": chat_id, "addr": address}))
                 queued = bool(chat.send(chat_id, "🛠️ " + message, interrupted=interrupted))
             if queued:
                 # Accepted into the local mail queue, not confirmed delivered.
@@ -1811,8 +1867,13 @@ def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         raise AppError(tr(locale, "Solo para administradores.", "Administrators only."))
     action, address = str(args.get("do") or ""), _clean(args.get("address")).lower()
     message = ""
-    if action in {"allow", "remove", "block"}:
-        done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
+    if action in {"allow_one", "allow", "remove", "block"}:
+        if action == "allow_one":
+            if chat.sender().strip().lower() != config.OWNER_ADDRESS:
+                raise AppError(tr(locale, "Solo el dueño puede autorizar a un invitado.", "Only the owner can approve a guest."))
+            done = admin.grant_one(address, args.get("minutes", 60), str(args.get("nonce") or ""))
+        else:
+            done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
         queue.wake()
         message = tr(locale, "Hecho.", "Done.") if done else tr(locale,
             "No se pudo cambiar: revisa la dirección, el modo privado y la conexión de Delta Chat.",

@@ -67,6 +67,39 @@ def set_owner_only(enabled: bool, minutes: int = 60, nonce: str = "") -> bool:
     return True
 
 
+def open_one_guest(address: str, minutes: int, nonce: str) -> int | None:
+    """Open a session and grant only this address in one atomic transition."""
+    global _controlled, _owner_only, _deadline, _revision, _nonce
+    address = (address or "").strip().lower()
+    if not address or address == config.OWNER_ADDRESS or type(minutes) is not int or minutes not in DURATIONS:
+        return None
+    with _lock:
+        _refresh_locked()
+        enabled = _owner_only if _controlled else bool(config.OWNER_ONLY)
+        if (not enabled or config.MAINTENANCE_MODE or not config.OWNER_ADDRESS
+                or not secrets.compare_digest(str(nonce), _nonce)):
+            return None
+        _controlled, _owner_only = True, False
+        _deadline = 0.0 if not minutes else time.time() + minutes * 60
+        _guests.clear()
+        _guests[address] = secrets.token_hex(16)
+        _nonce = secrets.token_urlsafe(24)
+        _revision += 1
+        return _revision
+
+
+def rollback_one_guest(address: str, expected_revision: int) -> None:
+    """Close a failed single-person opening only if no one else changed it."""
+    global _owner_only, _deadline, _revision, _nonce
+    with _lock:
+        _refresh_locked()
+        if _controlled and not _owner_only and _revision == expected_revision and set(_guests) == {address}:
+            _owner_only, _deadline = True, 0.0
+            _guests.clear()
+            _nonce = secrets.token_urlsafe(24)
+            _revision += 1
+
+
 def allow_guest(address: str, expected_revision: int) -> bool:
     address = (address or "").strip().lower()
     if not address or address == config.OWNER_ADDRESS:
@@ -134,6 +167,10 @@ def bound_allowed(item: dict[str, Any]) -> bool:
 
 
 def job_allowed(job: dict[str, Any]) -> bool:
+    """A sealed identity never resumes a previous identity's chat/message IDs."""
+    epoch = job.get("epoch")
+    if config.BOT_EPOCH_STRICT and epoch != config.BOT_EPOCH:
+        return False
     return bound_allowed(job)
 
 
