@@ -172,10 +172,11 @@ def media_card(chat_id: int, url: str, locale: str) -> None:
         for height, size in sorted(info.video_sizes.items()):
             star = " ⭐" if height == best_default else ""
             parts = queue.parts_for(size, part_mb)
-            lines.append(f"  {height}p ≈{human_size(size)}" + (f" ({parts} p.)" if parts > 1 else "") + f" {links.command('vid', info.webpage, str(height))}{star}")
+            estimate = f"≈{human_size(size)}" if size else tr(locale, "tamaño desconocido", "size unknown")
+            lines.append(f"  {height}p {estimate}" + (f" ({parts} p.)" if parts > 1 else "") + f" {links.command('vid', info.webpage, str(height))}{star}")
     if info.audio_sizes:
-        lines.append(tr(locale, "Audio:", "Audio:"))
-        for rate in (48, 64, 96, 128, 160):
+        lines.append(tr(locale, "Audio (conversión estimada):", "Audio (estimated conversion):"))
+        for rate in media.AUDIO_RATES:
             size = info.audio_sizes.get(rate, 0)
             star = " ⭐" if rate == default_kbps else ""
             lines.append(f"  {rate} kbps ≈{human_size(size)} {links.command('a', info.webpage, str(rate))}{star}")
@@ -217,7 +218,7 @@ def enqueue_download(chat_id: int, url: str, locale: str) -> None:
     _ack(chat_id, job, locale)
 
 
-def enqueue_media(chat_id: int, url: str, kind: str, quality: int, locale: str) -> None:
+def enqueue_media(chat_id: int, url: str, kind: str, quality: int, locale: str, audio_format: str = "", video_format: str = "") -> None:
     try:
         url = net.validate_public_url(url)
     except ValueError as exc:
@@ -235,7 +236,12 @@ def enqueue_media(chat_id: int, url: str, kind: str, quality: int, locale: str) 
     if kind == "video" and info.video_sizes and quality not in info.video_sizes:
         fitting = [height for height in info.video_sizes if height <= quality]
         quality = max(fitting) if fitting else min(info.video_sizes)
-    job, problem = queue.enqueue_media(chat_id, info, kind, quality, locale)
+    if video_format:
+        job, problem = queue.enqueue_media(chat_id, info, kind, quality, locale, "", video_format)
+    elif audio_format:
+        job, problem = queue.enqueue_media(chat_id, info, kind, quality, locale, audio_format)
+    else:
+        job, problem = queue.enqueue_media(chat_id, info, kind, quality, locale)
     if problem:
         chat.text(chat_id, problem)
         return

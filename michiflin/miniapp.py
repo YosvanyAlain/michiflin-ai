@@ -1,6 +1,7 @@
 """Mini app bridge: the bot ships the webxdc app and answers its requests through status updates.
 
 App -> bot: {"t": "req", "id": str, "op": str, "args": {...}, "lang": "es"|"en"}
+            {"t": "req_chunk", "id": str, "i": n, "n": total, "s": base64} (large coding projects)
 Bot -> app: {"t": "res", "re": id, "ok": bool, "data": ..., "error": str}
             {"t": "chunk", "re": id, "i": n, "n": total, "s": str}  (oversized responses, reassembled by the app)
             {"t": "push", "kind": str, "data": ...}                 (queue changes, alerts)
@@ -27,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, music, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -189,7 +190,7 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     return entry
 
 
-SAFE_REPLAY = {"hello", "models", "ask", "image", "search", "read", "tool", "rates", "translate", "health", "repair"}
+SAFE_REPLAY = {"hello", "models", "ask", "image", "search", "music_search", "music_item", "read", "tool", "rates", "translate", "health", "repair"}
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
 SWEEP_EVERY = 30.0      # catch updates whose event was missed (restarts, reconnects)
 ANSWER_CACHE = 2400.0   # seconds an answer stays ready for a resend
@@ -216,6 +217,24 @@ def _prune_seen() -> None:
     with _answers_lock:
         for key in [key for key, item in _answers.items() if now - item["ts"] > ANSWER_CACHE]:
             _answers.pop(key, None)
+    # Partial coding requests contain user files. Remove expired fragments even
+    # when no new request ever arrives, rather than keeping them in backups.
+    changed = False
+    with state.lock:
+        for entry in _apps().values():
+            parts = entry.get("request_parts") if isinstance(entry, dict) else None
+            if not isinstance(parts, dict):
+                continue
+            for key, item in list(parts.items()):
+                try:
+                    expired = not isinstance(item, dict) or now - float(item.get("at", 0)) > REQUEST_AGE
+                except (TypeError, ValueError):
+                    expired = True
+                if expired:
+                    parts.pop(key, None)
+                    changed = True
+    if changed:
+        state.save()
 
 
 def _admit(rid: str, retry: int, instance_id: int = 0) -> str:
@@ -244,6 +263,62 @@ def _admit(rid: str, retry: int, instance_id: int = 0) -> str:
         return "running" if item["state"] == "running" else "cached"
 
 
+# Bound and persist partial request chunks together with the app serial. If the
+# bot restarts between updates, the remaining pieces can still complete the
+# same request without executing it twice. Chunks are accepted only from an
+# already-bound instance; normal authorization is rechecked in handle().
+REQUEST_MAX = 600_000
+REQUEST_PART = 74_000
+REQUEST_PARTS = 12
+REQUEST_AGE = 3600
+
+
+def _request_piece(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
+    rid, part = payload.get("id"), payload.get("s")
+    index, total = payload.get("i"), payload.get("n")
+    if (not isinstance(rid, str) or not re.fullmatch(r"[a-z0-9]{5,40}", rid) or
+            not isinstance(part, str) or len(part) > REQUEST_PART or not re.fullmatch(r"[A-Za-z0-9+/=]+", part) or
+            type(index) is not int or type(total) is not int or not 1 <= total <= REQUEST_PARTS or not 0 <= index < total):
+        return None
+    with state.lock:
+        parts = entry.setdefault("request_parts", {})
+        if not isinstance(parts, dict):
+            entry["request_parts"] = parts = {}
+        now = time.time()
+        for key, item in list(parts.items()):
+            if not isinstance(item, dict) or now - float(item.get("at", 0)) > REQUEST_AGE:
+                parts.pop(key, None)
+        saved = parts.get(rid)
+        if saved is None:
+            if len(parts) >= 2:  # at most two incomplete projects per instance
+                return None
+            saved = parts[rid] = {"at": now, "n": total, "pieces": {}}
+        if saved.get("n") != total or not isinstance(saved.get("pieces"), dict):
+            parts.pop(rid, None)
+            return None
+        pieces = saved["pieces"]
+        key = str(index)
+        if key in pieces and pieces[key] != part:
+            parts.pop(rid, None)
+            return None
+        pieces[key] = part
+        if len(pieces) != total:
+            return None
+        parts.pop(rid, None)
+        try:
+            encoded = "".join(pieces[str(i)] for i in range(total))
+            raw = base64.b64decode(encoded, validate=True)
+            if len(raw) > REQUEST_MAX:
+                return None
+            request = json.loads(raw.decode("utf-8"))
+            if (not isinstance(request, dict) or request.get("t") != "req" or request.get("id") != rid
+                    or request.get("op") != "code"):
+                return None
+            return request
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            return None
+
+
 def on_status_update(msg_id: int) -> None:
     """Read new updates of an instance and dispatch the app's requests."""
     if _paused.is_set():
@@ -264,9 +339,16 @@ def on_status_update(msg_id: int) -> None:
         for update in updates:
             entry["serial"] = max(int(entry.get("serial", 0)), int(update.get("serial", 0)))
             payload = update.get("payload")
-            if isinstance(payload, dict) and payload.get("t") == "req":
-                entry["active"] = time.time()
-                _route(msg_id, dict(entry), payload)
+            if isinstance(payload, dict):
+                if payload.get("t") == "req_chunk":
+                    address = str(entry.get("addr", "")).strip().lower()
+                    if (not address or not admin.is_allowed(address) or not config.service_access_allowed(address)
+                            or (entry.get("build") and entry.get("build") != app_build())):
+                        continue
+                    payload = _request_piece(entry, payload)
+                if isinstance(payload, dict) and payload.get("t") == "req":
+                    entry["active"] = time.time()
+                    _route(msg_id, dict(entry), payload)
         state.save()
 
 
@@ -315,11 +397,11 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     chat.send_update(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "action", "command", "tool", "translate", "rates",
+WORK_OPS = {"ask", "image", "code", "read", "search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
             "youtube_account", "facebook_account", "tiktok_account"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "nauta_strict", "settings", "models", "estado"}
-OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "translate": 90, "code": 900}
+OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control-op")
 _ai_gates: dict[str, threading.Lock] = {}
@@ -668,8 +750,8 @@ LEVELS = (("low", "Baja", "Low"), ("medium", "Media", "Medium"), ("high", "Alta"
 YES_NO = (("yes", "Sí", "Yes"), ("no", "No", "No"))
 APP_SETTINGS: list[tuple[tuple[str, str], list[tuple[str, str, str, str, tuple]]]] = [
     (("Descargas", "Downloads"), [
-        ("video_height", "Calidad de video", "Video quality", "choice", tuple((str(v), f"{v}p", f"{v}p") for v in (144, 240, 360, 480, 720, 1080))),
-        ("audio_kbps", "Calidad de audio", "Audio quality", "choice", tuple((str(v), f"{v} kbps", f"{v} kbps") for v in (32, 48, 64, 96, 128, 160))),
+        ("video_height", "Calidad de video", "Video quality", "choice", tuple((str(v), f"{v}p", f"{v}p") for v in (144, 240, 360, 480, 720, 1080, 1440, 2160))),
+        ("audio_kbps", "Calidad de audio", "Audio quality", "choice", tuple((str(v), f"{v} kbps", f"{v} kbps") for v in (32, 48, 64, 96, 128, 160, 192, 224, 256, 320))),
         ("audio_format", "Formato de audio", "Audio format", "choice", (("m4a", "M4A", "M4A"), ("mp3", "MP3", "MP3"), ("opus", "Opus", "Opus"))),
         ("part_mb", "Tamaño de cada parte (MB)", "Part size (MB)", "number", (1, 20)),
         ("part_format", "Partes de archivos", "File parts", "choice", (("raw", "Partes simples", "Plain parts"), ("7z", "7z", "7z"), ("zip", "ZIP", "ZIP"))),
@@ -795,10 +877,10 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         answer["models"] = models_view()
         return answer
     messages = [{"role": "system", "content": agent.system_prompt(locale)}]
-    budget = 8000
+    budget = 30000
     for turn in reversed(history[-12:]):
         if isinstance(turn, list) and len(turn) == 2 and turn[0] in {"user", "assistant"}:
-            content = _clean(turn[1])[:2000]
+            content = _clean(turn[1])[:6000]
             budget -= len(content)
             if budget < 0:
                 break
@@ -810,7 +892,11 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         result = ai.complete_exact(messages, space, images=media_parts or None)
     if not result.ok:
         raise AppError(ai.describe_error(result.error, locale, result, "" if space == "auto" else space).replace("⚠️ IA: ", "").replace("⚠️ ", ""))
-    return {"text": result.text, "sig": result.signature(), "model": result.model, "models": models_view()}
+    text = result.text
+    if result.truncated:
+        text += tr(locale, "\n\n[La respuesta se cortó por el límite del proveedor; pide que continúe.]",
+                   "\n\n[The answer was cut off by the provider's limit; ask it to continue.]")
+    return {"text": text, "sig": result.signature(), "model": result.model, "truncated": result.truncated, "models": models_view()}
 
 
 @op("browser_session")
@@ -916,7 +1002,14 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     text = _clean(args.get("text"))[:6000]
     if not text:
         raise AppError(tr(locale, "Describe qué quieres programar.", "Describe what you want to build."))
-    files = [item for item in (args.get("files") or [])[:coder.MAX_FILES] if isinstance(item, dict)] if isinstance(args.get("files"), list) else []
+    incoming = args.get("files") if isinstance(args.get("files"), list) else []
+    if len(incoming) > coder.MAX_FILES:
+        raise AppError(tr(locale, "El proyecto supera el límite de archivos; no se modificó.",
+                          "The project exceeds the file limit; it was not modified."))
+    if any(not isinstance(item, dict) for item in incoming):
+        raise AppError(tr(locale, "Archivo de proyecto no válido; no se modificó.",
+                          "Invalid project file; it was not changed."))
+    files = incoming
     model = _clean(args.get("model"))[:120]
     if model and ai.model_by_key(model) is None:
         raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro o usa Automático.",
@@ -1000,10 +1093,10 @@ def op_image(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         reason = {"no_source": tr(locale, "No hay generadores configurados.", "No generators are configured."),
                   "unknown": tr(locale, "Ese modelo ya no está disponible. Elige otro.", "That model is no longer available. Pick another one."),
                   "cooldown": tr(locale, f"{name} está descansando. Elige otro modelo o Automático.", f"{name} is resting. Pick another model or Automatic."),
-                  "quota": tr(locale, f"{name}: se agotó la cuota gratis de hoy{f'; vuelve a las {back}' if back else ''}. Elige otro modelo o Automático."
-                              if model else "Las cuotas gratis de imagen se agotaron por hoy.",
-                              f"{name}: today's free quota is used up{f'; back at {back}' if back else ''}. Pick another model or Automatic."
-                              if model else "Free image quotas are used up for today."),
+                  "quota": tr(locale, f"{name}: alcanzó un límite local o del proveedor{f'; prueba después de las {back}' if back else ''}. Elige otro modelo o Automático."
+                              if model else "No quedan generadores dentro de los límites locales o del proveedor.",
+                              f"{name}: a local or provider limit was reached{f'; try after {back}' if back else ''}. Pick another model or Automatic."
+                              if model else "No generators remain within local or provider limits."),
                   "busy": tr(locale, f"{name} está saturado ahora. Prueba en un minuto u otro modelo.", f"{name} is overloaded right now. Try again in a minute or another model."),
                   "auth": tr(locale, f"{name}: el servicio rechazó la clave. Hay que renovarla.", f"{name}: the service rejected the key. It needs to be renewed.")}
         fallback = tr(locale, f"{name} no respondió. Prueba otra vez u otro modelo.", f"{name} did not answer. Try again or another model.") if model else \
@@ -1042,6 +1135,27 @@ def op_search(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             results = []
     return {"engine": engine, "q": query, "mode": "advanced" if advanced else "standard", "left": tools.you_left() if advanced else None,
             "results": [{"title": item.title, "url": item.url, "snippet": item.snippet, "source": item.source, "date": item.date} for item in results]}
+
+
+@op("music_search")
+def op_music_search(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    query = _clean(args.get("q"))[:200]
+    if not query:
+        raise AppError(tr(locale, "Escribe qué música buscas.", "Enter the music you want to find."))
+    try:
+        return {"q": query, "results": music.search(query)}
+    except music.MusicError as exc:
+        raise AppError(tr(locale, "La biblioteca no respondió. Prueba otra vez.",
+                          "The library did not respond. Try again.")) from exc
+
+
+@op("music_item")
+def op_music_item(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    try:
+        return music.item(_clean(args.get("id")))
+    except music.MusicError as exc:
+        raise AppError(tr(locale, "No pude leer esta colección de audio.",
+                          "Could not read this audio collection.")) from exc
 
 
 @op("read")
@@ -1083,7 +1197,21 @@ def op_action(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         return {"title": title, "text": text[:200_000]}
     if kind not in ACTIONS or not url:
         raise AppError(tr(locale, "Acción no válida.", "Invalid action."))
-    return run_captured(lambda: ACTIONS[kind](chat_id, url, locale, quality), locale) | {"jobs": jobs_view(chat_id, locale)}
+    if quality and ((kind == "audio" and quality not in media.AUDIO_RATES) or
+                    (kind == "video" and quality not in media.VIDEO_HEIGHTS)):
+        raise AppError(tr(locale, "Calidad no válida.", "Invalid quality."))
+    audio_format = str(args.get("audio_format") or "").lower()
+    video_format = str(args.get("video_format") or "").lower()
+    if ((audio_format and (kind != "audio" or audio_format not in {"mp3", "m4a", "opus"})) or
+            (video_format and (kind != "video" or video_format not in {"mp4", "mkv", "webm"}))):
+        raise AppError(tr(locale, "Formato no válido.", "Invalid format."))
+    if kind == "audio" and audio_format:
+        operation = lambda: web.enqueue_media(chat_id, url, kind, quality or int(state.setting("audio_kbps")), locale, audio_format)
+    elif kind == "video" and video_format:
+        operation = lambda: web.enqueue_media(chat_id, url, kind, quality or int(state.setting("video_height")), locale, "", video_format)
+    else:
+        operation = lambda: ACTIONS[kind](chat_id, url, locale, quality)
+    return run_captured(operation, locale) | {"jobs": jobs_view(chat_id, locale)}
 
 
 @op("command")

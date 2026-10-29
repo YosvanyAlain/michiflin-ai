@@ -62,16 +62,22 @@ OPENROUTER_API_KEY = env("OPENROUTER_API_KEY")
 ZAI_API_KEY = env("ZAI_API_KEY")
 CLOUDFLARE_ACCOUNT_ID = env("CLOUDFLARE_ACCOUNT_ID")
 CLOUDFLARE_AI_TOKEN = env("CLOUDFLARE_AI_TOKEN")
+# Conservative local estimate shared across Workers AI text and images; not an account billing cap.
+CLOUDFLARE_ESTIMATED_NEURONS = env_int("CLOUDFLARE_ESTIMATED_NEURONS", 7500)
+# OVH SDXL is currently free anonymously, subject to the provider's rate limits and availability.
+OVH_IMAGES = env("OVH_IMAGES", "1") != "0"
 GITHUB_MODELS_TOKEN = env("GITHUB_MODELS_TOKEN")
 POLLINATIONS_API_KEY = env("POLLINATIONS_API_KEY")
 BAZAARLINK_API_KEY = env("BAZAARLINK_API_KEY")
 ORCAROUTER_API_KEY = env("ORCAROUTER_API_KEY")
 SAMBANOVA_API_KEY = env("SAMBANOVA_API_KEY")
-# Keyless free gateways (LLM7.io turbo tier, Kilo Gateway ":free" models); optional free tokens raise their limits.
+# Keyless gateways (OVH anonymous, LLM7.io turbo tier, Kilo Gateway free models).
 FREE_GATEWAYS = env("FREE_GATEWAYS", "1") != "0"
 LLM7_API_KEY = env("LLM7_API_KEY")
 KILO_API_KEY = env("KILO_API_KEY")
-# Hugging Face token: used only for free ZeroGPU Spaces (image backup), never paid inference.
+# Hugging Face public ZeroGPU Space: anonymous by default, or an optional account token.
+# Paid/PRO account settings can spend credits after the included quota; check the account.
+HF_IMAGES = env("HF_IMAGES", "1") != "0"
 HF_TOKEN = env("HF_TOKEN")
 HF_IMAGE_SPACE = env("HF_IMAGE_SPACE", "black-forest-labs/FLUX.1-schnell")
 # You.com Web Search: kept under its free daily allowance, then the keyless search takes over.
@@ -86,7 +92,7 @@ AI_HORDE_API_KEY = env("AI_HORDE_API_KEY")
 EXTRA_PROVIDERS = env("EXTRA_PROVIDERS")
 AI_EXTRA_ALLOWED_HOSTS = {host.lower() for host in env_list("AI_EXTRA_ALLOWED_HOSTS")}
 AI_TIMEOUT = env_int("AI_TIMEOUT", 75)
-AI_MAX_OUTPUT_TOKENS = env_int("AI_MAX_OUTPUT_TOKENS", 1800)
+AI_MAX_OUTPUT_TOKENS = env_int("AI_MAX_OUTPUT_TOKENS", 6000)
 # Coder runs code only inside an isolated sandbox (sudo + namespaces); 0 keeps it to writing files.
 CODE_RUN = env("CODE_RUN", "1") != "0"
 # Live status notices: seconds before the first notice, minimum gap between edits, edit cap.
@@ -95,9 +101,9 @@ STATUS_EDIT_SECONDS = env_int("STATUS_EDIT_SECONDS", 12)
 STATUS_MAX_EDITS = env_int("STATUS_MAX_EDITS", 30)
 AI_SYSTEM_PROMPT = env(
     "AI_SYSTEM_PROMPT",
-    "You are Michiflin AI, a concise and helpful private assistant used over a slow, "
-    "expensive email connection. Answer directly, avoid filler, use short paragraphs "
-    "or lists, and never claim actions you did not perform.",
+    "You are Michiflin AI, a helpful private assistant. Match the depth and length of "
+    "your answer to the task: be brief for simple questions and thorough for complex requests. "
+    "Use clear paragraphs or lists and never claim actions you did not perform.",
 )
 
 # Optional services.

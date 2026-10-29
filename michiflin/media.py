@@ -24,8 +24,8 @@ except ImportError:  # pragma: no cover
 
 VIDEO_LEVELS = {"baja": 360, "media": 480, "alta": 720, "low": 360, "medium": 480, "high": 720}
 AUDIO_LEVELS = {"baja": 64, "media": 96, "alta": 160, "low": 64, "medium": 96, "high": 160}
-VIDEO_HEIGHTS = (144, 240, 360, 480, 720, 1080)
-AUDIO_RATES = (32, 48, 64, 96, 128, 160, 192)
+VIDEO_HEIGHTS = (144, 240, 360, 480, 720, 1080, 1440, 2160)
+AUDIO_RATES = (32, 48, 64, 96, 128, 160, 192, 224, 256, 320)
 PROXY_FIRST = re.compile(r"(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com|instagram\.com|facebook\.com|fb\.watch|tiktok\.com)$")
 
 _extractors: list[Any] | None = None
@@ -149,7 +149,7 @@ def _estimates(info: dict[str, Any]) -> tuple[dict[int, int], dict[int, int], in
     max_height = max((int(item["height"]) for item in videos), default=int(info.get("height") or 0))
     video_sizes: dict[int, int] = {}
     for height in VIDEO_HEIGHTS:
-        fitting = [item for item in videos if int(item["height"]) <= height and _size(item, duration)]
+        fitting = [item for item in videos if int(item["height"]) <= height]
         if not fitting:
             continue
         top = max(int(item["height"]) for item in fitting)
@@ -157,9 +157,10 @@ def _estimates(info: dict[str, Any]) -> tuple[dict[int, int], dict[int, int], in
             continue
         candidates = [item for item in fitting if int(item["height"]) == top]
         avc = [item for item in candidates if str(item.get("vcodec", "")).startswith("avc")] or candidates
-        chosen = min(avc, key=lambda item: _size(item, duration))
+        chosen = min(avc, key=lambda item: _size(item, duration) or float("inf"))
+        chosen_size = _size(chosen, duration)
         extra = best_audio if chosen.get("acodec") in {None, "none"} else 0
-        video_sizes[top] = _size(chosen, duration) + extra
+        video_sizes[top] = chosen_size + extra if chosen_size else 0
     audio_sizes = {rate: int(rate * 1000 / 8 * duration) for rate in AUDIO_RATES} if duration else {}
     return video_sizes, audio_sizes, max_height
 
@@ -250,12 +251,13 @@ def format_options(kind: str, quality: int, audio_format: str) -> dict[str, Any]
             "format": f"ba[abr<={source_cap}]/ba/b",
             "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": audio_format, "preferredquality": str(quality)}],
         }
-    return {
-        "format": "bv*+ba/b",
-        "format_sort": [f"res:{quality}", "vcodec:h264", "acodec:aac", "abr:96", "+size"],
-        "merge_output_format": "mp4",
-        "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}],
-    }
+    container = audio_format if audio_format in {"mp4", "mkv", "webm"} else "mp4"
+    # WebM needs WebM-compatible codecs; do not pretend an incompatible source
+    # was converted. yt-dlp/ffmpeg report a real failure when remuxing cannot work.
+    source = "bv*[ext=webm]+ba[ext=webm]/b[ext=webm]/bv*+ba/b" if container == "webm" else "bv*+ba/b"
+    sort = [f"res:{quality}", "abr:96", "+size"] if container == "webm" else [f"res:{quality}", "vcodec:h264", "acodec:aac", "abr:96", "+size"]
+    return {"format": source, "format_sort": sort, "merge_output_format": container,
+            "postprocessors": [{"key": "FFmpegVideoRemuxer", "preferedformat": container}]}
 
 
 def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,

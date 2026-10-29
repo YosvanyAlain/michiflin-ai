@@ -381,6 +381,12 @@ class HordeTests(Base):
         def json(self):
             return self.body
 
+        def iter_content(self, chunk_size=65536):
+            yield self.content
+
+        def close(self):
+            pass
+
     def run_job(self, censored: bool):
         from PIL import Image
         buffer = __import__("io").BytesIO()
@@ -392,7 +398,7 @@ class HordeTests(Base):
             sent.update(json=json, headers=headers)
             return self.Reply({"id": "job1"}, status=202)
 
-        def get(url, headers=None, timeout=None):
+        def get(url, headers=None, timeout=None, **_kwargs):
             if "/check/" in url:
                 return self.Reply(next(checks))
             if "/status/" in url:
@@ -400,7 +406,8 @@ class HordeTests(Base):
             return self.Reply(content=buffer.getvalue())
         with mock.patch.object(config, "AI_HORDE", True), mock.patch("michiflin.images.requests.post", post), \
                 mock.patch("michiflin.images.requests.get", get), mock.patch("michiflin.images.requests.delete", lambda *a, **k: None), \
-                mock.patch("michiflin.images.time.sleep", lambda _s: None), mock.patch("michiflin.images.english_prompt", lambda p: p):
+                mock.patch("michiflin.images.time.sleep", lambda _s: None), mock.patch("michiflin.images.english_prompt", lambda p: p), \
+                mock.patch("michiflin.images._public_image", return_value=buffer.getvalue()):
             result = images.generate("a lighthouse 1920x1080", "horde:flux")
         return result, sent
 
@@ -545,7 +552,8 @@ class CoderTests(Base):
         with mock.patch.object(coder, "isolation", lambda: False), mock.patch.object(coder, "_lock_private", lambda: None), \
                 mock.patch.object(coder, "MAX_STEPS", 2), mock.patch("michiflin.ai.complete", complete):
             result = coder.run("una página", [], "es")
-        self.assertEqual(result["summary"], "Página lista.")
+        self.assertIn("pueden estar incompletos", result["summary"])
+        self.assertIn("Página lista.", result["summary"])
         self.assertEqual(len(asked), 3)
 
     def test_syntax_checks_python_without_execution_and_javascript_in_sandbox(self) -> None:
@@ -1333,7 +1341,7 @@ class SearchAndImageSourceTests(Base):
                 images.Source("hf:space", "HF", 7), images.Source("cf:flux-1-schnell", "CF", 250)]
         with mock.patch.object(images, "sources", lambda: fake):
             self.assertEqual([item.key for item in images._ordered()],
-                             ["cf:flux-1-schnell", "hf:space", "pollinations:key", "pollinations:flux"])
+                             ["hf:space", "cf:flux-1-schnell", "pollinations:key", "pollinations:flux"])
 
 
 class NavigationAndReactionTests(Base):

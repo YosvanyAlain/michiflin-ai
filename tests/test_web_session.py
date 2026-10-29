@@ -837,6 +837,13 @@ class RealSandboxTests(unittest.TestCase):
                         self.assertTrue(private_media.inspect(url, mine).get("title"))
                         result = private_media.download(url, mine, root / "result", "video", 360, "m4a")
                     self.assertEqual(hashlib.sha256(result.read_bytes()).digest(), hashlib.sha256(video.read_bytes()).digest())
+                    # A requested new container and higher target must pass the real isolated worker.
+                    with state.person(ALICE):
+                        remuxed = private_media.download(url, mine, root / "mkv-result", "video", 1440, "mkv")
+                    self.assertEqual(remuxed.suffix, ".mkv")
+                    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=codec_type",
+                                            "-of", "csv=p=0", str(remuxed)], capture_output=True, text=True, check=True, timeout=10)
+                    self.assertIn("video", probe.stdout)
                     # Exercise the real browser-to-queue path, then prepare the
                     # queued media as Alice; the fixture/network overrides exist
                     # only inside this test process.

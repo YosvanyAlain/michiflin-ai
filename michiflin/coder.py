@@ -26,7 +26,7 @@ from typing import Any
 from . import ai, config, progress, smart_agent, state as runtime_state, tools
 from .util import tr
 
-MAX_STEPS = 9
+MAX_STEPS = 14
 MAX_FILES = 40
 MAX_FILE = 120_000
 MAX_TOTAL = 400_000
@@ -35,7 +35,7 @@ RUN_TIMEOUT = 25
 RUNS_PER_STEP = 4
 OUTPUT_MAX = 2500
 TIME_BUDGET = 780  # seconds; the app operation is cut at 900
-ANSWER_TOKENS = 5000
+ANSWER_TOKENS = 12000
 ROOT = Path(tempfile.gettempdir()) / "michiflin-code"
 SKIP_DIRS = {"__pycache__", "node_modules", ".git", ".pytest_cache", ".mypy_cache", "venv", ".venv"}
 BLOCK = re.compile(r"<<<\s*(FILE|RUN|DONE|DELETE|SEARCH|OPEN)\b[ \t]*([^\n>]*?)\s*>>>[ \t]*\n?(.*?)\n?[ \t]*<<<\s*END\s*>>>", re.S | re.I)
@@ -179,7 +179,8 @@ def _safe_parent(folder: Path, raw: str, create: bool = False):
 
 
 def _safe_write_text(folder: Path, raw: str, content: str, limit: int) -> bool:
-    return _safe_write_bytes(folder, raw, content[:limit].encode("utf-8"))
+    data = content.encode("utf-8")
+    return len(data) <= limit and _safe_write_bytes(folder, raw, data)
 
 
 def _safe_write_bytes(folder: Path, raw: str, data: bytes) -> bool:
@@ -221,20 +222,61 @@ def _unfence(content: str) -> str:
     return "\n".join(lines)
 
 
-def write_files(folder: Path, files: list[dict[str, Any]]) -> None:
+def validate_files(files: list[dict[str, Any]], locale: str) -> None:
+    """Reject an unrepresentable input instead of silently deleting or truncating files."""
+    def fail() -> None:
+        raise CoderError(tr(locale, "El proyecto contiene archivos no válidos o excede los límites; no se modificó.",
+                            "The project contains invalid files or exceeds the limits; it was not changed."))
+
+    if len(files) > MAX_FILES:
+        fail()
+    total, paths = 0, set()
+    for item in files:
+        if not isinstance(item, dict):
+            fail()
+        path = safe_path(str(item.get("path", "")))
+        if (not path or path in paths or any(part in SKIP_DIRS for part in Path(path).parts)
+                or path.endswith(".pyc")):
+            fail()
+        paths.add(path)
+        if "b64" in item:
+            try:
+                data = base64.b64decode(str(item["b64"]), validate=True)
+            except (ValueError, TypeError):
+                fail()
+            if len(data) > MAX_BINARY:
+                fail()
+        elif isinstance(item.get("text"), str):
+            data = item["text"].encode("utf-8")
+            if len(data) > MAX_FILE:
+                fail()
+        else:
+            fail()
+        total += len(data)
+        if total > MAX_TOTAL:
+            fail()
+
+
+def write_files(folder: Path, files: list[dict[str, Any]]) -> bool:
+    """Write every input file safely and report any failure; never hide loss."""
+    complete = len(files) <= MAX_FILES
     for item in files[:MAX_FILES]:
         path = safe_path(str(item.get("path", "")))
         if not path:
+            complete = False
             continue
         if "b64" in item:
             try:
-                data = base64.b64decode(str(item["b64"]), validate=True)[:MAX_BINARY]
+                data = base64.b64decode(str(item["b64"]), validate=True)
             except (ValueError, TypeError):
+                complete = False
                 continue
-            _safe_write_bytes(folder, path, data)
+            written = len(data) <= MAX_BINARY and _safe_write_bytes(folder, path, data)
         else:
-            _safe_write_text(folder, path, str(item.get("text", "")), MAX_FILE)
+            written = _safe_write_text(folder, path, str(item.get("text", "")), MAX_FILE)
+        complete = bool(written) and complete
     _open_up(folder)
+    return complete
 
 
 def _open_up(folder: Path) -> None:
@@ -266,7 +308,7 @@ def _open_up(folder: Path) -> None:
             continue
 
 
-def read_files(folder: Path) -> list[dict[str, Any]]:
+def read_files(folder: Path, issues: list[str] | None = None) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     total = 0
     for path in sorted(folder.rglob("*")):
@@ -278,17 +320,31 @@ def read_files(folder: Path) -> list[dict[str, Any]]:
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
                 try:
                     info = os.fstat(fd)
-                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > MAX_FILE:
+                    if stat.S_ISDIR(info.st_mode):
+                        continue
+                    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                        if issues is not None:
+                            issues.append(f"Unsupported or unsafe file: {relative.as_posix()}")
+                        continue
+                    if info.st_size > MAX_FILE:
+                        if issues is not None:
+                            issues.append(f"File exceeds {MAX_FILE} bytes: {relative.as_posix()}")
                         continue
                     with os.fdopen(fd, "rb", closefd=False) as handle:
                         data = handle.read(MAX_FILE + 1)
                     if len(data) > MAX_FILE:
+                        if issues is not None:
+                            issues.append(f"File exceeds {MAX_FILE} bytes: {relative.as_posix()}")
                         continue
                 finally:
                     os.close(fd)
         except OSError:
+            if issues is not None:
+                issues.append(f"Could not safely read: {relative.as_posix()}")
             continue
         if total + len(data) > MAX_TOTAL or len(found) >= MAX_FILES:
+            if issues is not None:
+                issues.append(f"Project exceeds the {MAX_FILES} file / {MAX_TOTAL} byte export limit")
             break
         try:
             text = data.decode("utf-8")
@@ -297,6 +353,8 @@ def read_files(folder: Path) -> list[dict[str, Any]]:
             found.append({"path": relative.as_posix(), "text": text})
         except UnicodeDecodeError:
             if len(data) > MAX_BINARY:
+                if issues is not None:
+                    issues.append(f"Binary exceeds {MAX_BINARY} bytes: {relative.as_posix()}")
                 continue
             found.append({"path": relative.as_posix(), "b64": base64.b64encode(data).decode()})
         total += len(data)
@@ -377,7 +435,9 @@ def system_prompt(locale: str, can_run: bool) -> str:
         "setUpdateListener(function (update) {...}, 0), which also replays every earlier update. Mini apps have no internet. "
         "Add manifest.toml with one line: name = \"Short app name\". The app packages the project as an .xdc file, so never write "
         "zip files or packaging scripts.\n"
-        "- Keep the project small and clear (at most 12 files); add a short README.md when there is more than one file.\n"
+        f"- Build the requested complete project rather than a demo or a stub. The workspace has safety limits "
+        f"of {MAX_FILES} files, {MAX_FILE} bytes per file, and {MAX_TOTAL} bytes total; stay within them and say if a limit prevents completion. "
+        "Split substantial projects across multiple steps and write complete files. Add a useful README when appropriate.\n"
         f"- Write user-facing text, comments and the README in {language} unless the user asks otherwise.\n"
         + verify
     )
@@ -405,6 +465,19 @@ ORDER = re.compile(r"\b(hazme|haz una?|créame|creame|crea una?|construye|progr�
 POLITE = re.compile(r"^\W*(puedes|podrías|podrias|me haces|me creas|me programas|me puedes|can you|could you|would you|please|por favor)\b", re.I)
 BUILD = re.compile(r"\b(hacer|crear|construir|programar|generar|escribir|desarrollar|añadir|agregar|cambiar|arreglar|corregir|"
                    r"make|build|create|write|generate|develop|add|change|fix)\b", re.I)
+VERIFY_COMMAND = re.compile(
+    r"\b(?:pytest|(?:python\d*(?:\.\d+)?)\s+(?:-m\s+(?:pytest|unittest)\b|[^\s;&|]*test[^\s;&|]*)|"
+    r"(?:node|deno)\s+(?:--check\b|test\b|[^\s;&|]*test[^\s;&|]*)|"
+    r"(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|check)\b|"
+    r"(?:cargo|go|make)\s+test\b|(?:gcc|g\+\+|javac)\b)", re.I)
+INSPECTION_COMMAND = re.compile(r"^\s*(?:cat|head|tail|sed|grep|ls|find|wc|tree)\b", re.I)
+
+
+def _verification_key(command: str) -> str:
+    """Remember failed checks until the same check passes; a later DONE cannot erase them."""
+    normal = re.sub(r"\s+(?:2>&1|1>&2)\s*$", "", command.strip())
+    normal = re.sub(r"\s+", " ", normal)
+    return normal if VERIFY_COMMAND.search(normal) else ""
 
 
 def looks_like_question(text: str) -> bool:
@@ -572,14 +645,20 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
     folder.chmod(0o777)
     steps: list[dict[str, Any]] = []
     summary, used, sticky = "", "", ""
+    model_confirmed = False  # Separate model's DONE from lossless file export; neither guarantees quality.
+    unresolved_checks: dict[str, int] = {}
+    inspection_rounds = 0
     allowed_urls = {url for match in smart_agent.URL.findall(request) if (url := smart_agent._url(match))}
     research_count = 0
     try:
-        write_files(folder, files)
+        validate_files(files, locale)
+        if not write_files(folder, files):
+            raise CoderError(tr(locale, "No se pudo preparar todo el proyecto; se conservó el original.",
+                                "Could not prepare the whole project; the original was kept."))
         context = ""
         if files:
             shown = read_files(folder)
-            budget = 30_000
+            budget = 60_000
             parts = []
             for item in shown:
                 body = item.get("text", "[binary file]")
@@ -617,6 +696,7 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                 build_requested = bool(ORDER.search(request) or BUILD.search(request)) and not looks_like_question(request)
                 if step == 0 and not files and not build_requested:
                     summary = result.text.strip()[:3000]
+                    model_confirmed = not result.truncated
                     break
                 if not model_key:
                     sticky = ""  # let the fair router try a different provider
@@ -635,6 +715,15 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                     content = _unfence(body)
                     if PLACEHOLDER.match(content.strip() or "..."):
                         results.append(f"! {path} was NOT written: send the complete file content, never a placeholder.")
+                        continue
+                    existing = read_files(folder)
+                    sizes = {item["path"]: len(item.get("text", "").encode("utf-8")) if "text" in item
+                             else len(base64.b64decode(item.get("b64", ""))) for item in existing}
+                    new_size = len(content.encode("utf-8"))
+                    if ((path not in sizes and len(sizes) >= MAX_FILES) or new_size > MAX_FILE or
+                            sum(sizes.values()) - sizes.get(path, 0) + new_size > MAX_TOTAL):
+                        failed = True
+                        results.append(f"! {path} was NOT written: project/file safety size limit. Split or reduce the project and explain the limitation.")
                         continue
                     if not _safe_write_text(folder, path, content, MAX_FILE):
                         results.append(f"! Skipped unsafe write: {path}")
@@ -659,14 +748,35 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                     done = (body or arg).strip()
             _open_up(folder)
             runs = [body.strip() for kind, _arg, body in actions if kind == "RUN" and body.strip()][:RUNS_PER_STEP] if can_run else []
+            inspection_only = bool(runs) and all(INSPECTION_COMMAND.match(command) for command in runs) and not any(
+                kind in {"FILE", "DELETE", "SEARCH", "OPEN"} for kind, _arg, _body in actions)
+            inspection_rounds = inspection_rounds + 1 if inspection_only else 0
             for command in runs:
                 runtime_state.check_work_allowed()
                 code, output = _run(folder, command)
                 runtime_state.check_work_allowed()
                 failed = failed or code != 0
+                check = _verification_key(command)
+                if check:
+                    if code:
+                        unresolved_checks[check] = code
+                    else:
+                        unresolved_checks.pop(check, None)
                 steps.append({"kind": "run", "cmd": command[:400], "code": code, "out": output[:1500]})
                 results.append(f"$ {command}\nexit {code}\n{output}")
-            current_files = read_files(folder)
+            if inspection_rounds >= 3:
+                results.append("Several consecutive rounds only inspected files. Apply the necessary changes and rerun failing tests; "
+                               "inspect further only when it helps solve the problem.")
+            if done and unresolved_checks:
+                failed = True
+                results.append("Previously failed verification is still unresolved. Fix it and rerun the same check successfully before DONE: " +
+                               "; ".join(list(unresolved_checks)[:4]))
+            export_issues: list[str] = []
+            current_files = read_files(folder, export_issues)
+            if export_issues:
+                failed = True
+                results.append("Files cannot be exported safely: " + "; ".join(export_issues[:8]) +
+                               ". Fix or remove them; do not claim completion.")
             problems = web_check(current_files) if current_files else []
             syntax_problems = syntax_check(folder, current_files, can_run) if current_files else []
             for label, found in (("web check", problems), ("syntax check", syntax_problems)):
@@ -679,8 +789,13 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                 if message["role"] == "assistant":
                     message["content"] = _compact(message["content"])
             messages.append({"role": "assistant", "content": result.text[:24000]})
+            if result.truncated:
+                failed = True
+                results.append("The model response was cut off by its output limit. Resend each incomplete file as a complete FILE block; "
+                               "do not claim completion until all files and tests are complete.")
             if done and not failed and not any(kind in {"SEARCH", "OPEN"} for kind, _arg, _body in actions):
                 summary = done[:3000]
+                model_confirmed = True
                 break
             if len(messages) > 14:
                 messages = messages[:2] + messages[-10:]
@@ -692,19 +807,31 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
                 messages.append({"role": "user", "content": state + ("\n\nNow run the code to check it, then finish with <<<DONE>>>."
                                                                      if can_run else "\n\nFinish with <<<DONE>>> when the project is complete.")})
         runtime_state.check_work_allowed()
-        output = read_files(folder)
+        export_issues = []
+        output = read_files(folder, export_issues)
         if output and not summary and time.monotonic() - started < TIME_BUDGET + 60:
-            summary = _wrap_up(messages, model_key, sticky)
+            tentative = _wrap_up(messages, model_key, sticky)
+            summary = tr(locale, "No hubo confirmación completa dentro del límite; los archivos pueden estar incompletos.",
+                         "No complete confirmation within the limit; files may be incomplete.")
+            if tentative:
+                summary += "\n\n" + tentative
+        if export_issues:
+            warning = tr(locale, "No se pudo exportar todo el proyecto; se conservaron los archivos anteriores:",
+                         "The whole project could not be exported; the previous files were kept:")
+            summary = warning + " " + "; ".join(export_issues[:8]) + ("\n\n" + summary if summary else "")
+            # Return the input, not a partial project: this also protects older clients.
+            output = files
         if not output and not summary:
             raise CoderError(tr(locale, "Los modelos no produjeron código. Reformula la petición o prueba otro modelo.",
                                 "The models produced no code. Rephrase the request or try another model."))
         if not summary:
             summary = tr(locale, "Terminé sin confirmación final; revisa el registro de pasos.", "Stopped without a final confirmation; check the step log.")
         written = {step["path"] for step in steps if step["kind"] == "write"}
-        if written.intersection(item["path"] for item in output) and EMPTY_PROJECT_CLAIM.search(summary):
+        if not export_issues and written.intersection(item["path"] for item in output) and EMPTY_PROJECT_CLAIM.search(summary):
             summary = tr(locale, "Se escribieron archivos del proyecto; revísalos antes de usarlos.",
                          "Project files were written; review them before use.")
-        return {"files": output, "summary": summary, "steps": steps[-60:], "sig": used, "isolated": can_run,
+        return {"files": output, "project_complete": not export_issues, "model_confirmed": model_confirmed and not export_issues,
+                "summary": summary, "steps": steps[-60:], "sig": used, "isolated": can_run,
                 "seconds": round(time.monotonic() - started), "name": project_name(output),
                 "answer": not any(step["kind"] in {"write", "delete"} for step in steps)}
     finally:

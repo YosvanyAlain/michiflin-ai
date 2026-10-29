@@ -11,13 +11,14 @@ const store = {
   get(_key, fallback) { return project || fallback; },
   set(_key, value) { Object.assign(project, value); },
 };
+const notices = [];
 const context = {
   store,
   bridge: { handlers: {}, pending: () => ({}), request: () => ({ id: "test" }) },
   bus: { emit() {} },
   VIEWS: {},
   t: (key) => key,
-  toast() {},
+  toast(text) { notices.push(text); },
   now: () => 1,
   h: () => ({}),
   openSheet() {},
@@ -34,9 +35,13 @@ context.coderUndo();
 assert.equal(project.files[0].text, "def value():\n    return 0\n");
 assert.equal(project.history.length, 0);
 Object.assign(project, { files: [], history: [], lastChanges: [], summary: "", name: "", rid: "initial" });
-context.bridge.handlers.code({ files: [{ path: "first.txt", text: "first" }], summary: "first" }, null, null, "initial");
+context.bridge.handlers.code({ files: [{ path: "first.txt", text: "first" }], project_complete: true, model_confirmed: false, summary: "first" }, null, null, "initial");
 assert.equal(project.history.length, 1);
 assert.equal(project.history[0].files.length, 0);
+assert.equal(notices.at(-1), "coder_draft");
+project.rid = "finished";
+context.bridge.handlers.code({ files: project.files, project_complete: true, model_confirmed: true, summary: "finished" }, null, null, "finished");
+assert.equal(notices.at(-1), "coder_ready");
 context.coderUndo();
 assert.equal(project.files.length, 0);
 console.log("coder history ok");

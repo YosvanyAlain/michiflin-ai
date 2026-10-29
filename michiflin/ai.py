@@ -85,6 +85,7 @@ class AIResult:
     model: str = ""
     error: str = ""
     seconds: float = 0.0
+    truncated: bool = False
 
     @property
     def ok(self) -> bool:
@@ -100,6 +101,7 @@ class AIResult:
 _lock = threading.RLock()
 _providers: dict[str, Provider] = {}
 _last_used: dict[str, float] = {}
+_ovh_locks: dict[str, threading.Lock] = {}
 
 
 def _m(provider: str, model: str, roles: str, daily: int, weight: float = 1.0, label: str = "") -> Model:
@@ -124,7 +126,7 @@ def build_registry() -> None:
         groq.models = [
             _m("groq", "openai/gpt-oss-20b", "chat,fast", 1000, label="GPT-OSS 20B"),
             _m("groq", "openai/gpt-oss-120b", "chat,reason,code", 1000, label="GPT-OSS 120B"),
-            _m("groq", "qwen/qwen3.8-27b", "chat,code,reason,fast", 1000, label="Qwen 3.8 27B"),
+            _m("groq", "qwen/qwen3.8-27b", "chat,code,reason,fast,vision", 1000, label="Qwen 3.8 27B"),
         ]
         providers.append(groq)
     if config.MISTRAL_API_KEY:
@@ -193,6 +195,14 @@ def build_registry() -> None:
         ]
         providers.append(samba)
     if config.FREE_GATEWAYS:
+        # Anonymous access only: attaching a paid OVH key would change billing.
+        # The public endpoint is rate-limited per IP and per model (2/minute).
+        ovh = Provider("ovh", "OVHcloud · anonymous", "openai", "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", daily=1000)
+        ovh.models = [
+            _m("ovh", "gpt-oss-120b", "chat,reason,code,long", 500, label="GPT-OSS 120B"),
+            _m("ovh", "Qwen3.6-27B", "chat,reason,code,long,vision", 500, label="Qwen 3.6 27B"),
+        ]
+        providers.append(ovh)
         # Anonymous: 10 requests/min, 60/h, 500k tokens a day (twice that with a free token).
         llm7 = Provider("llm7", "LLM7", "openai", "https://api.llm7.io/v1", config.LLM7_API_KEY, daily=600 if config.LLM7_API_KEY else 300)
         llm7.models = [
@@ -203,6 +213,10 @@ def build_registry() -> None:
         # Free models only: 200 requests an hour per IP, anonymous or not.
         kilo = Provider("kilo", "Kilo", "openai", "https://api.kilo.ai/api/gateway", config.KILO_API_KEY, daily=1500)
         kilo.models = [
+            # These current free endpoints are explicitly coding-capable; discovery retains
+            # the roles while removing them if the gateway stops listing them as free.
+            _m("kilo", "reflection/beam-free", "chat,reason,code,long", 400, label="Beam Free"),
+            _m("kilo", "recursive/flint-v1.0:free", "chat,reason,code,long", 400, label="Flint Free"),
             _m("kilo", "nvidia/nemotron-3-ultra-550b-a55b:free", "chat,reason,code,long", 400, label="Nemotron 3 Ultra"),
             _m("kilo", "poolside/laguna-s-2.1:free", "code,long", 400, 0.5, "Laguna S 2.1"),
             _m("kilo", "cohere/north-mini-code:free", "code,long", 400, label="North Mini Code"),
@@ -245,7 +259,7 @@ def _extra_providers() -> list[Provider]:
         return []
     found: list[Provider] = []
     reserved = {"gemini", "groq", "mistral", "zai", "openrouter", "cloudflare", "ghmodels",
-                "bazaarlink", "orcarouter", "sambanova", "llm7", "kilo"}
+                "bazaarlink", "orcarouter", "sambanova", "llm7", "kilo", "ovh"}
     for item in items:
         try:
             if not isinstance(item, dict):
@@ -517,8 +531,15 @@ def _model_fraction(model: Model) -> float:
     return state.usage_today(model.key) / max(1, model.daily)
 
 
+def locally_exhausted(model: Model) -> bool:
+    item = provider(model.provider)
+    if model.daily > 0 and state.usage_today(model.key) >= model.daily:
+        return True
+    return bool(item and item.daily > 0 and sum(state.usage_today(other.key) for other in item.models) >= item.daily)
+
+
 def available(model: Model) -> bool:
-    return not state.cooldown_until(model.key) and not state.cooldown_until(model.provider)
+    return not state.cooldown_until(model.key) and not state.cooldown_until(model.provider) and not locally_exhausted(model)
 
 
 def candidates(role: str, pin: str = "") -> list[Model]:
@@ -631,6 +652,8 @@ def _complete_exact(model: Model | None, messages: list[dict[str, Any]], max_tok
         return AIResult(error="unknown_model")
     if _blocked.get():
         return AIResult(error="no_provider")
+    if locally_exhausted(model):
+        return AIResult(provider=item.name, model=model.title(), error="quota")
     if not available(model):
         return AIResult(provider=item.name, model=model.title(), error="cooldown")
     state.check_work_allowed()
@@ -765,16 +788,22 @@ def _track_headers(model: Model, headers: Any) -> None:
 
 def _call(item: Provider, model: Model, messages: list[dict[str, Any]], images: list[tuple[str, bytes]] | None, max_tokens: int,
           raw: bool = False) -> AIResult:
+    if item.key == "cloudflare":
+        from . import cf_safety
+
+        if not cf_safety.reserve(cf_safety.text_cost(model.model, messages, images, max_tokens)):
+            state.set_cooldown(model.key, state.until_utc_midnight(), "quota")
+            return AIResult(provider=item.name, model=model.title(), error="quota")
     try:
         if item.kind == "gemini":
-            response, text, tokens = _gemini(item, model, messages, images)
+            response, text, tokens = _gemini(item, model, messages, images, max_tokens)
         else:
             if REASONING_FLOOR.search(model.model):
                 max_tokens = max(max_tokens, 1500)
             if item.key == "kilo":
                 max_tokens = max(max_tokens, 3200)  # free output; several free models think at length first
             response, text, tokens = _openai(item, model, messages, images, max_tokens)
-    except requests.RequestException as exc:
+    except (requests.RequestException, OSError) as exc:
         state.record_usage(model.key, False)
         state.set_cooldown(model.key, 120, "connection")
         log.warning("AI %s %s: connection failed (%s)", item.key, model.model, exc.__class__.__name__)
@@ -782,6 +811,21 @@ def _call(item: Provider, model: Model, messages: list[dict[str, Any]], images: 
     if response is None:
         state.record_usage(model.key, False)
         return AIResult(provider=item.name, model=model.title(), error="policy")
+    # Some gateways host models with smaller output caps. Only retry a clear
+    # parameter-limit rejection, at a lower budget, never on policy/quota errors.
+    if (item.kind != "gemini" and not response.ok and response.status_code in {400, 422}
+            and re.search(r"max(?:imum)?(?:_output|_completion)?[_ ]tokens", response.text, re.I)
+            and re.search(r"exceed|limit|at most|too large|less than|must be", response.text, re.I)
+            and max_tokens > 4096):
+        match = re.search(r"(?:limit|maximum|at most|less than)\D{0,30}(\d[\d,]*)", response.text, re.I)
+        smaller = min(max_tokens - 1, int(match.group(1).replace(",", ""))) if match else 4096
+        if smaller >= 512:
+            try:
+                response, text, tokens = _openai(item, model, messages, images, smaller)
+            except requests.RequestException:
+                state.record_usage(model.key, False)
+                state.set_cooldown(model.key, 120, "connection")
+                return AIResult(provider=item.name, model=model.title(), error="connection")
     if not response.ok:
         state.record_usage(model.key, False)
         kind = _cooldown_for(item, model, response.status_code, response.text[:2000], str(response.headers.get("Retry-After", "")))
@@ -792,11 +836,20 @@ def _call(item: Provider, model: Model, messages: list[dict[str, Any]], images: 
     _track_headers(model, response.headers)
     text = strip_thinking(text) if raw else chat_format(strip_thinking(text))
     state.record_usage(model.key, bool(text), tokens)
+    try:
+        body = response.json()
+        if item.kind == "gemini":
+            finish = str((body.get("candidates") or [{}])[0].get("finishReason") or "")
+        else:
+            finish = str((body.get("choices") or [{}])[0].get("finish_reason") or "")
+        truncated = finish.lower() in {"length", "max_tokens", "max_output_tokens"}
+    except (ValueError, TypeError, AttributeError, IndexError):
+        truncated = False
     if not text:
         state.set_cooldown(model.key, 120, "response")
-        log.warning("AI %s %s: empty answer", item.key, model.model)
-        return AIResult(provider=item.name, model=model.title(), error="empty")
-    return AIResult(text=text.strip(), provider=item.name, model=model.title())
+        log.warning("AI %s %s: %s answer", item.key, model.model, "truncated" if truncated else "empty")
+        return AIResult(provider=item.name, model=model.title(), error="truncated" if truncated else "empty", truncated=truncated)
+    return AIResult(text=text.strip(), provider=item.name, model=model.title(), truncated=truncated)
 
 
 # Listeners get (kind, Spanish text, English text) when a model stops or starts working for good.
@@ -890,7 +943,32 @@ def chat_format(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
 
 
+def _pace_ovh(model: Model) -> None:
+    """Reserve one anonymous request per 35 seconds per model, across restarts.
+
+    OVH permits two requests per minute per IP/model; other clients sharing the
+    same IP can still consume that quota. A failed save fails closed.
+    """
+    with _lock:
+        gate = _ovh_locks.setdefault(model.key, threading.Lock())
+    with gate:
+        name = "ovh-last:" + model.model
+        while True:
+            state.check_work_allowed()
+            with state.lock:
+                previous = float(state.data["flags"].get(name) or 0)
+                wait = max(0.0, previous + 35.0 - time.time()) if previous else 0.0
+                if wait <= 0:
+                    state.data["flags"][name] = time.time()
+                    state.save()
+                    return
+            progress.phase("⏳ Esperando el límite de OVH…", "⏳ Waiting for OVH's rate limit…")
+            time.sleep(min(wait, 2.0))
+
+
 def _openai(item: Provider, model: Model, messages: list[dict[str, Any]], images: list[tuple[str, bytes]] | None, max_tokens: int):
+    if item.key == "ovh":
+        _pace_ovh(model)
     payload_messages = [dict(message) for message in messages]
     if images and payload_messages:
         last = payload_messages[-1]
@@ -900,19 +978,22 @@ def _openai(item: Provider, model: Model, messages: list[dict[str, Any]], images
         last["content"] = parts
     payload: dict[str, Any] = {"model": model.model, "messages": payload_messages, "max_tokens": max_tokens, "temperature": 0.6}
     if item.key == "groq" and "gpt-oss" in model.model:
-        payload["reasoning_effort"] = "low"
+        payload["reasoning_effort"] = "medium"
         payload["include_reasoning"] = False
     if item.key == "groq" and "qwen" in model.model:
         payload["reasoning_format"] = "hidden"
-    if item.key == "zai":
-        payload["thinking"] = {"type": "disabled"}
+        if model.model == "qwen/qwen3.8-27b":
+            payload["reasoning_effort"] = "default"  # documented thinking mode for complex work
+    # Z.AI chooses its supported/default thinking mode; never blanket-disable it.
     headers = {"Content-Type": "application/json", **item.headers}
-    if item.api_key:
+    if item.api_key and item.key != "ovh":
         headers["Authorization"] = f"Bearer {item.api_key}"
-    timeout = max(config.AI_TIMEOUT, 120) if item.key == "kilo" else config.AI_TIMEOUT
-    request_options = {"allow_redirects": False} if item.custom else {}
+    timeout = max(config.AI_TIMEOUT, 120) if item.key == "kilo" or max_tokens >= 8000 else config.AI_TIMEOUT
+    request_options = {"allow_redirects": False} if item.custom or item.key == "ovh" else {}
     response = requests.post(f"{item.base_url}/chat/completions", headers=headers, json=payload, timeout=timeout,
                              **request_options)
+    if item.key == "ovh" and 300 <= int(response.status_code) < 400:
+        raise requests.RequestException("OVH redirect refused")
     if not response.ok or (item.custom and 300 <= int(response.status_code) < 400):
         return response, "", 0
     body = response.json()
@@ -925,7 +1006,7 @@ def _openai(item: Provider, model: Model, messages: list[dict[str, Any]], images
     return response, str(content or ""), int(usage.get("total_tokens") or 0)
 
 
-def _gemini(item: Provider, model: Model, messages: list[dict[str, Any]], images: list[tuple[str, bytes]] | None):
+def _gemini(item: Provider, model: Model, messages: list[dict[str, Any]], images: list[tuple[str, bytes]] | None, max_tokens: int):
     system = "\n".join(str(message["content"]) for message in messages if message["role"] == "system")
     contents = []
     for message in messages:
@@ -936,12 +1017,14 @@ def _gemini(item: Provider, model: Model, messages: list[dict[str, Any]], images
     if images and contents:
         for mime, data in images[:4]:
             contents[-1]["parts"].append({"inline_data": {"mime_type": mime, "data": base64.b64encode(data).decode()}})
-    payload: dict[str, Any] = {"contents": contents}
-    if re.search(r"^gemini-[\d.]+-flash$", model.model):
-        payload["generationConfig"] = {"thinkingConfig": {"thinkingBudget": 0}}  # thinking made these time out on the free tier
+    payload: dict[str, Any] = {"contents": contents, "generationConfig": {"maxOutputTokens": min(65536, max(1, max_tokens))}}
+    # Gemini 3.x uses thinkingLevel, not the 2.5 thinkingBudget parameter.
+    if model.model in {"gemini-3.1-flash-lite", "gemini-3.5-flash-lite"} and max_tokens >= 8000:
+        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": "medium"}
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}
-    response = requests.post(f"{item.base_url}/models/{model.model}:generateContent", params={"key": item.api_key}, json=payload, timeout=config.AI_TIMEOUT)
+    response = requests.post(f"{item.base_url}/models/{model.model}:generateContent", params={"key": item.api_key}, json=payload,
+                             timeout=max(config.AI_TIMEOUT, 120) if max_tokens >= 8000 else config.AI_TIMEOUT)
     if not response.ok:
         return response, "", 0
     body = response.json()
@@ -977,7 +1060,13 @@ def transcribe(data: bytes, filename: str, mime: str) -> str:
         except requests.RequestException:
             pass
     cloud = provider("cloudflare")
-    if cloud:
+    if cloud and not _blocked.get():
+        from . import cf_safety
+
+        cost = cf_safety.audio_cost(data)
+        if cost is None or not cf_safety.reserve(cost):
+            cloud = None  # unknown duration or local budget exhausted; do not risk unreserved usage
+    if cloud and not _blocked.get():
         try:
             response = requests.post(
                 f"https://api.cloudflare.com/client/v4/accounts/{config.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo",
@@ -1054,7 +1143,9 @@ def describe_error(error: str, locale: str, result: AIResult | None = None, key:
     messages = {
         "no_provider": ("no hay modelos libres ahora mismo: todos están en pausa o agotados; prueba en unos minutos",
                         "no model is free right now: all are paused or used up; try again in a few minutes"),
-        "quota": (f"este modelo alcanzó su límite gratuito{later}", f"this model reached its free limit{later}"),
+        "quota": (f"este modelo alcanzó un límite local o del proveedor{later}", f"this model reached a local or provider limit{later}"),
+        "truncated": ("la respuesta se agotó antes de generar texto; pide una parte más concreta o prueba otro modelo",
+                      "the response limit was reached before text was generated; request a smaller part or try another model"),
         "auth": (f"{name} rechazó la clave de acceso; hay que renovarla en su web", f"{name} rejected the API key; it needs to be renewed"),
         "model": ("este modelo ya no se ofrece gratis; elige otro", "this model is no longer offered for free; pick another one"),
         "busy": (f"{name} está saturado{later or ''}; prueba otro modelo", f"{name} is overloaded{later or ''}; try another model"),

@@ -57,8 +57,8 @@ _kill_generations: dict[str, int] = {}
 # Allowed values for each owner setting: a set of choices or an inclusive int range.
 SETTING_RULES: dict[str, Any] = {
     "language": {"auto", "es", "en"},
-    "video_height": {144, 240, 360, 480, 720, 1080},
-    "audio_kbps": {32, 48, 64, 96, 128, 160, 192},
+    "video_height": {144, 240, 360, 480, 720, 1080, 1440, 2160},
+    "audio_kbps": {32, 48, 64, 96, 128, 160, 192, 224, 256, 320},
     "audio_format": {"m4a", "mp3", "opus"},
     "part_mb": (1, 20),
     "part_format": {"7z", "zip", "raw"},

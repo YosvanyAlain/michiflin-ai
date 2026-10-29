@@ -455,6 +455,8 @@ bridge.watchers.add(activity);
 const TILES = [
   ["ai", "tile_agent", "chat", { space: "agent" }],
   ["image", "tile_images", "images"],
+  ["youtube", "tile_youtube", "youtube"],
+  ["audio", "tile_music", "music"],
   ["translate", "tile_translate", "translate"],
   ["rates", "tile_rates", "rates"],
   ["weather", "tile_weather", "weather"],
@@ -639,12 +641,13 @@ async function pinProvider(key) {
 function modelSections() {
   const data = cache.models;
   if (!data) return [empty(t("models_none"), "ai")];
-  const out = [h("p", { class: "muted small" }, icon("clock"), t("quota_reset"), " ", until(data.reset, t("now")))];
+  const out = [h("p", { class: "muted small" }, icon("clock"), t("quota_reset"), " ", until(data.reset, t("now"))),
+    h("p", { class: "note" }, icon("info"), t("local_limits_note"))];
   for (const provider of data.providers) {
     const pinned = data.pin === provider.key;
     out.push(card(
       h("div", { class: "provider-head" },
-        h("div", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, t("used_of", { n: provider.used, m: provider.daily }))),
+        h("div", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, t("local_used_of", { n: provider.used, m: provider.daily }))),
         provider.cooldown > now() ? h("span", { class: "chip warn" }, icon("clock"), until(provider.cooldown, t("available"))) : null,
         iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
       bar(provider.used, provider.daily),
@@ -712,8 +715,21 @@ const attachments = new Map(); // message time -> attachment, kept in memory for
 
 function ask(space, text, file = null) {
   const list = messages(space);
-  const history = space === "agent" ? [] : list.filter((item) => !item.pending && !item.error && (item.text || item.file))
-    .slice(-12).map((item) => [item.role, item.file ? `${item.text}\n[${item.file.name}]`.trim() : item.text]);
+  // Stay within the 128 KB WebXDC update limit, especially with a large attachment.
+  const history = [];
+  if (space !== "agent") {
+    const prior = list.filter((item) => !item.pending && !item.error && (item.text || item.file)).slice(-12);
+    const overhead = new Blob([JSON.stringify({ space, text, file })]).size + 4000;
+    let budget = Math.min(30000, Math.max(0, 124000 - overhead));
+    for (const item of prior.reverse()) {
+      const content = (item.file ? `${item.text}\n[${item.file.name}]`.trim() : item.text).slice(0, 6000);
+      const turn = [item.role, content];
+      const size = new Blob([JSON.stringify(turn)]).size;
+      if (size > budget) break;
+      history.unshift(turn);
+      budget -= size;
+    }
+  }
   const args = { space, text, history };
   if (file) args.file = { name: file.name, mime: file.mime, b64: file.b64 };
   const { id } = bridge.request("ask", args, { space });
@@ -828,14 +844,30 @@ function bubble(space, item, list) {
   if (item.error) {
     const index = list.indexOf(item);
     const question = list.slice(0, index).reverse().find((entry) => entry.role === "user");
-    const retry = () => { saveMessages(space, list.filter((entry) => entry !== item && entry !== question)); ask(space, question.text, attachments.get(question.ts) || null); };
+    const retry = () => {
+      saveMessages(space, list.filter((entry) => entry !== item && entry !== question));
+      if (item.imageRequest) createChatImage(space, question.text);
+      else ask(space, question.text, attachments.get(question.ts) || null);
+    };
     const automatic = () => { ask("auto", question.text); go("chat", { space: "auto" }); };
     return h("div", { class: "bubble bot error" }, icon("alert"), h("span", { class: "grow" }, item.error),
       question ? h("div", { class: "error-actions" },
         h("button", { class: "btn small ghost", onclick: retry }, icon("refresh"), t("retry")),
         space !== "auto" && space !== "agent" ? h("button", { class: "btn small ghost", onclick: automatic }, icon("ai"), t("use_auto")) : null) : null);
   }
-  return h("div", { class: "bubble bot" },
+  const picture = item.imageId ? h("div", { class: "chat-image" }, h("small", { class: "muted" }, t("image_loading"))) : null;
+  if (picture) media.get(item.imageId).then((image) => {
+    if (!picture.isConnected) return;
+    if (!image) { fill(picture, h("small", { class: "muted" }, t("image_missing"))); return; }
+    const scroller = picture.closest(".view");
+    const follow = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140;
+    const img = h("img", { src: `data:${image.mime};base64,${image.b64}`, alt: image.prompt });
+    img.addEventListener("load", () => {
+      if (follow && scroller.isConnected) scroller.scrollTop = scroller.scrollHeight;
+    });
+    fill(picture, h("button", { class: "chat-image-button", onclick: () => imageViewer(image) }, img));
+  }).catch(() => fill(picture, h("small", { class: "muted" }, t("image_missing"))));
+  return h("div", { class: "bubble bot" }, picture,
     replyBody({ text: item.text, actions: item.actions, files: item.files ? new Array(item.files) : [] }),
     h("div", { class: "bubble-foot" }, item.sig ? h("small", { class: "muted" }, item.sig) : h("small", { class: "muted" }, fmtTime(item.ts)),
       iconButton("copy", t("copy"), () => copyText(item.text), "tiny")));
@@ -857,7 +889,7 @@ VIEWS.chat = {
     main.classList.add("chat-view");
     const meta = h("div", { class: "chips chat-meta" });
     const list = h("div", { class: "messages" });
-    const area = autosize(h("textarea", { class: "input", rows: 1, placeholder: t("ask_placeholder"), enterkeyhint: "send" }));
+    const area = autosize(h("textarea", { class: "input", rows: 1, maxlength: "6000", placeholder: t("ask_placeholder"), enterkeyhint: "send" }));
     const tray = h("div", { class: "attach-tray" });
     let attached = null;
     const drawTray = () => fill(tray, attached ? h("div", { class: "attach-chip" }, attachmentLine(attached),
@@ -906,7 +938,15 @@ VIEWS.chat = {
         savePrefs();
         swap("chat", { space: value });
       }), h("small", { class: "muted" }, t("agent_mode_privacy"))) : null;
-    add(main, mode, meta, list, h("div", { class: "composer-wrap" }, tray, h("div", { class: "composer" },
+    const imageAction = space !== "agent" && space !== "smart_agent" ? h("button", {
+      class: "chip action chat-image-action", title: t("chat_image_note"), onclick: () => {
+        const prompt = area.value.trim();
+        if (!prompt) { toast(t("chat_image_empty")); return; }
+        if (attached) { toast(t("chat_image_no_attach"), "bad"); return; }
+        if (createChatImage(space, prompt)) { area.value = ""; area.dispatchEvent(new Event("input")); }
+      },
+    }, icon("image"), t("chat_image_button")) : null;
+    add(main, mode, meta, list, h("div", { class: "composer-wrap" }, tray, imageAction, h("div", { class: "composer" },
       space !== "agent" && space !== "smart_agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
       area, h("button", { class: "btn primary round", "aria-label": t("send"), onclick: () => submit() }, icon("send")))));
     drawMeta();
@@ -932,18 +972,52 @@ function createImage(prompt, model = prefs.imageModel || "") {
   return true;
 }
 
+function createChatImage(space, prompt) {
+  const model = prefs.imageModel || "";
+  const { id } = bridge.request("image", { prompt, model }, { prompt, space, chatImage: true });
+  if (!id) return false;
+  const ts = now();
+  const list = messages(space);
+  list.push({ role: "user", text: prompt, ts }, { role: "assistant", text: "", ts, rid: id, pending: true, imageRequest: true });
+  saveMessages(space, list);
+  const pending = store.get("img.pending", []);
+  pending.unshift({ rid: id, prompt, model, ts });
+  store.set("img.pending", pending);
+  bus.emit("images");
+  return true;
+}
+
 bridge.handlers.image = async (data, error, ctx, rid) => {
   store.set("img.pending", store.get("img.pending", []).filter((item) => item.rid !== rid));
+  let persisted = true;
+  if (!error) {
+    persisted = await media.put({ id: rid, prompt: data.prompt, source: data.source, model: data.model || "", mime: data.mime, b64: data.b64, ts: now() });
+    if (!persisted) notice(t("image_memory_only"), "bad");
+  }
+  const chatImage = !!(ctx && ctx.chatImage && ctx.space);
+  if (chatImage) {
+    const list = messages(ctx.space, false);
+    const item = list.find((entry) => entry.rid === rid);
+    if (item) {
+      item.pending = false;
+      item.ts = now();
+      if (error) item.error = error;
+      else {
+        Object.assign(item, { imageId: rid, text: t("chat_image_source", { source: data.source }) +
+          (persisted ? "" : `\n\n${t("image_memory_only")}`), sig: data.source });
+      }
+      saveMessages(ctx.space, list);
+    }
+  }
   if (error) {
-    notice(t("image_failed", { error }), "bad");
+    if (!chatImage) notice(t("image_failed", { error }), "bad");
   } else {
-    await media.put({ id: rid, prompt: data.prompt, source: data.source, model: data.model || "", mime: data.mime, b64: data.b64, ts: now() });
     if (data.models) {
       cache.models = data.models;
       saveCache();
       bus.emit("models");
     }
-    if (current.view !== "images") notice(t("image_ready"), "ok");
+    if (!chatImage && current.view !== "images") notice(t("image_ready"), "ok");
   }
   bus.emit("images");
 };
@@ -979,7 +1053,7 @@ VIEWS.images = {
         ...list.map((source) => {
           const resting = source.cooldown > now();
           return h("button", { class: `chip ${prefs.imageModel === source.key ? "on" : ""} ${resting ? "warn" : ""}`,
-            title: resting ? t("img_resting", { time: fmtTime(source.cooldown) }) : t("used_of", { n: source.used, m: source.daily }),
+            title: resting ? t("img_resting", { time: fmtTime(source.cooldown) }) : t("local_used_of", { n: source.used, m: source.daily }),
             onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
           source.label, h("small", { class: "muted" }, resting ? ` · ${fmtTime(source.cooldown)}` : ` ${source.used}/${source.daily}`));
         }),
@@ -1001,7 +1075,7 @@ VIEWS.images = {
     bus.on("images", draw);
     bus.on("models", drawQuotas);
     bus.on("quota", drawQuotas);
-    add(main, card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
+    add(main, h("p", { class: "note" }, icon("info"), t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
       const prompt = area.value.trim();
       if (prompt && createImage(prompt)) area.value = "";
     } }, icon("image"), t("generate")))), section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
@@ -1026,10 +1100,10 @@ function hostOf(url) {
   }
 }
 
-async function runAction(kind, url, quality = 0) {
+async function runAction(kind, url, quality = 0, outputFormat = "") {
   try {
     const before = new Set(cache.jobs.map((job) => job.id));
-    const reply = await bridge.call("action", { kind, url, quality });
+    const reply = await bridge.call("action", { kind, url, quality, audio_format: kind === "audio" ? outputFormat : "", video_format: kind === "video" ? outputFormat : "" });
     if (reply.jobs) setJobs(reply.jobs);
     const added = (reply.jobs || []).find((job) => !before.has(job.id));
     if (added) toast(t("queued_ok", { name: plain(added.title) }), "ok");
@@ -1042,17 +1116,29 @@ async function runAction(kind, url, quality = 0) {
 }
 
 function qualitySheet(kind, url) {
-  const options = kind === "video" ? [144, 240, 360, 480, 720, 1080] : [32, 48, 64, 96, 128, 160];
-  const unit = kind === "video" ? "p" : " kbps";
+  const options = kind === "video" ? [144, 240, 360, 480, 720, 1080, 1440, 2160] : [32, 48, 64, 96, 128, 160, 192, 224, 256, 320];
   const settingKey = kind === "video" ? "video_height" : "audio_kbps";
-  const row = cache.settings && cache.settings.flatMap((group) => group.items).find((item) => item.key === settingKey);
-  const chosen = row ? Number(row.value) : 0;
+  const items = cache.settings ? cache.settings.flatMap((group) => group.items) : [];
+  const row = items.find((item) => item.key === settingKey);
+  let chosen = row ? Number(row.value) : (kind === "video" ? 360 : 96);
+  if (!options.includes(chosen)) chosen = kind === "video" ? 360 : 96;
+  const formatRow = items.find((item) => item.key === "audio_format");
+  let format = kind === "video" ? "mp4" : (formatRow && ["mp3", "m4a", "opus"].includes(formatRow.value) ? formatRow.value : "mp3");
+  const chips = h("div", { class: "chips" });
+  const draw = () => fill(chips, ...options.map((value) => h("button", {
+    class: `chip big ${value === chosen ? "on" : ""}`,
+    "aria-pressed": String(value === chosen),
+    onclick: () => { chosen = value; draw(); },
+  }, `${value}${kind === "video" ? "p" : " kbps"}`)));
+  draw();
   openSheet(t(kind === "video" ? "pick_video" : "pick_audio"), [
-    h("p", { class: "muted small" }, t("pick_hint")),
-    h("div", { class: "chips" }, options.map((value) => h("button", {
-      class: `chip big ${value === chosen ? "on" : ""}`,
-      onclick: () => { closeSheet(); runAction(kind, url, value); },
-    }, `${value}${unit}`))),
+    h("p", { class: "muted small" }, t(kind === "video" ? "video_quality_note" : "audio_quality_note")),
+    h("div", { class: "stack" }, h("b", {}, t("audio_format_label")),
+      segmented(format, kind === "audio" ? [["mp3", "MP3"], ["m4a", "M4A"], ["opus", "OPUS"]] :
+        [["mp4", "MP4"], ["mkv", "MKV"], ["webm", "WebM"]], (value) => { format = value; })),
+    h("b", {}, t("quality_label")), chips,
+    h("button", { class: "btn primary wide", onclick: () => { closeSheet(); runAction(kind, url, chosen, format); } },
+      icon("downloads"), t("start_download")),
   ]);
 }
 
@@ -1183,6 +1269,101 @@ VIEWS.transcript = {
 // ---------------------------------------------------------------------------
 // Mini apps.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// YouTube and music. Search results are not a guarantee that a download is allowed or accessible.
+// ---------------------------------------------------------------------------
+function youtubeUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return ["http:", "https:"].includes(new URL(value).protocol) &&
+      (host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com"));
+  } catch (error) { return false; }
+}
+
+function youtubeCard(item, audioOnly = false) {
+  return h("article", { class: "card video" },
+    h("div", { class: "video-art" }, icon(audioOnly ? "audio" : "youtube")),
+    h("div", { class: "video-body" }, h("b", {}, plain(item.title)),
+      h("small", { class: "muted" }, [item.source || "YouTube", item.snippet, item.date].filter(Boolean).join(" · ")),
+      h("div", { class: "chips" },
+        !audioOnly ? h("button", { class: "chip action", onclick: () => qualitySheet("video", item.url) }, icon("video"), t("act_video")) : null,
+        h("button", { class: "chip action", onclick: () => qualitySheet("audio", item.url) }, icon("audio"), t("act_audio")),
+        h("button", { class: "chip action", onclick: () => runAction("info", item.url) }, icon("info"), t("media_inspect")),
+        !audioOnly ? h("button", { class: "chip action", onclick: () => go("transcript", { url: item.url }) }, icon("subtitles"), t("act_transcript")) : null,
+        h("button", { class: "chip action", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")))));
+}
+
+VIEWS.youtube = {
+  tab: "apps", title: () => "YouTube",
+  render(main, params) {
+    const input = field({ type: "search", placeholder: t("youtube_placeholder"), value: params.q || "", enterkeyhint: "search" });
+    const submit = () => {
+      const q = input.value.trim();
+      if (!q) return;
+      if (looksLikeWebAddress(q)) {
+        const url = normalUrl(q);
+        if (!youtubeUrl(url)) { toast(t("youtube_only"), "bad"); return; }
+        openSheet(t("video_link"), [h("p", { class: "muted small" }, t("media_rights_note")), youtubeCard({ title: q, url, source: "YouTube" })]);
+      } else swap("youtube", { q });
+    };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+    const box = h("div", { class: "stack" });
+    add(main, h("div", { class: "search-field" }, icon("youtube"), input,
+      h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+      h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
+    if (params.q) fetchView(box, "search", { q: params.q, engine: "videos" }, (data) => {
+      const results = (data.results || []).filter((item) => youtubeUrl(item.url));
+      fill(box, ...(results.length ? results.map((item) => youtubeCard(item)) : [empty(t("no_results"), "search")]));
+    }, { label: t("searching") });
+    else add(box, empty(t("youtube_hint"), "youtube"));
+  },
+};
+
+VIEWS.music = {
+  tab: "apps", title: () => t("tile_music"),
+  render(main, params) {
+    const provider = params.provider === "archive" ? "archive" : "youtube";
+    const input = field({ type: "search", placeholder: t("music_placeholder"), value: params.q || "", enterkeyhint: "search" });
+    const submit = () => { const q = input.value.trim(); if (q) swap("music", { q, provider }); };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+    const box = h("div", { class: "stack" });
+    add(main, segmented(provider, [["youtube", "YouTube"], ["archive", "Internet Archive"]], (value) => swap("music", { q: input.value.trim(), provider: value })),
+      h("div", { class: "search-field" }, icon("audio"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+      h("p", { class: "note" }, icon("info"), t(provider === "youtube" ? "media_rights_note" : "music_archive_note")), box);
+    if (!params.q) { add(box, empty(t("music_hint"), "audio")); return; }
+    if (provider === "youtube") {
+      fetchView(box, "search", { q: params.q + " music", engine: "videos" }, (data) => {
+        const results = (data.results || []).filter((item) => youtubeUrl(item.url));
+        fill(box, ...(results.length ? results.map((item) => youtubeCard(item, true)) : [empty(t("no_results"), "search")]));
+      }, { label: t("searching") });
+    } else {
+      fetchView(box, "music_search", { q: params.q }, (data) => fill(box, ...((data.results || []).length ? data.results.map((item) =>
+        h("button", { class: "card space-card", onclick: () => go("music_item", { id: item.id }) }, icon("audio"),
+          h("span", { class: "grow" }, h("b", {}, item.title), h("small", { class: "muted" }, [item.creator, "Internet Archive"].filter(Boolean).join(" · "))), icon("next")))
+        : [empty(t("no_results"), "search")])), { label: t("searching") });
+    }
+  },
+};
+
+VIEWS.music_item = {
+  tab: "apps", title: () => t("music_files_title"),
+  render(main, params) {
+    const box = h("div", { class: "stack" }); add(main, box);
+    fetchView(box, "music_item", { id: params.id }, (data) => fill(box,
+      h("h2", {}, data.title), h("p", { class: "muted small" }, data.creator || "Internet Archive"),
+      h("p", { class: "note" }, icon("info"), t("music_license_note"), " ", data.license || data.rights || t("music_no_license")),
+      h("p", { class: "muted small" }, t("music_files_hint")),
+      ...(data.files.length ? data.files.map((file) => h("article", { class: "card row music-file" },
+        h("div", { class: "grow" }, h("b", {}, file.title), h("small", { class: "muted" },
+          [file.format, file.bitrate || "", file.size ? fmtSize(file.size) : ""].filter(Boolean).join(" · "))),
+        h("button", { class: "btn primary small", onclick: () => runAction("download", file.url) }, icon("downloads"), t("download_original"))))
+        : [empty(t("music_no_files"), "audio")]),
+      data.more ? h("p", { class: "muted small" }, t("music_more_files")) : null,
+      h("button", { class: "btn ghost", onclick: () => openLiveAddress(data.page) }, icon("web"), t("music_open_source"))
+    ), { label: t("loading_page") });
+  },
+};
+
 VIEWS.apps = {
   title: () => t("tab_apps"),
   render(main) {
