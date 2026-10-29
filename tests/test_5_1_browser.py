@@ -87,6 +87,7 @@ def test_nested_model_and_image_selection_with_legacy_history_preserved(language
         assert page.locator(".provider-card:not([open])").count() == 1
         page.locator(".provider-card > summary").click()
         assert page.locator(".provider-card .model-category").count() == 2
+        assert page.get_by_text("1 modelo" if language == "es" else "1 model", exact=True).count() == 2
         page.locator(".provider-card .model-category").first.locator("summary").click()
         assert page.locator(".provider-card .model-choice:visible").count() >= 1
         page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
@@ -100,6 +101,7 @@ def test_nested_model_and_image_selection_with_legacy_history_preserved(language
         page.evaluate("go('images')")
         page.locator(".image-provider > summary").click()
         assert page.locator(".image-provider .image-family").count() == 2
+        assert page.get_by_text("1 modelo" if language == "es" else "1 model", exact=True).count() == 2
         page.locator(".image-family").filter(has_text="Stable Diffusion").locator("summary").click()
         page.get_by_role("button", name="SDXL Paint", exact=False).click()
         assert page.evaluate("prefs.imageModel") == "demo:sdxl"
