@@ -416,7 +416,7 @@ class KillSwitchDisconnectTests(unittest.TestCase):
                     future.set_exception(exc)
                 return future
         function = mock.Mock(return_value={"connected": False, "revoked": True})
-        entry = {"chat": 10, "addr": OWNER}
+        entry = {"chat": 10, "addr": OWNER, "build": miniapp.app_build()}
         request = {"id": "abc", "op": "youtube_account", "lang": "en", "args": {"do": "disconnect"}}
         with mock.patch.dict(miniapp.OPS, {"youtube_account": function}), \
              mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
@@ -442,7 +442,7 @@ class KillSwitchDisconnectTests(unittest.TestCase):
                 except Exception as exc:
                     future.set_exception(exc)
                 return future
-        entry = {"chat": 10, "addr": OWNER}
+        entry = {"chat": 10, "addr": OWNER, "build": miniapp.app_build()}
         for op in ("facebook_account", "tiktok_account"):
             function = mock.Mock(return_value={"connected": False})
             with self.subTest(op=op), mock.patch.dict(miniapp.OPS, {op: function}), \

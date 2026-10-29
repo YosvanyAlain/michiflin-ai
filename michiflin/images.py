@@ -54,6 +54,7 @@ class Source:
     key: str
     label: str
     daily: int
+    personal: bool = False
 
 
 def is_image_request(text: str) -> bool:
@@ -82,7 +83,7 @@ def sources() -> list[Source]:
     if config.OVH_IMAGES:
         items.append(Source("ovh:sdxl", "SDXL (OVH)", 80))  # local daily guard, not a provider guarantee
     if config.CLOUDFLARE_ACCOUNT_ID and config.CLOUDFLARE_AI_TOKEN:
-        items += [Source(key, label, daily) for key, (_model, label, daily, _style) in CLOUDFLARE.items()]
+        items += [Source(key, label + " (Cloudflare)", daily) for key, (_model, label, daily, _style) in CLOUDFLARE.items()]
     if config.HF_IMAGES and _gradio_available():
         # A local sharing guard, not a promise of ZeroGPU minutes or billing safety.
         items.append(Source("hf:space", "FLUX.1 schnell (HF Space)", 12))
@@ -94,6 +95,12 @@ def sources() -> list[Source]:
     if config.POLLINATIONS_PUBLIC:
         # Keyless images are downgraded and watermarked: last resort only.
         items.append(Source("pollinations:flux", "Pollinations", 300))
+    if state.request_sender() and state.personal_ai_secure():
+        from . import personal_ai
+        try:
+            items.extend(personal_ai.image_sources(state.request_sender()))
+        except (personal_ai.PersonalError, OSError):
+            pass
     return items
 
 
@@ -148,7 +155,9 @@ def _gradio_available() -> bool:
 
 
 def _ordered() -> list[Source]:
-    pool = [item for item in sources() if not state.cooldown_until(item.key) and state.usage_today(item.key) < item.daily]
+    # A user's personal key is never part of free automatic rotation.
+    pool = [item for item in sources() if not item.personal and not state.cooldown_until(item.key)
+            and state.usage_today(item.key) < item.daily]
     random.shuffle(pool)
     return sorted(pool, key=lambda item: (PRIORITY.get(item.key, 0), state.usage_today(item.key) / max(1, item.daily)))
 
@@ -198,7 +207,7 @@ def _generate(text: str, model: str = "") -> ImageResult:
             return ImageResult(error="unknown", prompt=prompt)
         if state.cooldown_until(chosen.key):
             return ImageResult(error="cooldown", prompt=prompt, source=chosen.label)
-        if state.usage_today(chosen.key) >= chosen.daily:
+        if not chosen.personal and chosen.daily and state.usage_today(chosen.key) >= chosen.daily:
             return ImageResult(error="quota", prompt=prompt, source=chosen.label)
         pool = [chosen]
     else:
@@ -207,7 +216,8 @@ def _generate(text: str, model: str = "") -> ImageResult:
             return ImageResult(error="quota", prompt=prompt)
     if not pool:
         return ImageResult(error=last_error, prompt=prompt)
-    english = english_prompt(prompt)[:1900]
+    # Do not send a private paid prompt to a separate translation service.
+    english = (prompt if pool[0].personal else english_prompt(prompt))[:1900]
     state.check_work_allowed()
     for source in pool:
         state.check_work_allowed()
@@ -328,6 +338,15 @@ def _image_response(response: requests.Response) -> bytes:
 
 
 def _run(source: Source, prompt: str, width: int, height: int, patient: bool = False) -> bytes:
+    if source.personal:
+        from . import personal_ai
+        try:
+            return personal_ai.image(state.request_sender(), source.key, prompt)
+        except (personal_ai.PersonalError, OSError) as exc:
+            code = str(exc) if isinstance(exc, personal_ai.PersonalError) else "connection"
+            if code == "auth":
+                raise _AuthError() from None
+            raise _SourceError(code if code in {"quota", "connection"} else "response") from None
     seed = random.randint(1, 2**31 - 1)
     if source.key == "ovh:sdxl":
         response = requests.post("https://stable-diffusion-xl.endpoints.kepler.ai.cloud.ovh.net/api/text2image",

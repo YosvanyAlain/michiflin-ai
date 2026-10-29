@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import math
 import re
+import threading
 import time
 import unicodedata
 from defusedxml import ElementTree as ET
@@ -11,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
-from urllib.parse import quote, quote_plus
+from urllib.parse import parse_qs, quote, quote_plus, urlsplit
 
 import requests
 
@@ -183,6 +185,80 @@ def video_search(query: str, locale: str, limit: int = 15) -> list[Result]:
             return []
 
     return _cached(f"vs:{locale}:{limit}:{query.lower()}", 900, run)
+
+
+# Browsing beyond the first screen is paginated, bounded and isolated by sender.
+# A snapshot keeps earlier pages stable when YouTube's ranking changes between
+# fetches. yt-dlp may still return fewer results or fail under site restrictions.
+VIDEO_PAGE_SIZE = 15
+VIDEO_MAX_PAGES = 12
+VIDEO_BATCH = 45
+_VIDEO_CACHE_SECONDS = 300
+_video_cache: dict[str, tuple[float, list[Result], int, bool]] = {}
+_video_lock = threading.RLock()
+
+
+def _youtube_id(url: str) -> str:
+    try:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return ""
+        if host == "youtu.be":
+            value = parsed.path.strip("/").split("/")[0]
+        elif host == "youtube.com" or host.endswith(".youtube.com"):
+            value = (parse_qs(parsed.query).get("v") or [""])[0]
+        else:
+            return ""
+        return value if re.fullmatch(r"[A-Za-z0-9_-]{6,20}", value) else ""
+    except ValueError:
+        return ""
+
+
+def youtube_page(query: str, locale: str, page: int, owner: str) -> dict[str, Any]:
+    """Stable incremental pages, never claim that the provider has infinite results."""
+    if type(page) is not int or not 1 <= page <= VIDEO_MAX_PAGES:
+        raise ValueError("page")
+    query = query.strip()[:300]
+    if not query or not owner:
+        raise ValueError("query")
+    cache_key = hashlib.sha256((owner.casefold() + "\0" + locale + "\0" + query.casefold()).encode()).hexdigest()
+    now = time.monotonic()
+    with _video_lock:
+        for key, item in list(_video_cache.items()):
+            if now - item[0] > _VIDEO_CACHE_SECONDS:
+                _video_cache.pop(key, None)
+        if len(_video_cache) > 128:
+            _video_cache.pop(min(_video_cache, key=lambda key: _video_cache[key][0]), None)
+        hit = _video_cache.get(cache_key)
+    saved = list(hit[1]) if hit else []
+    requested = hit[2] if hit else 0
+    exhausted = hit[3] if hit else False
+    end = page * VIDEO_PAGE_SIZE
+    target = min(VIDEO_MAX_PAGES * VIDEO_PAGE_SIZE + 1,
+                 max(VIDEO_BATCH + 1, ((end // VIDEO_BATCH) + 1) * VIDEO_BATCH + 1))
+    if len(saved) <= end and not exhausted and target > requested:
+        try:
+            found = _youtube_search(query, target, locale)
+            if not found:
+                found = _ddg_videos(query, target, locale)
+        except Exception:
+            found = []
+        seen = {_youtube_id(item.url) for item in saved}
+        for item in found:
+            video_id = _youtube_id(item.url)
+            if video_id and video_id not in seen:
+                seen.add(video_id)
+                saved.append(item)
+        # A provider may stop early, but another request should not repeat the
+        # same expensive search in this short session.
+        exhausted = len(found) < target
+        requested = target
+        with _video_lock:
+            _video_cache[cache_key] = (time.monotonic(), saved, requested, exhausted)
+    start = (page - 1) * VIDEO_PAGE_SIZE
+    return {"results": saved[start:end], "more": len(saved) > end and page < VIDEO_MAX_PAGES,
+            "limited": len(saved) > end and page == VIDEO_MAX_PAGES}
 
 
 def you_left() -> int:

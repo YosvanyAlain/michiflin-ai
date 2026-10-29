@@ -189,7 +189,7 @@ def _prompt(locale: str) -> str:
     )
 
 
-def run(text: str, locale: str, history: list[Any] | None = None) -> dict[str, Any]:
+def run(text: str, locale: str, history: list[Any] | None = None, model_key: str = "") -> dict[str, Any]:
     text = (text or "").strip()[:6000]
     if not text:
         raise AgentError(tr(locale, "Escribe algo primero.", "Write something first."))
@@ -215,7 +215,8 @@ def run(text: str, locale: str, history: list[Any] | None = None) -> dict[str, A
         progress.phase(f"🧠 Agente IA · paso {index + 1}", f"🧠 AI agent · step {index + 1}")
         if index == MAX_ROUNDS - 1:
             messages.append({"role": "user", "content": "Final round: do not call tools; give the best honest answer as JSON {\"answer\":\"...\"}."})
-        result = ai.complete(messages, "reason", max_attempts=1, max_tokens=6000, raw=True)
+        result = (ai.complete_exact(messages, model_key, max_tokens=6000, raw=True) if model_key else
+                  ai.complete(messages, "reason", max_attempts=1, max_tokens=6000, raw=True))
         state.check_work_allowed()
         if not result.ok:
             if index == 0:

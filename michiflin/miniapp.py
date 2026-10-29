@@ -28,7 +28,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, mail_profiles, media, music, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, images, links, maintenance, mail_profiles, media, music, perf, queue, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -86,7 +86,7 @@ def _apps() -> dict[str, dict[str, Any]]:
     return state.data.setdefault("apps", {})
 
 
-def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "") -> int:
+def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None) -> int:
     if updated:
         text = tr(locale, "✨ Michiflin AI se actualizó. La app anterior se conserva con sus proyectos e historial; "
                           "esta nueva instancia tiene almacenamiento independiente.",
@@ -103,11 +103,17 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
                   "web pages, downloads and settings.\n\n"
                   "There is no need to type in this chat: the app talks to the bot by email on its own. "
                   "Answers take a few seconds to arrive.")
-    msg_id = chat.send(chat_id, text, file=build(), filename="Michiflin AI.xdc", viewtype="Webxdc")
+    advisory = maintenance.text(locale)
+    if advisory:
+        text += "\n\n🛠️ " + advisory
+    send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
+    if interrupted is not None:
+        send_args["interrupted"] = interrupted
+    msg_id = chat.send(chat_id, text, **send_args)
     if msg_id:
         with state.lock:
             recipient = address or chat.sender()
-            _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(),
+            _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(), "locale": locale,
                                     "build": app_build(), "epoch": config.BOT_EPOCH,
                                     "access_session": access.session_stamp(recipient)}
             # Every WebXDC instance owns its local storage. Dropping an old binding can
@@ -190,14 +196,14 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     return entry
 
 
-SAFE_REPLAY = {"hello", "models", "ask", "image", "search", "music_search", "music_item", "read", "tool", "rates", "translate", "health", "repair"}
+SAFE_REPLAY = {"hello", "models", "ask", "image", "search", "youtube_search", "music_search", "music_item", "read", "tool", "rates", "translate", "health", "repair"}
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
 SWEEP_EVERY = 30.0      # catch updates whose event was missed (restarts, reconnects)
 ANSWER_CACHE = 2400.0   # seconds an answer stays ready for a resend
-UPGRADE_GAP = 1800.0    # at most one automatic app replacement per chat in this window
+UPGRADE_GAP = 1800.0    # suppress duplicate sends of the same build, not later builds
 _answers: dict[str, dict[str, Any]] = {}
 _answers_lock = threading.Lock()
-_upgraded: dict[int, float] = {}
+_upgraded: dict[tuple[int, str], float] = {}
 _upgrade_lock = threading.Lock()
 
 
@@ -343,7 +349,7 @@ def on_status_update(msg_id: int) -> None:
                 if payload.get("t") == "req_chunk":
                     address = str(entry.get("addr", "")).strip().lower()
                     if (not address or not admin.is_allowed(address) or not config.service_access_allowed(address)
-                            or (entry.get("build") and entry.get("build") != app_build())):
+                            or entry.get("build") != app_build()):
                         continue
                     payload = _request_piece(entry, payload)
                 if isinstance(payload, dict) and payload.get("t") == "req":
@@ -362,7 +368,11 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         retry = 0
     verdict = _admit(rid, retry, instance_id)
     op = str(request.get("op", ""))
-    if verdict == "lost" and op in SAFE_REPLAY:
+    args = request.get("args") if isinstance(request.get("args"), dict) else {}
+    personal_paid = any(str(args.get(name) or "").startswith("personal-") for name in ("space", "model", "agent_model"))
+    # A restart may occur after a billable request reached the provider. Never
+    # replay a personal-key generation automatically when its outcome is unknown.
+    if verdict == "lost" and op in SAFE_REPLAY and not personal_paid:
         with _answers_lock:
             _answers[rid] = {"state": "running", "ts": time.time(), "body": None, "acked": 0.0}
         verdict = "new"
@@ -371,7 +381,7 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         with state.lock:
             admitted = dict(request, _kill_generation=state.kill_generation(address),
                             _kill_at_admission=state.get_kill_switch(address))
-        (_control_pool if op in {"kill_switch", "owner_only"} else _pool).submit(handle, instance_id, entry, admitted)
+        (_control_pool if op in {"kill_switch", "owner_only", "maintenance_notice"} else _pool).submit(handle, instance_id, entry, admitted)
     elif verdict == "running":
         _ack(instance_id, rid, force=True, entry=entry)
     elif verdict == "cached":
@@ -382,8 +392,12 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             _deliver(instance_id, rid, body)
     elif verdict == "lost":
         locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
-        respond(instance_id, rid, None, tr(locale, "La respuesta se perdió durante un reinicio del bot. Revisa el resultado (por ejemplo, en Descargas) y repítelo si hace falta.",
-                                           "The answer was lost while the bot restarted. Check the result (for example, in Downloads) and repeat it if needed."))
+        if personal_paid:
+            respond(instance_id, rid, None, tr(locale, "Se perdió la respuesta durante un reinicio. El proveedor pudo cobrar la solicitud; revisa su historial antes de repetirla.",
+                                               "The answer was lost during a restart. The provider may have charged the request; check its history before retrying."))
+        else:
+            respond(instance_id, rid, None, tr(locale, "La respuesta se perdió durante un reinicio del bot. Revisa el resultado (por ejemplo, en Descargas) y repítelo si hace falta.",
+                                               "The answer was lost while the bot restarted. Check the result (for example, in Downloads) and repeat it if needed."))
 
 
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
@@ -397,11 +411,11 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     chat.send_update(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
+WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
             "youtube_account", "facebook_account", "tiktok_account"}
 AI_OPS = {"ask", "image", "code"}
-KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "nauta_strict", "settings", "models", "estado"}
-OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900}
+KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
+OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control-op")
 _ai_gates: dict[str, threading.Lock] = {}
@@ -446,14 +460,15 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     # Local authorization status and disconnection remain available while work
     # is paused; starting, polling or reading providers is kill-switch guarded.
     social_ops = {"youtube_account", "facebook_account", "tiktok_account", "browser_session"}
-    kill_safe = op in KILL_SAFE_OPS or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
+    kill_safe = (op in KILL_SAFE_OPS or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
+                 or (op == "personal_ai" and args.get("do", "status") in {"status", "remove"}))
     generation = int(request.get("_kill_generation", state.kill_generation(address)))
     was_killed = bool(request.get("_kill_at_admission", state.get_kill_switch(address)))
     if not kill_safe and (was_killed or state.work_interrupted(address, generation)):
         reply(None, kill_message(locale))
         return
     # Older packages may only run hello so the bot can replace them; other ops stay blocked.
-    if entry.get("build") and entry.get("build") != app_build() and op not in {"hello", "health"}:
+    if entry.get("build") != app_build() and op not in {"hello", "health"}:
         reply(None, tr(locale, "Esta mini app ya no es válida. Abre la versión nueva del chat.",
                                            "This mini app is no longer valid. Open the new version from the chat."))
         return
@@ -470,6 +485,16 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         if not config.service_access_allowed(address):
             raise AppError(tr(locale, "Michiflin está en mantenimiento.", "Michiflin is under maintenance."))
         chat.set_sender(address)
+        if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
+            from . import live_web
+            identity = live_web._identity(instance_id)
+            secure = bool(identity and identity[1] == address and entry.get("build") == app_build())
+            state.set_personal_ai_secure(secure)
+            requested = op == "personal_ai" or any(str(args.get(name) or "").startswith("personal-")
+                                                   for name in ("space", "model", "agent_model"))
+            if requested and not secure:
+                raise AppError(tr(locale, "Las APIs personales requieren la app actual en un chat individual cifrado.",
+                                  "Personal APIs require the current app in an encrypted one-to-one chat."))
         gate = _ai_gate(address) if op in AI_OPS else None
         if gate is not None and not gate.acquire(blocking=False):
             raise AppError(tr(locale, "Espera a que termine tu consulta anterior.", "Wait until your previous request finishes."))
@@ -488,7 +513,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             chat.stop_capture()
 
     started = time.monotonic()
-    future = (_control_workers if op in {"kill_switch", "owner_only"} else _workers).submit(run)
+    future = (_control_workers if op in {"kill_switch", "owner_only", "maintenance_notice"} else _workers).submit(run)
     timer = threading.Timer(ACK_AFTER, _ack, args=(instance_id, rid), kwargs={"entry": entry})
     timer.daemon = True
     timer.start()
@@ -531,15 +556,25 @@ def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None
         with state.lock:
             already_sent = any(int(other.get("chat", 0)) == chat_id and other.get("build") == current_build
                                and access.bound_allowed(other) for other in _apps().values())
-        if already_sent or time.time() - _upgraded.get(chat_id, 0.0) < UPGRADE_GAP:
+        marker = (chat_id, current_build)
+        if already_sent or time.time() - _upgraded.get(marker, 0.0) < UPGRADE_GAP:
             return
         if replace_app(instance_id, chat_id, locale, str(entry.get("addr", ""))):
-            _upgraded[chat_id] = time.time()
+            _upgraded[marker] = time.time()
 
 
 def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") -> int:
     """Send an upgrade while keeping the old message and its instance-local storage."""
-    new_id = send_app(chat_id, locale, updated=True, address=address)
+    from . import live_web
+    expected = address.strip().casefold()
+
+    def interrupted() -> bool:
+        identity = live_web._identity(instance_id)
+        return not identity or identity[1] != expected or int(identity[0].get("chat") or 0) != chat_id
+
+    if interrupted():
+        return 0
+    new_id = send_app(chat_id, locale, updated=True, address=address, interrupted=interrupted)
     if new_id:
         log.info("app instance %s preserved; new instance %s sent", instance_id, new_id)
     return new_id
@@ -558,17 +593,62 @@ def _deliver(instance_id: int, rid: str, text: str) -> None:
     if len(text.encode("utf-8")) <= CHUNK:
         chat.send_update(instance_id, json.loads(text))
         return
-    pieces = [text[start:start + CHUNK // 2] for start in range(0, len(text), CHUNK // 2)]
+    # The string is embedded in another JSON object: its characters can take
+    # up to four UTF-8 bytes (or require escaping) in that outer update. Keep
+    # each complete status update well below WebXDC's 128,000-byte limit.
+    width = CHUNK // 4
+    pieces = [text[start:start + width] for start in range(0, len(text), width)]
     for index, piece in enumerate(pieces):
         chat.send_update(instance_id, {"t": "chunk", "re": rid, "i": index, "n": len(pieces), "s": piece})
 
 
+def proactive_upgrades() -> None:
+    """Deliver the current build without waiting for an old app to be opened.
+
+    Keep old messages and their instance-local storage until migration can be
+    proven. Only bot-sent, current-authorized individual encrypted chats are
+    eligible; an old binding must never reactivate a revoked contact.
+    """
+    from . import live_web
+
+    with state.lock:
+        entries = [(int(key), dict(entry)) for key, entry in _apps().items()
+                   if str(key).isdigit() and isinstance(entry, dict)]
+    newest: dict[int, tuple[int, dict[str, Any]]] = {}
+    for msg_id, entry in entries:
+        try:
+            chat_id = int(entry.get("chat") or 0)
+            address = str(entry.get("addr") or "").strip().lower()
+            if (not chat_id or not address or not access.bound_allowed(entry) or not admin.is_allowed(address)
+                    or (chat_id in newest and msg_id < newest[chat_id][0])):
+                continue
+            newest[chat_id] = (msg_id, entry)
+        except (TypeError, ValueError):
+            continue
+    for msg_id, entry in newest.values():
+        if entry.get("build") == app_build():
+            continue
+        # The RPC identity check verifies bot ownership, recipient, current
+        # authorization and encryption. A failure never causes deletion.
+        identity = live_web._identity(msg_id)
+        if not identity or identity[1] != str(entry.get("addr") or "").strip().casefold():
+            continue
+        with state.person(identity[1]):
+            _maybe_upgrade(msg_id, identity[0], str(entry.get("locale") or "es"))
+
+
 def sweep_forever() -> None:
-    """Re-read recently active instances: an update whose event was missed is still answered within seconds."""
-    first = True
+    """Re-read updates and send upgraded apps even while users are away."""
+    first, last_upgrade = True, 0.0
     while True:
         try:
             now = time.time()
+            if first or now - last_upgrade >= 120:
+                proactive_upgrades()
+                notice = maintenance.get()
+                if notice["revision"]:
+                    threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-retry", daemon=True).start()
+                last_upgrade = now
             with state.lock:
                 keys = [int(key) for key, entry in _apps().items()
                         if first or now - float(entry.get("active", 0)) < 86400 or now - float(entry.get("sent", 0)) < 172800]
@@ -583,18 +663,18 @@ def sweep_forever() -> None:
         time.sleep(SWEEP_EVERY)
 
 
-def push(chat_id: int, kind: str, data: Any, notify: str = "") -> None:
-    """Send a push to the newest app instance of a chat (with an optional system notification)."""
+def push(chat_id: int, kind: str, data: Any, notify: str = "") -> bool:
+    """Queue a push for the newest app; True means accepted locally, not delivered."""
     with state.lock:
         found = [(int(key), entry) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
                  and access.bound_allowed(entry)]
     if not found or not chat.ready():
-        return
+        return False
     instance_id, entry = max(found, key=lambda item: item[0])
     address = str(entry.get("addr", ""))
-    if not access.bound_allowed(entry):
-        return
-    chat.send_update(instance_id, {"t": "push", "kind": kind, "data": data}, {address: notify[:120]} if notify and address else None)
+    if not address or not access.bound_allowed(entry) or not admin.is_allowed(address):
+        return False
+    return chat.send_update(instance_id, {"t": "push", "kind": kind, "data": data}, {address: notify[:120]} if notify and address else None)
 
 
 def _on_job(job: dict[str, Any], values: dict[str, Any]) -> None:
@@ -714,20 +794,29 @@ def _next_reset() -> float:
 
 
 def models_view() -> dict[str, Any]:
+    from . import personal_ai
     providers = []
-    for item in ai.providers():
+    registry = ai.providers()
+    try:
+        if state.request_sender() and state.personal_ai_secure():
+            registry += personal_ai.providers(state.request_sender())
+    except (personal_ai.PersonalError, OSError):
+        pass  # private vault unavailable: never fall back to another person's data
+    for item in registry:
         models = []
         for model in item.models:
             remaining = state.remaining_for(model.key)
             models.append({"key": model.key, "title": model.title(), "roles": sorted(model.roles), "used": state.usage_today(model.key),
                            "daily": model.daily, "remaining": list(remaining) if remaining else None,
                            "cooldown": state.cooldown_until(model.key), "reason": state.cooldown_reason(model.key),
-                           "health": ai.model_status(model.key), "id": model.model, "accepts": ai.accepts(model), "manual": model.weight <= 0})
+                           "health": ai.model_status(model.key), "id": model.model, "accepts": ai.accepts(model), "manual": model.weight <= 0,
+                           "personal": item.personal})
         providers.append({"key": item.key, "name": item.name, "daily": item.daily or sum(model.daily for model in item.models),
-                          "used": sum(state.usage_today(model.key) for model in item.models),
-                          "cooldown": state.cooldown_until(item.key), "reason": state.cooldown_reason(item.key), "models": models})
+                          "used": personal_ai.attempts(item.key) if item.personal else sum(state.usage_today(model.key) for model in item.models),
+                          "personal": item.personal, "cooldown": state.cooldown_until(item.key),
+                          "reason": state.cooldown_reason(item.key), "models": models})
     sources = [{"key": source.key, "label": source.label, "daily": source.daily, "used": state.usage_today(source.key),
-                "cooldown": state.cooldown_until(source.key), "reason": state.cooldown_reason(source.key)} for source in images.sources()]
+                "personal": source.personal, "cooldown": state.cooldown_until(source.key), "reason": state.cooldown_reason(source.key)} for source in images.sources()]
     return {"now": time.time(), "reset": _next_reset(), "providers": providers, "images": sources, "pin": state.setting("ai_pin")}
 
 
@@ -829,7 +918,8 @@ def settings_view(locale: str) -> list[dict[str, Any]]:
 @op("hello")
 def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     return {"version": __version__, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
-            "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender())}
+            "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
+            "maintenance_notice": maintenance.get()}
 
 
 @op("repair")
@@ -870,8 +960,11 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         return run_captured(lambda: agent.handle(chat_id, text, locale), locale)
     history = args.get("history") if isinstance(args.get("history"), list) else []
     if space == "smart_agent":
+        agent_model = _clean(args.get("agent_model"))[:180]
+        if agent_model and ai.model_by_key(agent_model) is None:
+            raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro.", "That model is no longer available; pick another."))
         try:
-            answer = smart_agent.run(text, locale, history)
+            answer = smart_agent.run(text, locale, history, agent_model) if agent_model else smart_agent.run(text, locale, history)
         except smart_agent.AgentError as exc:
             raise AppError(str(exc)) from exc
         answer["models"] = models_view()
@@ -897,6 +990,54 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         text += tr(locale, "\n\n[La respuesta se cortó por el límite del proveedor; pide que continúe.]",
                    "\n\n[The answer was cut off by the provider's limit; ask it to continue.]")
     return {"text": text, "sig": result.signature(), "model": result.model, "truncated": result.truncated, "models": models_view()}
+
+
+@op("personal_ai")
+def op_personal_ai(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    """Manage only this sender's encrypted vault; never return a credential."""
+    from . import personal_ai
+    if not state.personal_ai_secure():
+        raise AppError(tr(locale, "Se requiere un chat individual cifrado.", "An encrypted one-to-one chat is required."))
+    action, address = str(args.get("do") or "status"), state.request_sender()
+    try:
+        if action == "status":
+            return {"providers": personal_ai.public_list(address)}
+        if action == "handshake":
+            return personal_ai.handshake(address)
+        if action == "add":
+            values = personal_ai.unseal(address, args.get("sealed"))
+            return personal_ai.add(address, values)
+        provider_id = _clean(args.get("provider"))[:100]
+        if action == "refresh":
+            return {"providers": personal_ai.refresh(address, provider_id)}
+        if action == "remove":
+            return {"providers": personal_ai.remove(address, provider_id)}
+        if action == "edit":
+            return {"providers": personal_ai.edit_provider(address, provider_id, args.get("name"), args.get("daily"))}
+        if action == "configure":
+            return {"providers": personal_ai.configure_model(address, provider_id, _clean(args.get("model"))[:120],
+                                                              args.get("chat"), args.get("vision"), args.get("image"))}
+        raise personal_ai.PersonalError("input")
+    except (personal_ai.PersonalError, OSError) as exc:
+        code = str(exc) if isinstance(exc, personal_ai.PersonalError) else "vault"
+        messages = {
+            "key_unavailable": ("El servidor no tiene una WEB_SESSION_KEY estable y segura; no se guardó la clave.",
+                                "The server lacks a stable, secure WEB_SESSION_KEY; the key was not stored."),
+            "vault": ("No se pudo abrir o guardar la bóveda cifrada.", "Could not open or save the encrypted vault."),
+            "challenge": ("La autorización de cifrado caducó; vuelve a intentarlo.", "The encryption authorization expired; try again."),
+            "envelope": ("No pude verificar el mensaje cifrado; vuelve a intentarlo.", "Could not verify the encrypted message; try again."),
+            "url": ("Usa una URL HTTPS pública sin clave, usuario ni parámetros.", "Use a public HTTPS URL without keys, user credentials or parameters."),
+            "auth": ("El proveedor rechazó la clave; verifica sus permisos.", "The provider rejected the key; check its permissions."),
+            "connection": ("No se pudo conectar de forma segura al proveedor.", "Could not securely connect to the provider."),
+            "redirect": ("El proveedor redirigió la solicitud; se bloqueó para proteger la clave.", "The provider redirected the request; it was blocked to protect the key."),
+            "quota": ("El proveedor informó un límite o cuota.", "The provider reported a limit or quota."),
+            "unsupported": ("Este protocolo o función no está disponible en el servidor elegido.", "This protocol or feature is unavailable on the selected server."),
+            "provider_limit": ("Ya hay ocho proveedores personales; elimina uno antes de agregar otro.", "There are already eight personal providers; remove one before adding another."),
+            "model_limit": ("Se alcanzó el límite de 200 modelos para este proveedor.", "The 200-model limit for this provider was reached."),
+        }
+        spanish, english = messages.get(code, ("No pude completar la operación; revisa los datos y el protocolo.",
+                                                "Could not complete the operation; check the details and protocol."))
+        raise AppError(tr(locale, spanish, english)) from None
 
 
 @op("browser_session")
@@ -1010,7 +1151,7 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         raise AppError(tr(locale, "Archivo de proyecto no válido; no se modificó.",
                           "Invalid project file; it was not changed."))
     files = incoming
-    model = _clean(args.get("model"))[:120]
+    model = _clean(args.get("model"))[:180]
     if model and ai.model_by_key(model) is None:
         raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro o usa Automático.",
                           "That model is no longer available; pick another or use Automatic."))
@@ -1019,7 +1160,7 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if state.acting_as():
         if not usage.allowed(address, "code"):
             raise AppError(usage.limit_text("code", locale))
-        if usage.reserve_low():
+        if not model.startswith("personal-") and usage.reserve_low():
             raise AppError(usage.reserve_text(locale))
     try:
         result = coder.run(text, files, locale, model)
@@ -1083,7 +1224,7 @@ def op_image(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     prompt = _clean(args.get("prompt"))[:1500]
     if not prompt:
         raise AppError(tr(locale, "Describe la imagen.", "Describe the image."))
-    model = _clean(args.get("model"))[:60]
+    model = _clean(args.get("model"))[:180]
     result = images.generate(prompt, model)
     if result.error == "person_quota":
         raise AppError(usage.limit_text("image", locale))
@@ -1135,6 +1276,21 @@ def op_search(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             results = []
     return {"engine": engine, "q": query, "mode": "advanced" if advanced else "standard", "left": tools.you_left() if advanced else None,
             "results": [{"title": item.title, "url": item.url, "snippet": item.snippet, "source": item.source, "date": item.date} for item in results]}
+
+
+@op("youtube_search")
+def op_youtube_search(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    query = _clean(args.get("q"))[:300]
+    page = args.get("page", 1)
+    if not query or type(page) is not int or not 1 <= page <= tools.VIDEO_MAX_PAGES:
+        raise AppError(tr(locale, "Consulta o página no válida.", "Invalid query or page."))
+    try:
+        found = tools.youtube_page(query, locale, page, chat.sender())
+    except ValueError:
+        raise AppError(tr(locale, "No pude buscar esa página.", "Could not search that page.")) from None
+    return {"q": query, "page": page, "more": found["more"], "limited": found["limited"],
+            "results": [{"title": item.title, "url": item.url, "snippet": item.snippet,
+                         "source": item.source, "date": item.date} for item in found["results"]]}
 
 
 @op("music_search")
@@ -1437,6 +1593,61 @@ def op_owner_only(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                               "Sharing is unavailable during maintenance or the session changed. Refresh Administration."))
         queue.wake()
     return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "message": ""}
+
+
+_maintenance_notify_lock = threading.Lock()
+
+
+def _notify_maintenance(notice: dict[str, Any]) -> None:
+    """Retry failed local queueing, but never notify a revoked or stale grant."""
+    if not notice.get("revision") or not _maintenance_notify_lock.acquire(blocking=False):
+        return
+    try:
+        with state.lock:
+            entries = [dict(entry) for entry in _apps().values() if isinstance(entry, dict)]
+        chats: dict[int, tuple[str, str]] = {}
+        for entry in entries:
+            try:
+                address = str(entry.get("addr") or "").strip().lower()
+                chat_id = int(entry.get("chat") or 0)
+                if chat_id and address and access.bound_allowed(entry) and admin.is_allowed(address):
+                    chats[chat_id] = (address, str(entry.get("locale") or "es"))
+            except (TypeError, ValueError):
+                continue
+        for chat_id, (address, locale) in chats.items():
+            if maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address):
+                continue
+            with state.lock:
+                record = state.data.get("maintenance_notice") or {}
+                if (record.get("notified") or {}).get(str(chat_id)) == notice["revision"]:
+                    continue
+            message = (notice["en" if locale == "en" else "es"] if notice["active"] else
+                       tr(locale, "Aviso de mantenimiento desactivado.", "Maintenance notice turned off."))
+            if push(chat_id, "maintenance", notice, message):
+                # Accepted into the local mail queue, not confirmed delivered.
+                with state.lock:
+                    record = state.data.get("maintenance_notice") or {}
+                    if record.get("revision") == notice["revision"]:
+                        record.setdefault("notified", {})[str(chat_id)] = notice["revision"]
+                        state.save()
+    finally:
+        _maintenance_notify_lock.release()
+
+
+@op("maintenance_notice")
+def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    if not admin.is_admin(chat.sender()) or chat.sender().strip().lower() != config.OWNER_ADDRESS:
+        raise AppError(tr(locale, "Solo el dueño puede editar este aviso.", "Only the owner can edit this notice."))
+    if "active" not in args:
+        return {"notice": maintenance.get(), "profile_updated": None}
+    try:
+        notice = maintenance.set_notice(args.get("active"), args.get("es"), args.get("en"))
+    except ValueError:
+        raise AppError(tr(locale, "Aviso inválido: usa un mensaje de hasta 280 caracteres.",
+                          "Invalid notice: use a message of up to 280 characters.")) from None
+    profile_updated = maintenance.sync_profile()
+    threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-notice", daemon=True).start()
+    return {"notice": notice, "profile_updated": profile_updated}
 
 
 @op("admin")

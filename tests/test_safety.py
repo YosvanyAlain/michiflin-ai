@@ -98,6 +98,7 @@ class SafetyTests(unittest.TestCase):
         with (mock.patch.object(miniapp, "app_build", return_value="build-1"),
               mock.patch.object(miniapp, "build", return_value=Path("/tmp/fake.xdc")),
               mock.patch.object(chat, "send", side_effect=[101, 102, 103, 104, 105, 106]),
+              mock.patch("michiflin.live_web._identity", side_effect=lambda msg_id: (state.data["apps"][str(msg_id)], OWNER)),
               mock.patch.object(chat, "delete_for_all") as delete):
             for _ in range(4):
                 miniapp.send_app(91, "en", address=OWNER)
@@ -118,6 +119,7 @@ class SafetyTests(unittest.TestCase):
         with (mock.patch.object(miniapp, "app_build", return_value="new"),
               mock.patch.object(miniapp, "build", return_value=Path("/tmp/fake.xdc")),
               mock.patch.object(chat, "send", return_value=151) as send,
+              mock.patch("michiflin.live_web._identity", return_value=(old, OWNER)),
               mock.patch.object(chat, "delete_for_all") as delete):
             miniapp._maybe_upgrade(150, old, "en")
             self.assertIn("150", state.data["apps"])
@@ -209,7 +211,7 @@ class SafetyTests(unittest.TestCase):
             entered.set()
             finish.wait(3)
             return {"private": "result"}
-        entry = {"chat": 91, "addr": OLD, "access_session": access.session_stamp(OLD)}
+        entry = {"chat": 91, "addr": OLD, "access_session": access.session_stamp(OLD), "build": miniapp.app_build()}
         with mock.patch.dict(miniapp.OPS, {"slow_test": slow}), mock.patch.object(miniapp, "respond") as respond:
             worker = threading.Thread(target=miniapp.handle, args=(123, entry, {"id": "slow", "op": "slow_test"}))
             worker.start()
@@ -454,7 +456,7 @@ class SafetyTests(unittest.TestCase):
                 test.toggle_once()
                 return super().submit(function, *args)
 
-        entry = {"chat": 7, "addr": OWNER}
+        entry = {"chat": 7, "addr": OWNER, "build": miniapp.app_build()}
         with mock.patch.dict(miniapp.OPS, {"race_test": handler}), mock.patch.object(miniapp, "_workers", ToggleBeforeRun()), \
                 mock.patch.object(miniapp, "respond", side_effect=lambda *args: responses.append(args)):
             miniapp.handle(42, entry, {"id": "race", "op": "race_test", "lang": "en"})
@@ -493,7 +495,7 @@ class SafetyTests(unittest.TestCase):
             responses = []
             with mock.patch.object(miniapp, "_workers", Immediate()), \
                     mock.patch.object(miniapp, "respond", side_effect=lambda *args: responses.append(args)):
-                miniapp.handle(42, {"chat": 7, "addr": OWNER}, {"id": language, "op": "estado", "lang": language})
+                miniapp.handle(42, {"chat": 7, "addr": OWNER, "build": miniapp.app_build()}, {"id": language, "op": "estado", "lang": language})
             self.assertIn(expected, responses[0][2][language])
             self.assertTrue(responses[0][2]["killed"])
 
