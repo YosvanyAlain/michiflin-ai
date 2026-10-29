@@ -370,24 +370,43 @@ const media = {
       transaction.onerror = () => reject(transaction.error);
     });
   },
-  put(item) {
-    return this.run("readwrite", (os) => (os ? os.put(item) : this.memory.set(item.id, item)));
+  async put(item) {
+    try {
+      if (await this.open()) {
+        await this.run("readwrite", (os) => os.put(item));
+        return true;
+      }
+    } catch (error) { /* storage full or unavailable: keep a temporary copy */ }
+    this.memory.set(item.id, item);
+    return false;
+  },
+  async get(id) {
+    let item = null;
+    try { item = await this.run("readonly", (os) => (os ? os.get(id) : null)); } catch (error) { /* memory still works */ }
+    return item || this.memory.get(id) || null;
   },
   async all() {
-    const items = (await this.run("readonly", (os) => (os ? os.getAll() : null))) || [...this.memory.values()];
-    return items.sort((a, b) => b.ts - a.ts);
+    let stored = [];
+    try { stored = (await this.run("readonly", (os) => (os ? os.getAll() : null))) || []; } catch (error) { /* memory still works */ }
+    const items = new Map(stored.map((item) => [item.id, item]));
+    for (const item of this.memory.values()) items.set(item.id, item);
+    return [...items.values()].sort((a, b) => b.ts - a.ts);
   },
   remove(id) {
-    return this.run("readwrite", (os) => (os ? os.delete(id) : this.memory.delete(id)));
+    this.memory.delete(id);
+    return this.run("readwrite", (os) => (os ? os.delete(id) : undefined));
   },
   clear() {
-    return this.run("readwrite", (os) => (os ? os.clear() : this.memory.clear()));
+    this.memory.clear();
+    return this.run("readwrite", (os) => (os ? os.clear() : undefined));
   },
 };
 
 // Requests travel as webxdc updates (e-mails); answers can arrive minutes later or after the app was closed.
 const STALE_MS = 45 * 60 * 1000;
 const UPDATE_MAX = 126000; // webxdc caps one update at 128000 bytes
+const CODE_REQUEST_MAX = 600000; // large coding projects are split into bounded request updates
+const REQUEST_CHUNK = 74000;
 // Unanswered requests are resent with the same id (the bot answers a resend from its cache or says it is working).
 const RESEND_AFTER = [45000, 90000, 180000, 300000];
 const RESENDABLE = 24000; // bytes; bigger requests (attachments) are not stored for a resend
@@ -426,7 +445,12 @@ const bridge = {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     const payload = { t: "req", id, op, args, lang: lang() };
     const size = new Blob([JSON.stringify({ payload })]).size;
-    if (size > UPDATE_MAX) {
+    const reported = Number(window.webxdc.sendUpdateMaxSize) || 128000;
+    const maxUpdate = Math.min(UPDATE_MAX, reported);
+    const chunkSize = Math.min(REQUEST_CHUNK, Math.floor((maxUpdate - 500) / 4) * 4);
+    // Bound the number of stored fragments and do not send an unusable partial request.
+    const canSplit = chunkSize >= 1024 && Math.ceil(size * 4 / 3 / chunkSize) <= 12;
+    if (size > maxUpdate && (op !== "code" || size > CODE_REQUEST_MAX || !canSplit)) {
       toast(t("request_big"), "bad");
       const promise = Promise.reject(new Error(t("request_big")));
       promise.catch(() => {});
@@ -437,7 +461,18 @@ const bridge = {
     this.save(pending);
     const promise = new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
     promise.catch(() => {});
-    window.webxdc.sendUpdate({ payload }, "");
+    if (size > maxUpdate) {
+      // Encode UTF-8 first so splitting never divides a Unicode surrogate pair.
+      const bytes = new TextEncoder().encode(JSON.stringify(payload));
+      let binary = "";
+      for (let offset = 0; offset < bytes.length; offset += 8192)
+        binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+      const encoded = btoa(binary);
+      const count = Math.ceil(encoded.length / chunkSize);
+      for (let i = 0; i < count; i += 1)
+        window.webxdc.sendUpdate({ payload: { t: "req_chunk", id, i, n: count,
+          s: encoded.slice(i * chunkSize, (i + 1) * chunkSize) } }, "");
+    } else window.webxdc.sendUpdate({ payload }, "");
     this.changed();
     return { id, promise };
   },

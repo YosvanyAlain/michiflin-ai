@@ -1,6 +1,7 @@
 """Headless browser smoke tests for the WebXDC app with an in-memory Delta Chat bridge."""
 from __future__ import annotations
 
+import base64
 import copy
 import functools
 import http.server
@@ -74,6 +75,12 @@ BRIDGE = r"""
       case "settings": return settings;
       case "rates": return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() };
       case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
+      case "music_search": return { results: [{ id: "album-1", title: "Licensed jazz", creator: "Artist" }] };
+      case "music_item": return { id: "album-1", title: "Licensed jazz", creator: "Artist", license: "CC BY https://creativecommons.org/publicdomain/mark/1.0/",
+        page: "https://archive.org/details/album-1", files: [{ title: "Jazz track", format: "VBR MP3", size: 12345,
+          url: "https://archive.org/download/album-1/track.mp3" }] };
+      case "image": return { prompt: request.args.prompt, source: "OVH test", model: "ovh:sdxl", mime: "image/png",
+        b64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
       case "ask": return { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
@@ -339,9 +346,9 @@ class WebXDCBrowserSmoke(unittest.TestCase):
         cases = [("es", {"width": 320, "height": 700}), ("en", {"width": 1280, "height": 800})]
         for language, viewport in cases:
             with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
-                self.assertEqual(page.locator("#view .tile-youtube").count(), 0)
+                self.assertEqual(page.locator("#view .tile-youtube").count(), 1)
                 page.locator('.tab[data-tab="apps"]:visible').click()
-                self.assertEqual(page.locator("#view .tile-youtube").count(), 0)
+                self.assertEqual(page.locator("#view .tile-youtube").count(), 1)
                 page.evaluate("""() => {
                   store.set('recent', [{q:'preserved search', engine:'videos'}]);
                   store.set('visited', [{url:'https://example.org/', title:'Preserved'}]);
@@ -352,7 +359,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(page.get_by_text("Abrir una dirección en Live" if language == "es" else "Open an address in Live", exact=True).is_visible())
                 for name in ("YouTube", "Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
                     self.assertEqual(page.get_by_text(name, exact=True).count(), 0, name)
-                self.assertTrue(page.evaluate("!['accounts', 'youtube', 'youtube_account', 'facebook_account', 'tiktok_account'].some(k => k in VIEWS)"))
+                self.assertTrue(page.evaluate("'youtube' in VIEWS && !['accounts', 'youtube_account', 'facebook_account', 'tiktok_account'].some(k => k in VIEWS)"))
                 self.assertEqual(page.locator('#view .segmented [data-key="web"]').get_attribute("aria-selected"), "true")
                 self.assertEqual(page.locator('#view .segmented [data-key="videos"]').count(), 0)
                 self.assertEqual(page.evaluate("store.get('recent')[0].q"), "preserved search")
@@ -583,15 +590,121 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
                 page.evaluate("""() => {
                   const project = coder.get();
-                  project.files = [{path:'important.txt', text:'x'.repeat(95000)}];
+                  project.files = [{path:'important.txt', text:'x'.repeat(560000)}];
                   coder.set(project);
                 }""")
                 before = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'code').length")
                 self.assertFalse(page.evaluate("coderSend('continue')"))
                 self.assertEqual(before, page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'code').length"))
-                self.assertEqual(page.evaluate("coder.get().files[0].text.length"), 95000)
+                self.assertEqual(page.evaluate("coder.get().files[0].text.length"), 560000)
                 self.assertEqual(page.evaluate("coder.get().files[0].path"), "important.txt")
                 self.assertEqual(errors, [])
+
+    def test_incomplete_coder_response_preserves_original_project(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                actual = page.evaluate("""() => {
+                  const project = coder.get();
+                  project.files = [{path:'a.txt',text:'original'},{path:'b.txt',text:'keep'}];
+                  project.rid = 'pending'; coder.set(project);
+                  bridge.handlers.code({files:[{path:'a.txt',text:'partial'}], project_complete:false,
+                    summary:'export incomplete', steps:[]}, null, null, 'pending');
+                  return coder.get().files;
+                }""")
+                self.assertEqual(actual, [{"path":"a.txt","text":"original"},{"path":"b.txt","text":"keep"}])
+                # A response from an older server without the completeness marker is also not applied.
+                actual = page.evaluate("""() => { const p = coder.get(); p.rid = 'old'; coder.set(p);
+                  bridge.handlers.code({files:[],summary:'old response'},null,null,'old'); return coder.get().files; }""")
+                self.assertEqual(len(actual), 2)
+                actual = page.evaluate("""() => { const p = coder.get(); p.rid = 'complete'; coder.set(p);
+                  bridge.handlers.code({files:[{path:'new.txt',text:'ok'}],project_complete:true,summary:'ok'},null,null,'complete');
+                  return coder.get().files; }""")
+                self.assertEqual(actual, [{"path":"new.txt","text":"ok"}])
+                self.assertEqual(errors, [])
+
+    def test_youtube_music_and_chat_images_bilingual(self) -> None:
+        cases = [("es", {"width": 375, "height": 844}), ("en", {"width": 1280, "height": 800})]
+        for language, viewport in cases:
+            with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
+                page.evaluate("""() => { window.__searchResults = [
+                  {url:'https://www.youtube.com/watch?v=abc123', title:'SIMULATED video', source:'YouTube'},
+                  {url:'https://elsewhere.example/video', title:'OTHER SITE', source:'Elsewhere'}]; }""")
+                page.locator('.tab[data-tab="apps"]:visible').click()
+                self.assertEqual(page.locator("#view .tile-youtube").count(), 1)
+                self.assertEqual(page.locator("#view .tile-audio").count(), 1)
+                self.assertEqual(page.locator("#view .tile-facebook, #view .tile-tiktok").count(), 0)
+                page.locator("#view .tile-youtube").click()
+                query = page.locator('#view input[type="search"]')
+                query.fill("sailboat")
+                query.press("Enter")
+                page.get_by_text("SIMULATED video").wait_for(state="visible")
+                self.assertEqual(page.get_by_text("OTHER SITE").count(), 0)
+                screenshot_if_requested(page, language + "-youtube")
+                page.locator("article.video").get_by_role("button", name="Audio").click()
+                sheet = page.locator("#sheet.open")
+                self.assertIn("Formato" if language == "es" else "format", sheet.inner_text().lower() if language == "en" else sheet.inner_text())
+                sheet.get_by_role("tab", name="OPUS").click()
+                self.assertEqual(sheet.get_by_role("tab", name="OPUS").get_attribute("aria-selected"), "true")
+                self.assertEqual(sheet.get_by_role("tab", name="MP3").get_attribute("aria-selected"), "false")
+                sheet.get_by_role("button", name="128 kbps").click()
+                screenshot_if_requested(page, language + "-youtube-audio-quality")
+                sheet.get_by_role("button", name="Iniciar descarga" if language == "es" else "Start download").click()
+                page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'action')")
+                action = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'action').at(-1).payload.args")
+                self.assertEqual((action["kind"], action["quality"], action["audio_format"]), ("audio", 128, "opus"))
+
+                page.locator('.tab[data-tab="apps"]:visible').click()
+                page.locator("#view .tile-audio").click()
+                page.get_by_role("tab", name="Internet Archive").click()
+                page.locator('#view input[type="search"]').fill("jazz")
+                page.locator('#view input[type="search"]').press("Enter")
+                page.get_by_text("Licensed jazz").wait_for(state="visible")
+                screenshot_if_requested(page, language + "-music-results")
+                page.get_by_text("Licensed jazz").click()
+                page.get_by_text("Jazz track").wait_for(state="visible")
+                self.assertTrue(page.get_by_text("VBR MP3", exact=False).is_visible())
+                self.assertTrue(page.get_by_text("CC BY", exact=False).is_visible())
+                # A real Archive license URL previously widened the mobile view beyond the screen.
+                widths = page.locator("#view .note").evaluate("el => [el.scrollWidth, el.clientWidth]")
+                self.assertLessEqual(widths[0], widths[1], f"music license overflow: {widths}")
+                screenshot_if_requested(page, language + "-music-formats")
+                page.locator(".music-file").get_by_role("button", name="Descargar" if language == "es" else "Download").click()
+                page.wait_for_function("window.__sentUpdates.filter(x => x.payload?.op === 'action').length >= 2")
+                action = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'action').at(-1).payload.args")
+                self.assertEqual(action["kind"], "download")
+                self.assertTrue(action["url"].startswith("https://archive.org/download/"))
+                page.locator("#sheet .sheet-head button").click()
+                page.locator("#sheet").wait_for(state="hidden")
+
+                page.locator('.tab[data-tab="ai"]:visible').click()
+                page.get_by_role("button", name="Automático" if language == "es" else "Automatic", exact=False).first.click()
+                page.locator("#view textarea").fill("a red sailboat")
+                page.get_by_role("button", name="Crear imagen" if language == "es" else "Create image").click()
+                page.locator(".chat-image img").wait_for(state="visible")
+                self.assertTrue(page.get_by_text("OVH test", exact=False).first.is_visible())
+                image_request = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'image').at(-1).payload.args")
+                self.assertEqual(image_request["prompt"], "a red sailboat")
+                self.assertTrue(page.evaluate("messages('auto').some(m => m.imageId)"))
+                self.assertTrue(page.evaluate("(async () => !!(await media.get(messages('auto').find(m => m.imageId).imageId)))()"))
+                screenshot_if_requested(page, language + "-chat-image")
+                page.evaluate("go('chat', {space:'other:model'})")
+                self.assertEqual(page.get_by_text("a red sailboat", exact=True).count(), 0)
+                self.assertTrue(page.evaluate("messages('auto').some(m => m.imageId)"))
+                self.assertEqual(errors, [])
+
+    def test_large_coder_request_uses_bounded_multipart(self) -> None:
+        with browser_fixture("en", {"width": 390, "height": 844}) as (page, errors):
+            sent = page.evaluate("""() => {
+              const p = coder.get(); p.files = [{path:'a.txt', text:'á'.repeat(70000)}]; coder.set(p);
+              return coderSend('continue');
+            }""")
+            self.assertTrue(sent)
+            chunks = page.evaluate("window.__sentUpdates.map(x => x.payload).filter(p => p?.t === 'req_chunk')")
+            self.assertGreater(len(chunks), 1)
+            decoded = json.loads(base64.b64decode("".join(item["s"] for item in chunks)))
+            self.assertEqual(decoded["args"]["files"][0]["text"], "á" * 70000)
+            self.assertTrue(all(len(item["s"]) <= 74000 for item in chunks))
+            self.assertEqual(errors, [])
 
     def test_tabs_and_all_app_tiles_render_without_browser_errors(self) -> None:
         with tempfile.TemporaryDirectory(prefix="michiflin-webxdc-smoke-") as temporary:

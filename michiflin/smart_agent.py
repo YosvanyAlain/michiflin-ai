@@ -23,7 +23,7 @@ from urllib.parse import urljoin, urlsplit
 from . import ai, progress, state, tools
 from .util import tr
 
-MAX_ROUNDS = 4  # includes the final answer
+MAX_ROUNDS = 6  # includes the final answer
 MAX_SECONDS = 150  # checked between calls; an in-flight network call has its own timeout
 MAX_SOURCES = 8
 WORD = re.compile(r"[^\W_]+", re.UNICODE)
@@ -185,7 +185,7 @@ def _prompt(locale: str) -> str:
         "Never claim you performed actions you did not perform. Do not claim you logged in, ran code, created "
         "files, messaged someone, changed data or browsed private pages: no such tools exist here. "
         "For a coding project tell the user to use Coder, which is a separate tool. "
-        f"Answer in {lang}, clearly and concisely. Stop when you have enough evidence."
+        f"Answer in {lang}, with the depth the task needs. Stop when you have enough evidence."
     )
 
 
@@ -194,11 +194,11 @@ def run(text: str, locale: str, history: list[Any] | None = None) -> dict[str, A
     if not text:
         raise AgentError(tr(locale, "Escribe algo primero.", "Write something first."))
     messages: list[dict[str, str]] = [{"role": "system", "content": _prompt(locale)}]
-    budget = 6000
+    budget = 20000
     accepted = []
-    for turn in reversed((history or [])[-8:]):
+    for turn in reversed((history or [])[-12:]):
         if isinstance(turn, list) and len(turn) == 2 and turn[0] in {"user", "assistant"}:
-            content = str(turn[1] or "")[:1200]
+            content = str(turn[1] or "")[:6000]
             budget -= len(content)
             if budget < 0:
                 break
@@ -215,7 +215,7 @@ def run(text: str, locale: str, history: list[Any] | None = None) -> dict[str, A
         progress.phase(f"🧠 Agente IA · paso {index + 1}", f"🧠 AI agent · step {index + 1}")
         if index == MAX_ROUNDS - 1:
             messages.append({"role": "user", "content": "Final round: do not call tools; give the best honest answer as JSON {\"answer\":\"...\"}."})
-        result = ai.complete(messages, "reason", max_attempts=1, max_tokens=1500, raw=True)
+        result = ai.complete(messages, "reason", max_attempts=1, max_tokens=6000, raw=True)
         state.check_work_allowed()
         if not result.ok:
             if index == 0:
@@ -223,8 +223,15 @@ def run(text: str, locale: str, history: list[Any] | None = None) -> dict[str, A
             break
         signature = result.signature()
         action = _parse(result.text)
+        if result.truncated and not (action and "answer" in action):
+            messages += [{"role": "assistant", "content": result.text[:2000]},
+                         {"role": "user", "content": "The response was cut off. Return one shorter, complete JSON action or answer."}]
+            continue  # never execute a potentially partial tool action
         if action and "answer" in action:
             answer = action["answer"]
+            if result.truncated:
+                answer += tr(locale, "\n\n[La respuesta se cortó; pide que continúe.]",
+                             "\n\n[The answer was cut off; ask it to continue.]")
             break
         if not action:
             # A model that ignores the wire protocol may still give a useful plain answer.

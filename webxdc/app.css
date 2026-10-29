@@ -253,7 +253,7 @@ button.chip:active { transform: scale(0.96); }
 .accent { color: var(--accent); }
 .clamp { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .clamp1 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.note { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: 13px; }
+.note { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: 12px; background: var(--surface-2); color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .note .ic { width: 17px; height: 17px; margin-top: 1px; }
 .note.warn { color: var(--warn); background: var(--warn-soft); }
 .note.ok { color: var(--ok); background: var(--ok-soft); }
@@ -668,3 +668,20 @@ details[open] .caret { transform: rotate(180deg); }
 .live-options .segmented, .live-auto { margin-top: 8px; }
 .live-auto input { flex: 0 0 auto; }
 .agent-mode { gap: 5px; margin-bottom: 10px; }
+
+/* Keep the two agent modes visible even after scrolling a long conversation. */
+.agent-mode { position: sticky; top: 0; z-index: 5; padding: 8px 0; background: var(--bg); }
+.agent-mode + .chat-meta { position: relative; top: auto; }
+.chat-image-action { margin: 6px 0 0; }
+.chat-image-button { display: block; padding: 0; border: 0; background: none; max-width: 280px; }
+.chat-image-button img { display: block; max-width: 100%; border-radius: 14px; }
+.music-file { align-items: center; gap: 10px; }
+.music-file .grow { min-width: 0; overflow-wrap: anywhere; }
+
+/* YouTube result card keeps title, source and actions readable on narrow screens. */
+.video { display: flex; align-items: flex-start; gap: 12px; }
+.video-art { flex: none; width: 48px; height: 48px; display: grid; place-items: center; border-radius: 13px; color: var(--accent); background: var(--accent-soft); }
+.video-art .ic { width: 23px; height: 23px; }
+.video-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.video-body > b, .video-body > small { display: block; }
+.video-body > small { margin: 3px 0 9px; }

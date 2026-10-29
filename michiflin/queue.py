@@ -195,7 +195,7 @@ def enqueue_file(chat_id: int, info: files.FileInfo, locale: str) -> tuple[dict[
     return job, ""
 
 
-def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, locale: str) -> tuple[dict[str, Any] | None, str]:
+def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, locale: str, audio_format: str = "", video_format: str = "") -> tuple[dict[str, Any] | None, str]:
     sizes = info.audio_sizes if kind == "audio" else info.video_sizes
     estimate = sizes.get(quality) or (max(sizes.values()) if sizes else 0)
     if kind == "video" and sizes and quality not in sizes:
@@ -204,8 +204,11 @@ def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, 
     problem = _capacity_error(estimate, locale)
     if problem:
         return None, problem
-    fmt = state.setting("audio_format") if kind == "audio" else "mp4"
-    job = _new_job(chat_id, kind, info.webpage or info.url, info.title, estimate, quality=quality, audio_format=state.setting("audio_format"),
+    fmt = (audio_format or state.setting("audio_format")) if kind == "audio" else (video_format or "mp4")
+    if ((kind == "audio" and fmt not in {"mp3", "m4a", "opus"}) or
+            (kind == "video" and fmt not in {"mp4", "mkv", "webm"})):
+        return None, tr(locale, "⚠️ Formato de salida no válido.", "⚠️ Invalid output format.")
+    job = _new_job(chat_id, kind, info.webpage or info.url, info.title, estimate, quality=quality, audio_format=fmt,
                    ext=fmt, label=(tr(locale, "Audio", "Audio") if kind == "audio" else "Video"), duration=info.duration, locale=locale)
     with state.lock:
         jobs()[job["id"]] = job

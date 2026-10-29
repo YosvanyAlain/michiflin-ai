@@ -4,10 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
 
-function boot(storage, sent) {
+function boot(storage, sent, maximum = 128000) {
   const listeners = {};
   const ctx = {
-    console, Blob, setTimeout, clearTimeout, setInterval: () => 0, Date, Math, JSON, Promise, Map, Set, Object, Array, String, Number,
+    console, Blob, TextEncoder, btoa, setTimeout, clearTimeout, setInterval: () => 0, Date, Math, JSON, Promise, Map, Set, Object, Array, String, Number,
     localStorage: { getItem: (k) => (k in storage ? storage[k] : null), setItem: (k, v) => { storage[k] = String(v); }, removeItem: (k) => { delete storage[k]; } },
     navigator: { language: "es" },
     document: { addEventListener: (n, f) => { listeners[n] = f; }, documentElement: { lang: "es", dataset: {} }, visibilityState: "visible",
@@ -15,7 +15,7 @@ function boot(storage, sent) {
     indexedDB: undefined,
   };
   ctx.window = ctx;
-  ctx.window.webxdc = { sendUpdate: (update) => sent.push(update.payload), selfAddr: "me@x", selfName: "Me" };
+  ctx.window.webxdc = { sendUpdate: (update) => sent.push(update.payload), selfAddr: "me@x", selfName: "Me", sendUpdateMaxSize: maximum };
   ctx.window.addEventListener = () => {};
   const vm = require("vm");
   vm.createContext(ctx);
@@ -86,3 +86,30 @@ setTimeout(() => {
   assert.ok(bridge.pending()[third.id], "resendable request kept");
   console.log("bridge ok");
 }, 10);
+
+// 5. A project larger than one update is split in bounded UTF-8-safe parts.
+{
+  const chunksSent = [];
+  const separate = boot({}, chunksSent);
+  const project = { text: 'continue', files: [{ path: 'x.txt', text: '🌴á'.repeat(35000) }] };
+  const sentRequest = separate.request('code', project);
+  assert.ok(sentRequest.id);
+  assert.ok(chunksSent.length > 1);
+  assert.ok(chunksSent.every(p => p.t === 'req_chunk' && p.id === sentRequest.id && p.s.length <= 74000));
+  const reconstructed = JSON.parse(Buffer.from(chunksSent.map(p => p.s).join(''), 'base64').toString('utf8'));
+  assert.strictEqual(reconstructed.args.files[0].text, project.files[0].text);
+  assert.strictEqual(reconstructed.op, 'code');
+  assert.strictEqual(separate.pending()[sentRequest.id].p, null, 'large projects are not silently resent');
+}
+
+// 6. Respect a messenger's advertised smaller update limit when splitting.
+{
+  const sent = [];
+  const small = boot({}, sent, 60000);
+  const requested = small.request('code', { text:'x', files:[{path:'x.txt', text:'é'.repeat(60000)}] });
+  assert.ok(requested.id);
+  assert.ok(sent.length > 1);
+  assert.ok(sent.every(payload => new Blob([JSON.stringify({payload})]).size <= 60000));
+  const decoded = JSON.parse(Buffer.from(sent.map(p => p.s).join(''), 'base64').toString('utf8'));
+  assert.equal(decoded.args.files[0].text.length, 60000);
+}

@@ -77,8 +77,8 @@ class AgentTests(unittest.TestCase):
         with mock.patch.object(ai, "complete", return_value=response) as model, \
              mock.patch.object(tools, "calculate", return_value="5") as calc:
             result = smart_agent.run("2+3", "en")
-        self.assertEqual(model.call_count, 4)
-        self.assertEqual(calc.call_count, 3)
+        self.assertEqual(model.call_count, smart_agent.MAX_ROUNDS)
+        self.assertEqual(calc.call_count, smart_agent.MAX_ROUNDS - 1)
         self.assertIn("step limit", result["text"])
 
     def test_pause_after_model_prevents_tool_execution(self) -> None:

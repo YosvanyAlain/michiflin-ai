@@ -81,7 +81,8 @@ def system_prompt(locale: str) -> str:
     language = "English" if locale == "en" else "Spanish (neutral, Cuban-friendly)"
     now = datetime.now(config.LOCAL_ZONE).strftime("%Y-%m-%d %H:%M")
     return (f"{config.AI_SYSTEM_PROMPT}\nCurrent date and time: {now} ({config.TIMEZONE_NAME}). Reply in {language}. "
-            "Plain text for a chat app: no tables, at most light *bold*, keep it under 350 words unless asked for more.")
+            "Plain text for a chat app: prefer readable paragraphs and lists, and at most light *bold*. "
+            "Give the detail the task needs; do not impose an arbitrary word limit.")
 
 
 def pick_role(text: str) -> str:

@@ -124,10 +124,16 @@ def main() -> int:
     kind = str(request.get("kind") or "video")
     quality = int(request.get("quality") or 360)
     audio = str(request.get("audio_format") or "m4a")
-    if kind not in {"audio", "video"} or quality not in {32, 48, 64, 96, 128, 160, 192, 144, 240, 360, 480, 720, 1080}:
+    audio_rates = {32, 48, 64, 96, 128, 160, 192, 224, 256, 320}
+    video_heights = {144, 240, 360, 480, 720, 1080, 1440, 2160}
+    audio_formats = {"m4a", "mp3", "opus", "ogg", "wav"}
+    video_formats = {"mp4", "mkv", "webm"}
+    if kind not in {"audio", "video"} or quality not in (audio_rates if kind == "audio" else video_heights):
         raise ValueError("format")
-    if audio not in {"m4a", "mp3", "opus", "ogg", "wav"}:
+    if audio not in (audio_formats if kind == "audio" else audio_formats | video_formats):
         raise ValueError("format")
+    # Older queued videos stored the audio preference here; preserve MP4 for them.
+    container = audio if audio in video_formats else "mp4"
     maximum = int(request.get("max_bytes") or 0)
     if maximum < 1 or maximum > 20_000_000_000:
         raise ValueError("limit")
@@ -148,8 +154,10 @@ def main() -> int:
         options.update(format=f"ba[abr<={max(48, int(quality * 1.4))}]/ba/b",
                        postprocessors=[{"key": "FFmpegExtractAudio", "preferredcodec": audio, "preferredquality": str(quality)}])
     else:
-        options.update(format="bv*+ba/b", format_sort=[f"res:{quality}", "vcodec:h264", "acodec:aac", "abr:96", "+size"],
-                       merge_output_format="mp4", postprocessors=[{"key": "FFmpegVideoRemuxer", "preferedformat": "mp4"}])
+        source = "bv*[ext=webm]+ba[ext=webm]/b[ext=webm]/bv*+ba/b" if container == "webm" else "bv*+ba/b"
+        sort = [f"res:{quality}", "abr:96", "+size"] if container == "webm" else [f"res:{quality}", "vcodec:h264", "acodec:aac", "abr:96", "+size"]
+        options.update(format=source, format_sort=sort, merge_output_format=container,
+                       postprocessors=[{"key": "FFmpegVideoRemuxer", "preferedformat": container}])
     with yt_dlp.YoutubeDL(options) as client:
         client.download([url])
     results = [item for item in Path("/work").glob("media.*") if re.fullmatch(r"media\.[a-zA-Z0-9]{1,8}", item.name)

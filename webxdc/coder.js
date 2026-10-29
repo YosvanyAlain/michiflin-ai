@@ -1,7 +1,7 @@
 "use strict";
 // Programador: free coding models write, run and fix a small project on the bot; the app keeps the files.
 
-const CODER_SEND_MAX = 90000; // project files travel back with each follow-up when they fit in one update
+const CODER_SEND_MAX = 550000; // larger projects use bounded multipart status updates
 
 const coder = {
   get() {
@@ -88,7 +88,7 @@ bridge.handlers.code = (data, error, ctx, rid) => {
   project.rid = "";
   if (data) {
     const nextFiles = Array.isArray(data.files) ? data.files : [];
-    if (coderFilesSignature(project.files) !== coderFilesSignature(nextFiles)) {
+    if (data.project_complete === true && coderFilesSignature(project.files) !== coderFilesSignature(nextFiles)) {
       project.lastChanges = coderChanges(project.files, nextFiles);
       project.history = [{ files: coderCloneFiles(project.files), summary: project.summary || "", name: project.name || "", ts: now() },
         ...(Array.isArray(project.history) ? project.history : [])].slice(0, 3);
@@ -107,7 +107,9 @@ bridge.handlers.code = (data, error, ctx, rid) => {
       saveCache();
       bus.emit("models");
     }
-    toast(t("coder_ready"), "ok");
+    const notice = data.project_complete !== true ? "coder_project_kept" :
+      (data.model_confirmed === true ? "coder_ready" : "coder_draft");
+    toast(t(notice), notice === "coder_ready" ? "ok" : "bad");
   } else {
     project.turns.push({ role: "assistant", text: error, error: true, ts: now() });
     toast(error, "bad");
@@ -432,7 +434,7 @@ VIEWS.coder = {
     bus.on("coder", draw);
     bus.on("models", drawPicker);
     bus.on("quota", drawPicker);
-    add(main, body, card(area, pickRow, h("div", { class: "row end" },
+    add(main, body, card(area, pickRow, h("small", { class: "muted block" }, t("coder_privacy")), h("div", { class: "row end" },
       h("button", { class: "btn primary", onclick: send }, icon("send"), " ", t("coder_send")))));
     drawPicker();
     draw();
