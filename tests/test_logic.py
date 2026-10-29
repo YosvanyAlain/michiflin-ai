@@ -811,7 +811,7 @@ class AiRoutingTests(Base):
                 mock.patch.object(images, "english_prompt", lambda text: text), \
                 mock.patch.object(images, "_run", lambda source, *a, **k: used.append(source.key) or (_ for _ in ()).throw(images._SourceError("response"))):
             result = images.generate("un gato", "cf:phoenix")
-            self.assertEqual((used, result.error, result.source), (["cf:phoenix"], "response", "Phoenix 1.0"))
+            self.assertEqual((used, result.error, result.source), (["cf:phoenix"], "response", "Phoenix 1.0 (Cloudflare)"))
             self.assertEqual(images.generate("un gato", "cf:phoenix").error, "cooldown")
             self.assertEqual(images.generate("un gato", "nope").error, "unknown")
         with mock.patch("michiflin.extras.translate", lambda text, target, source="auto": ("a cat on a roof", "es")), \
@@ -1809,6 +1809,7 @@ class AppSyncTests(Base):
         state.data["apps"]["500"]["build"] = "old"
         with mock.patch.object(self.m, "op_hello", lambda chat_id, args, locale: {"ok": True}), \
                 mock.patch.dict(self.m.OPS, {"hello": lambda chat_id, args, locale: {"ok": True}}), \
+                mock.patch("michiflin.live_web._identity", side_effect=lambda msg_id: (state.data["apps"][str(msg_id)], "owner@example.org")), \
                 mock.patch.object(self.m, "build", lambda: Path(__file__)):
             self.push({"t": "req", "id": "e1", "op": "hello", "args": {}, "lang": "es"})
             self.assertEqual(self.deleted, [])

@@ -121,7 +121,7 @@ function coderModels() {
   const list = [];
   for (const provider of (cache.models && cache.models.providers) || []) {
     for (const model of provider.models || []) {
-      if ((model.roles || []).includes("code") && !modelBroken(model, provider)) list.push([model.key, `${model.title} · ${provider.name}`]);
+      if ((model.roles || []).includes("code") && !modelBroken(model, provider)) list.push([model.key, `${model.title} · ${provider.name}${provider.personal ? " · " + t("personal_model_badge") : ""}`]);
     }
   }
   return list;
@@ -381,7 +381,8 @@ VIEWS.coder = {
         options.unshift([prefs.coderModel, t("coder_model_unavailable")]);
       }
       fill(pickRow, h("small", { class: "muted" }, t("coder_model")),
-        select(prefs.coderModel || "", [["", t("auto")], ...options], (value) => { prefs.coderModel = value; savePrefs(); drawPicker(); }), quotaChip("code"));
+        select(prefs.coderModel || "", [["", t("auto")], ...options], (value) => { prefs.coderModel = value; savePrefs(); drawPicker(); }), quotaChip("code"),
+        prefs.coderModel && prefs.coderModel.startsWith("personal-") ? h("small", { class: "muted" }, t("coder_personal_cost")) : null);
     };
     const send = () => {
       const text = area.value.trim();

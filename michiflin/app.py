@@ -442,8 +442,11 @@ def _maintenance_reply(address: str, chat_id: int, locale: str) -> None:
     if now - _maintenance_notice.get(address, 0.0) < MAINTENANCE_NOTICE_GAP:
         return
     _maintenance_notice[address] = now
-    chat.text(chat_id, tr(locale, "🛠️ Michiflin está en mantenimiento y temporalmente solo lo puede usar su dueño.",
-                          "🛠️ Michiflin is under maintenance and temporarily available only to its owner."))
+    from . import maintenance
+    custom = maintenance.text(locale)
+    chat.text(chat_id, "🛠️ " + custom if custom else tr(locale,
+              "🛠️ Michiflin está en mantenimiento y temporalmente solo lo puede usar su dueño.",
+              "🛠️ Michiflin is under maintenance and temporarily available only to its owner."))
 
 
 def _refuse(address: str, text: str, chat_id: int, contact_id: int = 0) -> None:
@@ -483,6 +486,11 @@ def on_start(bot: Any, args: Any) -> None:
         log.warning("bot profile status could not be updated (%s)", type(exc).__name__)
     links.set_bot_address(chat.self_address())
     state.load()
+    # Restore the owner's advisory after a session restart; it never changes access gates.
+    from . import maintenance
+    notice_state = state.data.get("maintenance_notice") or {}
+    if (maintenance.get()["active"] or notice_state.get("profile_suffix")) and not maintenance.sync_profile():
+        log.warning("maintenance notice profile could not be updated")
     if not (config.OWNER_ONLY or config.MAINTENANCE_MODE):
         shutil.rmtree(config.TEMP_ROOT, ignore_errors=True)
     config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)

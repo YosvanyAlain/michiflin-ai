@@ -13,7 +13,7 @@ const searchEngine = (value) => ENGINES.includes(value) ? value : "web";
 const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 
-const cache = Object.assign({ version: "", admin: false, models: null, health: null, settings: null, jobs: [], lang: "", at: 0 }, store.get("cache", {}));
+const cache = Object.assign({ version: "", admin: false, models: null, health: null, settings: null, jobs: [], maintenance_notice: null, lang: "", at: 0 }, store.get("cache", {}));
 const memo = new Map();
 const VIEWS = {};
 let current = { view: TABS.some((tab) => tab.id === store.get("tab")) ? store.get("tab") : "home", params: {} };
@@ -427,7 +427,7 @@ async function sync(force) {
   try {
     const data = await bridge.call("hello");
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
-      jobs: data.jobs, lang: lang(), at: now() });
+      jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, lang: lang(), at: now() });
     saveCache();
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
@@ -437,6 +437,13 @@ async function sync(force) {
 }
 
 bridge.pushes.notice = (data) => notice(lang() === "en" ? data.en : data.es, data.kind);
+bridge.pushes.maintenance = (data) => {
+  if (data && cache.maintenance_notice && Number(data.revision || 0) < Number(cache.maintenance_notice.revision || 0)) return;
+  cache.maintenance_notice = data || null;
+  saveCache();
+  bus.emit("maintenance");
+  if (data && data.active) notice(lang() === "en" ? data.en : data.es, "warn");
+};
 
 bridge.pushes.job = (job) => {
   const previous = cache.jobs.find((item) => item.id === job.id);
@@ -553,14 +560,22 @@ VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
     const status = h("div", { class: "chips" });
+    const advisory = h("div");
     const drawStatus = () => fill(status, ...statusChips());
+    const drawAdvisory = () => {
+      const item = cache.maintenance_notice;
+      fill(advisory, item && item.active ? h("p", { class: "note warn", role: "status" }, icon("info"),
+        h("span", { class: "grow" }, lang() === "en" ? item.en : item.es)) : null);
+    };
     ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
-    drawStatus();
+    ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
+    drawStatus(); drawAdvisory();
     add(main, 
       h("div", { class: "hero" },
         h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
         h("div", { class: "hero-art" }, icon("cat"))),
       status,
+      advisory,
       searchBox(),
       section(t("shortcuts"), tiles([], ["health"])),
       section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })), noticeList()),
@@ -622,6 +637,7 @@ function modelState(model, provider) {
   if (model.cooldown > now()) {
     return h("span", { class: "chip warn" }, icon("clock"), REASONS[model.reason] ? t(REASONS[model.reason]) + " · " : "", until(model.cooldown, t("available")));
   }
+  if (provider && provider.personal) return h("span", { class: "chip warn" }, t("personal_model_badge"));
   if (model.remaining) return h("span", { class: "chip" }, t("limit_left", { n: model.remaining[0], m: model.remaining[1] }));
   return h("span", { class: "chip" }, t("uses_left", { n: Math.max(0, model.daily - model.used) }));
 }
@@ -647,10 +663,12 @@ function modelSections() {
     const pinned = data.pin === provider.key;
     out.push(card(
       h("div", { class: "provider-head" },
-        h("div", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, t("local_used_of", { n: provider.used, m: provider.daily }))),
+        h("div", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, provider.personal ?
+          (provider.daily ? t("personal_attempts_limit", { n: provider.used, m: provider.daily }) : t("personal_attempts", { n: provider.used })) :
+          t("local_used_of", { n: provider.used, m: provider.daily }))),
         provider.cooldown > now() ? h("span", { class: "chip warn" }, icon("clock"), until(provider.cooldown, t("available"))) : null,
-        iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
-      bar(provider.used, provider.daily),
+        provider.personal ? null : iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
+      !provider.personal || provider.daily ? bar(provider.used, provider.daily) : null,
       h("div", { class: "list" }, provider.models.map((model) =>
         h("button", { class: "list-row model-row" + (modelBroken(model, provider) ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
           brandMark(brandOf(model, provider)),
@@ -689,8 +707,143 @@ VIEWS.ai = {
         spaceCard("ai", t("auto"), t("auto_hint"), () => go("chat", { space: "auto" })),
         spaceCard("code", t("coder"), t("coder_hint"), () => go("coder")),
         spaceCard("image", t("tile_images"), t("images_hint"), () => go("images")),
+        spaceCard("shield", t("personal_title"), t("personal_short"), () => go("personal_ai")),
         quotaNote()),
       section(null, headRow(t("models"), refresh), list));
+  },
+};
+
+// Personal API keys are encrypted in the app before any durable WebXDC update.
+// Only the sealed envelope is given to bridge.request and its pending store.
+function bytes64(buffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+function unbytes64(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+}
+async function sealPersonal(values, handshake) {
+  if (!window.isSecureContext || !window.crypto || !crypto.subtle) throw new Error(t("personal_crypto"));
+  if (!handshake || handshake.algorithm !== "RSA-OAEP-256+A256GCM") throw new Error(t("personal_crypto"));
+  const publicKey = await crypto.subtle.importKey("spki", unbytes64(handshake.public_key),
+    { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const payload = new TextEncoder().encode(JSON.stringify({ ...values, challenge: handshake.challenge }));
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv,
+    additionalData: new TextEncoder().encode("michiflin-personal-ai-v1") }, aes, payload);
+  const raw = await crypto.subtle.exportKey("raw", aes);
+  const wrapped = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, raw);
+  return { key: bytes64(wrapped), iv: bytes64(iv), data: bytes64(encrypted) };
+}
+
+async function reloadPersonalModels() {
+  cache.models = await bridge.call("models");
+  saveCache(); bus.emit("models");
+}
+
+VIEWS.personal_ai = {
+  tab: "ai",
+  title: () => t("personal_title"),
+  render(main) {
+    const holder = h("div", { class: "stack personal-providers" }, loading());
+    const form = h("div", { class: "card stack" });
+    const name = field({ placeholder: t("personal_name"), maxlength: 48 });
+    const base = field({ type: "url", placeholder: "https://api.example.com/v1", maxlength: 1000 });
+    const key = field({ type: "password", placeholder: t("personal_key"), maxlength: 1024, autocomplete: "new-password" });
+    const daily = field({ type: "number", min: 0, max: 100000, value: "0" });
+    let protocol = "auto";
+    const kind = select(protocol, [["auto", t("personal_auto")], ["openai", "OpenAI-compatible"],
+      ["gemini", "Gemini"], ["anthropic", "Anthropic"]], (value) => { protocol = value; });
+    const addButton = h("button", { class: "btn primary", onclick: async () => {
+      if (!base.value.trim() || !key.value) return toast(t("personal_required"), "bad");
+      if (!window.isSecureContext || !window.crypto || !crypto.subtle) return toast(t("personal_crypto"), "bad");
+      const confirmed = await confirmBox(t("personal_confirm_title"), t("personal_confirm_body"), t("confirm"));
+      if (!confirmed) return;
+      addButton.disabled = true;
+      try {
+        const handshake = await bridge.call("personal_ai", { do: "handshake" });
+        const sealed = await sealPersonal({ name: name.value.trim(), base: base.value.trim(), key: key.value,
+          kind: protocol, daily: Number(daily.value || 0) }, handshake);
+        key.value = "";
+        const response = await bridge.call("personal_ai", { do: "add", sealed });
+        name.value = ""; base.value = "";
+        draw(response.providers || []);
+        await reloadPersonalModels();
+        toast(response.discovery === "unsupported" ? t("personal_manual_hint") : t("personal_discovered"), "ok");
+      } catch (error) { key.value = ""; if (!error.cancelled) toast(error.message, "bad"); }
+      finally { addButton.disabled = false; }
+    } }, icon("plus"), t("personal_add"));
+    add(form, h("label", { class: "stack small" }, t("personal_name"), name),
+      h("label", { class: "stack small" }, t("personal_url"), base),
+      h("label", { class: "stack small" }, t("personal_protocol"), kind),
+      h("label", { class: "stack small" }, t("personal_key"), key),
+      h("label", { class: "stack small" }, t("personal_daily"), daily), addButton);
+
+    const perform = async (args, button) => {
+      if (button) button.disabled = true;
+      try {
+        const data = await bridge.call("personal_ai", args);
+        draw(data.providers || []);
+        await reloadPersonalModels();
+        toast(t("done"), "ok");
+      } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+      finally { if (button) button.disabled = false; }
+    };
+    const providerCard = (provider) => {
+      const label = field({ value: provider.name || "", maxlength: 48 });
+      const limit = field({ type: "number", min: 0, max: 100000, value: String(provider.daily || 0) });
+      const details = h("div", { class: "stack" });
+      let chosen = provider.models && provider.models.length ? provider.models[0].id : "";
+      const drawModel = () => {
+        const selected = (provider.models || []).find((model) => model.id === chosen);
+        const custom = field({ placeholder: t("personal_model_id"), maxlength: 120, value: selected ? selected.id : "" });
+        const chatMode = h("input", { type: "checkbox", checked: selected ? !!selected.chat : true });
+        const vision = h("input", { type: "checkbox", checked: selected ? !!selected.vision : false });
+        const picture = h("input", { type: "checkbox", checked: selected ? !!selected.image : false,
+          disabled: provider.kind === "anthropic" });
+        const saveModel = h("button", { class: "btn ghost", onclick: () => perform({ do: "configure", provider: provider.id,
+          model: custom.value.trim(), chat: chatMode.checked, vision: vision.checked, image: picture.checked }, saveModel) },
+        icon("check"), t("personal_save_model"));
+        const options = [["", t("personal_new_model")], ...(provider.models || []).map((m) => [m.id, m.title || m.id])];
+        const picker = select(chosen, options, (value) => { chosen = value; drawModel(); });
+        fill(details, h("p", { class: "muted small" }, t("personal_capability_hint")), picker,
+          h("label", { class: "stack small" }, t("personal_model_id"), custom),
+          h("label", { class: "row" }, chatMode, t("personal_chat")),
+          h("label", { class: "row" }, vision, t("personal_vision")),
+          h("label", { class: "row" }, picture, t("personal_image")),
+          selected ? h("small", { class: "muted" }, selected.source === "manual" ? t("personal_source_manual") :
+            selected.source === "metadata" ? t("personal_source_metadata") : t("personal_source_inferred")) : null,
+          saveModel);
+      };
+      drawModel();
+      const save = h("button", { class: "btn ghost", onclick: () => perform({ do: "edit", provider: provider.id,
+        name: label.value.trim(), daily: Number(limit.value || 0) }, save) }, icon("check"), t("personal_save"));
+      const refresh = h("button", { class: "btn ghost", onclick: () => perform({ do: "refresh", provider: provider.id }, refresh) },
+        icon("refresh"), t("personal_refresh"));
+      const remove = h("button", { class: "btn ghost danger-text", onclick: async () => {
+        if (await confirmBox(t("personal_remove"), t("personal_remove_body"), t("delete")))
+          await perform({ do: "remove", provider: provider.id }, remove);
+      } }, icon("trash"), t("personal_remove"));
+      return h("div", { class: "card stack" }, h("b", {}, provider.name), h("small", { class: "muted" }, provider.base, " · ", provider.kind),
+        h("small", { class: "muted" }, provider.daily ? t("personal_attempts_limit", { n: provider.attempts, m: provider.daily }) :
+          t("personal_attempts", { n: provider.attempts })),
+        h("label", { class: "stack small" }, t("personal_name"), label),
+        h("label", { class: "stack small" }, t("personal_daily"), limit),
+        h("div", { class: "row wrap" }, save, refresh, remove),
+        h("details", { class: "personal-models" }, h("summary", {}, t("personal_models", { n: (provider.models || []).length })), details));
+    };
+    function draw(providers) {
+      if (!holder.isConnected) return;
+      fill(holder, ...(providers.length ? providers.map(providerCard) : [empty(t("personal_none"), "shield")]));
+    }
+    add(main, h("p", { class: "note warn" }, icon("shield"), h("span", { class: "grow" }, t("personal_security"))),
+      h("p", { class: "muted small" }, t("personal_limits")), section(t("personal_add"), form),
+      section(t("personal_yours"), holder));
+    bridge.call("personal_ai", { do: "status" }).then((data) => draw(data.providers || []))
+      .catch((error) => { if (holder.isConnected && !error.cancelled) fill(holder, failure(error.message, () => go("personal_ai"))); });
   },
 };
 
@@ -731,6 +884,7 @@ function ask(space, text, file = null) {
     }
   }
   const args = { space, text, history };
+  if (space === "smart_agent" && prefs.agentModel) args.agent_model = prefs.agentModel;
   if (file) args.file = { name: file.name, mime: file.mime, b64: file.b64 };
   const { id } = bridge.request("ask", args, { space });
   if (!id) return false;
@@ -826,7 +980,7 @@ function spaceMeta(space) {
   const info = modelInfo(space);
   if (!info) return [h("span", { class: "chip warn" }, t("model_unknown"))];
   const { model, provider } = info;
-  const chips = [h("span", { class: "chip" }, t("uses_left_of", { n: Math.max(0, model.daily - model.used), m: model.daily })), modelState(model, provider), quotaChip("ask")];
+  const chips = [provider.personal ? null : h("span", { class: "chip" }, t("uses_left_of", { n: Math.max(0, model.daily - model.used), m: model.daily })), modelState(model, provider), quotaChip("ask")];
   if (provider.cooldown > now() && provider.reason !== "auth") {
     chips.push(h("span", { class: "chip warn" }, provider.name, " · ", REASONS[provider.reason] ? t(REASONS[provider.reason]) + " · " : "", until(provider.cooldown, t("available"))));
   }
@@ -930,6 +1084,20 @@ VIEWS.chat = {
     bus.on("models", drawMeta);
     bus.on("quota", drawMeta);
     bus.on("chat:" + space, drawList);
+    const agentPicker = h("div", { class: "stack" });
+    const drawAgentPicker = () => {
+      if (space !== "smart_agent") return;
+      const options = [];
+      for (const provider of (cache.models && cache.models.providers) || []) {
+        for (const model of provider.models || []) if ((model.roles || []).includes("chat") && !modelBroken(model, provider))
+          options.push([model.key, `${model.title} · ${provider.name}${provider.personal ? " · " + t("personal_model_badge") : ""}`]);
+      }
+      if (prefs.agentModel && !options.some(([id]) => id === prefs.agentModel)) options.unshift([prefs.agentModel, t("coder_model_unavailable")]);
+      fill(agentPicker, h("small", { class: "muted" }, t("agent_model")),
+        select(prefs.agentModel || "", [["", t("auto")], ...options], (value) => { prefs.agentModel = value; savePrefs(); drawAgentPicker(); }),
+        prefs.agentModel && prefs.agentModel.startsWith("personal-") ? h("small", { class: "muted" }, t("agent_personal_cost")) : null);
+    };
+    bus.on("models", drawAgentPicker); drawAgentPicker();
     const mode = space === "agent" || space === "smart_agent" ? h("div", { class: "stack agent-mode" },
       h("small", { class: "muted" }, t("agent_mode")),
       segmented(space, [["agent", t("agent_mode_free")], ["smart_agent", t("agent_mode_ai")]], (value) => {
@@ -937,7 +1105,7 @@ VIEWS.chat = {
         prefs.agentMode = value;
         savePrefs();
         swap("chat", { space: value });
-      }), h("small", { class: "muted" }, t("agent_mode_privacy"))) : null;
+      }), h("small", { class: "muted" }, t("agent_mode_privacy")), space === "smart_agent" ? agentPicker : null) : null;
     const imageAction = space !== "agent" && space !== "smart_agent" ? h("button", {
       class: "chip action chat-image-action", title: t("chat_image_note"), onclick: () => {
         const prompt = area.value.trim();
@@ -1053,9 +1221,9 @@ VIEWS.images = {
         ...list.map((source) => {
           const resting = source.cooldown > now();
           return h("button", { class: `chip ${prefs.imageModel === source.key ? "on" : ""} ${resting ? "warn" : ""}`,
-            title: resting ? t("img_resting", { time: fmtTime(source.cooldown) }) : t("local_used_of", { n: source.used, m: source.daily }),
+            title: resting ? t("img_resting", { time: fmtTime(source.cooldown) }) : (source.personal ? t("personal_model_badge") : t("local_used_of", { n: source.used, m: source.daily })),
             onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
-          source.label, h("small", { class: "muted" }, resting ? ` · ${fmtTime(source.cooldown)}` : ` ${source.used}/${source.daily}`));
+          source.label, h("small", { class: "muted" }, resting ? ` · ${fmtTime(source.cooldown)}` : source.personal ? ` · ${t("personal_model_badge")}` : ` ${source.used}/${source.daily}`));
         }),
         ...(() => {
           const spent = list.find((source) => source.key.startsWith("cf:") && source.reason === "quota" && source.cooldown > now());
@@ -1293,6 +1461,33 @@ function youtubeCard(item, audioOnly = false) {
         h("button", { class: "chip action", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")))));
 }
 
+function youtubePages(box, query, audioOnly = false) {
+  const results = h("div", { class: "stack" });
+  const controls = h("div", { class: "stack" });
+  const seen = new Set();
+  let page = 1, busy = false;
+  fill(box, results, controls);
+  const load = async () => {
+    if (busy || !box.isConnected) return;
+    busy = true;
+    fill(controls, loading(t("searching")));
+    try {
+      const data = await bridge.call("youtube_search", { q: query, page });
+      if (!box.isConnected) return;
+      const items = (data.results || []).filter((item) => youtubeUrl(item.url) && !seen.has(item.url));
+      for (const item of items) { seen.add(item.url); add(results, youtubeCard(item, audioOnly)); }
+      page += 1;
+      fill(controls,
+        data.more ? h("button", { class: "btn ghost wide", onclick: load }, icon("down"), t("youtube_more")) : null,
+        data.limited ? h("p", { class: "muted small" }, t("youtube_limit")) : null,
+        !results.childElementCount && !data.more ? empty(t("no_results"), "search") : null);
+    } catch (error) {
+      if (box.isConnected && !error.cancelled) fill(controls, failure(error.message, load));
+    } finally { busy = false; }
+  };
+  load();
+}
+
 VIEWS.youtube = {
   tab: "apps", title: () => "YouTube",
   render(main, params) {
@@ -1311,10 +1506,7 @@ VIEWS.youtube = {
     add(main, h("div", { class: "search-field" }, icon("youtube"), input,
       h("button", { class: "btn primary small", onclick: submit }, t("go"))),
       h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
-    if (params.q) fetchView(box, "search", { q: params.q, engine: "videos" }, (data) => {
-      const results = (data.results || []).filter((item) => youtubeUrl(item.url));
-      fill(box, ...(results.length ? results.map((item) => youtubeCard(item)) : [empty(t("no_results"), "search")]));
-    }, { label: t("searching") });
+    if (params.q) youtubePages(box, params.q);
     else add(box, empty(t("youtube_hint"), "youtube"));
   },
 };
@@ -1332,10 +1524,7 @@ VIEWS.music = {
       h("p", { class: "note" }, icon("info"), t(provider === "youtube" ? "media_rights_note" : "music_archive_note")), box);
     if (!params.q) { add(box, empty(t("music_hint"), "audio")); return; }
     if (provider === "youtube") {
-      fetchView(box, "search", { q: params.q + " music", engine: "videos" }, (data) => {
-        const results = (data.results || []).filter((item) => youtubeUrl(item.url));
-        fill(box, ...(results.length ? results.map((item) => youtubeCard(item, true)) : [empty(t("no_results"), "search")]));
-      }, { label: t("searching") });
+      youtubePages(box, params.q + " music", true);
     } else {
       fetchView(box, "music_search", { q: params.q }, (data) => fill(box, ...((data.results || []).length ? data.results.map((item) =>
         h("button", { class: "card space-card", onclick: () => go("music_item", { id: item.id }) }, icon("audio"),
@@ -2256,6 +2445,31 @@ function ownerAccessSection(box, data) {
   return section(t("owner_control"), card);
 }
 
+function maintenanceSection() {
+  const holder = h("div", { class: "card stack maintenance-settings" }, loading());
+  const draw = (data) => {
+    const es = field({ type: "text", maxlength: 280, value: data.es || "", "aria-label": t("maintenance_es") });
+    const en = field({ type: "text", maxlength: 280, value: data.en || "", "aria-label": t("maintenance_en") });
+    const active = h("input", { type: "checkbox", class: "switch", checked: !!data.active });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        const result = await bridge.call("maintenance_notice", { active: active.checked, es: es.value.trim(), en: en.value.trim() });
+        cache.maintenance_notice = result.notice; saveCache(); bus.emit("maintenance");
+        toast(result.profile_updated ? t("done") : t("maintenance_profile_error"), result.profile_updated ? "ok" : "bad");
+      } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+      finally { save.disabled = false; }
+    } }, icon("check"), t("maintenance_save"));
+    fill(holder, h("p", { class: "muted small" }, t("maintenance_hint")),
+      h("label", { class: "setting" }, h("span", { class: "grow" }, t("maintenance_active")), active),
+      h("label", { class: "stack small" }, t("maintenance_es"), es),
+      h("label", { class: "stack small" }, t("maintenance_en"), en), save);
+  };
+  bridge.call("maintenance_notice").then((data) => { if (holder.isConnected) draw(data.notice || {}); })
+    .catch((error) => { if (holder.isConnected && !error.cancelled) fill(holder, failure(error.message, () => go("admin"))); });
+  return section(t("maintenance_title"), holder);
+}
+
 function drawAdmin(box, data) {
   const address = field({ type: "email", placeholder: t("admin_address") });
   const person = (entry, ...tools) => h("div", { class: "list-row" }, icon("user"),
@@ -2263,6 +2477,7 @@ function drawAdmin(box, data) {
   fill(box,
     headRow(t("admin_live"), iconButton("refresh", t("refresh"), () => adminOp(box, {}))),
     ownerAccessSection(box, data),
+    maintenanceSection(),
     data.perf ? perfSection(data.perf) : null,
     data.usage ? usageSection(box, data.usage, data.private_mode, data.preserve_history) : null,
     data.perf ? hostSection(data.perf) : null,

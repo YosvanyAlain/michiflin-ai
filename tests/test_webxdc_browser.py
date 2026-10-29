@@ -75,6 +75,13 @@ BRIDGE = r"""
       case "settings": return settings;
       case "rates": return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() };
       case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
+      case "youtube_search": {
+        const rows = window.__searchResults || [];
+        const start = ((request.args.page || 1) - 1) * 15;
+        return { results: rows.slice(start, start + 15), more: rows.length > start + 15, limited: false };
+      }
+      case "maintenance_notice": return { notice: { active: false, es: "Mensaje de mantenimiento", en: "Maintenance message" }, profile_updated: true };
+      case "personal_ai": return { providers: [] };
       case "music_search": return { results: [{ id: "album-1", title: "Licensed jazz", creator: "Artist" }] };
       case "music_item": return { id: "album-1", title: "Licensed jazz", creator: "Artist", license: "CC BY https://creativecommons.org/publicdomain/mark/1.0/",
         page: "https://archive.org/details/album-1", files: [{ title: "Jazz track", format: "VBR MP3", size: 12345,
@@ -104,8 +111,10 @@ BRIDGE = r"""
           const fail = (window.__failNext[request.op] || 0) > 0;
           if (fail) window.__failNext[request.op] -= 1;
           try {
-            if (window.__realAccess && ["admin", "owner_only"].includes(request.op)) {
-              const result = await fetch("/api/access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
+            if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
+                (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op))) {
+              const result = await fetch(window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access",
+                { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
               const body = await result.json();
               data = body.data;
               error = body.error || "";
@@ -131,7 +140,7 @@ BRIDGE = r"""
 
 
 @contextmanager
-def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False):
+def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False):
     """Fake Delta bridge; optionally connect access UI to real Python handlers, not a live bot."""
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
         root = Path(temporary)
@@ -144,13 +153,25 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                 pass
 
             def do_POST(self) -> None:
-                if self.path != "/api/access" or not real_access:
+                if not ((self.path == "/api/access" and real_access) or (self.path == "/api/personal" and real_personal)):
                     self.send_error(404)
                     return
                 try:
                     request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                     chat.set_sender("owner@example.org")
-                    result = miniapp.OPS[request["op"]](7, request.get("args", {}), request.get("lang", "es"))
+                    if self.path == "/api/personal":
+                        from michiflin import personal_ai
+                        state.set_personal_ai_secure(True)
+                        def fake_provider(_provider, method, suffix, body=None, **_options):
+                            if method == "GET" and suffix == "/models":
+                                return {"data": [{"id": "simulated-chat"}, {"id": "gpt-image-2"}]}
+                            if suffix == "/chat/completions":
+                                return {"choices": [{"message": {"content": "SIMULATED personal answer"}, "finish_reason": "stop"}], "usage": {"total_tokens": 3}}
+                            raise personal_ai.PersonalError("unsupported")
+                        with mock.patch.object(personal_ai, "_request", side_effect=fake_provider):
+                            result = miniapp.OPS[request["op"]](7, request.get("args", {}), request.get("lang", "es"))
+                    else:
+                        result = miniapp.OPS[request["op"]](7, request.get("args", {}), request.get("lang", "es"))
                     body = {"data": result, "error": ""}
                 except Exception as exc:
                     body = {"data": None, "error": str(exc)}
@@ -169,7 +190,7 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
             with sync_playwright() as playwright:
                 browser = playwright.chromium.launch(args=["--no-sandbox"])
                 page = browser.new_page(viewport=viewport, locale=language)
-                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()};")
+                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()};")
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)
@@ -692,6 +713,85 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(page.evaluate("messages('auto').some(m => m.imageId)"))
                 self.assertEqual(errors, [])
 
+    def test_personal_api_webcrypto_real_backend_synthetic_provider_bilingual(self) -> None:
+        # Browser performs real WebCrypto and Python decrypts/saves it; Delta and
+        # the external provider are synthetic, with no network or paid calls.
+        fake_key = "synthetic-browser-key-never-real-123"
+        saved_state = copy.deepcopy(state.data)
+        try:
+            for language in ("es", "en"):
+                viewport = {"width": 375, "height": 844} if language == "es" else {"width": 1280, "height": 850}
+                with self.subTest(language=language), tempfile.TemporaryDirectory(prefix="personal-browser-") as tmp, \
+                     mock.patch.object(config, "CONFIG_DIR", Path(tmp)), mock.patch.object(state, "CONFIG_DIR", Path(tmp)), \
+                     mock.patch.object(state, "STATE_FILE", Path(tmp) / "state.json"), \
+                     mock.patch.dict(os.environ, {"WEB_SESSION_KEY": "browser-synthetic-master-" + "X" * 48}), \
+                     mock.patch.object(config, "OWNER_ADDRESS", "owner@example.org"), \
+                     mock.patch.object(config, "ADMIN_ADDRESSES", {"owner@example.org"}), \
+                     browser_fixture(language, viewport, real_personal=True) as (page, errors):
+                    page.locator('.tab[data-tab="ai"]:visible').click()
+                    page.get_by_text("Mis APIs y modelos" if language == "es" else "My APIs and models", exact=True).click()
+                    page.get_by_label("Nombre del proveedor" if language == "es" else "Provider name").first.fill("Synthetic")
+                    page.get_by_label("URL base HTTPS" if language == "es" else "HTTPS base URL").fill("https://example.com/v1")
+                    page.locator('#view input[type="password"]').fill(fake_key)
+                    page.get_by_role("button", name="Agregar API personal" if language == "es" else "Add personal API", exact=True).click()
+                    page.locator("#sheet").get_by_role("button", name="Confirmar" if language == "es" else "Confirm").click()
+                    page.get_by_text("Synthetic", exact=True).first.wait_for(state="visible", timeout=15000)
+                    self.assertEqual(page.locator('#view input[type="password"]').input_value(), "")
+                    updates = json.dumps(page.evaluate("window.__sentUpdates"))
+                    local = json.dumps(page.evaluate("Object.values(localStorage)"))
+                    self.assertNotIn(fake_key, updates)
+                    self.assertNotIn(fake_key, local)
+                    sealed = page.evaluate("window.__sentUpdates.find(x => x.payload?.op === 'personal_ai' && x.payload?.args?.do === 'add').payload.args.sealed")
+                    self.assertEqual(set(sealed), {"key", "iv", "data"})
+                    files = list((Path(tmp) / "personal-ai-v1").glob("*.enc"))
+                    self.assertGreaterEqual(len(files), 2)
+                    self.assertTrue(all(fake_key.encode() not in f.read_bytes() for f in files))
+                    widths = page.locator("#view").evaluate("e => [e.scrollWidth, e.clientWidth]")
+                    self.assertLessEqual(widths[0], widths[1])
+                    screenshot_if_requested(page, language + "-personal-api")
+                    page.locator('.tab[data-tab="ai"]:visible').click()
+                    page.get_by_text("simulated-chat", exact=True).first.click()
+                    page.locator("#view textarea").fill("test question")
+                    page.locator("#view .composer button.primary").click()
+                    page.get_by_text("SIMULATED personal answer").wait_for(state="visible", timeout=15000)
+                    model = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
+                    self.assertTrue(model.startswith("personal-"))
+                    self.assertEqual(errors, [])
+        finally:
+            state.data.clear(); state.data.update(saved_state)
+            state.act_as("")
+
+    def test_youtube_show_more_and_maintenance_controls_bilingual(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 375, "height": 844}) as (page, errors):
+                page.evaluate("""() => { window.__searchResults = Array.from({length: 32}, (_,i) =>
+                  ({url:'https://www.youtube.com/watch?v=video' + String(i).padStart(6,'0'), title:'SIM VIDEO ' + i, source:'YouTube'})); }""")
+                page.locator('.tab[data-tab="apps"]:visible').click()
+                page.locator("#view .tile-youtube").click()
+                page.locator('#view input[type="search"]').fill("birds")
+                page.locator('#view input[type="search"]').press("Enter")
+                page.get_by_text("SIM VIDEO 14", exact=True).wait_for()
+                self.assertEqual(page.get_by_text("SIM VIDEO 15", exact=True).count(), 0)
+                more = page.get_by_role("button", name="Mostrar más" if language == "es" else "Show more")
+                more.click()
+                page.get_by_text("SIM VIDEO 29", exact=True).wait_for()
+                page.get_by_role("button", name="Mostrar más" if language == "es" else "Show more").click()
+                page.get_by_text("SIM VIDEO 31", exact=True).wait_for()
+                self.assertEqual(page.get_by_role("button", name="Mostrar más" if language == "es" else "Show more").count(), 0)
+                self.assertEqual(page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'youtube_search').map(x => x.payload.args.page)"), [1, 2, 3])
+                screenshot_if_requested(page, language + "-youtube-more")
+                page.locator('.tab[data-tab="settings"]:visible, #gear:visible').first.click()
+                page.get_by_text("Administración" if language == "es" else "Administration", exact=True).first.click()
+                notice = page.locator(".maintenance-settings")
+                notice.wait_for(state="visible")
+                notice.locator('input[type="checkbox"]').check()
+                notice.get_by_label("Mensaje en español" if language == "es" else "Message in Spanish").fill("Aviso de prueba")
+                notice.get_by_label("Mensaje en inglés" if language == "es" else "Message in English").fill("Test notice")
+                notice.get_by_role("button", name="Guardar aviso" if language == "es" else "Save notice").click()
+                page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'maintenance_notice' && x.payload.args.active === true)")
+                screenshot_if_requested(page, language + "-maintenance")
+                self.assertEqual(errors, [])
+
     def test_large_coder_request_uses_bounded_multipart(self) -> None:
         with browser_fixture("en", {"width": 390, "height": 844}) as (page, errors):
             sent = page.evaluate("""() => {
@@ -724,8 +824,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             errors: list[str] = []
             try:
                 with sync_playwright() as playwright:
-                    if not Path(playwright.chromium.executable_path).exists():
-                        self.skipTest("Playwright Chromium is not installed")
+                    # In headless mode Playwright may use the separately installed
+                    # chromium-headless-shell even when the full browser is absent.
                     browser = playwright.chromium.launch(args=["--no-sandbox"])
                     page = browser.new_page(viewport={"width": 390, "height": 844})
                     page.on("pageerror", lambda error: errors.append(str(error)))

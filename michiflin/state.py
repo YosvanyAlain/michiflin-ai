@@ -42,6 +42,8 @@ data: dict[str, Any] = {
     "link_seq_q": 0,
     "nauta_strict": {},
     "kill_switch": {},
+    "maintenance_notice": {},
+    "personal_ai_budgets": {},
 }
 
 # Settings each person keeps for themselves; everything else is shared and changed only by administrators.
@@ -101,6 +103,7 @@ def act_as(address: str) -> None:
     _acting.address = "" if address in config.ADMIN_ADDRESSES else address
     _acting.sender = address
     _acting.charged = False
+    _acting.personal_ai_secure = False
 
 
 def acting_as() -> str:
@@ -110,6 +113,15 @@ def acting_as() -> str:
 def request_sender() -> str:
     """Address behind the current request, administrators included."""
     return str(getattr(_acting, "sender", ""))
+
+
+def set_personal_ai_secure(value: bool) -> None:
+    """Set only after validating this request's current encrypted single chat."""
+    _acting.personal_ai_secure = bool(value)
+
+
+def personal_ai_secure() -> bool:
+    return bool(getattr(_acting, "personal_ai_secure", False))
 
 
 def charge_once() -> bool:
@@ -126,12 +138,12 @@ def uncharge() -> None:
 
 @contextmanager
 def person(address: str):
-    previous = (acting_as(), request_sender(), bool(getattr(_acting, "charged", False)))
+    previous = (acting_as(), request_sender(), bool(getattr(_acting, "charged", False)), personal_ai_secure())
     act_as(address)
     try:
         yield
     finally:
-        _acting.address, _acting.sender, _acting.charged = previous
+        _acting.address, _acting.sender, _acting.charged, _acting.personal_ai_secure = previous
 
 
 def _shared(key: str) -> Any:

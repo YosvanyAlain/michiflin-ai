@@ -76,6 +76,7 @@ class Provider:
     headers: dict[str, str] = field(default_factory=dict)
     models: list[Model] = field(default_factory=list)
     custom: bool = False
+    personal: bool = False
 
 
 @dataclass
@@ -514,6 +515,14 @@ def providers() -> list[Provider]:
 
 
 def provider(key: str) -> Provider | None:
+    if key.startswith("personal-"):
+        if not state.personal_ai_secure():
+            return None
+        from . import personal_ai
+        try:
+            return next((item for item in personal_ai.providers(state.request_sender()) if item.key == key), None)
+        except (personal_ai.PersonalError, OSError):
+            return None
     with _lock:
         return _providers.get(key)
 
@@ -533,6 +542,9 @@ def _model_fraction(model: Model) -> float:
 
 def locally_exhausted(model: Model) -> bool:
     item = provider(model.provider)
+    if item and item.personal:
+        from . import personal_ai
+        return bool(item.daily and personal_ai.attempts(item.key) >= item.daily)
     if model.daily > 0 and state.usage_today(model.key) >= model.daily:
         return True
     return bool(item and item.daily > 0 and sum(state.usage_today(other.key) for other in item.models) >= item.daily)
@@ -587,7 +599,11 @@ def accepts(model: Model | None) -> list[str]:
 
 
 def model_by_key(key: str) -> Model | None:
-    for item in providers():
+    items = providers()
+    if str(key).startswith("personal-"):
+        item = provider(str(key).split(":", 1)[0])
+        items = [item] if item else []
+    for item in items:
         for model in item.models:
             if model.key == key:
                 return model
@@ -639,7 +655,8 @@ def complete_exact(messages: list[dict[str, Any]], key: str, max_tokens: int | N
                    images: list[tuple[str, bytes]] | None = None, raw: bool = False) -> AIResult:
     """Ask one specific model, without fallback (the mini app's per-model chats)."""
     model = model_by_key(key)
-    error, charged, address = _allowance(bool(model and "fast" in model.roles))
+    # A personal provider does not consume the shared free-provider reserve.
+    error, charged, address = _allowance(bool(model and ("fast" in model.roles or model.provider.startswith("personal-"))))
     if error:
         return AIResult(error=error)
     return _settle(_complete_exact(model, messages, max_tokens, images, raw), charged, address)
@@ -788,6 +805,28 @@ def _track_headers(model: Model, headers: Any) -> None:
 
 def _call(item: Provider, model: Model, messages: list[dict[str, Any]], images: list[tuple[str, bytes]] | None, max_tokens: int,
           raw: bool = False) -> AIResult:
+    if item.personal:
+        from . import personal_ai
+        payload = [dict(message) for message in messages]
+        if images:
+            if "vision" not in model.roles or not payload:
+                return AIResult(provider=item.name, model=model.title(), error="unknown_model")
+            last = payload[-1]
+            parts: list[dict[str, Any]] = [{"type": "text", "text": str(last.get("content", ""))}]
+            for mime, image_data in images[:4]:
+                parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(image_data).decode()}"}})
+            last["content"] = parts
+        try:
+            text, tokens, finish = personal_ai.complete(state.request_sender(), model.key, payload, max_tokens)
+        except (personal_ai.PersonalError, OSError) as exc:
+            reason = str(exc) if isinstance(exc, personal_ai.PersonalError) else "connection"
+            state.record_usage(model.key, False)
+            return AIResult(provider=item.name, model=model.title(), error=reason if reason in {"quota", "auth", "connection"} else "response")
+        text = strip_thinking(text) if raw else chat_format(strip_thinking(text))
+        state.record_usage(model.key, bool(text), tokens)
+        truncated = finish.lower() in {"length", "max_tokens", "max_output_tokens"}
+        return AIResult(text=text.strip(), provider=item.name, model=model.title(),
+                        error="" if text.strip() else "response", truncated=truncated)
     if item.key == "cloudflare":
         from . import cf_safety
 
