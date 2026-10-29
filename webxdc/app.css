@@ -819,3 +819,10 @@ details[open] .caret { transform: rotate(180deg); }
 .history-row.heading { color: var(--muted); font-size: 11px; }
 .history-row b { text-align: right; overflow-wrap: anywhere; }
 @media (max-width: 350px) { .rate-banner { padding: 14px; } .rate-banner-values { gap: 4px; } }
+/* Keep long, correctly denominated crypto options readable on narrow screens. */
+.convert-row > .row { flex: 1 1 0; min-width: 0; }
+.convert-row select.input { width: 100%; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+@media (max-width: 400px) {
+  .convert-row { display: grid; grid-template-columns: minmax(0, 1fr) 40px; }
+  .convert-row .input[type=number] { grid-column: 1 / -1; width: 100%; }
+}

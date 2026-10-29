@@ -2158,7 +2158,8 @@ class IntakeTests(Base):
         self.processed: list[str] = []
         self.marked: list[int] = []
         self.patches += [mock.patch.object(app, "_process", lambda msg, text, locale, address: self.processed.append(text)),
-                         mock.patch.object(chat, "rpc", lambda: self.NS(markseen_msgs=lambda acc, ids: self.marked.extend(ids))),
+                         mock.patch.object(chat, "rpc", lambda: self.NS(markseen_msgs=lambda acc, ids: self.marked.extend(ids),
+                                                                       set_config=lambda *_: None)),
                          mock.patch.object(chat, "account", lambda: 1),
                          mock.patch.object(state, "save", lambda: None)]
         for patch in self.patches[-4:]:

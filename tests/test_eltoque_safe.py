@@ -37,21 +37,24 @@ def test_api_parser_keeps_provider_symbols_and_rejects_unsafe_values():
     result = tools._parse_eltoque_rates(payload)
     assert result == {"USD": 855.0, "BTC": 780.65, "USDT_TRC20": 1095.0, "ECU": 950.0, "TRX": 424.69, "USDX-CASH": 100.0}
     assert tools.rate_unit("BTC") == "usd_crypto"
-    assert tools.rate_unit("USDT_TRC20") == "unknown"  # field-specific denomination not documented
+    assert tools.rate_unit("USDT_TRC20") == "usd_crypto"  # provider table explicitly marks TRC20 per USD
     assert tools.rate_unit("TRX") == "unit"
-    assert tools.rate_unit("ECU") == "unknown"  # no published API schema identifies this field
+    assert tools.rate_unit("ECU") == "unit"  # API Euro alias cross-checked against the provider table
+    assert tools.rate_unit("USDT_OTHER") == "unknown"
 
 
 def test_crypto_quote_never_claims_one_bitcoin_equals_the_api_value(monkeypatch):
     rates = {"USD": 855.0, "BTC": 780.65, "USDT_TRC20": 1095.0, "ECU": 950.0, "TRX": 424.69}
     monkeypatch.setattr(tools, "_rates", lambda: rates)
     shown = tools.rate_text("", "es")
-    assert "USD en BTC" in shown and "USDT_TRC20 (unidad por confirmar)" in shown
+    assert "USD en BTC" in shown and "1 USD en USDT (TRC20)" in shown
+    assert "1 EUR: 950 CUP" in shown and "ECU" not in shown
     assert "1 BTC ≈" not in shown
     refusal = tools.rate_text("1 BTC", "es")
     assert "USD en BTC" in refusal and "1 BTC ≈" not in refusal
     assert "1 TRX ≈" in tools.rate_text("1 TRX", "es")
-    assert "unidad" in tools.rate_text("1 ECU", "es").lower()
+    assert "1 EUR ≈ 950 CUP" in tools.rate_text("1 ECU", "es")
+    assert "1 EUR ≈ 950 CUP" in tools.rate_text("EUR", "es")
 
 
 def test_requests_never_follow_redirects_or_bypass_429(monkeypatch):
@@ -108,7 +111,7 @@ def test_rate_ui_receives_explicit_unit_metadata(monkeypatch):
     monkeypatch.setattr(tools, "current_rates", lambda: {"USD": 855.0, "BTC": 780.65, "ECU": 950.0})
     monkeypatch.setattr(config, "ELTOQUE_API_TOKEN", "synthetic-token")
     result = miniapp.op_rates(7, {}, "es")
-    assert result["units"] == {"USD": "unit", "BTC": "usd_crypto", "ECU": "unknown"}
+    assert result["units"] == {"USD": "unit", "BTC": "usd_crypto", "ECU": "unit"}
     assert result["source"] == "elTOQUE API"
 
 
@@ -201,3 +204,30 @@ def test_display_does_not_silently_round_provider_rate_to_two_decimals(monkeypat
     monkeypatch.setattr(tools, "_rates", lambda: {"USD": 1.234567, "BTC": 0.12345678})
     value = tools.rate_text("", "es")
     assert "1,234567" in value and "0,12345678" in value
+
+
+def test_euro_alias_and_explicit_usd_crypto_conversion_do_not_modify_provider_values(monkeypatch):
+    raw = {"USD": 855.0, "ECU": 950.0, "BTC": 780.65, "USDT_TRC20": 1095.0, "TRX": 424.69}
+    monkeypatch.setattr(tools, "_rates", lambda: raw)
+    monkeypatch.setattr(config, "ELTOQUE_DERIVED_CALCULATIONS", True)
+    assert "95.000 CUP" in tools.rate_text("100 EUR", "es")
+    assert "EUR" in tools.rate_text("950 CUP EUR", "es")
+    assert "78.065 CUP" in tools.rate_text("100 USD_BTC", "es")
+    assert "USD en BTC" in tools.rate_text("100 USD_BTC", "es")
+    assert "109.500 CUP" in tools.rate_text("100 USD_USDT_TRC20", "es")
+    assert "moneda completa" in tools.rate_text("100 USDT_TRC20", "es")
+    assert "Michiflin" in tools.rate_text("100 EUR", "es")
+    assert raw == {"USD": 855.0, "ECU": 950.0, "BTC": 780.65, "USDT_TRC20": 1095.0, "TRX": 424.69}
+
+
+def test_euro_native_key_takes_precedence_over_legacy_alias(monkeypatch):
+    monkeypatch.setattr(tools, "_rates", lambda: {"EUR": 800, "ECU": 950})
+    assert "800" in tools.rate_text("EUR", "en")
+    assert "950" in tools.rate_text("ECU", "en")
+
+
+def test_derived_are_never_calculated_from_stale_data_or_unconfirmed_codes(monkeypatch):
+    monkeypatch.setattr(config, "ELTOQUE_DERIVED_CALCULATIONS", True)
+    monkeypatch.setattr(tools, "rates_snapshot", lambda: {"rates": {"ECU": 950, "USDT_OTHER": 100}, "at": time.time(), "stale": True})
+    assert "pausada" in tools.rate_text("100 EUR", "es")
+    assert "confirmada" in tools.rate_text("100 USDT_OTHER", "es")

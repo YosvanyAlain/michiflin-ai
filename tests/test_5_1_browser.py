@@ -65,8 +65,8 @@ def test_weather_and_real_history_charts_are_data_driven(language):
         page.locator(".rate-chart").wait_for(state="visible")
         assert page.locator(".chart-bar").count() == 7
         assert page.locator(".rate-chart").evaluate("e => e.scrollWidth <= e.clientWidth")
-        assert page.locator(".scenario").count() == 0  # provider permission not assumed
-        assert ("pendientes" if language == "es" else "await") in page.locator(".rate-chart").locator("..").inner_text()
+        assert page.locator(".scenario").count() == 0  # this synthetic fixture explicitly disables calculations
+        assert ("desactivados" if language == "es" else "disabled") in page.locator(".rate-chart").locator("..").inner_text()
         assert page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'rates' && x.payload.args.history).length") == 1
         page.locator(".rate-history-table").scroll_into_view_if_needed()
         screenshot_if_requested(page, f"{language}-rates-5-1")
@@ -148,11 +148,11 @@ def test_retry_never_silently_drops_lost_attachment(language):
 
 
 @pytest.mark.parametrize("language", ["es", "en"])
-def test_eltoque_crypto_units_and_unconfirmed_codes_are_never_converted(language):
-    # Synthetic explicit opt-in exercises unit restrictions, not provider approval.
+def test_eltoque_euro_and_explicit_dollar_crypto_units(language):
+    # The UI uses USD-valued crypto amounts, not whole coins; unknown suffixes remain unavailable.
     with browser_fixture(language, {"width": 320, "height": 800}) as (page, errors):
         page.evaluate("""() => {
-          const rates = {USD:855, BTC:780.65, USDT_TRC20:1095, TRX:424.69, ECU:950};
+          const rates = {USD:855, BTC:780.65, USDT_TRC20:1095, TRX:424.69, ECU:950, USDT_OTHER:123};
           rateDerivedApproved = true; // simulate a fresh policy response from this bot session
           store.set('rates',{rates, at:Date.now()/1000, source:'elTOQUE API', derived_allowed:true});
           store.set('rates.history',{history:Array.from({length:7},(_,i)=>({
@@ -162,17 +162,27 @@ def test_eltoque_crypto_units_and_unconfirmed_codes_are_never_converted(language
         }""")
         cards = page.locator(".rate-grid")
         assert ("1 USD en BTC" if language == "es" else "1 USD in BTC") in cards.inner_text()
-        assert ("USDT_TRC20 · unidad por confirmar" if language == "es" else "USDT_TRC20 · unit unconfirmed") in cards.inner_text()
-        assert ("unidad por confirmar" if language == "es" else "unit unconfirmed") in cards.inner_text()
+        assert ("1 USD en USDT (TRC20)" if language == "es" else "1 USD in USDT (TRC20)") in cards.inner_text()
+        assert "1 EUR" in cards.inner_text() and "ECU" not in cards.inner_text()
+        assert ("USDT_OTHER · unidad por confirmar" if language == "es" else "USDT_OTHER · unit unconfirmed") in cards.inner_text()
         options = page.locator(".convert-row select option").all_text_contents()
-        assert "USD" in options and "TRX" in options
-        assert not {"BTC", "USDT_TRC20", "ECU"}.intersection(options)
+        assert "USD" in options and "TRX" in options and "EUR" in options
+        assert ("USD en BTC" if language == "es" else "USD in BTC") in options
+        assert ("USD en USDT (TRC20)" if language == "es" else "USD in USDT (TRC20)") in options
+        assert "BTC" not in options and "USDT_TRC20" not in options and "USDT_OTHER" not in options
+        page.locator(".convert-row select").select_option("ECU")
+        assert "95" in page.locator(".convert-out").inner_text() and "EUR" in page.locator(".convert-out").inner_text()
+        page.locator(".convert-row select").select_option("USDT_TRC20")
+        assert ("USD en USDT" if language == "es" else "USD in USDT") in page.locator(".convert-out").inner_text()
         assert page.locator("#view select option[value='30']").count() == 1
         history = page.locator(".rate-chart").locator("..")
         history.locator("select").select_option("BTC")
         scenario = history.locator(".scenario").inner_text()
         assert ("1 USD en BTC" if language == "es" else "1 USD in BTC") in scenario
         history.locator("select").select_option("ECU")
+        assert "EUR" in history.locator(".scenario strong").inner_text()
+        screenshot_if_requested(page, f"{language}-eltoque-scenario-current")
+        history.locator("select").select_option("USDT_OTHER")
         assert history.locator(".scenario strong").count() == 0
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
         screenshot_if_requested(page, f"{language}-eltoque-units")
@@ -195,6 +205,8 @@ def test_home_rates_banner_stale_and_provider_policy_fail_closed(language, width
         }""")
         banner = page.locator(".rate-banner")
         assert "elTOQUE" in banner.inner_text() and "855" in banner.inner_text()
+        assert "EUR" in banner.inner_text() and "ECU" not in banner.inner_text()
+        assert page.locator("#view .tile-rates").count() == 0  # banner is the home entry, not a duplicate tile
         assert "[object" not in banner.inner_text() and banner.locator("[data-since]").count() == 1
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
         screenshot_if_requested(page, f"{language}-rates-banner-fresh")
@@ -254,3 +266,17 @@ def test_single_guest_mobile_uses_real_access_handlers(language, monkeypatch):
             assert errors == []
     finally:
         access.reset()
+
+
+@pytest.mark.parametrize('language,width', [('es', 320), ('en', 375)])
+def test_bilingual_rates_help_and_real_receipts_explanation(language, width):
+    with browser_fixture(language, {'width': width, 'height': 800}) as (page, errors):
+        page.evaluate("go('help')")
+        label = 'Tasas de elTOQUE' if language == 'es' else 'elTOQUE rates'
+        card = page.locator('details.help').filter(has_text=label)
+        card.locator('summary').click()
+        assert 'EUR' in card.inner_text() and 'TRC20' in card.inner_text()
+        assert ('cálculos de Michiflin' if language == 'es' else 'Michiflin calculations') in card.inner_text()
+        assert ('recibos de lectura' if language == 'es' else 'read receipts') in page.locator('details.help').first.inner_text()
+        assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
+        assert errors == []

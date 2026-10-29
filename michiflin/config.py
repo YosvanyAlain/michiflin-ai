@@ -118,7 +118,8 @@ ELTOQUE_API_TOKEN = env("ELTOQUE_API_TOKEN")
 # One shared poll for all users, never faster than the documented quota permits.
 ELTOQUE_REFRESH_SECONDS = max(120, min(3600, env_int("ELTOQUE_REFRESH_SECONDS", 300)))
 # Keep derived calculations off until the application has provider approval.
-ELTOQUE_DERIVED_CALCULATIONS = env("ELTOQUE_DERIVED_CALCULATIONS", "0").lower() in {"1", "true", "yes", "on"}
+# Derived values are separate Michiflin calculations; original provider observations stay unchanged.
+ELTOQUE_DERIVED_CALCULATIONS = env("ELTOQUE_DERIVED_CALCULATIONS", "1").lower() in {"1", "true", "yes", "on"}
 LIBRETRANSLATE_URL = env("LIBRETRANSLATE_URL")
 LIBRETRANSLATE_API_KEY = env("LIBRETRANSLATE_API_KEY")
 MICHIFLIN_GITHUB_TOKEN = env("MICHIFLIN_GITHUB_TOKEN")

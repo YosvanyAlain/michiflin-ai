@@ -104,13 +104,17 @@ The default engine and the reader page size can be changed in Settings.
 
 Each app asks the bot only for what it needs, to save data. Weather uses [Open-Meteo](https://open-meteo.com/); exchange rates and history use the [elTOQUE API](https://tasas.eltoque.com/docs/) under its [terms](https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso). The translation service receives the submitted text. External services may impose limits or be unavailable.
 
-The rates app never uses the public website to work around API errors. One shared background monitor refreshes approximately every five minutes while the bot runs (configurable to 120–3600 seconds), saves the last observation and yesterday's queried window, and can notify the directly verified owner about errors. The home banner refreshes while visible and shows the real age; a failed refresh shows only saved values with a stale warning. Requested 7/14/30-day histories reuse saved real windows and clearly mark gaps; the API's timezone is not documented. BTC and unsuffixed USDT represent USD 1 in the cryptocurrency, not one whole coin; TRX is per unit. Codes with unconfirmed units, such as `ECU` and `USDT_TRC20`, are shown without assuming their denomination. `ELTOQUE_DERIVED_CALCULATIONS` defaults to 0: conversions and scenarios remain disabled unless the provider explicitly approves them. Official links are shown as selectable text for clients that block external links.
+The rates app never uses the public website to work around API errors. A shared monitor refreshes approximately every five minutes while the bot runs (120–3600 seconds), saves received observations and can notify the verified owner about errors. The home banner opens the same rates view and shows real age; failures show saved values with a stale warning. Histories use real queried windows and mark gaps. The API's timezone is undocumented and it can return fewer currencies than the website.
+
+Original provider codes are retained. `ECU` is presented as EUR based on the provider's published euro value, although the alias is not defined in the API contract. BTC and USDT (TRC20) are CUP per USD represented in the cryptocurrency, not per whole coin; TRX is per unit. For represented-USD conversions use `USD_BTC` or `USD_USDT_TRC20`. The converter and illustrative scenario are enabled by operator request and explicitly identified as Michiflin calculations, not elTOQUE quotes or forecasts; permission for derivatives is not confirmed. Review the provider's terms or set `ELTOQUE_DERIVED_CALCULATIONS=0`. Official links can be copied where external navigation is blocked.
+
+For a newly authorized chat message, the bot uses Delta Chat's read-receipt mechanism after the durable checkpoint; the sender's settings and delivery determine whether a receipt appears, and it does not indicate task completion. Rejected messages and old messages seeded when the cursor is first initialized are not intentionally acknowledged. See the [owner-history recovery guide](RECOVER_OWNER_HISTORY.md) for the separate encrypted, key-free archive.
 
 | App | What it does |
 |---|---|
 | **YouTube** | Search videos, then download video or audio in the chosen quality, or read the transcript |
 | **Translator** | Without AI model quota; automatic detection, external services and limits |
-| **elTOQUE** | Informal reference rates and real 7/14/30-day history require an authorized token; conversions and scenarios are disabled pending provider permission |
+| **elTOQUE** | Reference rates and real 7/14/30-day history require an authorized token; conversions and scenarios are labelled Michiflin calculations, with provider permission for derivatives unconfirmed |
 | **Weather** | Open-Meteo current conditions, five-day forecast and location selection |
 | **News** | Headlines by topic or by search |
 | **Utilities** | Unit converter, local time and calculator |

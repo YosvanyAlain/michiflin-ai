@@ -38,6 +38,8 @@ _realtime_slots = threading.BoundedSemaphore(32)
 _chat_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chat")   # one drainer per busy chat
 _chat_locks: dict[int, threading.Lock] = {}
 _intake_lock = threading.Lock()
+# mdns_enabled is account-wide; serialize any temporary silent mark-seen calls.
+_seen_lock = threading.Lock()
 _taken: set[int] = set()                   # message ids accepted in this session
 _chat_queues: dict[int, deque] = {}
 _chat_busy: set[int] = set()
@@ -208,7 +210,7 @@ def _accept(bot: Any, accid: int, msg: Any) -> None:
             _taken.discard(msg_id)
         return
     if job is None:
-        _done(msg_id)
+        _done(msg_id, rpc=bot.rpc, account=accid, message=msg)
         return
     chat_id = int(msg.chat_id)
     with state.lock:
@@ -236,7 +238,12 @@ def _drain_chat(chat_id: int) -> None:
         with state.lock:
             attempts = _inbox().get(str(msg_id), 0) + 1
             _inbox()[str(msg_id)] = attempts
-        state.save()
+        state.save()  # persist the work before marking it seen, so a restart can replay it
+        try:
+            rpc, account = chat.rpc(), chat.account()
+            seen = _mark_seen(rpc, account, [msg_id], _receipt_allowed(rpc, account, job[0]))
+        except Exception:
+            seen = False
         if attempts > MAX_ATTEMPTS:
             log.warning("message skipped after %s interrupted attempts", attempts - 1)
         else:
@@ -244,18 +251,68 @@ def _drain_chat(chat_id: int) -> None:
                 _process(*job)
             except Exception:
                 log.exception("message processing failed")
-        _done(msg_id)
+        _done(msg_id, message=job[0], already_seen=seen)
 
 
-def _done(msg_id: int) -> None:
+def _receipt_allowed(rpc: Any, account: int, message: Any) -> bool:
+    """Never reveal a read receipt to an untrusted sender or group."""
+    try:
+        if message is None or message.from_id in (0, 1, 2) or getattr(message, "is_info", False):
+            return False
+        info = rpc.get_basic_chat_info(account, int(message.chat_id))
+        kind = getattr(info.chat_type, "value", info.chat_type)
+        if str(kind) != "Single" or getattr(info, "is_contact_request", False):
+            return False
+        address = str(rpc.get_contact(account, int(message.from_id)).address or "").strip().lower()
+        return bool(admin.is_allowed(address) and identity_guard.authorized_chat(
+            rpc, account, int(message.chat_id), address, contact_id=int(message.from_id), message=message))
+    except Exception:
+        return False
+
+
+def _mark_seen(rpc: Any, account: int, ids: list[int], receipt: bool) -> bool:
+    """Use Delta Chat's real MDN feature, silently advancing rejected messages.
+
+    MDN configuration is shared by the account. The lock covers both switching
+    it off for ignored messages and restoring it, so concurrent workers cannot
+    accidentally send a receipt to an unauthorized contact. If switching off
+    fails, do not mark that message seen. The core sends a receipt only when
+    the sender requested one and the chat permits it.
+    """
+    with _seen_lock:
+        try:
+            rpc.set_config(account, "mdns_enabled", "1" if receipt else "0")
+            rpc.markseen_msgs(account, ids)
+            return True
+        except Exception as exc:
+            log.warning("markseen postponed: %s", exc.__class__.__name__)
+            return False
+        finally:
+            if not receipt:
+                try:
+                    rpc.set_config(account, "mdns_enabled", "1")
+                except Exception as exc:
+                    log.warning("read-receipt setting restore failed: %s", exc.__class__.__name__)
+
+
+def _done(msg_id: int, *, rpc: Any = None, account: int | None = None,
+          message: Any = None, already_seen: bool = False) -> None:
     with _intake_lock:
         _work_tickets.pop(msg_id, None)
     with state.lock:
-        _inbox().pop(str(msg_id), None)
-    try:
-        chat.rpc().markseen_msgs(chat.account(), [msg_id])
-    except Exception as exc:
-        log.debug("markseen failed: %s", exc)
+        completed = _inbox().pop(str(msg_id), None) is not None
+        if completed:
+            try:
+                state.save()
+            except (OSError, TypeError, ValueError) as exc:
+                log.warning("completed inbox checkpoint postponed: %s", exc.__class__.__name__)
+    if not already_seen:
+        try:
+            rpc = rpc if rpc is not None else chat.rpc()
+            account = account if account is not None else chat.account()
+            _mark_seen(rpc, account, [msg_id], _receipt_allowed(rpc, account, message))
+        except Exception as exc:
+            log.debug("markseen postponed: %s", exc.__class__.__name__)
 
 
 def _catch_up(bot: Any, accid: int) -> None:
@@ -286,9 +343,9 @@ def _catch_up(bot: Any, accid: int) -> None:
 def _start_cursor(bot: Any, accid: int) -> None:
     """First run with the cursor: history older than a few minutes counts as handled."""
     try:
-        bot.rpc.set_config(accid, "mdns_enabled", "0")
+        bot.rpc.set_config(accid, "mdns_enabled", "1")
     except Exception as exc:
-        log.debug("mdns setting failed: %s", exc)
+        log.warning("read-receipt setting postponed: %s", exc.__class__.__name__)
     if state.flag("intake_cursor_v1"):
         return
     try:
@@ -301,8 +358,8 @@ def _start_cursor(bot: Any, accid: int) -> None:
                 stamp = 0
             if time.time() - stamp > 600:
                 old.append(msg_id)
-        if old:
-            bot.rpc.markseen_msgs(accid, old)
+        if old and not _mark_seen(bot.rpc, accid, old, False):
+            return  # do not claim a seeded cursor if silent marking failed
         state.set_flag("intake_cursor_v1", time.time())
         log.info("intake cursor ready: %s old messages marked handled", len(old))
     except Exception as exc:

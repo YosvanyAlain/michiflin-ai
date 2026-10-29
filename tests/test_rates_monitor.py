@@ -128,12 +128,12 @@ def test_owner_notice_is_coalesced_retried_and_recovery_is_reported(monkeypatch)
     assert all("synthetic-token" not in str(notice) for notice in notices)
 
 
-def test_derived_calculations_are_off_without_provider_approval(monkeypatch):
+def test_derived_calculations_can_be_disabled_without_altering_rates(monkeypatch):
     monkeypatch.setattr(tools, "current_rates", lambda: {"USD": 500})
     monkeypatch.setattr(tools, "rates_observed_at", time.time)
     monkeypatch.setattr(config, "ELTOQUE_DERIVED_CALCULATIONS", False)
     assert "500" in tools.rate_text("USD", "es")
-    assert "autorización" in tools.rate_text("100 USD", "es")
+    assert "desactivadas" in tools.rate_text("100 USD", "es")
     assert miniapp.op_rates(1, {}, "es")["derived_allowed"] is False
     monkeypatch.setattr(config, "ELTOQUE_DERIVED_CALCULATIONS", True)
     assert "50.000" in tools.rate_text("100 USD", "es")
