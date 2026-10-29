@@ -261,7 +261,11 @@ def _handle(chat_id: int, text: str, locale: str) -> None:
             web.route(chat_id, url, locale)
         return
     if images.is_image_request(stripped):
-        send_image(chat_id, stripped, locale)
+        # The model-free agent must not silently spend a shared image balance
+        # or provider quota. Image generation is an explicit, separate choice.
+        chat.text(chat_id, tr(locale,
+            "🎨 Este modo no genera imágenes automáticamente. Abre Imágenes y elige una fuente; algunas pueden consumir cuota o saldo.",
+            "🎨 This mode does not generate images automatically. Open Images and choose a source; some may use quota or balance."))
         return
     match = TRANSLATE.match(stripped)
     if match:

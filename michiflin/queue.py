@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -61,9 +62,12 @@ def jobs() -> dict[str, dict[str, Any]]:
 
 
 def get(job_id: str) -> dict[str, Any] | None:
+    """A user-facing job id must belong to the current authenticated sender."""
+    sender = (chat.sender() or state.request_sender() or "").strip().lower()
     with state.lock:
         job = jobs().get(str(job_id).lstrip("#"))
-        return job if job and access.job_allowed(job) else None
+        owner = str(job.get("addr") or "").strip().lower() if job else ""
+        return job if job and sender and owner == sender and access.job_allowed(job) else None
 
 
 LISTENERS: list[Callable[[dict[str, Any], dict[str, Any]], None]] = []
@@ -419,6 +423,18 @@ def _tag_segment(piece: Path, target: Path, muxer: str, marker: str, title: str,
     return True
 
 
+def _copy_source(source: Path, target: Path, stop: Callable[[], bool] | None) -> None:
+    """Copy without moving the original, checking maintenance between blocks."""
+    with source.open("rb") as incoming, target.open("wb") as outgoing:
+        while True:
+            _checkpoint(stop)
+            block = incoming.read(1024 * 1024)
+            if not block:
+                break
+            outgoing.write(block)
+    _checkpoint(stop)
+
+
 def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = None) -> list[Path]:
     """Return the parts to send: playable segments for media, raw pieces or volumes for files."""
     _checkpoint(stop)
@@ -428,7 +444,14 @@ def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = 
     out.mkdir(parents=True)
     named = folder(job) / "named" / job["name"]
     named.parent.mkdir(parents=True, exist_ok=True)
-    source.replace(named)
+    named.unlink(missing_ok=True)
+    # Keep the completed source until *all* parts and their hashes are committed.
+    # A hard link avoids doubling large files on the normal same-filesystem path.
+    try:
+        os.link(source, named)
+    except OSError:
+        _copy_source(source, named, stop)
+    _checkpoint(stop)
     if named.stat().st_size <= part_bytes:
         final = out / job["name"]
         named.replace(final)
@@ -477,6 +500,24 @@ def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = 
     return parts
 
 
+def _retained_progress(job: dict[str, Any], work: Path) -> int:
+    name = str(job.get("source_complete") or "")
+    source = work / name if name and Path(name).name == name else None
+    if source and source.is_file() and source.stat().st_size == int(job.get("source_complete_size") or -1):
+        return source.stat().st_size
+    partial = work / "download.bin"
+    if job["kind"] == "file" and job.get("resumable") and partial.is_file():
+        return partial.stat().st_size
+    if job["kind"] in {"audio", "video"}:
+        sizes = []
+        for attempt in work.glob(".resume-*"):
+            if attempt.is_dir():
+                sizes.append(sum(path.stat().st_size for path in attempt.glob("media.*")
+                                 if path.is_file() and not path.name.endswith((".ytdl", ".temp"))))
+        return max(sizes, default=0)
+    return 0
+
+
 def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     stop = _stop_flags.setdefault(job["id"], threading.Event())
     owner = usage.job_owner(job)
@@ -486,7 +527,12 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     work = folder(job) / "src"
     shutil.rmtree(folder(job) / "parts", ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
-    update(job, status="downloading", progress=0, error="")
+    name = str(job.get("source_complete") or "")
+    candidate = work / name if name and Path(name).name == name else None
+    if candidate and (not candidate.is_file() or candidate.stat().st_size != int(job.get("source_complete_size") or -1)):
+        candidate = None
+    retained = _retained_progress(job, work)
+    update(job, status="downloading", progress=retained, error="")
     sample: dict[str, float] = {}
     _status(job, tr(job.get("locale", "es"), "⬇️ Iniciando descarga…", "⬇️ Starting download…"))
 
@@ -497,21 +543,29 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
         _status(job, _rate_line(job, done, total or int(job.get("size_est") or 0), sample))
 
     if job["kind"] == "file":
-        target = work / "download.bin"
-        files.download(job["url"], target, int(job.get("size_est") or 0), bool(job.get("resumable")), progress,
-                       interrupted, config.MAX_FILE_BYTES)
+        source = candidate or (work / "download.bin")
+        if candidate is None:
+            files.download(job["url"], source, int(job.get("size_est") or 0), bool(job.get("resumable")), progress,
+                           interrupted, config.MAX_FILE_BYTES)
+            # Only a completed download gets this marker; partial range downloads
+            # continue to use the existing resumable path instead.
+            update(job, source_complete=source.name, source_complete_size=source.stat().st_size)
         _checkpoint(interrupted)
-        with target.open("rb") as handle:
+        with source.open("rb") as handle:
             head = handle.read(65536)
         hint = job["ext"] if job.get("ext") else ""
         kind = files.sniff(head, hint)
         if kind not in {"bin", "txt", "html"} and kind != hint and hint not in {"tar.gz", "xls", "ppt", "msi", "apks", "xapk"}:
             stem = job["name"].rsplit(".", 1)[0] if "." in job["name"] else job["name"]
             update(job, ext=kind, name=clean_filename(f"{stem}.{kind}"), mime=files.KINDS[kind][0], label=files.describe(kind, job.get("locale", "es")))
-        source = target
     else:
-        source = media.download(job["url"], work, job["kind"], int(job["quality"]), job.get("audio_format", "m4a"),
-                                lambda done, total: progress(done, total), interrupted)
+        source = candidate
+        if source is None:
+            source = media.download(job["url"], work, job["kind"], int(job["quality"]), job.get("audio_format", "m4a"),
+                                    lambda done, total: progress(done, total), interrupted)
+            if source.parent != work:
+                raise ValueError("media_error")
+            update(job, source_complete=source.name, source_complete_size=source.stat().st_size)
         _checkpoint(interrupted)
         ext = source.suffix.lstrip(".").lower() or job["ext"]
         mime = files.KINDS.get(ext, files.KINDS["bin"])[0]
@@ -549,14 +603,15 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
         return
     if not todo:
         todo = list(range(len(parts)))
-    shutil.rmtree(work, ignore_errors=True)
-    shutil.rmtree(folder(job) / "named", ignore_errors=True)
     next_status = "sending" if state.setting("auto_send") or job.get("send_requested") else "ready"
     part_sha = [_sha256(path, interrupted) for path in parts] if len(parts) > 1 else []
     _checkpoint(interrupted)
     update(job, sha=digest, parts=len(parts), part_files=[str(path) for path in parts], todo=todo, status=next_status, restart_note=note,
-           part_sha=part_sha,
+           part_sha=part_sha, source_complete="", source_complete_size=0,
            part_sizes=[path.stat().st_size for path in parts] if len(parts) > 1 else [])
+    # These are redundant links/copies only after the new parts were persisted.
+    shutil.rmtree(work, ignore_errors=True)
+    shutil.rmtree(folder(job) / "named", ignore_errors=True)
     if note:
         _notify(job, tr(job.get("locale", "es"), f"♻️ #{job['id']}: la fuente cambió tras el reinicio; se reenvía desde la parte 1.",
                         f"♻️ #{job['id']}: the source changed after restart; resending from part 1."))
@@ -569,7 +624,7 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
 def _blocked(job: dict[str, Any]) -> bool:
     """Globally paused queue, kill switch, or downloads of one person paused by an administrator."""
     owner = usage.job_owner(job)
-    return (not access.job_allowed(job) or bool(state.flag("queue_paused"))
+    return (not access.job_allowed(job) or state.maintenance_active() or bool(state.flag("queue_paused"))
             or state.get_kill_switch(owner) or owner in (state.flag("limited") or []))
 
 
@@ -612,7 +667,8 @@ def _preparer() -> None:
                 code = str(exc) if str(exc) in {"too_large", "disk_full", "network", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid"} else exc.__class__.__name__
                 log.warning("job %s failed: %s", job["id"], exc)
                 update(job, status="failed", error=code)
-                shutil.rmtree(folder(job), ignore_errors=True)
+                # Keep reusable sources and partials for an explicit retry; normal
+                # expiry or a user-requested cleanup still controls storage.
                 _status_done(job)
                 progress.finish_job(job.get("source_msg", 0), "failed")
                 _notify(job, tr(job.get("locale", "es"), f"❌ #{job['id']} {job['title'][:60]}: {_error_text(code, 'es')}",
@@ -625,12 +681,14 @@ def _interrupted_preparation(job: dict[str, Any]) -> None:
         shutil.rmtree(folder(job), ignore_errors=True)
         _status_done(job)
         return
-    # Keep a resumable partial download; discard only incomplete packaging of this job.
+    # src retains either the completed source or a range-resumable partial file.
+    # Only incomplete, reproducible packing artifacts are discarded.
     shutil.rmtree(folder(job) / "parts", ignore_errors=True)
     shutil.rmtree(folder(job) / "named", ignore_errors=True)
-    update(job, status="queued", progress=0, error="")
-    _status(job, tr(job.get("locale", "es"), "⏸️ Descarga pausada por el kill switch.",
-                    "⏸️ Download paused by the kill switch."), timer=False)
+    retained = _retained_progress(job, folder(job) / "src")
+    update(job, status="queued", progress=retained, error="")
+    _status(job, tr(job.get("locale", "es"), "⏸️ Trabajo pausado; continuará al terminar la pausa.",
+                    "⏸️ Job paused; it will continue when the pause ends."), timer=False)
     _wake.set()
 
 
@@ -639,6 +697,9 @@ def _error_text(code: str, locale: str) -> str:
         return media.describe_error(code, locale).removeprefix("⚠️ ")
     if code.startswith("http_"):
         return tr(locale, f"el servidor respondió {code[5:]}", f"the server answered {code[5:]}")
+    if code == "source_preservation":
+        return tr(locale, "archivo anterior protegido; requiere revisión antes de reanudar",
+                  "previous source protected; review is required before resuming")
     if code == "pack_error":
         return tr(locale, "no se pudo dividir en partes", "splitting into parts failed")
     if code == "network":
@@ -850,7 +911,14 @@ def _send_one(job: dict[str, Any]) -> None:
                 update(job, not_before=time.time() + 60)
             return
         update(job, inflight={"index": index, "size": size, "msg_id": msg_id})
-    outcome = chat.wait_delivery(msg_id, 1200, _stop_flags.setdefault(job["id"], threading.Event()))
+    cancel_stop = _stop_flags.setdefault(job["id"], threading.Event())
+    class DeliveryStop:
+        def is_set(self) -> bool:
+            # Retain the existing message id for reconciliation after the pause;
+            # stopping the poll never pretends to retract an RPC already handed off.
+            return (cancel_stop.is_set() or _blocked(job) or job.get("hold")
+                    or state.work_interrupted(owner, generation))
+    outcome = chat.wait_delivery(msg_id, 1200, DeliveryStop())
     if outcome == "delivered":
         state.record_sent(size, usage.job_owner(job))
         usage.note(job.get("addr", ""), bytes=size)
@@ -964,8 +1032,51 @@ def cleanup() -> None:
         state.save()
 
 
+def _recover_packing_source(job: dict[str, Any]) -> bool:
+    """Preserve a complete source left in old versions' named/ during packaging."""
+    if job.get("status") != "packing" or job.get("source_complete") or int(job.get("size") or 0) <= 0:
+        return True
+    expected = int(job["size"])
+    work = folder(job) / "src"
+    candidates = [work / "download.bin"] if job.get("kind") == "file" else list(work.glob("media.*"))
+    candidates = [path for path in candidates if path.is_file() and not path.name.endswith((".part", ".ytdl", ".temp"))
+                  and path.stat().st_size == expected]
+    if not candidates:
+        named = folder(job) / "named"
+        candidates = [path for path in named.glob("*") if path.is_file() and path.stat().st_size == expected]
+        if not candidates:
+            # Old code may have moved a small, complete file straight into parts/.
+            parts = folder(job) / "parts"
+            whole = parts / str(job.get("name") or "")
+            if (expected <= int(job.get("part_mb") or 0) * MIB and whole.is_file()
+                    and whole.stat().st_size == expected):
+                candidates = [whole]
+            elif any(parts.glob("*")) or any(named.glob("*")):
+                return False  # retain incomplete or ambiguous artifacts for review
+            else:
+                return True  # no local source remains; normal re-download can proceed
+        if len(candidates) != 1:
+            return False  # do not guess or overwrite among multiple candidates
+        source = candidates[0]
+        target = work / ("download.bin" if job.get("kind") == "file" else "media" + (source.suffix or ".bin"))
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                os.link(source, target)  # never delete or overwrite the only old copy
+            if target.stat().st_size != expected:
+                return False
+        except OSError:
+            return False
+        candidates = [target]
+    if len(candidates) != 1:
+        return False
+    job["source_complete"] = candidates[0].name
+    job["source_complete_size"] = expected
+    return True
+
+
 def recover() -> None:
-    """After a restart, files in temporary storage are gone: re-prepare unfinished jobs."""
+    """After a restart, preserve local sources and re-prepare unfinished jobs."""
     stale = []
     with state.lock:
         for job in jobs().values():
@@ -975,6 +1086,14 @@ def recover() -> None:
                 stale.append(int(job["status_msg"]))
                 job["status_msg"] = 0
             if job["status"] in ACTIVE:
+                try:
+                    preserved = _recover_packing_source(job)
+                except OSError:
+                    preserved = False
+                if not preserved:
+                    job["hold"] = True
+                    job["error"] = "source_preservation"
+                    log.warning("job %s paused to preserve an old packaging source", job.get("id", "?"))
                 paths = job.get("part_files") or []
                 if job.get("inflight"):
                     # Reconcile the already handed-off message before any re-download.
@@ -1012,8 +1131,10 @@ def start() -> None:
 def status_label(job: dict[str, Any], locale: str) -> str:
     pair = STATUS_LABELS.get(job["status"], (job["status"], job["status"]))
     label = pair[1] if locale == "en" else pair[0]
+    if state.maintenance_active() and job["status"] not in FINAL:
+        label += tr(locale, " · 🛠️ mantenimiento", " · 🛠️ maintenance")
     if job.get("hold") and job["status"] not in FINAL:
-        label += tr(locale, " · ⏸️ pausado", " · ⏸️ paused")
+        label += tr(locale, " · ⏸️ pausa manual", " · ⏸️ manually paused")
     return label
 
 
@@ -1028,7 +1149,7 @@ def describe_job(job: dict[str, Any], locale: str, detailed: bool = False) -> st
         lines[-1] += f" · {delivered}/{job['parts']} " + tr(locale, "partes", "parts")
     if float(job.get("not_before") or 0) > time.time() + 60:
         lines.append("   🕒 " + local_time(float(job["not_before"]), "%d/%m %H:%M"))
-    if job["status"] == "failed" and job.get("error"):
+    if (job["status"] == "failed" or job.get("error") == "source_preservation") and job.get("error"):
         lines.append(f"   {_error_text(job['error'], locale)}")
     ops = []
     if job["status"] in ACTIVE:
@@ -1074,6 +1195,9 @@ def hold(job_id: str, value: bool, locale: str) -> str:
     if not job or job["status"] in FINAL:
         return tr(locale, "⚠️ Trabajo no encontrado o terminado.", "⚠️ Job not found or finished.")
     if not value:
+        if job.get("error") == "source_preservation":
+            return tr(locale, "⚠️ El archivo anterior está protegido. No se reanudará hasta que lo revise el administrador.",
+                      "⚠️ The previous source is protected. It will not resume until an administrator reviews it.")
         inflight = job.get("inflight")
         if isinstance(inflight, dict) and not inflight.get("msg_id"):
             return tr(locale, "⚠️ Entrega incierta: revisa el chat. Para evitar duplicados no se reenviará automáticamente; cancela y crea otro trabajo solo si es necesario.",

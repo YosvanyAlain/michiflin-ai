@@ -379,7 +379,11 @@ def set_nauta_strict(address: str, value: bool) -> None:
 # Kill switch (F2): per-person pause of queue + AI + downloads.
 # ---------------------------------------------------------------------------
 class WorkPaused(Exception):
-    """A request was invalidated by a kill-switch activation."""
+    """A request was invalidated by a pause or an access change."""
+
+    def __init__(self, maintenance: bool = False):
+        super().__init__("maintenance" if maintenance else "paused")
+        self.maintenance = maintenance
 
 
 def get_kill_switch(address: str) -> bool:
@@ -388,24 +392,43 @@ def get_kill_switch(address: str) -> bool:
         return bool(data["kill_switch"].get(address, DEFAULTS.get("kill_switch", False)))
 
 
+def maintenance_active() -> bool:
+    """The owner's operational pause; it never changes the access grants."""
+    with lock:
+        notice = data.get("maintenance_notice")
+        return isinstance(notice, dict) and notice.get("active") is True
+
+
+def maintenance_generation() -> int:
+    with lock:
+        notice = data.get("maintenance_notice")
+        return int(notice.get("generation") or 0) if isinstance(notice, dict) else 0
+
+
 def kill_generation(address: str) -> int:
     address = (address or "").strip().lower()
     with lock:
-        # A mode change or guest revocation also invalidates already-admitted work.
-        return (_kill_generations.get(address, 0) << 128) + access.revision(address)
+        # Keep access.revision's full 128 bits. The persistent maintenance epoch
+        # also invalidates work if maintenance is switched on and off quickly.
+        return ((_kill_generations.get(address, 0) << 256)
+                + (maintenance_generation() << 128) + access.revision(address))
+
+
+def maintenance_interrupted(generation: int) -> bool:
+    return maintenance_active() or ((generation >> 128) & ((1 << 128) - 1)) != maintenance_generation()
 
 
 def work_interrupted(address: str, generation: int) -> bool:
     address = (address or "").strip().lower()
     with lock:
-        return (get_kill_switch(address) or kill_generation(address) != generation
+        return (maintenance_active() or get_kill_switch(address) or kill_generation(address) != generation
                 or bool(address and not config.service_access_allowed(address)))
 
 
 def check_work_allowed() -> None:
     guard = getattr(_acting, "kill_guard", None)
     if guard and work_interrupted(*guard):
-        raise WorkPaused()
+        raise WorkPaused(maintenance=maintenance_interrupted(guard[1]))
 
 
 @contextmanager

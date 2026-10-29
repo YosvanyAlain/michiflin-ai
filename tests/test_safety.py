@@ -475,7 +475,7 @@ class SafetyTests(unittest.TestCase):
         with mock.patch.object(miniapp, "_admit", return_value="new"), mock.patch.object(miniapp, "_pool", ToggleBeforeDispatch()), \
                 mock.patch.dict(miniapp.OPS, {"race_test": lambda *a: calls.append(1)}), \
                 mock.patch.object(miniapp, "respond", side_effect=lambda *args: responses.append(args)):
-            miniapp._route(42, {"chat": 7, "addr": OWNER}, {"id": "race2", "op": "race_test", "lang": "es"})
+            miniapp._route(42, {"chat": 7, "addr": OWNER}, {"id": "race2", "op": "race_test", "lang": "es", "session": miniapp.BOOT_SESSION})
         self.assertEqual(calls, [])
         self.assertIn("kill switch", responses[0][3].lower())
 
