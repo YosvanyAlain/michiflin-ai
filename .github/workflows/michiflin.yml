@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "5 */6 * * *"
   workflow_dispatch:
+    inputs:
+      send_owner_documents:
+        description: "Send the requested source ZIP and PDF to the verified owner once"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -25,6 +31,8 @@ jobs:
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
       OWNER_ONLY: "1"
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
+      # Optional one-shot request is bound to a single exact revision.
+      OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # The previous root SHA is the stable fallback for existing app instances.
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
       MAINTENANCE_MODE: "0"
@@ -207,6 +215,14 @@ jobs:
       - name: Note retained recovery snapshots after one-time cleanup
         if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'releases'
         run: echo "The sanitized snapshot was verified; older recovery snapshots remain under the retention policy. Do not claim their immediate erasure."
+
+      - name: Deliver explicitly requested owner documents
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_owner_documents) || (env.OWNER_DOCUMENT_DELIVERY_REVISION != '' && env.OWNER_DOCUMENT_DELIVERY_REVISION == github.sha) }}
+        continue-on-error: true
+        env:
+          CONFIRM_OWNER_DELIVERY: "1"
+          EXPECTED_DELIVERY_ADDRESS: ${{ secrets.OWNER_DOCUMENT_RECIPIENT }}
+        run: python .github/scripts/deliver_owner_documents.py
 
       - name: Private session
         shell: bash

@@ -86,6 +86,27 @@ class ReleaseRetentionTests(unittest.TestCase):
         patch.assert_not_called()
         prune.assert_not_called()
 
+    def test_checkpoint_save_verifies_new_snapshot_without_rotating_old_ones(self):
+        uploaded = {}
+        def post(*args, **kwargs):
+            uploaded["encrypted"] = kwargs["data"]
+            return mock.Mock(json=lambda: {"id": 123}, raise_for_status=lambda: None)
+        def patch(*args, **kwargs):
+            return mock.Mock(json=lambda: {"id": 123, "name": kwargs["json"]["name"], "state": "uploaded"},
+                             raise_for_status=lambda: None)
+        with mock.patch.object(backup, "_assert_private"), mock.patch.object(backup, "archive", return_value=b"data"), \
+             mock.patch.object(backup, "_ensure_release", return_value={"id": 7}), \
+             mock.patch.object(backup.requests, "post", side_effect=post), \
+             mock.patch.object(backup, "_download_asset", side_effect=lambda *args: uploaded["encrypted"]), \
+             mock.patch.object(backup.requests, "patch", side_effect=patch), \
+             mock.patch.object(backup, "_verify_plaintext") as verify, \
+             mock.patch.object(backup, "_mark_ready") as ready, \
+             mock.patch.object(backup, "_prune") as prune:
+            backup._save_release("t", "o/r", "pass", rotate=False)
+        verify.assert_called_once_with(b"data")
+        ready.assert_called_once()
+        prune.assert_not_called()
+
     def test_public_repository_is_rejected(self):
         response = mock.Mock(json=lambda: {"private": False, "archived": False}, raise_for_status=lambda: None)
         with mock.patch.object(backup.requests, "get", return_value=response), self.assertRaises(ValueError):
@@ -104,6 +125,11 @@ class BackupRestoreTests(unittest.TestCase):
     def tearDown(self):
         self.env.stop()
         self.temp.cleanup()
+
+    def test_save_passes_checkpoint_rotation_policy(self):
+        with mock.patch.object(backup, "_save_release") as save:
+            backup.save(rotate=False)
+            save.assert_called_once_with("t", "o/r", "passphrase", rotate=False)
 
     def test_bootstrap_uses_legacy_only_before_marker(self):
         with mock.patch.object(backup, "_get_ref", return_value=None), mock.patch.object(backup, "_release", return_value=None), \
