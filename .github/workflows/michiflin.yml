@@ -33,6 +33,8 @@ jobs:
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
+      # One-time migration is also armed only for an exact reviewed commit.
+      RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # The previous root SHA is the stable fallback for existing app instances.
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
       MAINTENANCE_MODE: "0"
@@ -59,6 +61,8 @@ jobs:
       EXTRA_PROVIDERS: ${{ secrets.EXTRA_PROVIDERS }}
       AI_EXTRA_ALLOWED_HOSTS: ${{ secrets.AI_EXTRA_ALLOWED_HOSTS }}
       ELTOQUE_API_TOKEN: ${{ secrets.ELTOQUE_API_TOKEN }}
+      LIBRETRANSLATE_URL: ${{ vars.LIBRETRANSLATE_URL }}
+      LIBRETRANSLATE_API_KEY: ${{ secrets.LIBRETRANSLATE_API_KEY }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
       GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
       FACEBOOK_APP_ID: ${{ secrets.FACEBOOK_APP_ID }}
@@ -215,6 +219,21 @@ jobs:
       - name: Note retained recovery snapshots after one-time cleanup
         if: steps.purge_verified.outputs.verified == 'true' && env.STATE_BACKUP_STORAGE == 'releases'
         run: echo "The sanitized snapshot was verified; older recovery snapshots remain under the retention policy. Do not claim their immediate erasure."
+
+      # Authorized one-time 5.1 relay change. Armed only when the exact reviewed
+      # revision is supplied through the temporary repository variable. The
+      # script verifies a recoverable encrypted snapshot, keeps the old transport
+      # and refuses automatic retries after an interrupted registration.
+      - name: Migrate bot relay with recovery safeguards
+        id: relay_migration
+        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.RELAY_MIGRATION_REVISION != '' && env.RELAY_MIGRATION_REVISION == github.sha }}
+        env:
+          MICHIFLIN_RELAY_MIGRATE_ONCE: "1"
+        run: python tools/migrate_relay_once.py
+
+      - name: Relay migration verified
+        if: steps.relay_migration.outputs.verified == 'true'
+        run: echo "New relay, preserved identity, encrypted continuity and recovery verified."
 
       - name: Deliver explicitly requested owner documents
         if: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_owner_documents) || (env.OWNER_DOCUMENT_DELIVERY_REVISION != '' && env.OWNER_DOCUMENT_DELIVERY_REVISION == github.sha) }}

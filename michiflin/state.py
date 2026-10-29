@@ -394,6 +394,8 @@ def get_kill_switch(address: str) -> bool:
 
 def maintenance_active() -> bool:
     """The owner's operational pause; it never changes the access grants."""
+    from . import maintenance
+    maintenance.expire_if_due()
     with lock:
         notice = data.get("maintenance_notice")
         return isinstance(notice, dict) and notice.get("active") is True

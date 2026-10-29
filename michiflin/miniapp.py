@@ -1001,7 +1001,8 @@ def settings_view(locale: str) -> list[dict[str, Any]]:
 def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
-            "maintenance_notice": maintenance.get()}
+            "maintenance_notice": maintenance.get(),
+            "modes": {"kill_switch": op_kill_switch(chat_id, {}, locale), "nauta_strict": op_nauta_strict(chat_id, {}, locale)}}
 
 
 @op("repair")
@@ -1032,16 +1033,20 @@ def op_models(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     text = _clean(args.get("text"))[:6000]
     space = str(args.get("space") or "agent")
-    attachment = args.get("file") if isinstance(args.get("file"), dict) and space not in {"agent", "smart_agent"} else None
+    attachment = args.get("file") if isinstance(args.get("file"), dict) and space != "agent" else None
     if not text and not attachment:
         raise AppError(tr(locale, "Escribe algo primero.", "Write something first."))
     media_parts: list[tuple[str, bytes]] = []
+    selected_agent_model = ""
     if attachment:
-        text, media_parts = _attachment(attachment, text, space, locale)
-    if space == "agent":
-        return run_captured(lambda: agent.handle(chat_id, text, locale), locale)
+        selected_agent_model = _clean(args.get("agent_model"))[:180] if space == "smart_agent" else ""
+        if selected_agent_model and ai.model_by_key(selected_agent_model) is None:
+            raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro.", "That model is no longer available; pick another."))
+        text, media_parts = _attachment(attachment, text, selected_agent_model or ("auto" if space == "smart_agent" else space), locale)
     history = args.get("history") if isinstance(args.get("history"), list) else []
-    if space == "smart_agent":
+    if space == "agent":
+        return run_captured(lambda: agent.handle(chat_id, text, locale, history), locale)
+    if space == "smart_agent" and not attachment:
         agent_model = _clean(args.get("agent_model"))[:180]
         if agent_model and ai.model_by_key(agent_model) is None:
             raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro.", "That model is no longer available; pick another."))
@@ -1061,8 +1066,10 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                 break
             messages.insert(1, {"role": turn[0], "content": content})
     messages.append({"role": "user", "content": text})
-    if space == "auto":
+    if space == "auto" or (space == "smart_agent" and not selected_agent_model):
         result = ai.complete(messages, agent.pick_role(text), images=media_parts or None)
+    elif space == "smart_agent":
+        result = ai.complete_exact(messages, selected_agent_model, images=media_parts or None)
     else:
         result = ai.complete_exact(messages, space, images=media_parts or None)
     if not result.ok:
@@ -1482,23 +1489,54 @@ def op_tool(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("rates")
 def op_rates(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    if args.get("history") is True:
+        try:
+            return tools.historical_rates(args.get("days", 7))
+        except tools.RateError as exc:
+            reason = str(exc)
+            if reason == "authorization":
+                raise AppError(tr(locale, "El historial requiere la clave de API de elTOQUE de esta aplicación. También puedes consultar el gráfico en su sitio oficial.",
+                                  "History requires this application's elTOQUE API key. You can also view the chart on their official site.")) from None
+            raise AppError(tr(locale, "No pude consultar el historial de elTOQUE ahora. Inténtalo más tarde.",
+                              "Could not retrieve elTOQUE history right now. Try again later.")) from None
     try:
         rates = tools.current_rates()
     except Exception:
-        raise AppError(tr(locale, "No pude consultar elTOQUE ahora.", "elTOQUE is unavailable right now."))
-    return {"rates": rates, "at": time.time()}
+        raise AppError(tr(locale, "No pude consultar elTOQUE ahora. Su API requiere una clave y el sitio público puede bloquear solicitudes.",
+                          "elTOQUE is unavailable. Its API requires a key and the public site may block requests.")) from None
+    return {"rates": rates, "at": time.time(), "source": "elTOQUE"}
+
+
+@op("weather")
+def op_weather(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    try:
+        place_id = args.get("place_id", 0)
+        if type(place_id) is not int or place_id < 0:
+            raise tools.WeatherError("place_changed")
+        return tools.weather_data(_clean(args.get("city"))[:120], locale, place_id)
+    except tools.WeatherError as exc:
+        if str(exc) == "not_found":
+            raise AppError(tr(locale, "No encontré esa ciudad. Prueba con otro nombre.", "City not found. Try another name.")) from None
+        raise AppError(tr(locale, "No pude consultar Open-Meteo. Inténtalo de nuevo.", "Could not reach Open-Meteo. Try again.")) from None
 
 
 @op("translate")
 def op_translate(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    text = _clean(args.get("text"))[:4500]
+    text = _clean(args.get("text"))
     if not text:
-        return {"text": "", "detected": ""}
+        return {"text": "", "detected": "", "provider": ""}
+    if len(text) > 4500:
+        raise AppError(tr(locale, "El texto supera 4500 caracteres; divídelo antes de traducir.",
+                          "Text exceeds 4500 characters; split it before translating."))
     target = str(args.get("target") or ("en" if locale == "es" else "es"))
-    translated, detected = extras.translate(text, target, str(args.get("source") or "auto"))
-    if not translated:
-        raise AppError(tr(locale, "Los traductores no respondieron. Prueba más tarde.", "The translators did not answer. Try again later."))
-    return {"text": translated, "detected": detected}
+    source = str(args.get("source") or "auto")
+    if target not in extras.LANGUAGES or (source != "auto" and source not in extras.LANGUAGES):
+        raise AppError(tr(locale, "Idioma no disponible.", "Language unavailable."))
+    result = extras.translate_detailed(text, target, source)
+    if not result["text"]:
+        raise AppError(tr(locale, "Los traductores no respondieron. Si usabas detección automática, elige el idioma de origen e inténtalo otra vez.",
+                          "Translation services did not answer. If using detection, choose the source language and try again."))
+    return result
 
 
 @op("queue")
@@ -1625,7 +1663,8 @@ def op_kill_switch(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     elif isinstance(value, str):
         state.set_kill_switch(chat.sender(), value.lower() in {"1", "true", "yes", "on", "sí", "si"})
     active = state.get_kill_switch(chat.sender())
-    queue.wake()
+    if isinstance(value, (bool, str)):
+        queue.wake()
     return {"active": active}
 
 
@@ -1674,7 +1713,7 @@ def op_owner_only(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             raise AppError(tr(locale, "No se puede compartir durante mantenimiento o la sesión cambió. Actualiza Administración.",
                               "Sharing is unavailable during maintenance or the session changed. Refresh Administration."))
         queue.wake()
-    return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "message": ""}
+    return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "maintenance_notice": maintenance.get(), "message": ""}
 
 
 _maintenance_notify_lock = threading.Lock()
@@ -1757,7 +1796,7 @@ def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> An
     if "active" not in args:
         return {"notice": maintenance.get(), "profile_updated": None}
     try:
-        notice = maintenance.set_notice(args.get("active"), args.get("es"), args.get("en"))
+        notice = maintenance.set_notice(args.get("active"), args.get("es"), args.get("en"), args.get("minutes"))
     except ValueError:
         raise AppError(tr(locale, "Aviso inválido: usa un mensaje de hasta 280 caracteres.",
                           "Invalid notice: use a message of up to 280 characters.")) from None
@@ -1804,5 +1843,5 @@ def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     elif action == "bench":
         result = perf.bench()
         message = tr(locale, "Ya hay una prueba en marcha.", "A test is already running.") if result.get("busy") else tr(locale, "Prueba terminada.", "Test finished.")
-    return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "message": message.replace("🔄 ", "").replace("⚠️ ", "")}
+    return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "maintenance_notice": maintenance.get(), "message": message.replace("🔄 ", "").replace("⚠️ ", "")}
 

@@ -11,7 +11,7 @@ import unicodedata
 from defusedxml import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, quote_plus, urlsplit
 
@@ -393,6 +393,9 @@ def wiki_summary(topic: str, locale: str) -> tuple[str, str, str] | None:
 WEATHER = {
     0: ("despejado", "clear"), 1: ("mayormente despejado", "mostly clear"), 2: ("parcialmente nublado", "partly cloudy"),
     3: ("nublado", "overcast"), 45: ("niebla", "fog"), 48: ("niebla con escarcha", "rime fog"),
+    56: ("llovizna helada ligera", "light freezing drizzle"), 57: ("llovizna helada intensa", "heavy freezing drizzle"),
+    66: ("lluvia helada ligera", "light freezing rain"), 67: ("lluvia helada intensa", "heavy freezing rain"),
+    77: ("granos de nieve", "snow grains"), 85: ("chubascos de nieve", "snow showers"), 86: ("chubascos de nieve fuertes", "heavy snow showers"),
     51: ("llovizna ligera", "light drizzle"), 53: ("llovizna", "drizzle"), 55: ("llovizna intensa", "heavy drizzle"),
     61: ("lluvia ligera", "light rain"), 63: ("lluvia", "rain"), 65: ("lluvia intensa", "heavy rain"),
     71: ("nieve ligera", "light snow"), 73: ("nieve", "snow"), 75: ("nieve intensa", "heavy snow"),
@@ -401,43 +404,87 @@ WEATHER = {
 }
 
 
-def weather_text(query: str, locale: str) -> str:
-    query = query.strip()
+class WeatherError(Exception):
+    pass
+
+
+def _place_label(place: dict[str, Any]) -> str:
+    return ", ".join(str(item) for item in (place.get("name"), place.get("admin1"), place.get("country")) if item)
+
+
+def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
+    """Geocode explicitly, allowing the user to resolve places with the same name."""
+    query = query.strip()[:120]
     if not query:
-        return tr(locale, "Uso: /clima <ciudad>", "Usage: /weather <city>")
+        raise WeatherError("empty")
+    parts = [part.strip() for part in query.split(",") if part.strip()]
+    name = parts[0] if parts else query
     try:
         geocode = requests.get("https://geocoding-api.open-meteo.com/v1/search",
-                               params={"name": query, "count": 1, "language": locale, "format": "json"}, timeout=20)
+                               params={"name": name, "count": 10, "language": locale, "format": "json"}, timeout=15)
         geocode.raise_for_status()
         places = geocode.json().get("results") or []
+        if len(parts) > 1:
+            needle = " ".join(parts[1:]).casefold()
+            matched = [p for p in places if needle in _place_label(p).casefold()]
+            if matched:
+                places = matched
+        places = [p for p in places if isinstance(p, dict) and p.get("id") and p.get("latitude") is not None and p.get("longitude") is not None]
         if not places:
-            return tr(locale, f"🌦️ No encontré “{query}”.", f"🌦️ “{query}” was not found.")
-        place = places[0]
+            raise WeatherError("not_found")
+        place = next((p for p in places if p["id"] == place_id), None) if place_id else places[0]
+        if place is None:
+            raise WeatherError("place_changed")
         forecast = requests.get("https://api.open-meteo.com/v1/forecast", params={
             "latitude": place["latitude"], "longitude": place["longitude"],
-            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m",
+            "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,is_day",
             "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-            "forecast_days": 3, "timezone": "auto",
-        }, timeout=20)
+            "forecast_days": 5, "timezone": "auto",
+        }, timeout=15)
         forecast.raise_for_status()
         body = forecast.json()
-    except (requests.RequestException, ValueError, KeyError) as exc:
-        return tr(locale, f"⚠️ No pude consultar el clima ({exc.__class__.__name__}).", f"⚠️ Weather lookup failed ({exc.__class__.__name__}).")
-    index = 1 if locale == "en" else 0
-    now = body.get("current", {})
-    label = ", ".join(filter(None, [place.get("name"), place.get("admin1"), place.get("country")]))
-    sky = WEATHER.get(int(now.get("weather_code", -1)), ("?", "?"))[index]
-    lines = [
-        f"🌦️ {label}",
-        f"{sky.capitalize()} · {now.get('temperature_2m', '—')} °C ({tr(locale, 'sensación', 'feels')} {now.get('apparent_temperature', '—')} °C)",
-        f"{tr(locale, 'Humedad', 'Humidity')} {now.get('relative_humidity_2m', '—')}% · {tr(locale, 'Viento', 'Wind')} {now.get('wind_speed_10m', '—')} km/h · {now.get('precipitation', '—')} mm",
-        "",
-    ]
-    daily = body.get("daily", {})
-    for day, code, high, low, rain in zip(daily.get("time", []), daily.get("weather_code", []), daily.get("temperature_2m_max", []),
-                                          daily.get("temperature_2m_min", []), daily.get("precipitation_probability_max", [])):
-        name = datetime.fromisoformat(day).strftime("%d/%m")
-        lines.append(f"{name}: {WEATHER.get(int(code), ('?', '?'))[index]} · {low}–{high} °C · 💧{rain}%")
+        current = body.get("current") or {}
+        daily = body.get("daily") or {}
+        if "temperature_2m" not in current or "weather_code" not in current:
+            raise WeatherError("empty")
+        index = 1 if locale == "en" else 0
+        days = []
+        for day, code, high, low, rain in zip(daily.get("time", []), daily.get("weather_code", []),
+                daily.get("temperature_2m_max", []), daily.get("temperature_2m_min", []), daily.get("precipitation_probability_max", [])):
+            days.append({"date": day, "code": code, "description": WEATHER.get(int(code), ("?", "?"))[index],
+                         "high": high, "low": low, "rain": rain})
+        return {"query": query, "place": {"id": place["id"], "label": _place_label(place)},
+                "candidates": [{"id": p["id"], "label": _place_label(p)} for p in places[:10]],
+                "timezone": body.get("timezone") or place.get("timezone") or "", "as_of": current.get("time") or "",
+                "current": {"temp": current.get("temperature_2m"), "feels": current.get("apparent_temperature"),
+                            "humidity": current.get("relative_humidity_2m"), "wind": current.get("wind_speed_10m"),
+                            "precipitation": current.get("precipitation"), "code": current.get("weather_code"),
+                            "is_day": current.get("is_day", 1),
+                            "description": WEATHER.get(int(current["weather_code"]), ("?", "?"))[index]},
+                "days": days, "source": "Open-Meteo"}
+    except WeatherError:
+        raise
+    except (requests.RequestException, ValueError, KeyError, TypeError, IndexError) as exc:
+        raise WeatherError("unavailable") from exc
+
+
+def weather_text(query: str, locale: str) -> str:
+    if not query.strip():
+        return tr(locale, "Uso: /clima <ciudad>", "Usage: /weather <city>")
+    try:
+        data = weather_data(query, locale)
+    except WeatherError as exc:
+        if str(exc) == "not_found":
+            return tr(locale, f"🌦️ No encontré “{query}”.", f"🌦️ “{query}” was not found.")
+        return tr(locale, "⚠️ No pude consultar el clima ahora.", "⚠️ Weather lookup failed right now.")
+    now = data["current"]
+    lines = [f"🌦️ {data['place']['label']}",
+             f"{now['description'].capitalize()} · {now['temp']} °C ({tr(locale, 'sensación', 'feels')} {now['feels']} °C)",
+             f"{tr(locale, 'Humedad', 'Humidity')} {now['humidity']}% · {tr(locale, 'Viento', 'Wind')} {now['wind']} km/h · {now['precipitation']} mm", ""]
+    for day in data["days"]:
+        name = datetime.fromisoformat(day["date"]).strftime("%d/%m")
+        lines.append(f"{name}: {day['description']} · {day['low']}–{day['high']} °C · 💧{day['rain']}%")
+    lines.append("\nOpen-Meteo · " + data["as_of"])
     return "\n".join(lines)
 
 
@@ -512,6 +559,67 @@ def current_rates() -> dict[str, float]:
         return _rates()
     except RateError:
         return _public_rates()
+
+
+def historical_rates(days: int = 7) -> dict[str, Any]:
+    """Daily elTOQUE API medians; each request covers less than 24 h.
+
+    No inferred or fabricated points. The official API requires an application
+    token. Stop on rate limits, and mark incomplete intervals explicitly.
+    """
+    if not config.ELTOQUE_API_TOKEN:
+        raise RateError("authorization")
+    if type(days) is not int or days not in {7, 14}:
+        raise RateError("range")
+    end = datetime.now(config.LOCAL_ZONE).date() - timedelta(days=1)
+    today_key = end.isoformat()
+
+    def run() -> dict[str, Any]:
+        series, error = [], ""
+        for age in range(days - 1, -1, -1):
+            state.check_work_allowed()
+            date = end - timedelta(days=age)
+            try:
+                response = requests.get(ELTOQUE_ENDPOINT, timeout=10, params={
+                    "date_from": date.isoformat() + " 00:00:00", "date_to": date.isoformat() + " 23:59:59"},
+                    headers={"Authorization": f"Bearer {config.ELTOQUE_API_TOKEN}", "Accept": "application/json"})
+                if response.status_code in {401, 422}:
+                    error = "authorization"
+                    break
+                if response.status_code == 429:
+                    error = "rate_limit"
+                    break  # do not circumvent or hammer the service
+                if not response.ok:
+                    error = "http"
+                    continue
+                payload = response.json()
+                rates = {}
+                for code, value in (payload.get("tasas") or {}).items():
+                    try:
+                        number = float(str(value).replace(",", "."))
+                    except (ValueError, TypeError):
+                        continue
+                    if math.isfinite(number) and number > 0 and re.fullmatch(r"[A-Z0-9]{2,12}", str(code).upper()):
+                        rates[str(code).upper()] = number
+                if rates:
+                    series.append({"date": date.isoformat(), "rates": rates})
+                else:
+                    error = "incomplete"
+            except (requests.RequestException, ValueError, TypeError, AttributeError):
+                error = "connection"
+                break
+        if not series:
+            raise RateError(error or "empty")
+        return {"history": series, "complete": len(series) == days, "error": error, "source": "elTOQUE API", "days": days}
+    # Cache only completed responses. Partial errors may recover on the next deliberate request.
+    key = f"rates_history:{today_key}:{days}"
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < 3600:
+        return hit[1]
+    result = run()
+    if result["complete"]:
+        _cache[key] = (time.monotonic(), result)
+    return result
 
 
 def _number(value: float, locale: str) -> str:

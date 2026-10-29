@@ -347,6 +347,12 @@ function notice(text, kind = "info") {
 // ---------------------------------------------------------------------------
 // Bot replies: tap commands become buttons, links open in the reader.
 // ---------------------------------------------------------------------------
+function contextHelp(text) {
+  return h("details", { class: "context-help" },
+    h("summary", {}, icon("info"), h("span", {}, t("context_help")), icon("down", "caret")),
+    h("p", { class: "muted small" }, text));
+}
+
 function actionLabel(action) {
   const quality = action.a && action.a[1] && /^\d+$/.test(action.a[1]) ? action.a[1] : "";
   const unit = action.k === "video" ? "p" : action.k === "audio" ? " kbps" : "";
@@ -428,7 +434,7 @@ async function sync(force) {
     const data = await bridge.call("hello");
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
-      jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, lang: lang(), at: now() });
+      jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
     saveCache();
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
@@ -506,42 +512,29 @@ function statusChips() {
 
 function searchBox(initial = {}, replace = false) {
   let engine = searchEngine(initial.engine || prefs.engine);
-  let mode = initial.mode || prefs.searchMode || "standard";
-  const modeButton = h("button", { class: "mode-btn", type: "button" });
-  const drawMode = () => {
-    modeButton.classList.toggle("on", mode === "advanced");
-    modeButton.title = t(mode === "advanced" ? "mode_advanced_hint" : "mode_standard_hint");
-    fill(modeButton, icon(mode === "advanced" ? "bolt" : "search"), h("span", {}, t("mode_" + mode)));
-  };
-  modeButton.onclick = () => {
-    mode = mode === "advanced" ? "standard" : "advanced";
-    prefs.searchMode = mode;
-    savePrefs();
-    drawMode();
-    toast(t(mode === "advanced" ? "mode_advanced_hint" : "mode_standard_hint"));
-  };
-  drawMode();
+  let mode = ["standard", "advanced"].includes(initial.mode || prefs.searchMode) ? (initial.mode || prefs.searchMode) : "standard";
   const input = field({ type: "search", placeholder: t("search_placeholder"), value: initial.q || "", enterkeyhint: "search" });
   const submit = () => {
     const q = input.value.trim();
     if (!q) return;
     const move = replace ? swap : go;
-    if (looksLikeWebAddress(q)) {
-      openLiveAddress(q, move);
-      return;
-    }
+    if (looksLikeWebAddress(q)) { openLiveAddress(q, move); return; }
     remember("recent", { q, engine, mode });
     move("results", { q, engine, mode });
   };
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      submit();
-    }
-  });
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+  const searchModes = segmented(mode, [["standard", t("search_standard_short"), "search"],
+    ["advanced", t("search_advanced_short"), "bolt"]], (value) => { mode = value; prefs.searchMode = value; savePrefs(); });
+  searchModes.setAttribute("aria-label", t("search_choose_mode"));
+  const sources = segmented(engine, [["web", t("engine_web"), "web"], ["news", t("engine_news"), "news"],
+    ["wiki", t("engine_wiki"), "book"]], (value) => { engine = value; });
+  sources.setAttribute("aria-label", t("search_engine"));
   return h("div", { class: "searchbox" },
-    h("div", { class: "search-field" }, modeButton, input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
-    segmented(engine, ENGINES.map((key) => [key, t("engine_" + key)]), (value) => { engine = value; }));
+    h("div", { class: "search-field" }, icon("search"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+    h("div", { class: "search-selectors" },
+      h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_choose_mode")), searchModes),
+      h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_engine")), sources)),
+    contextHelp(t("search_mode_info")));
 }
 
 function noticeList() {
@@ -655,26 +648,42 @@ async function pinProvider(key) {
   }
 }
 
+function modelCategory(model) {
+  const roles = model.roles || [];
+  for (const key of ["vision", "code", "reason", "long", "fast", "chat"]) if (roles.includes(key)) return key;
+  return "chat";
+}
+
 function modelSections() {
   const data = cache.models;
   if (!data) return [empty(t("models_none"), "ai")];
   const out = [h("p", { class: "muted small" }, icon("clock"), t("quota_reset"), " ", until(data.reset, t("now"))),
-    h("p", { class: "note" }, icon("info"), t("local_limits_note"))];
-  for (const provider of data.providers) {
+    contextHelp(t("local_limits_note"))];
+  for (const provider of data.providers || []) {
     const pinned = data.pin === provider.key;
-    out.push(card(
-      h("div", { class: "provider-head" },
-        h("div", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, provider.personal ?
-          (provider.daily ? t("personal_attempts_limit", { n: provider.used, m: provider.daily }) : t("personal_attempts", { n: provider.used })) :
-          t("local_used_of", { n: provider.used, m: provider.daily }))),
-        provider.cooldown > now() ? h("span", { class: "chip warn" }, icon("clock"), until(provider.cooldown, t("available"))) : null,
-        provider.personal ? null : iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
-      !provider.personal || provider.daily ? bar(provider.used, provider.daily) : null,
-      h("div", { class: "list" }, provider.models.map((model) =>
-        h("button", { class: "list-row model-row" + (modelBroken(model, provider) ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
+    const groups = new Map();
+    for (const model of provider.models || []) {
+      const key = modelCategory(model);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(model);
+    }
+    const categories = [...groups.entries()].map(([name, models]) => h("details", { class: "model-category" },
+      h("summary", {}, h("b", {}, role(name)), h("small", { class: "muted" }, t("model_count", { n: models.length })), icon("down", "caret")),
+      h("div", { class: "model-cards" }, models.map((model) =>
+        h("button", { class: "model-choice" + (modelBroken(model, provider) ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
           brandMark(brandOf(model, provider)),
-          h("div", { class: "grow" }, h("b", {}, model.title), h("div", { class: "roles" }, model.roles.map((name) => h("span", { class: "tag" }, role(name))))),
+          h("span", { class: "grow" }, h("b", {}, model.title), h("span", { class: "roles" }, (model.roles || []).map((item) => h("span", { class: "tag" }, role(item))))),
           modelState(model, provider), icon("next"))))));
+    out.push(h("details", { class: "card provider-card" },
+      h("summary", { class: "provider-head" }, brandMark(brandOf(null, provider)),
+        h("span", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, t("model_count", { n: (provider.models || []).length }))),
+        icon("down", "caret")),
+      h("div", { class: "provider-body stack" },
+        h("div", { class: "row between wrap" }, h("small", { class: "muted" }, provider.personal ?
+          (provider.daily ? t("personal_attempts_limit", { n: provider.used, m: provider.daily }) : t("personal_attempts", { n: provider.used })) :
+          t("local_used_of", { n: provider.used, m: provider.daily })),
+          provider.personal ? null : iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
+        !provider.personal || provider.daily ? bar(provider.used, provider.daily) : null, categories)));
   }
   return out;
 }
@@ -705,7 +714,7 @@ VIEWS.ai = {
         spaceCard("bolt", t("agent"), t("agent_unified_hint"), () => go("chat", {
           space: prefs.agentMode === "smart_agent" ? "smart_agent" : "agent"
         })),
-        spaceCard("ai", t("auto"), t("auto_hint"), () => go("chat", { space: "auto" })),
+        (store.get("chat.auto", []) || []).length ? spaceCard("clock", t("agent_legacy"), t("agent_legacy_hint"), () => go("chat", { space: "auto" })) : null,
         spaceCard("code", t("coder"), t("coder_hint"), () => go("coder")),
         spaceCard("image", t("tile_images"), t("images_hint"), () => go("images")),
         spaceCard("shield", t("personal_title"), t("personal_short"), () => go("personal_ai")),
@@ -871,7 +880,7 @@ function ask(space, text, file = null) {
   const list = messages(space);
   // Stay within the 128 KB WebXDC update limit, especially with a large attachment.
   const history = [];
-  if (space !== "agent") {
+  {
     const prior = list.filter((item) => !item.pending && !item.error && (item.text || item.file)).slice(-12);
     const overhead = new Blob([JSON.stringify({ space, text, file })]).size + 4000;
     let budget = Math.min(30000, Math.max(0, 124000 - overhead));
@@ -902,8 +911,11 @@ const DOC_FILE = /\.(txt|md|rst|csv|tsv|json|xml|ya?ml|html?|log|srt|vtt|ini|tom
 const AUDIO_TYPES = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", opus: "audio/ogg", wav: "audio/wav", flac: "audio/flac" };
 
 function spaceAccepts(space) {
-  if (space === "agent" || space === "smart_agent") return [];
-  if (space === "auto") return ["document", "image"];
+  if (space === "agent") return [];
+  if (space === "auto" || space === "smart_agent") {
+    const info = space === "smart_agent" && prefs.agentModel ? modelInfo(prefs.agentModel) : null;
+    return info && info.model.accepts ? info.model.accepts : ["document", "image"];
+  }
   const info = modelInfo(space);
   return info && info.model.accepts ? info.model.accepts : ["document", "image", "pdf", "audio"]; // unknown yet: the bot decides
 }
@@ -1080,7 +1092,9 @@ VIEWS.chat = {
     const drawList = () => {
       const items = messages(space);
       fill(list, ...(items.length ? items.map((item) => bubble(space, item, items)) : [chatIntro(space, submit)]));
-      requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
+      // An empty conversation should open at the mode selector, not scrolled
+      // past it; existing/new messages still open at the latest response.
+      if (items.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
     };
     bus.on("models", drawMeta);
     bus.on("quota", drawMeta);
@@ -1088,26 +1102,50 @@ VIEWS.chat = {
     const agentPicker = h("div", { class: "stack" });
     const drawAgentPicker = () => {
       if (space !== "smart_agent") return;
-      const options = [];
-      for (const provider of (cache.models && cache.models.providers) || []) {
-        for (const model of provider.models || []) if ((model.roles || []).includes("chat") && !modelBroken(model, provider))
-          options.push([model.key, `${model.title} · ${provider.name}${provider.personal ? " · " + t("personal_model_badge") : ""}`]);
-      }
-      if (prefs.agentModel && !options.some(([id]) => id === prefs.agentModel)) options.unshift([prefs.agentModel, t("coder_model_unavailable")]);
-      fill(agentPicker, h("small", { class: "muted" }, t("agent_model")),
-        select(prefs.agentModel || "", [["", t("auto")], ...options], (value) => { prefs.agentModel = value; savePrefs(); drawAgentPicker(); }),
-        prefs.agentModel && prefs.agentModel.startsWith("personal-") ? h("small", { class: "muted" }, t("agent_personal_cost")) : null);
+      const providerList = (cache.models && cache.models.providers) || [];
+      const selected = modelInfo(prefs.agentModel || "");
+      const selectedTitle = selected ? `${selected.model.title} · ${selected.provider.name}` : (prefs.agentModel ? t("coder_model_unavailable") : t("model_select_auto"));
+      const pick = (value) => { prefs.agentModel = value; savePrefs(); drawAgentPicker(); };
+      const providers = providerList.map((provider) => {
+        const options = (provider.models || []).filter((model) => (model.roles || []).includes("chat") && !modelBroken(model, provider));
+        if (!options.length) return null;
+        const groups = new Map();
+        for (const model of options) {
+          const category = modelCategory(model);
+          if (!groups.has(category)) groups.set(category, []);
+          groups.get(category).push(model);
+        }
+        return h("details", { class: "agent-provider" },
+          h("summary", {}, brandMark(brandOf(null, provider)), h("b", { class: "grow" }, provider.name), icon("down", "caret")),
+          [...groups.entries()].map(([category, models]) => h("details", { class: "model-category" },
+            h("summary", {}, h("span", { class: "grow" }, role(category)), icon("down", "caret")),
+            models.map((model) => h("button", { class: "model-choice", "aria-pressed": String(prefs.agentModel === model.key), onclick: () => pick(model.key) },
+              brandMark(brandOf(model, provider)), h("span", { class: "grow" }, model.title), prefs.agentModel === model.key ? icon("check") : null)))));
+      });
+      fill(agentPicker, h("details", { class: "agent-picker" },
+        h("summary", {}, icon("ai"), h("span", { class: "grow" }, h("b", {}, t("agent_model_select")), h("small", { class: "muted" }, selectedTitle)), icon("down", "caret")),
+        h("div", { class: "picker-body stack" },
+          h("button", { class: "model-choice", "aria-pressed": String(!prefs.agentModel), onclick: () => pick("") },
+            icon("swap"), h("span", { class: "grow" }, h("b", {}, t("model_select_auto")), h("small", { class: "muted" }, t("agent_model_auto_hint"))),
+            !prefs.agentModel ? icon("check") : null), providers)),
+        prefs.agentModel && prefs.agentModel.startsWith("personal-") ? contextHelp(t("agent_personal_cost")) : null);
     };
     bus.on("models", drawAgentPicker); drawAgentPicker();
-    const mode = space === "agent" || space === "smart_agent" ? h("div", { class: "stack agent-mode" },
+    const isAgent = space === "agent" || space === "smart_agent";
+    const mode = isAgent ? h("div", { class: "stack agent-mode" },
       h("small", { class: "muted" }, t("agent_mode")),
       segmented(space, [["agent", t("agent_mode_free")], ["smart_agent", t("agent_mode_ai")]], (value) => {
         if (value === space) return;
         prefs.agentMode = value;
         savePrefs();
         swap("chat", { space: value });
-      }), h("small", { class: "muted" }, t("agent_mode_privacy")), space === "smart_agent" ? agentPicker : null) : null;
-    const imageAction = space !== "agent" && space !== "smart_agent" ? h("button", {
+      })) : null;
+    // The compact mode bar remains visible while scrolling; the potentially
+    // tall model selector and help scroll normally, so they cannot cover chat.
+    const modeOptions = isAgent ? h("div", { class: "stack agent-options" },
+      contextHelp(t("agent_mode_privacy") + (space === "smart_agent" ? " " + t("agent_attach_direct") : "")),
+      space === "smart_agent" ? agentPicker : null) : null;
+    const imageAction = space !== "agent" ? h("button", {
       class: "chip action chat-image-action", title: t("chat_image_note"), onclick: () => {
         const prompt = area.value.trim();
         if (!prompt) { toast(t("chat_image_empty")); return; }
@@ -1115,8 +1153,8 @@ VIEWS.chat = {
         if (createChatImage(space, prompt)) { area.value = ""; area.dispatchEvent(new Event("input")); }
       },
     }, icon("image"), t("chat_image_button")) : null;
-    add(main, mode, meta, list, h("div", { class: "composer-wrap" }, tray, imageAction, h("div", { class: "composer" },
-      space !== "agent" && space !== "smart_agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
+    add(main, mode, modeOptions, meta, list, h("div", { class: "composer-wrap" }, tray, imageAction, h("div", { class: "composer" },
+      space !== "agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
       area, h("button", { class: "btn primary round", "aria-label": t("send"), onclick: () => submit() }, icon("send")))));
     drawMeta();
     drawList();
@@ -1129,6 +1167,15 @@ VIEWS.chat = {
 function imageSourceLabel(key) {
   const found = ((cache.models && cache.models.images) || []).find((source) => source.key === key);
   return found ? found.label : t("img_auto");
+}
+
+function imageFamily(source) {
+  if (source.personal) return t("img_family_personal");
+  const name = `${source.key || ""} ${source.label || ""}`.toLowerCase();
+  if (/flux/.test(name)) return "FLUX";
+  if (/sdxl|stable.diffusion|dreamshaper|juggernaut|albedo/.test(name)) return "Stable Diffusion";
+  if (/z.?image/.test(name)) return "Z-Image";
+  return t("img_family_other");
 }
 
 function createImage(prompt, model = prefs.imageModel || "") {
@@ -1217,19 +1264,38 @@ VIEWS.images = {
       const list = (cache.models && cache.models.images) || [];
       if (prefs.imageModel && !list.some((source) => source.key === prefs.imageModel)) prefs.imageModel = "";
       const pick = (key) => { prefs.imageModel = key; savePrefs(); drawQuotas(); if (key.startsWith("horde:")) toast(t("img_horde_slow")); };
+      const groups = new Map();
+      for (const source of list) {
+        const provider = source.key.split(":")[0];
+        if (!groups.has(provider)) groups.set(provider, []);
+        groups.get(provider).push(source);
+      }
       fill(quotas, quotaChip("image"),
-        h("button", { class: `chip ${!prefs.imageModel ? "on" : ""}`, onclick: () => pick("") }, icon("swap"), t("img_auto")),
-        ...list.map((source) => {
-          const resting = source.cooldown > now();
-          return h("button", { class: `chip ${prefs.imageModel === source.key ? "on" : ""} ${resting ? "warn" : ""}`,
-            title: resting ? t("img_resting", { time: fmtTime(source.cooldown) }) : (source.personal ? t("personal_model_badge") : t("local_used_of", { n: source.used, m: source.daily })),
-            onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
-          source.label, h("small", { class: "muted" }, resting ? ` · ${fmtTime(source.cooldown)}` : source.personal ? ` · ${t("personal_model_badge")}` : ` ${source.used}/${source.daily}`));
+        h("p", { class: "small muted wide" }, t("image_selection", { name: imageSourceLabel(prefs.imageModel || "") })),
+        h("button", { class: "model-choice wide", "aria-pressed": String(!prefs.imageModel), onclick: () => pick("") }, icon("swap"),
+          h("span", { class: "grow" }, t("img_auto")), !prefs.imageModel ? icon("check") : null),
+        [...groups.entries()].map(([provider, sources]) => {
+          const families = new Map();
+          for (const source of sources) {
+            const family = imageFamily(source);
+            if (!families.has(family)) families.set(family, []);
+            families.get(family).push(source);
+          }
+          return h("details", { class: "card image-provider wide" },
+            h("summary", {}, icon("image"), h("b", { class: "grow" }, provider.toUpperCase()), h("small", { class: "muted" }, t("model_count", { n: sources.length })), icon("down", "caret")),
+            h("div", { class: "provider-body stack" }, [...families.entries()].map(([family, options]) =>
+              h("details", { class: "image-family" },
+                h("summary", {}, h("b", { class: "grow" }, family), h("small", { class: "muted" }, t("model_count", { n: options.length })), icon("down", "caret")),
+                h("div", { class: "model-cards" }, options.map((source) => {
+                  const resting = source.cooldown > now();
+                  return h("button", { class: "model-choice", "aria-pressed": String(prefs.imageModel === source.key),
+                    onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
+                    icon("image"), h("span", { class: "grow" }, h("b", {}, source.label), h("small", { class: "muted" }, resting ? t("img_resting", { time: fmtTime(source.cooldown) }) :
+                      (source.personal ? t("personal_model_badge") : t("local_used_of", { n: source.used, m: source.daily })))), prefs.imageModel === source.key ? icon("check") : null);
+                }))))));
         }),
-        ...(() => {
-          const spent = list.find((source) => source.key.startsWith("cf:") && source.reason === "quota" && source.cooldown > now());
-          return spent ? [h("p", { class: "note warn wide" }, icon("info"), t("img_cf_spent", { time: fmtTime(spent.cooldown) }))] : [];
-        })());
+        ...(() => { const spent = list.find((source) => source.key.startsWith("cf:") && source.reason === "quota" && source.cooldown > now());
+          return spent ? [contextHelp(t("img_cf_spent", { time: fmtTime(spent.cooldown) }))] : []; })());
     };
     const draw = async () => {
       const pending = bridge.pending();
@@ -1244,7 +1310,7 @@ VIEWS.images = {
     bus.on("images", draw);
     bus.on("models", drawQuotas);
     bus.on("quota", drawQuotas);
-    add(main, h("p", { class: "note" }, icon("info"), t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
+    add(main, contextHelp(t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
       const prompt = area.value.trim();
       if (prompt && createImage(prompt)) area.value = "";
     } }, icon("image"), t("generate")))), section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
@@ -1577,6 +1643,69 @@ function askBox({ placeholder, value = "", onsubmit, iconName = "search", label 
   return h("div", { class: "search-field" }, icon(iconName), input, h("button", { class: "btn primary small", onclick: submit }, label || t("go")));
 }
 
+function rateHistory() {
+  const container = h("div", { class: "stack" });
+  let history = store.get("rates.history", null);
+  let code = "USD";
+  let days = "7";
+  const body = h("div", { class: "stack" });
+  const draw = () => {
+    if (!history || !Array.isArray(history.history) || !history.history.length) {
+      fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return;
+    }
+    const codes = [...new Set(history.history.flatMap((point) => Object.keys(point.rates || {})))];
+    if (!codes.includes(code)) code = codes[0] || "USD";
+    const points = history.history.filter((point) => Number.isFinite(Number(point.rates && point.rates[code])) && Number(point.rates[code]) > 0)
+      .map((point) => ({ date: point.date, value: Number(point.rates[code]) }));
+    if (!points.length) { fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return; }
+    const vals = points.map((point) => point.value);
+    const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+    const chart = h("div", { class: "rate-chart" + (points.length <= 7 ? " chart-short" : ""), role: "img", "aria-label": t("history_chart", { code }) },
+      points.map((point) => h("div", { class: "chart-day", title: `${point.date}: ${fmtNumber(point.value, 2)} CUP` },
+        h("span", { class: "chart-value" }, fmtNumber(point.value, 1)),
+        h("span", { class: "chart-bar", style: `height:${30 + 70 * (point.value - min) / span}%` }),
+        h("small", {}, point.date.slice(5)))));
+    // The separate scenario is a linear extrapolation, not a published elTOQUE forecast.
+    const consecutive = points.length >= 5 && points.every((point, index) => !index ||
+      (Date.parse(point.date + "T00:00:00Z") - Date.parse(points[index - 1].date + "T00:00:00Z")) === 86400000);
+    let scenario = null;
+    if (consecutive && history.complete) {
+      const n = points.length, meanX = (n - 1) / 2, meanY = vals.reduce((a, b) => a + b, 0) / n;
+      const numerator = vals.reduce((sum, value, i) => sum + (i - meanX) * (value - meanY), 0);
+      const denominator = vals.reduce((sum, _value, i) => sum + (i - meanX) ** 2, 0);
+      const estimated = vals[n - 1] + (numerator / denominator) * 3;
+      if (Number.isFinite(estimated) && estimated > 0) scenario = estimated;
+    }
+    fill(body,
+      h("div", { class: "row between wrap" }, h("b", {}, t("history_chart", { code })),
+        select(code, codes.map((item) => [item, item]), (value) => { code = value; draw(); })),
+      chart, points.length > 7 ? h("small", { class: "muted" }, t("history_scroll")) : null,
+      !history.complete ? h("p", { class: "note warn" }, icon("alert"), t("history_incomplete")) : null,
+      h("small", { class: "muted" }, t("history_source")),
+      h("div", { class: "scenario" }, h("b", {}, t("history_forecast")),
+        scenario == null ? h("p", { class: "muted small" }, t("history_insufficient")) :
+          h("p", {}, h("strong", {}, `≈ ${fmtNumber(scenario, 0)} CUP / ${code}`)),
+        h("small", { class: "muted" }, t("history_estimate"))));
+  };
+  const load = async () => {
+    loadButton.disabled = true;
+    fill(body, loading());
+    try {
+      history = await bridge.call("rates", { history: true, days: Number(days) });
+      store.set("rates.history", history);
+      if (body.isConnected) draw();
+    } catch (error) {
+      if (!error.cancelled && body.isConnected) fill(body, failure(error.message));
+    } finally { loadButton.disabled = false; }
+  };
+  const loadButton = h("button", { class: "btn primary small", onclick: load }, icon("refresh"), t("history_load"));
+  add(container, contextHelp(t("history_notice")),
+    h("div", { class: "row wrap" }, select(days, [["7", t("history_7")], ["14", t("history_14")]], (value) => { days = value; }), loadButton), body,
+    h("button", { class: "btn ghost small", onclick: () => openLiveAddress("https://eltoque.com/tasas-de-cambio-cuba") }, icon("web"), t("history_official")));
+  draw();
+  return container;
+}
+
 VIEWS.rates = {
   tab: "apps",
   title: () => t("tile_rates"),
@@ -1606,7 +1735,7 @@ VIEWS.rates = {
       fill(board, 
         h("div", { class: "rate-grid" }, entries.map(([name, value]) => h("div", { class: "card rate" }, h("small", { class: "muted" }, `1 ${name}`),
           h("b", {}, fmtNumber(value, 2)), h("small", { class: "muted" }, "CUP")))),
-        h("p", { class: "muted small" }, icon("clock"), t("updated"), " ", since(data.at), " · elTOQUE"));
+        h("p", { class: "muted small" }, icon("clock"), t("rates_consulted"), " ", since(data.at), " · elTOQUE"));
       if (!data.rates[code]) code = entries.length ? entries[0][0] : "USD";
       fill(codes, select(code, entries.map(([name]) => [name, name]), (value) => { code = value; convert(); }));
       convert();
@@ -1619,7 +1748,10 @@ VIEWS.rates = {
         store.set("rates", data);
         if (board.isConnected) draw(data);
       } catch (error) {
-        if (!error.cancelled) toast(error.message, "bad");
+        if (!error.cancelled) {
+          toast(error.message, "bad");
+          if (board.isConnected && !store.get("rates", null)) fill(board, failure(error.message, () => refresh()));
+        }
       } finally {
         if (button) button.classList.remove("busy");
       }
@@ -1628,25 +1760,74 @@ VIEWS.rates = {
     const refreshButton = iconButton("refresh", t("refresh"), () => refresh(refreshButton));
     add(main, headRow(t("rates_title"), refreshButton), board,
       section(t("converter"), card(h("div", { class: "row convert-row" }, amountInput, codes,
-        iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); })), result)));
+        iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); })), result)),
+      section(t("history_title"), card(rateHistory())));
     if (saved) draw(saved);
     if (!saved || now() - saved.at > 1800) refresh();
   },
 };
 
+function weatherIcon(code, isDay = 1) {
+  code = Number(code);
+  if (code === 0 || code === 1) return isDay ? "sun" : "moon";
+  if (code === 45 || code === 48) return "cloudfog";
+  if (code >= 95) return "cloudstorm";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "cloudsnow";
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return "cloudrain";
+  return "weather";
+}
+
+function weatherValue(value, suffix = "") {
+  return value === null || value === undefined ? "—" : `${fmtNumber(value, 1)}${suffix}`;
+}
+
 VIEWS.weather = {
   tab: "apps",
   title: () => t("tile_weather"),
   render(main) {
-    const box = h("div", { class: "stack" });
+    const box = h("div", { class: "stack weather-result" });
     const cities = store.get("cities", [t("default_city")]);
-    const run = (city) => {
-      remember("cities", city, 6);
-      toolResult(box, "weather", city);
+    let sequence = 0;
+    const draw = (data) => {
+      const current = data.current || {};
+      const candidates = data.candidates || [];
+      const daily = (data.days || []).map((day) => {
+        const date = new Date(day.date + "T12:00:00");
+        return h("div", { class: "weather-day" },
+          h("small", {}, Number.isNaN(date.getTime()) ? day.date : date.toLocaleDateString(lang(), { weekday: "short", day: "numeric" })),
+          icon(weatherIcon(day.code)), h("small", { class: "weather-desc" }, day.description),
+          h("b", {}, `${weatherValue(day.high, "°")} / ${weatherValue(day.low, "°")}`),
+          h("small", {}, `${weatherValue(day.rain, "%")} ${t("weather_rain")}`));
+      });
+      fill(box,
+        candidates.length > 1 ? h("label", { class: "stack small" }, t("weather_places"),
+          select(String(data.place.id), candidates.map((item) => [String(item.id), item.label]), (value) => run(data.query, Number(value))),
+          h("small", { class: "muted" }, t("weather_choose"))) : null,
+        h("div", { class: "weather-hero" },
+          h("div", { class: "weather-sky" }, icon(weatherIcon(current.code, current.is_day), "weather-art")),
+          h("div", { class: "weather-place" }, h("small", {}, data.place.label),
+            h("div", { class: "weather-temp" }, weatherValue(current.temp, "°")),
+            h("b", {}, current.description), h("small", {}, `${t("weather_feels")} ${weatherValue(current.feels, "°C")}`)),
+          h("div", { class: "weather-stats" },
+            h("span", {}, icon("drop"), h("small", {}, t("weather_humidity")), h("b", {}, weatherValue(current.humidity, "%"))),
+            h("span", {}, icon("wind"), h("small", {}, t("weather_wind")), h("b", {}, weatherValue(current.wind, " km/h"))),
+            h("span", {}, icon("cloudrain"), h("small", {}, t("weather_rain")), h("b", {}, weatherValue(current.precipitation, " mm"))))),
+        h("small", { class: "muted" }, t("weather_observed", { time: `${data.as_of || "—"}${data.timezone ? " · " + data.timezone : ""}` })),
+        daily.length ? section(t("weather_forecast"), h("div", { class: "weather-days" }, daily)) : null,
+        h("small", { class: "muted" }, t("weather_source")));
     };
-    add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather" }),
+    const run = async (city, placeId = 0) => {
+      const ticket = ++sequence;
+      remember("cities", city, 6);
+      fill(box, loading());
+      try {
+        const data = await bridge.call("weather", { city, place_id: placeId });
+        if (box.isConnected && ticket === sequence) draw(data);
+      } catch (error) { if (box.isConnected && ticket === sequence && !error.cancelled) fill(box, failure(error.message, () => run(city, placeId))); }
+    };
+    add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather", label: t("weather_find") }),
       h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box);
-    add(box, empty(t("weather_hint"), "weather"));
+    add(box, empty(t("weather_none"), "weather"));
   },
 };
 
@@ -1699,13 +1880,14 @@ VIEWS.translate = {
     const run = async (button) => {
       const text = area.value.trim();
       if (!text) return;
+      if (text.length > 4500) { toast(t("translate_limit"), "bad"); return; }
       store.set("tr.text", text);
       button.classList.add("busy");
       fill(output, loading(t("translating")));
       try {
         const data = await bridge.call("translate", { text, source, target });
         fill(output, h("p", { class: "translated" }, data.text),
-          h("div", { class: "row between" }, h("small", { class: "muted" }, data.detected ? t("detected", { name: langName(data.detected) }) : ""),
+          h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
             iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
       } catch (error) {
         if (!error.cancelled) fill(output, failure(error.message));
@@ -1715,7 +1897,7 @@ VIEWS.translate = {
     };
     const button = h("button", { class: "btn primary", onclick: () => run(button) }, icon("translate"), t("translate"));
     drawPickers();
-    add(main, card(pickers, area, h("div", { class: "row between" }, h("small", { class: "muted" }, t("translate_note")), button)), output);
+    add(main, card(pickers, area, h("div", { class: "row between" }, h("small", { class: "muted" }, t("translate_note")), button)), contextHelp(t("translate_privacy") + " " + t("translate_limit")), output);
   },
 };
 
@@ -1725,9 +1907,11 @@ VIEWS.tools = {
   tab: "apps",
   title: () => t("tile_tools"),
   render(main) {
-    add(main, ...UTILITIES.map(([name, iconName, title, hint]) => {
+    add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
       const box = h("div");
-      return section(t(title), card(askBox({ placeholder: t(hint), onsubmit: (value) => toolResult(box, name, value), iconName }), box));
+      return h("details", { class: "card utility-card" }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
+        h("small", { class: "muted" }, t(hint))), icon("down", "caret")),
+        h("div", { class: "utility-body stack" }, askBox({ placeholder: t(hint), onsubmit: (value) => toolResult(box, name, value), iconName }), box));
     }));
   },
 };
@@ -2156,10 +2340,11 @@ function botSettings() {
       }
       bus.emit("settings");
     };
-    fill(box, h("p", { class: "note" }, icon(cache.admin ? "info" : "user"), h("span", { class: "grow" }, t(cache.admin ? "settings_admin" : "settings_own"))),
-      ...cache.settings.map((group) => section(group.title, h("div", { class: "stack" },
-        group.shared ? h("p", { class: "note" }, icon("shield"), h("span", { class: "grow" }, t("settings_shared"))) : null,
-        h("div", { class: "card settings" }, group.items.map(settingRow))))),
+    fill(box, contextHelp(t(cache.admin ? "settings_admin" : "settings_own")),
+      ...cache.settings.map((group) => h("details", { class: "card settings-group" },
+        h("summary", {}, icon("settings"), h("b", { class: "grow" }, group.title), icon("down", "caret")),
+        group.shared ? contextHelp(t("settings_shared")) : null,
+        h("div", { class: "settings" }, group.items.map(settingRow)))),
       cache.admin ? null : h("button", { class: "list-row", onclick: reset }, icon("refresh"), h("span", { class: "grow" }, t("settings_reset")), icon("next")));
   };
   bus.on("settings", draw);
@@ -2201,7 +2386,7 @@ VIEWS.settings = {
           prefs.engine = value;
           savePrefs();
         })))),
-      section(t("set_modes"), h("p", { class: "muted small" }, t("set_modes_hint")), modes),
+      section(t("set_modes"), contextHelp(t("set_modes_hint")), modes),
       botSettings(),
       section(t("more"), h("div", { class: "card list" },
         cache.admin ? h("button", { class: "list-row", onclick: () => go("admin") }, icon("shield"), h("span", { class: "grow" }, t("tile_admin")), icon("next")) : null,
@@ -2212,7 +2397,12 @@ VIEWS.settings = {
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
         wipe(t("wipe_images"), () => media.clear()),
         wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); memo.clear(); }))),
-      h("p", { class: "about" }, icon("cat"), " Michiflin AI", cache.version ? ` · ${cache.version}` : ""));
+      section(t("about_title"), card(
+        h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
+        h("p", { class: "muted small" }, t("about_body")),
+        h("button", { class: "btn ghost", onclick: () => openLiveAddress("https://github.com/YosvanyAlain/michiflin-ai") }, icon("web"), t("about_repository")),
+        h("details", { class: "context-help" }, h("summary", {}, icon("user"), h("span", {}, t("about_collaborate")), icon("down", "caret")),
+          h("p", { class: "muted small" }, t("about_support"))))));
     modeControl(modes, "nauta_strict", t("tile_nauta"), "nauta");
     modeControl(modes, "kill_switch", t("tile_killswitch"), "killswitch");
   },
@@ -2449,28 +2639,42 @@ function ownerAccessSection(box, data) {
   return section(t("owner_control"), card);
 }
 
-function maintenanceSection() {
-  const holder = h("div", { class: "card stack maintenance-settings" }, loading());
+function maintenanceSection(snapshot) {
+  const holder = h("div", { class: "card stack maintenance-settings" });
   const draw = (data) => {
     const es = field({ type: "text", maxlength: 280, value: data.es || "", "aria-label": t("maintenance_es") });
     const en = field({ type: "text", maxlength: 280, value: data.en || "", "aria-label": t("maintenance_en") });
     const active = h("input", { type: "checkbox", class: "switch", checked: !!data.active });
+    let durationChanged = false;
+    const minutes = field({ type: "number", inputmode: "numeric", min: "0", max: "525600", step: "1", value: data.expires ? String(Math.max(1, Math.ceil((data.expires - now()) / 60))) : "0",
+      "aria-label": t("maintenance_duration"), oninput: () => { durationChanged = true; } });
     const save = h("button", { class: "btn primary", onclick: async () => {
       save.disabled = true;
       try {
-        const result = await bridge.call("maintenance_notice", { active: active.checked, es: es.value.trim(), en: en.value.trim() });
+        const duration = Number(minutes.value);
+        if (!Number.isInteger(duration) || duration < 0 || duration > 525600 || minutes.value.trim() === "") { toast(t("maintenance_invalid_duration"), "bad"); return; }
+        const change = { active: active.checked, es: es.value.trim(), en: en.value.trim() };
+        if (durationChanged || !data.active || !active.checked) change.minutes = duration;
+        const result = await bridge.call("maintenance_notice", change);
         cache.maintenance_notice = result.notice; saveCache(); bus.emit("maintenance");
         toast(result.profile_updated ? t("done") : t("maintenance_profile_error"), result.profile_updated ? "ok" : "bad");
       } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
       finally { save.disabled = false; }
     } }, icon("check"), t("maintenance_save"));
-    fill(holder, h("p", { class: "muted small" }, t("maintenance_hint")),
+    fill(holder, contextHelp(t("maintenance_hint")),
       h("label", { class: "setting" }, h("span", { class: "grow" }, t("maintenance_active")), active),
+      data.active && data.expires ? h("small", { class: "muted" }, t("maintenance_until", { when: new Date(data.expires * 1000).toLocaleString() })) : null,
+      h("label", { class: "stack small" }, t("maintenance_duration"), minutes),
+      h("small", { class: "muted" }, t("maintenance_duration_hint")),
       h("label", { class: "stack small" }, t("maintenance_es"), es),
       h("label", { class: "stack small" }, t("maintenance_en"), en), save);
   };
-  bridge.call("maintenance_notice").then((data) => { if (holder.isConnected) draw(data.notice || {}); })
-    .catch((error) => { if (holder.isConnected && !error.cancelled) fill(holder, failure(error.message, () => go("admin"))); });
+  if (snapshot && typeof snapshot.active === "boolean") draw(snapshot);
+  else fill(holder, h("p", { class: "muted small" }, t("maintenance_no_snapshot")),
+    h("button", { class: "btn ghost", onclick: async () => {
+      try { const data = await bridge.call("maintenance_notice"); if (holder.isConnected) draw(data.notice); }
+      catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+    } }, icon("refresh"), t("mode_refresh")));
   return section(t("maintenance_title"), holder);
 }
 
@@ -2481,7 +2685,7 @@ function drawAdmin(box, data) {
   fill(box,
     headRow(t("admin_live"), iconButton("refresh", t("refresh"), () => adminOp(box, {}))),
     ownerAccessSection(box, data),
-    maintenanceSection(),
+    maintenanceSection(data.maintenance_notice || cache.maintenance_notice),
     data.perf ? perfSection(data.perf) : null,
     data.usage ? usageSection(box, data.usage, data.private_mode, data.preserve_history) : null,
     data.perf ? hostSection(data.perf) : null,
@@ -2627,15 +2831,21 @@ function modeControl(main, op, title, prefix) {
   const box = h("div", { class: "stack" });
   add(main, box);
   const draw = (data) => {
-    if (!data || typeof data.active !== "boolean") throw new Error(t("bad_answer"));
+    if (!data || typeof data.active !== "boolean") {
+      fill(box, h("div", { class: "card" }, h("p", { class: "muted small" }, t("mode_snapshot_pending")),
+        h("button", { class: "btn ghost small", onclick: load }, icon("refresh"), t("mode_refresh"))));
+      return;
+    }
     const active = data.active;
     const toggle = h("button", { class: `btn ${active ? "primary" : "ghost"}`, "aria-pressed": String(active), onclick: async () => {
       toggle.disabled = true;
       try {
         const updated = await bridge.call(op, { value: !active });
+        cache.modes = cache.modes || {}; cache.modes[op] = updated; saveCache();
         if (box.isConnected) draw(updated);
       } catch (error) {
-        // A timed-out change may have reached the bot: do not guess its state.
+        // A lost reply may have applied the change: hide stale state until user checks.
+        if (cache.modes) delete cache.modes[op]; saveCache();
         if (box.isConnected && !error.cancelled) fill(box, failure(error.message, load));
       }
     } }, icon(active ? "pause" : "play"), t(active ? "mode_disable" : "mode_enable"));
@@ -2643,18 +2853,20 @@ function modeControl(main, op, title, prefix) {
     fill(box, h("div", { class: `card mode-card mode-${mode}` },
       h("div", { class: "mode-heading" }, h("span", { class: `mode-icon ${mode}-color` }, icon(mode)), h("h2", {}, title)),
       h("p", { role: "status" }, t(prefix + (active ? "_on" : "_off"))),
-      op === "nauta_strict" ? h("p", { class: "muted" }, t("nauta_part", { mb: data.part_mb })) : null, toggle));
+      op === "nauta_strict" && data.part_mb != null ? h("p", { class: "muted" }, t("nauta_part", { mb: data.part_mb })) : null,
+      h("small", { class: "muted" }, t("mode_snapshot_hint")), toggle));
   };
   const load = async () => {
     fill(box, loading());
     try {
-      const data = await bridge.call(op);
+      // This read-only check happens only after the user explicitly asks.
+      const data = await bridge.call(op, {});
+      cache.modes = cache.modes || {}; cache.modes[op] = data; saveCache();
       if (box.isConnected) draw(data);
-    } catch (error) {
-      if (box.isConnected && !error.cancelled) fill(box, failure(error.message, load));
-    }
+    } catch (error) { if (box.isConnected && !error.cancelled) fill(box, failure(error.message, load)); }
   };
-  load();
+  bus.on("hello", () => { if (box.isConnected) draw(cache.modes && cache.modes[op]); });
+  draw(cache.modes && cache.modes[op]);
 }
 
 VIEWS.nauta_strict = {

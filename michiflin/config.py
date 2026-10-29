@@ -108,6 +108,8 @@ AI_SYSTEM_PROMPT = env(
 
 # Optional services.
 ELTOQUE_API_TOKEN = env("ELTOQUE_API_TOKEN")
+LIBRETRANSLATE_URL = env("LIBRETRANSLATE_URL")
+LIBRETRANSLATE_API_KEY = env("LIBRETRANSLATE_API_KEY")
 MICHIFLIN_GITHUB_TOKEN = env("MICHIFLIN_GITHUB_TOKEN")
 
 # Network egress helpers for blocked media/web sources (e.g. socks5://127.0.0.1:40000).

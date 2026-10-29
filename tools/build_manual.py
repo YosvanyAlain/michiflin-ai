@@ -249,6 +249,19 @@ def screenshot_pair() -> Table:
     return t
 
 
+def screenshot_51() -> Table:
+    paths = (ROOT / "docs/manual-media/agent-5-1-simulado.png", ROOT / "docs/manual-media/rates-5-1-simulado.png")
+    images = [Image(str(paths[0]), width=4.2 * cm, height=9.45 * cm),
+              Image(str(paths[1]), width=4.2 * cm, height=9.45 * cm)]
+    result = Table([images, [p("Agente · prueba de móvil simulada", "CaptionM"),
+                              p("Tasas y escenario · datos simulados", "CaptionM")]],
+                   colWidths=[BODY_W / 2, BODY_W / 2], hAlign="CENTER")
+    result.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+    result.spaceAfter = 12
+    return result
+
+
 # Every top-level Python component is named and explained in Spanish below.
 MODULES = {
     "__init__.py": "Identidad y versión del paquete Python. Es la puerta de entrada compartida de los módulos.",
@@ -357,7 +370,11 @@ def build_story() -> list:
               p("Escribe una pregunta o pega un enlace. El lector ligero prioriza texto y enlaces; una captura o PDF necesita un navegador disponible en el servidor. El navegador Live es otra función: muestra una sesión remota en un cliente compatible con tiempo real. No todas las páginas o clientes lo admiten."),
               p("En Live puedes intentar iniciar sesión en un sitio y elegir Guardar sesión. Esa acción guarda el estado cifrado por persona y sitio; no demuestra que el proveedor acepte el inicio de sesión. La sesión del navegador normal de tu teléfono no se copia automáticamente. Si aparece CAPTCHA, complétalo tú cuando sea posible; no intentes eludirlo."),
               sub("IA, agente y modelos personales"),
-              p("El agente sin cuota intenta resolver tareas con herramientas y fuentes, sin activar por sí solo la generación de imágenes. El agente con IA puede hacer varias llamadas al modelo elegido. Verifica siempre el resultado, las fuentes y el coste real en el proveedor."),
+              p("El agente unificado ofrece dos modos: sin cuota de modelos y con IA/API. El primero usa herramientas y fuentes sin activar imágenes por sí solo; el segundo puede elegir un modelo o usar selección automática y realizar hasta cuatro pasos. Los adjuntos compatibles van directamente al modelo elegido con el contexto reciente. Verifica el resultado y el coste real del proveedor."),
+              p("La conversación automática anterior conserva una entrada separada de historial. Los catálogos de texto e imagen se abren por proveedor; los modelos de texto también se agrupan por categoría. La disponibilidad real puede cambiar."),
+              sub("Traducción, clima y elTOQUE"),
+              p("El traductor no usa cuota de modelos de IA, acepta hasta 4500 caracteres y envía el texto al proveedor externo. Puede tener límites o fallar. Clima usa Open-Meteo y permite elegir la ubicación. El historial de tasas requiere el token autorizado de elTOQUE; los datos faltantes no se inventan. El escenario lineal es una estimación ilustrativa propia, no un pronóstico oficial ni consejo financiero."),
+              screenshot_51(),
               p("En Mis APIs y modelos, una persona autorizada puede registrar su propio proveedor HTTPS, revisar los modelos detectados y elegir capacidades. La clave no se vuelve a mostrar; el proveedor elegido sí recibe la clave y las consultas. Detectar una etiqueta o activar una casilla no demuestra que esa función exista o sea gratis."),
               bullet("Usa un proveedor de confianza y comprueba sus tarifas, límites y permisos."),
               bullet("Selecciona el modelo propio de forma explícita; no se usa de manera automática."),
@@ -373,7 +390,7 @@ def build_story() -> list:
               p("En Descargas pega el enlace y elige Archivo, Vídeo o Audio. El bot examina el recurso, crea un trabajo y muestra su progreso. Según los ajustes, prepara una o varias partes antes de entregarlas al chat. Un enlace admitido no garantiza que el sitio permita la descarga."),
               p("Los archivos generales pueden llegar como partes numeradas con SHA-256. Los medios largos pueden convertirse en segmentos reproducibles. Conserva todas las partes en Archivos, no en una galería que renombre o recodifique, y usa Unir partes para reconstruir y comprobar el resultado."),
               sub("Controles del dueño"),
-              p("Mantenimiento y aviso permite al dueño escribir mensajes en español e inglés y pausar las tareas de forma global. Las personas autorizadas actuales y las nuevas reciben el aviso al intentar usar el bot. Desactivar mantenimiento permite continuar trabajos elegibles, sin quitar pausas manuales ni alterar permisos."),
+              p("Mantenimiento y aviso está desactivado por defecto. El dueño puede escribir mensajes en español e inglés, guardar una duración de hasta un año o dejar la finalización manual, y pausar las tareas de forma global. Las personas autorizadas actuales y las nuevas reciben el aviso. Al finalizar, los trabajos elegibles pueden continuar sin quitar pausas manuales ni alterar permisos. Abrir Ajustes no cambia el kill switch ni Nauta Estricto."),
               p("El kill switch es una pausa de seguridad asociada a la persona. Ambos controles son cooperativos: una petición ya enviada a un proveedor o una entrega que entró en el core de correo puede finalizar. No prometen cancelar cobros ni borrar correo de salida."),
               screenshot_pair(),
               sub("Qué significa el progreso retenido"),
@@ -545,6 +562,7 @@ def build_story() -> list:
               bullet("Interfaz real de Desktop para activar y desactivar mantenimiento; el aviso de pérdida de progreso se mostró en una prueba visual simulada."),
               bullet("Descarga local interrumpida y reanudada en el mismo disco con Range, If-Range y SHA-256; protección frente a un origen cambiado."),
               bullet("Entrega de dos adjuntos distintos en un chat verificado sintético, con cifrado extremo a extremo y hashes coincidentes."),
+              bullet("Migración de relay con cuentas sintéticas: misma huella OpenPGP, historia previa, transporte antiguo, mensajes cifrados y restauración de copias cifradas; no equivale a confirmar la cuenta de producción."),
               bullet("Regresión local amplia y prueba real de Deno dentro del sandbox. La CI remota y las pruebas de proveedores externos dependen del commit y entorno publicados."),
               sub("Lo que esas pruebas no demuestran"),
               bullet("Migración automática del almacenamiento local entre instancias de miniapp."),
