@@ -1,19 +1,21 @@
-"""Owner-managed advisory notice, separate from the strict access gate.
+"""Owner-managed operational maintenance, separate from the strict access gate.
 
 The message is public profile text: do not put addresses, API keys or other
-private information in it. Enabling the notice never grants or revokes access;
+private information in it. The pause never grants or revokes access;
 OWNER_ONLY and MAINTENANCE_MODE remain authoritative.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Any
 
 from . import chat, state
 
-DEFAULT_ES = "El bot tendrá mantenimiento. Algunas funciones pueden interrumpirse temporalmente."
-DEFAULT_EN = "The bot will undergo maintenance. Some features may be temporarily unavailable."
+DEFAULT_ES = "El bot está en mantenimiento. Sus tareas están pausadas y la cola continuará al terminar."
+DEFAULT_EN = "The bot is under maintenance. Work is paused and the queue will continue when maintenance ends."
 MAX_TEXT = 280
+_profile_lock = threading.Lock()
 
 
 def _text(value: Any) -> str:
@@ -39,11 +41,20 @@ def set_notice(active: bool, es: str, en: str) -> dict[str, Any]:
     with state.lock:
         current = state.data.get("maintenance_notice")
         current = dict(current) if isinstance(current, dict) else {}
+        starting = active and current.get("active") is not True
         updated = {**current, "active": active, "es": _text(es) or DEFAULT_ES,
-                   "en": _text(en) or _text(es) or DEFAULT_EN,
+                   "en": _text(en) or DEFAULT_EN,
+                   "generation": int(current.get("generation") or 0) + int(starting),
                    "revision": int(current.get("revision") or 0) + 1, "updated": time.time()}
         state.data["maintenance_notice"] = updated
+        # Save the epoch and active flag atomically before work can be re-admitted.
         state.save()
+    from . import queue
+    queue.wake()
+    if starting:
+        # Stop active browser sessions without waiting for a network operation.
+        from . import live_web
+        live_web.pause_for_maintenance()
     return get()
 
 
@@ -53,6 +64,12 @@ def text(locale: str) -> str:
 
 
 def sync_profile() -> bool:
+    # A fast on/off must not leave the older public suffix installed last.
+    with _profile_lock:
+        return _sync_profile()
+
+
+def _sync_profile() -> bool:
     """Update only our own marked suffix, preserving an externally edited profile.
 
     The suffix itself is persisted so disabling or editing the notice does not

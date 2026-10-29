@@ -6,8 +6,8 @@ Bot -> app: {"t": "res", "re": id, "ok": bool, "data": ..., "error": str}
             {"t": "chunk", "re": id, "i": n, "n": total, "s": str}  (oversized responses, reassembled by the app)
             {"t": "push", "kind": str, "data": ...}                 (queue changes, alerts)
             {"t": "ack", "re": id}                                    (slow request still running)
-Requests carry "retry": n when the app resends them; ids are remembered across restarts, so a resend is answered
-from the cache (or acknowledged while running) and an old replay is never executed twice.
+Requests carry "retry": n and the current process session. Cached answers can be resent; after a restart or
+older-backup restore, stale work and mutations are refused rather than repeated automatically.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 import shutil
 import tempfile
 import threading
@@ -196,10 +197,15 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     return entry
 
 
-SAFE_REPLAY = {"hello", "models", "ask", "image", "search", "youtube_search", "music_search", "music_item", "read", "tool", "rates", "translate", "health", "repair"}
+SAFE_REPLAY = {"hello", "models", "health", "repair"}  # no provider calls or billable side effects
+BOOT_SESSION = secrets.token_urlsafe(24)  # deliberately never stored in a backup
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
 SWEEP_EVERY = 30.0      # catch updates whose event was missed (restarts, reconnects)
 ANSWER_CACHE = 2400.0   # seconds an answer stays ready for a resend
+ANSWER_ITEM_BYTES = 3_000_000
+ANSWER_TOTAL_BYTES = 24_000_000  # bounded RAM; never write responses or keys to the state backup
+SEEN_AGE = 172800
+SEEN_LIMIT = 10_000
 UPGRADE_GAP = 1800.0    # suppress duplicate sends of the same build, not later builds
 _answers: dict[str, dict[str, Any]] = {}
 _answers_lock = threading.Lock()
@@ -216,10 +222,9 @@ def _prune_seen() -> None:
     now = time.time()
     with state.lock:
         seen = _seen()
-        if len(seen) > 3000 or any(now - item[0] > 172800 for item in list(seen.values())[:50]):
-            keep = sorted(seen.items(), key=lambda item: item[1][0])[-2500:]
-            seen.clear()
-            seen.update({key: value for key, value in keep if now - value[0] <= 172800})
+        for key, item in list(seen.items()):
+            if now - float(item[0]) > SEEN_AGE:
+                seen.pop(key, None)
     with _answers_lock:
         for key in [key for key, item in _answers.items() if now - item["ts"] > ANSWER_CACHE]:
             _answers.pop(key, None)
@@ -246,9 +251,17 @@ def _prune_seen() -> None:
 def _admit(rid: str, retry: int, instance_id: int = 0) -> str:
     """Do not return cached results to a different WebXDC instance, even on ID collision."""
     with state.lock:
-        known = _seen().get(rid)
+        seen = _seen()
+        known = seen.get(rid)
         if known is None:
-            _seen()[rid] = [time.time(), retry, instance_id]
+            if len(seen) >= SEEN_LIMIT:
+                now = time.time()
+                for key, item in list(seen.items()):
+                    if now - float(item[0]) > SEEN_AGE:
+                        seen.pop(key, None)
+                if len(seen) >= SEEN_LIMIT:
+                    return "full"  # fail closed instead of forgetting a recent paid request
+            seen[rid] = [time.time(), retry, instance_id]
             fresh = True
         else:
             fresh = False
@@ -358,6 +371,27 @@ def on_status_update(msg_id: int) -> None:
         state.save()
 
 
+def _needs_session(op: str, args: dict[str, Any]) -> bool:
+    """Only unambiguously read-only requests can use a stale boot session."""
+    if op in SAFE_REPLAY or op == "estado":
+        return False
+    if op in {"queue", "admin"}:
+        return bool(args.get("do"))
+    if op == "settings":
+        return bool(args.get("set")) or bool(args.get("reset")) or "pin" in args
+    if op in {"notas", "enlaces"}:
+        return str(args.get("do") or "list") != "list"
+    if op in {"kill_switch", "nauta_strict"}:
+        return "value" in args
+    if op == "owner_only":
+        return "enabled" in args
+    if op == "maintenance_notice":
+        return "active" in args
+    if op in {"personal_ai", "browser_session"}:
+        return str(args.get("do") or "status") != "status"
+    return True
+
+
 def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
     rid = str(request.get("id", ""))[:40]
     if not rid:
@@ -369,35 +403,50 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     verdict = _admit(rid, retry, instance_id)
     op = str(request.get("op", ""))
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
-    personal_paid = any(str(args.get(name) or "").startswith("personal-") for name in ("space", "model", "agent_model"))
-    # A restart may occur after a billable request reached the provider. Never
-    # replay a personal-key generation automatically when its outcome is unknown.
-    if verdict == "lost" and op in SAFE_REPLAY and not personal_paid:
+    locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
+    address = str(entry.get("addr", "")).strip().lower()
+    authorized = bool(address and access.bound_allowed(entry) and admin.is_allowed(address))
+    # The state backup can be older than an already charged request. A new,
+    # process-only session token makes even an *unseen* stale request fail
+    # closed after restart/restore instead of assuming the ledger is complete.
+    if verdict not in {"replay", "full"} and _needs_session(op, args) and request.get("session") != BOOT_SESSION:
+        if authorized:
+            warning = tr(locale,
+                "El bot se reinició o debe sincronizarse. Una solicitud anterior pudo terminar o generar cargos; revisa el proveedor y Descargas antes de repetir.",
+                "The bot restarted or needs to sync. A previous request may have completed or incurred charges; check the provider and Downloads before retrying.")
+            if state.maintenance_active():
+                warning = maintenance_message(locale) + "\n" + warning
+            respond(instance_id, rid, None, warning, code="session_changed")
+        return
+    if verdict == "lost" and op in SAFE_REPLAY:
         with _answers_lock:
             _answers[rid] = {"state": "running", "ts": time.time(), "body": None, "acked": 0.0}
         verdict = "new"
     if verdict == "new":
-        address = str(entry.get("addr", "")).strip().lower()
         with state.lock:
             admitted = dict(request, _kill_generation=state.kill_generation(address),
                             _kill_at_admission=state.get_kill_switch(address))
-        (_control_pool if op in {"kill_switch", "owner_only", "maintenance_notice"} else _pool).submit(handle, instance_id, entry, admitted)
+        (_control_pool if op in {"kill_switch", "owner_only", "maintenance_notice", "admin"} else _pool).submit(handle, instance_id, entry, admitted)
     elif verdict == "running":
         _ack(instance_id, rid, force=True, entry=entry)
     elif verdict == "cached":
         with _answers_lock:
             body = (_answers.get(rid) or {}).get("body")
-        if body and access.bound_allowed(entry):
+        if body and authorized:
             log.info("app resend %s answered from cache", op)
             _deliver(instance_id, rid, body)
-    elif verdict == "lost":
-        locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
-        if personal_paid:
-            respond(instance_id, rid, None, tr(locale, "Se perdió la respuesta durante un reinicio. El proveedor pudo cobrar la solicitud; revisa su historial antes de repetirla.",
-                                               "The answer was lost during a restart. The provider may have charged the request; check its history before retrying."))
-        else:
-            respond(instance_id, rid, None, tr(locale, "La respuesta se perdió durante un reinicio del bot. Revisa el resultado (por ejemplo, en Descargas) y repítelo si hace falta.",
-                                               "The answer was lost while the bot restarted. Check the result (for example, in Downloads) and repeat it if needed."))
+        elif authorized:
+            respond(instance_id, rid, None, tr(locale,
+                "La respuesta ya no está disponible para reenviarla. El proveedor pudo cobrar; revisa su historial antes de repetir.",
+                "The answer is no longer available for resending. The provider may have charged; check its history before retrying."))
+    elif verdict == "lost" and authorized:
+        respond(instance_id, rid, None, tr(locale,
+            "Se perdió la respuesta. El proveedor pudo cobrar o la operación pudo completarse; revisa su historial y Descargas antes de repetir.",
+            "The answer was lost. The provider may have charged or the operation may have completed; check its history and Downloads before retrying."))
+    elif verdict == "full" and authorized:
+        respond(instance_id, rid, None, tr(locale,
+            "Hay demasiadas solicitudes recientes para garantizar reintentos seguros. Espera antes de iniciar otra.",
+            "There are too many recent requests to guarantee safe retries. Wait before starting another."))
 
 
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
@@ -434,6 +483,13 @@ def kill_message(locale: str) -> str:
               "🛑 Operation paused by the kill switch. After turning it off, check Downloads and retry only if needed.")
 
 
+def maintenance_message(locale: str) -> str:
+    custom = maintenance.text(locale) or tr(locale, "El bot estuvo en mantenimiento.", "The bot was under maintenance.")
+    return tr(locale, "🛠️ Mantenimiento: ", "🛠️ Maintenance: ") + custom + tr(locale,
+        "\nLas colas autorizadas continuarán al terminar. Una operación ya enviada a un proveedor puede haber terminado o generado cargos; compruébalo antes de repetir.",
+        "\nAuthorized queues will continue afterwards. A request already sent to a provider may have completed or incurred charges; check before retrying.")
+
+
 def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
     rid = str(request.get("id", ""))[:40]
     locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
@@ -457,15 +513,23 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
                                            "Michiflin is under maintenance and available only to its owner."))
         return
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
-    # Local authorization status and disconnection remain available while work
-    # is paused; starting, polling or reading providers is kill-switch guarded.
+    # Maintenance does not rewrite manual pauses or grants. Status and the
+    # owner's access/maintenance controls remain usable, but work is refused.
+    owner_control = (address == config.OWNER_ADDRESS and op == "admin"
+                     and args.get("do", "") in {"", "allow", "remove", "block", "alerts", "pause_queue", "limit", "unlimit"})
+    maintenance_safe = (op in {"hello", "health", "maintenance_notice", "owner_only", "kill_switch"}
+                        or (op == "queue" and not args.get("do")) or owner_control)
+    if state.maintenance_active() and not maintenance_safe:
+        reply(None, maintenance_message(locale))
+        return
     social_ops = {"youtube_account", "facebook_account", "tiktok_account", "browser_session"}
-    kill_safe = (op in KILL_SAFE_OPS or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
+    kill_safe = (op in KILL_SAFE_OPS or owner_control or (op == "queue" and not args.get("do") and state.maintenance_active())
+                 or (op in social_ops and args.get("do", "status") in {"status", "disconnect", "cancel"})
                  or (op == "personal_ai" and args.get("do", "status") in {"status", "remove"}))
     generation = int(request.get("_kill_generation", state.kill_generation(address)))
     was_killed = bool(request.get("_kill_at_admission", state.get_kill_switch(address)))
     if not kill_safe and (was_killed or state.work_interrupted(address, generation)):
-        reply(None, kill_message(locale))
+        reply(None, maintenance_message(locale) if state.maintenance_interrupted(generation) else kill_message(locale))
         return
     # Older packages may only run hello so the bot can replace them; other ops stay blocked.
     if entry.get("build") != app_build() and op not in {"hello", "health"}:
@@ -484,6 +548,8 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             raise AppError(tr(locale, "Acceso revocado.", "Access revoked."))
         if not config.service_access_allowed(address):
             raise AppError(tr(locale, "Michiflin está en mantenimiento.", "Michiflin is under maintenance."))
+        if not maintenance_safe and state.maintenance_interrupted(generation):
+            raise AppError(maintenance_message(locale))
         chat.set_sender(address)
         if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
             from . import live_web
@@ -513,7 +579,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             chat.stop_capture()
 
     started = time.monotonic()
-    future = (_control_workers if op in {"kill_switch", "owner_only", "maintenance_notice"} else _workers).submit(run)
+    future = (_control_workers if op in {"kill_switch", "owner_only", "maintenance_notice"} or owner_control else _workers).submit(run)
     timer = threading.Timer(ACK_AFTER, _ack, args=(instance_id, rid), kwargs={"entry": entry})
     timer.daemon = True
     timer.start()
@@ -524,9 +590,9 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         outcome = "timeout"
         reply(None, tr(locale, "La respuesta tardó demasiado; la operación podría seguir en curso. Revisa Descargas antes de repetir.",
                                            "The response took too long; the operation may still be running. Check Downloads before retrying."))
-    except state.WorkPaused:
-        outcome = "refused: kill switch"
-        reply(None, kill_message(locale))
+    except state.WorkPaused as exc:
+        outcome = "refused: maintenance" if exc.maintenance else "refused: kill switch"
+        reply(None, maintenance_message(locale) if exc.maintenance else kill_message(locale))
     except AppError as exc:
         outcome = f"refused: {compact(str(exc), 120)}"
         reply(None, str(exc))
@@ -580,12 +646,25 @@ def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") 
     return new_id
 
 
-def respond(instance_id: int, rid: str, data: Any, error: str = "") -> None:
+def respond(instance_id: int, rid: str, data: Any, error: str = "", *, code: str = "") -> None:
     body = {"t": "res", "re": rid, "ok": not error, "data": data, "error": error}
+    if code:
+        body["code"] = code
     text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    size = len(text.encode("utf-8"))
     with _answers_lock:
         item = _answers.setdefault(rid, {"ts": time.time(), "acked": 0.0})
-        item.update(state="done", ts=time.time(), body=text if len(text) <= 600_000 else None)
+        item.update(state="done", ts=time.time(), body=None, body_size=0)
+        if size <= ANSWER_ITEM_BYTES and size <= ANSWER_TOTAL_BYTES:
+            used = sum(int(value.get("body_size") or 0) for value in _answers.values())
+            oldest = sorted(((key, value) for key, value in _answers.items() if key != rid and value.get("body")),
+                            key=lambda pair: float(pair[1].get("ts") or 0))
+            for _key, value in oldest:
+                if used + size <= ANSWER_TOTAL_BYTES:
+                    break
+                used -= int(value.get("body_size") or 0)
+                value.update(body=None, body_size=0)
+            item.update(body=text, body_size=size)
     _deliver(instance_id, rid, text)
 
 
@@ -648,6 +727,7 @@ def sweep_forever() -> None:
                 notice = maintenance.get()
                 if notice["revision"]:
                     threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-retry", daemon=True).start()
+                    threading.Thread(target=maintenance.sync_profile, name="maintenance-profile", daemon=True).start()
                 last_upgrade = now
             with state.lock:
                 keys = [int(key) for key, entry in _apps().items()
@@ -775,7 +855,8 @@ def job_view(job: dict[str, Any], locale: str) -> dict[str, Any]:
         "id": job["id"], "title": job.get("name") or job["title"], "kind": job["kind"], "status": job["status"],
         "hold": bool(job.get("hold")), "size": int(job.get("size") or job.get("size_est") or 0), "done": int(job.get("progress") or 0),
         "parts": parts, "delivered": max(0, delivered), "format": job.get("part_format", ""),
-        "error": queue._error_text(job["error"], locale) if job["status"] == "failed" and job.get("error") else "",
+        "error": (queue._error_text(job["error"], locale)
+                  if (job["status"] == "failed" or job.get("error") == "source_preservation") and job.get("error") else ""),
         "created": float(job.get("created") or 0), "updated": float(job.get("updated") or 0),
         "sha": job.get("sha", ""), "part_sha": job.get("part_sha", []), "part_sizes": job.get("part_sizes", []),
     }
@@ -917,7 +998,7 @@ def settings_view(locale: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 @op("hello")
 def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    return {"version": __version__, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
+    return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
             "maintenance_notice": maintenance.get()}
 
@@ -1605,25 +1686,56 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
     try:
         with state.lock:
             entries = [dict(entry) for entry in _apps().values() if isinstance(entry, dict)]
-        chats: dict[int, tuple[str, str]] = {}
+        chats: dict[int, tuple[str, str, bool, str]] = {}
         for entry in entries:
             try:
                 address = str(entry.get("addr") or "").strip().lower()
                 chat_id = int(entry.get("chat") or 0)
                 if chat_id and address and access.bound_allowed(entry) and admin.is_allowed(address):
-                    chats[chat_id] = (address, str(entry.get("locale") or "es"))
+                    chats[chat_id] = (address, str(entry.get("locale") or "es"), True, access.session_stamp(address))
             except (TypeError, ValueError):
                 continue
-        for chat_id, (address, locale) in chats.items():
+        # Also cover currently authorized people with an existing private chat
+        # but no app yet. Never revive historic grants or create a new contact.
+        if chat.ready():
+            mode = access.snapshot()
+            with state.lock:
+                addresses = ({config.OWNER_ADDRESS} | set(mode["guests"]) if mode["controlled"] else
+                             {config.OWNER_ADDRESS} | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
+            for address in addresses - {item[0] for item in chats.values()}:
+                if not address or not admin.is_allowed(address):
+                    continue
+                try:
+                    contact = int(chat.rpc().lookup_contact_id_by_addr(chat.account(), address) or 0)
+                    target = int(chat.rpc().get_chat_id_by_contact_id(chat.account(), contact) or 0) if contact else 0
+                    info = chat.rpc().get_basic_chat_info(chat.account(), target) if target else None
+                    kind = getattr(getattr(info, "chat_type", ""), "value", getattr(info, "chat_type", ""))
+                    actual = str(chat.rpc().get_contact(chat.account(), contact).address or "").strip().lower()
+                    if (target and str(kind) == "Single" and not getattr(info, "is_contact_request", False)
+                            and not getattr(info, "is_self_talk", False) and actual == address):
+                        with state.person(address):
+                            locale = "en" if state.setting("language") == "en" else "es"
+                        chats[target] = (address, locale, False, access.session_stamp(address))
+                except Exception:
+                    continue
+        for chat_id, (address, locale, has_app, stamp) in chats.items():
             if maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address):
                 continue
             with state.lock:
                 record = state.data.get("maintenance_notice") or {}
                 if (record.get("notified") or {}).get(str(chat_id)) == notice["revision"]:
                     continue
-            message = (notice["en" if locale == "en" else "es"] if notice["active"] else
-                       tr(locale, "Aviso de mantenimiento desactivado.", "Maintenance notice turned off."))
-            if push(chat_id, "maintenance", notice, message):
+            message = (tr(locale, "Mantenimiento: ", "Maintenance: ") + notice["en" if locale == "en" else "es"] if notice["active"] else
+                       tr(locale, "Mantenimiento finalizado; las colas autorizadas pueden continuar.",
+                          "Maintenance ended; authorized queues may continue."))
+            if has_app:
+                queued = push(chat_id, "maintenance", notice, message)
+            else:
+                def interrupted() -> bool:
+                    return (maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address)
+                            or access.session_stamp(address) != stamp)
+                queued = bool(chat.send(chat_id, "🛠️ " + message, interrupted=interrupted))
+            if queued:
                 # Accepted into the local mail queue, not confirmed delivered.
                 with state.lock:
                     record = state.data.get("maintenance_notice") or {}
@@ -1632,6 +1744,9 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
                         state.save()
     finally:
         _maintenance_notify_lock.release()
+        latest = maintenance.get()
+        if latest["revision"] != notice["revision"]:
+            threading.Thread(target=_notify_maintenance, args=(latest,), name="maintenance-latest", daemon=True).start()
 
 
 @op("maintenance_notice")

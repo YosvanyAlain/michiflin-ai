@@ -150,7 +150,7 @@ VIEWS.live_web = {
       too_large: "live_too_large", site_limit: "live_site_limit", busy: "live_busy", unsupported: "live_unsupported",
       isolation_unavailable: "live_isolation", python_unavailable: "live_isolation", browser_missing: "live_isolation",
       proxy_unavailable: "live_proxy_unavailable", proxy_invalid: "live_proxy_invalid",
-      paused: "live_paused", stale_app: "live_stale_app", channel_timeout: "live_channel_timeout",
+      paused: "live_paused", maintenance: "live_maintenance", stale_app: "live_stale_app", channel_timeout: "live_channel_timeout",
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
       different_site: "live_same_site", frame_too_large: "live_frame_large",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");

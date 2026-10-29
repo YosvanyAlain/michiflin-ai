@@ -1750,6 +1750,8 @@ class AppSyncTests(Base):
         super().tearDown()
 
     def push(self, payload: dict) -> None:
+        if payload.get("t") == "req":
+            payload.setdefault("session", self.m.BOOT_SESSION)
         self.updates.append({"serial": len(self.updates) + 1, "payload": payload})
         self.m.on_status_update(500)
 

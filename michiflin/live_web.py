@@ -77,7 +77,7 @@ def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
     if not identity:
         return None
     entry, owner = identity
-    if entry.get("build") != miniapp.app_build() or state.get_kill_switch(owner):
+    if entry.get("build") != miniapp.app_build() or state.maintenance_active() or state.get_kill_switch(owner):
         return None
     return identity
 
@@ -152,6 +152,7 @@ def _deny(instance: int, sid: str, locale: str) -> None:
         return
     entry, owner = identity
     reason = ("stale_app" if entry.get("build") != miniapp.app_build()
+              else "maintenance" if state.maintenance_active()
               else "paused" if state.get_kill_switch(owner) else "")
     if not reason:
         return
@@ -256,6 +257,18 @@ def forget_site(owner: str, site: str) -> bool:
         for session in sessions:
             session.stop()
         return web_vault.remove(owner, site)
+
+
+def pause_for_maintenance() -> None:
+    """Invalidate active browsers; their encrypted saved sessions are retained."""
+    with _lock:
+        sessions = list(_sessions.values())
+    for session in sessions:
+        session.stop()
+    # A realtime reply is best effort and must not hold the owner's control.
+    if sessions:
+        threading.Thread(target=lambda: [_deny(s.instance, s.sid, s.locale) for s in sessions],
+                         name="maintenance-live-notice", daemon=True).start()
 
 
 def shutdown() -> None:

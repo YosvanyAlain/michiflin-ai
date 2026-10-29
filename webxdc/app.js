@@ -426,6 +426,7 @@ function hello(force = false) {
 async function sync(force) {
   try {
     const data = await bridge.call("hello");
+    if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
       jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, lang: lang(), at: now() });
     saveCache();
@@ -565,7 +566,7 @@ VIEWS.home = {
     const drawAdvisory = () => {
       const item = cache.maintenance_notice;
       fill(advisory, item && item.active ? h("p", { class: "note warn", role: "status" }, icon("info"),
-        h("span", { class: "grow" }, lang() === "en" ? item.en : item.es)) : null);
+        h("span", { class: "grow" }, (lang() === "en" ? item.en : item.es) + " " + t("maintenance_queue_active"))) : null);
     };
     ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
     ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
@@ -2027,6 +2028,7 @@ function resendSheet(job) {
 }
 
 function jobCard(job) {
+  const maintenancePause = !!(cache.maintenance_notice && cache.maintenance_notice.active && !FINAL.includes(job.status));
   const tool = (name, label, action) => {
     const button = h("button", { class: "chip action", onclick: () => queueOp(action, job.id, button) }, icon(name), label);
     return button;
@@ -2038,13 +2040,13 @@ function jobCard(job) {
   return h("article", { class: `card job ${job.status}` },
     h("div", { class: "row" }, h("span", { class: "job-icon" }, icon(job.kind === "video" ? "video" : job.kind === "audio" ? "audio" : "file")),
       h("div", { class: "grow" }, h("b", { class: "clamp" }, plain(job.title)), h("small", { class: "muted" }, meta.filter(Boolean).join(" · "))),
-      h("span", { class: `status s-${job.hold && !FINAL.includes(job.status) ? "paused" : job.status}` },
-        job.hold && !FINAL.includes(job.status) ? t("status_paused") : t("status_" + job.status))),
+      h("span", { class: `status s-${(maintenancePause || (job.hold && !FINAL.includes(job.status))) ? "paused" : job.status}` },
+        maintenancePause ? t("status_maintenance") : job.hold && !FINAL.includes(job.status) ? t("status_paused") : t("status_" + job.status))),
     ...progress,
     job.error ? h("p", { class: "note bad" }, icon("alert"), plain(job.error)) : null,
     h("div", { class: "chips" },
-      !FINAL.includes(job.status) ? (job.hold ? tool("play", t("resume"), "resume") : tool("pause", t("pause"), "pause")) : null,
-      !FINAL.includes(job.status) ? tool("close", t("cancel"), "cancel") : null,
+      !maintenancePause && !FINAL.includes(job.status) ? (job.hold ? tool("play", t("resume"), "resume") : tool("pause", t("pause"), "pause")) : null,
+      !maintenancePause && !FINAL.includes(job.status) ? tool("close", t("cancel"), "cancel") : null,
       job.status === "failed" || job.status === "cancelled" ? tool("refresh", t("retry"), "retry") : null,
       job.status === "done" && job.parts > 0 ? h("button", { class: "chip action", onclick: () => resendSheet(job) }, icon("send"), t("act_resend")) : null,
       job.status === "done" && job.parts > 1 && job.format === "raw" ? h("button", { class: "chip action", onclick: () => go("join") }, icon("join"), t("tile_join")) : null));
@@ -2091,7 +2093,7 @@ VIEWS.downloads = {
     const body = h("div", { class: "stack" });
     const chosen = params.section === "links" ? "links" : "downloads";
     let drawJobs = null;
-    bus.on("jobs", () => { if (drawJobs) drawJobs(); });
+    ["jobs", "maintenance"].forEach((kind) => bus.on(kind, () => { if (drawJobs) drawJobs(); }));
     const draw = (which) => {
       current.params = { section: which };
       drawJobs = null;
@@ -2740,7 +2742,7 @@ function boot() {
   render();
   Promise.resolve(window.webxdc.setUpdateListener((update) => bridge.receive(update), bridge.startSerial())).then(() => {
     bus.emit("images");
-    const first = hello();
+    const first = hello(true); // refresh the process session even if the visible snapshot is cached
     bridge.watchExpiry();
     // With a cached snapshot the home is already complete; the very first open waits for its sync (up to SPLASH_MAX).
     if (cache.at) hide();

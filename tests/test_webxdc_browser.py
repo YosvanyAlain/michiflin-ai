@@ -43,9 +43,11 @@ BRIDGE = r"""
   window.__notes = [];
   window.__failNext = {};
   window.__delay = 0;
+  window.__fixtureSession = "synthetic-boot-session";
+  window.__sessionChangedNext = "";
   const responseFor = (request) => {
     switch (request.op) {
-      case "hello": return { version: "browser-smoke", admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
+      case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
       case "kill_switch":
       case "nauta_strict":
         if (typeof request.args.value === "boolean") window.__modes[request.op] = request.args.value;
@@ -107,11 +109,15 @@ BRIDGE = r"""
       const request = update && update.payload;
       if (request && request.t === "req") {
         setTimeout(async () => {
-          let data, error = "";
+          let data, error = "", code = "";
           const fail = (window.__failNext[request.op] || 0) > 0;
           if (fail) window.__failNext[request.op] -= 1;
           try {
-            if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
+            if (window.__sessionChangedNext === request.op) {
+              window.__sessionChangedNext = "";
+              error = request.lang === "en" ? "The bot restarted; check provider charges before retrying." : "El bot se reinició; revisa los cargos antes de repetir.";
+              code = "session_changed";
+            } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
                 (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op))) {
               const result = await fetch(window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access",
                 { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
@@ -123,7 +129,7 @@ BRIDGE = r"""
           if (window.__listener) window.__listener({
             serial: ++window.__serial,
             payload: { t: "res", re: request.id, ok: !fail && !error, data: (fail || error) ? null : data,
-              error: fail ? "SIMULATED network uncertainty" : error }
+              error: fail ? "SIMULATED network uncertainty" : error, code }
           });
         }, window.__delay);
       }
@@ -791,6 +797,25 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'maintenance_notice' && x.payload.args.active === true)")
                 screenshot_if_requested(page, language + "-maintenance")
                 self.assertEqual(errors, [])
+
+    def test_changed_bot_session_refreshes_without_repeating_image_bilingual(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.locator('.tab[data-tab="ai"]:visible').click()
+                page.get_by_role("button", name="Automático" if language == "es" else "Automatic", exact=False).first.click()
+                page.evaluate("""() => { window.__fixtureSession = 'new-synthetic-process'; window.__sessionChangedNext = 'image'; }""")
+                before = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'hello').length")
+                page.locator("#view textarea").fill("red sailboat")
+                page.get_by_role("button", name="Crear imagen" if language == "es" else "Create image").click()
+                page.get_by_text("revisa los cargos" if language == "es" else "check provider charges", exact=False).first.wait_for()
+                page.wait_for_function("count => window.__sentUpdates.filter(x => x.payload?.op === 'hello').length > count", arg=before)
+                page.wait_for_function("JSON.parse(localStorage.getItem('mf.botSession')) === 'new-synthetic-process'")
+                page.wait_for_timeout(300)
+                requests = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'image').map(x => x.payload)")
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(requests[0]["session"], "synthetic-boot-session")
+                self.assertEqual(errors, [])
+                screenshot_if_requested(page, language + "-session-change")
 
     def test_large_coder_request_uses_bounded_multipart(self) -> None:
         with browser_fixture("en", {"width": 390, "height": 844}) as (page, errors):

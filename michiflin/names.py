@@ -48,6 +48,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "back": ("anterior", "back"),
     "admin": ("admin", "admin"),
     "owner_only": ("solo_dueno", "owner_only"),
+    "maintenance": ("mantenimiento", "maintenance"),
     "nota": ("nota", "note"),
     "notas": ("notas", "notes"),
     "borrar_nota": ("borrar_nota", "delete_note"),

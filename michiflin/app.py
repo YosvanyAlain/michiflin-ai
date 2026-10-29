@@ -70,8 +70,11 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
         chat.set_sender(address)
         queue.set_locale(locale)
         # Safe commands from a revoked/re-granted guest must not replay either.
-        if not admin.is_admin(address) and (not admin.is_allowed(address)
-                or (ticket is not None and state.kill_generation(address) != ticket[0])):
+        if not admin.is_admin(address) and not admin.is_allowed(address):
+            return
+        if not admin.is_admin(address) and ticket is not None and state.kill_generation(address) != ticket[0]:
+            if state.maintenance_interrupted(ticket[0]):
+                chat.text(chat_id, miniapp.maintenance_message(locale))
             return
         progress.begin(chat_id, locale, int(msg.id))
         failed = drop = False
@@ -80,12 +83,12 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
             parsed = commands.parse((text or "").strip()) if not has_file else None
             key = parsed[0] if parsed else ""
             safe = key in {"app", "kill_switch", "nauta_strict", "estado", "health"}
-            if admin.is_admin(address) and (key == "owner_only" or
+            if admin.is_admin(address) and (key in {"owner_only", "maintenance"} or
                     (key == "admin" and parsed and parsed[1] and names.word_key(parsed[1][0]) in {"allow", "remove", "block"})):
-                safe = True  # owner access controls stay available even in app-only mode or during Kill
+                safe = True  # owner controls stay available in app-only mode and during pauses
             generation, was_killed = ticket or (state.kill_generation(address), state.get_kill_switch(address))
             if not safe and (was_killed or state.work_interrupted(address, generation)):
-                chat.text(chat_id, miniapp.kill_message(locale))
+                chat.text(chat_id, miniapp.maintenance_message(locale) if state.maintenance_interrupted(generation) else miniapp.kill_message(locale))
                 return
             # Emergency/status commands remain available even in app-only chat mode.
             if not has_file and state.setting("chat_mode") == "app" and not safe:
@@ -101,9 +104,9 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
                 if commands.dispatch(chat_id, text, locale):
                     return
                 agent.handle(chat_id, text, locale)
-        except state.WorkPaused:
+        except state.WorkPaused as exc:
             failed, drop = True, False
-            chat.text(chat_id, miniapp.kill_message(locale))
+            chat.text(chat_id, miniapp.maintenance_message(locale) if exc.maintenance else miniapp.kill_message(locale))
         except Exception as exc:
             failed = True
             log.exception("handler error")
@@ -153,6 +156,17 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     # Apply an authenticated emergency ON immediately, rather than queueing it
     # behind a slow request in the same chat. Its confirmation stays in order.
     parsed = commands.parse(text) if not getattr(msg, "file", None) else None
+    if parsed and parsed[0] == "maintenance" and address == config.OWNER_ADDRESS:
+        # Do not queue the emergency control behind another request from this chat.
+        chat.set_sender(address)
+        commands.cmd_maintenance(msg.chat_id, parsed[1], parsed[2], locale)
+        return None
+    owner_control = bool(address == config.OWNER_ADDRESS and parsed and (
+        parsed[0] in {"app", "kill_switch", "estado", "health", "owner_only"}
+        or (parsed[0] == "admin" and parsed[1] and names.word_key(parsed[1][0]) in {"allow", "remove", "block"})))
+    if state.maintenance_active() and not owner_control:
+        _maintenance_reply(address, msg.chat_id, locale, force=True)
+        return None
     if parsed and parsed[0] == "kill_switch" and parsed[2].strip().lower() in commands.YES:
         state.set_kill_switch(address, True)
         queue.wake()
@@ -436,15 +450,16 @@ def on_message(bot: Any, accid: int, event: Any) -> None:
     _accept(bot, accid, event.msg)
 
 
-def _maintenance_reply(address: str, chat_id: int, locale: str) -> None:
-    """Notify an already authorized non-owner sparingly while the service is owner-only."""
+def _maintenance_reply(address: str, chat_id: int, locale: str, force: bool = False) -> None:
+    """Notify an authorized user; operational maintenance answers each attempt."""
     now = time.time()
-    if now - _maintenance_notice.get(address, 0.0) < MAINTENANCE_NOTICE_GAP:
+    if not force and now - _maintenance_notice.get(address, 0.0) < MAINTENANCE_NOTICE_GAP:
         return
     _maintenance_notice[address] = now
-    from . import maintenance
-    custom = maintenance.text(locale)
-    chat.text(chat_id, "🛠️ " + custom if custom else tr(locale,
+    if state.maintenance_active():
+        chat.text(chat_id, miniapp.maintenance_message(locale))
+    else:
+        chat.text(chat_id, tr(locale,
               "🛠️ Michiflin está en mantenimiento y temporalmente solo lo puede usar su dueño.",
               "🛠️ Michiflin is under maintenance and temporarily available only to its owner."))
 
@@ -472,6 +487,18 @@ def _housekeeping() -> None:
             log.warning("housekeeping: %s", exc)
 
 
+def _background_after_maintenance(function: Any) -> None:
+    """Defer startup work while paused; retry safe setup after a pause transition."""
+    while not _draining.is_set():
+        if state.maintenance_active():
+            _draining.wait(1)
+            continue
+        epoch = state.maintenance_generation()
+        function()
+        if state.maintenance_generation() == epoch:
+            return
+
+
 @cli.on_start
 def on_start(bot: Any, args: Any) -> None:
     accounts = bot.rpc.get_all_account_ids()
@@ -486,7 +513,7 @@ def on_start(bot: Any, args: Any) -> None:
         log.warning("bot profile status could not be updated (%s)", type(exc).__name__)
     links.set_bot_address(chat.self_address())
     state.load()
-    # Restore the owner's advisory after a session restart; it never changes access gates.
+    # Restore the owner's operational pause after a restart; access gates remain separate.
     from . import maintenance
     notice_state = state.data.get("maintenance_notice") or {}
     if (maintenance.get()["active"] or notice_state.get("profile_suffix")) and not maintenance.sync_profile():
@@ -497,12 +524,12 @@ def on_start(bot: Any, args: Any) -> None:
     # Never purge pending mail automatically: the owner must explicitly choose
     # whether to remove old messages, especially during a state migration.
     ai.build_registry()
-    threading.Thread(target=ai.discover, name="discover", daemon=True).start()
-    threading.Thread(target=ai.health_check, name="ai-health", daemon=True).start()
+    threading.Thread(target=_background_after_maintenance, args=(ai.discover,), name="discover", daemon=True).start()
+    threading.Thread(target=_background_after_maintenance, args=(ai.health_check,), name="ai-health", daemon=True).start()
     threading.Thread(target=lambda: log.info("coder sandbox: %s", "isolated" if coder.isolation() else "off, files only"),
                      name="coder-probe", daemon=True).start()
     if browser.available():
-        threading.Thread(target=browser.warm_up, name="browser-warmup", daemon=True).start()
+        threading.Thread(target=_background_after_maintenance, args=(browser.warm_up,), name="browser-warmup", daemon=True).start()
     queue.start()
     _start_cursor(bot, accid)
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()

@@ -1,11 +1,14 @@
 """Streaming-site media (YouTube, Vimeo, Facebook, ...) via yt-dlp with size estimates."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
+import shutil
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -101,7 +104,7 @@ def _cookies() -> str:
 YOUTUBE = re.compile(r"(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$", re.I)
 # Fallback clients for streams YouTube refuses (HTTP 403 / SABR-only formats).
 YOUTUBE_CLIENTS = ("", "android", "web_embedded")
-FINAL_ERRORS = {"private", "unavailable", "geo", "unsupported", "too_large"}
+FINAL_ERRORS = {"private", "unavailable", "geo", "unsupported", "too_large", "disk_full"}
 
 def _options(proxy: str = "") -> dict[str, Any]:
     options: dict[str, Any] = {
@@ -228,6 +231,8 @@ def inspect(url: str) -> MediaInfo:
 
 def error_code(exc: Exception | None) -> str:
     text = str(exc or "").lower()
+    if "disk_full" in text:
+        return "disk_full"
     if any(marker in text for marker in ("sign in to confirm", "not a bot", "captcha", "verify you are human",
                                          "verify you're human", "confirm you're human", "anti-bot")):
         return "bot_check"
@@ -275,11 +280,18 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
     if storage is not None:
         return private_media.download(url, storage, folder, kind, quality, audio_format, progress, stop)
 
+    last_disk_check = [0.0]
     def hook(data: dict[str, Any]) -> None:
         if stop and stop():
             raise yt_dlp.utils.DownloadCancelled()
-        if progress and data.get("status") == "downloading":
-            progress(int(data.get("downloaded_bytes") or 0), int(data.get("total_bytes") or data.get("total_bytes_estimate") or 0))
+        if data.get("status") == "downloading":
+            now = time.monotonic()
+            if now - last_disk_check[0] >= 1:
+                last_disk_check[0] = now
+                if shutil.disk_usage(folder).free < config.MIN_FREE_DISK_BYTES:
+                    raise ValueError("disk_full")
+            if progress:
+                progress(int(data.get("downloaded_bytes") or 0), int(data.get("total_bytes") or data.get("total_bytes_estimate") or 0))
 
     last: Exception | None = None
     youtube = bool(YOUTUBE.search(urlparse(url).hostname or ""))
@@ -289,12 +301,17 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
         for client in (YOUTUBE_CLIENTS if youtube else ("",)):
             if stop and stop():
                 raise InterruptedError()
-            for leftover in folder.glob("media.*"):
-                leftover.unlink(missing_ok=True)
+            # Keep each extractor/client/route in its own resumable directory.
+            # Different clients may select different streams with the same extension;
+            # combining their partial bytes could silently corrupt the result.
+            identity = "\0".join((url, kind, str(quality), audio_format, route, client))
+            attempt = folder / (".resume-" + hashlib.sha256(identity.encode()).hexdigest()[:20])
+            attempt.mkdir(parents=True, exist_ok=True)
             options = _options(route)
             options.update({
-                "outtmpl": str(folder / "media.%(ext)s"),
+                "outtmpl": str(attempt / "media.%(ext)s"),
                 "progress_hooks": [hook],
+                "continuedl": True,
                 "max_filesize": config.MAX_FILE_BYTES,
                 "socket_timeout": 90,
             })
@@ -308,9 +325,14 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
                     ydl.download([url])
                 if stop and stop():
                     raise InterruptedError()
-                produced = [item for item in folder.glob("media.*") if item.is_file() and not item.name.endswith((".part", ".ytdl", ".temp"))]
+                produced = [item for item in attempt.glob("media.*") if item.is_file()
+                            and re.fullmatch(r"media\.[a-zA-Z0-9]{1,8}", item.name)]
                 if produced:
-                    return max(produced, key=lambda item: item.stat().st_size)
+                    source = max(produced, key=lambda item: item.stat().st_size)
+                    target = folder / ("media-result-" + os.urandom(8).hex() + source.suffix.lower())
+                    # A new name avoids overwriting any previously recovered source.
+                    os.replace(source, target)
+                    return target
                 last = ValueError("no output")
             except (yt_dlp.utils.DownloadCancelled, InterruptedError):
                 raise InterruptedError()

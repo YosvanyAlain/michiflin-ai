@@ -260,7 +260,7 @@ def help_pages(locale: str, owner: bool) -> list[str]:
         ]),
         (t("🤖 IA e imágenes", "🤖 AI and images"), [
             f"{c('ai')} " + t("texto – forzar respuesta con IA", "text – force an AI answer"),
-            f"{c('image')} " + t("texto – generar una imagen (o escribe «dibuja…»)", "text – generate an image (or write «draw…»)"),
+            f"{c('image')} " + t("texto – generar una imagen con la fuente seleccionada", "text – generate an image with the selected source"),
             f"{c('forget')} – " + t("empezar una conversación nueva", "start a new conversation"),
             f"{c('model')} – " + t("modelos, cuotas y saldo de imágenes", "models, quotas and image balance"),
             f"{c('model', 'auto')} – " + t("rotación automática", "automatic rotation") + f" · {c('model')}_" + t("NOMBRE", "NAME"),
@@ -299,6 +299,7 @@ def help_pages(locale: str, owner: bool) -> list[str]:
         sections.append((t("🛡️ Administración", "🛡️ Administration"), [
             f"{c('admin')} – " + t("usuarios, intentos ajenos y estado", "users, foreign attempts and status"),
             f"{c('owner_only')} – " + t("control privado de esta sesión", "session private-access control"),
+            f"{c('maintenance')} " + t("sí | no – pausa global segura", "yes | no – safe global pause"),
             f"{c('admin', 'allow')} " + t("correo – dar acceso", "address – grant access"),
             f"{c('admin', 'remove')} " + t("correo – quitar acceso", "address – revoke access"),
             f"{c('admin', 'block')} " + t("correo – bloquear", "address – block"),
@@ -309,8 +310,8 @@ def help_pages(locale: str, owner: bool) -> list[str]:
         ]))
     index = [
         t("Escríbeme normal o envía un enlace; yo decido qué hacer.", "Write normally or send a link; I decide what to do."),
-        t("Ej.: «qué es la fotosíntesis», «dibuja un gato astronauta», «videos de recetas cubanas», «clima en Holguín».",
-          "E.g.: «what is photosynthesis», «draw a cat astronaut», «videos of Cuban recipes», «weather in Havana»."),
+        t("Ej.: «qué es la fotosíntesis», «videos de recetas cubanas», «clima en Holguín». Para dibujos usa /img.",
+          "E.g.: «what is photosynthesis», «videos of Cuban recipes», «weather in Havana». For pictures use /img."),
         "",
         f"{c('app')} – " + t("abre la miniapp con todo a mano", "open the mini app with everything at hand"),
         "",
@@ -737,6 +738,37 @@ def cmd_purge(chat_id: int, args: list[str], rest: str, locale: str) -> None:
 # Administration (admin addresses only).
 # ---------------------------------------------------------------------------
 _owner_challenges: dict[int, tuple[str, float, int, str]] = {}
+
+
+@command("maintenance", owner=True)
+def cmd_maintenance(chat_id: int, args: list[str], rest: str, locale: str) -> None:
+    """Emergency text control works even if the owner's mini app is unavailable."""
+    if chat.sender().strip().lower() != config.OWNER_ADDRESS:
+        chat.text(chat_id, tr(locale, "Solo el dueño puede cambiar mantenimiento.", "Only the owner can change maintenance."))
+        return
+    from . import maintenance, miniapp
+    import threading
+
+    words = args + rest.split()
+    current = maintenance.get()
+    value = words[0].lower() if words else ""
+    if value not in YES | NO:
+        chat.text(chat_id, tr(locale,
+            f"🛠️ Mantenimiento {'activo' if current['active'] else 'inactivo'}. Uso: /mantenimiento sí | no",
+            f"🛠️ Maintenance {'on' if current['active'] else 'off'}. Usage: /maintenance yes | no"))
+        return
+    active = value in YES
+    if active != current["active"]:
+        current = maintenance.set_notice(active, current["es"], current["en"])
+        def announce() -> None:
+            maintenance.sync_profile()
+            miniapp._notify_maintenance(current)
+        threading.Thread(target=announce, name="maintenance-command-notice", daemon=True).start()
+    chat.text(chat_id, tr(locale,
+        "🛠️ Mantenimiento activado. Las tareas y colas están pausadas." if active else
+        "▶️ Mantenimiento desactivado. Las colas autorizadas pueden continuar; se conservan las pausas manuales y los permisos.",
+        "🛠️ Maintenance enabled. Work and queues are paused." if active else
+        "▶️ Maintenance disabled. Authorized queues may continue; manual pauses and permissions remain unchanged."))
 
 
 @command("owner_only", owner=True)

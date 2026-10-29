@@ -443,7 +443,9 @@ const bridge = {
   },
   request(op, args = {}, ctx = null) {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    const payload = { t: "req", id, op, args, lang: lang() };
+    // The bot rotates this value after every restart. Requests queued under an
+    // older session are refused rather than silently repeating provider calls.
+    const payload = { t: "req", id, op, args, lang: lang(), session: store.get("botSession", "") };
     const size = new Blob([JSON.stringify({ payload })]).size;
     const reported = Number(window.webxdc.sendUpdateMaxSize) || 128000;
     const maxUpdate = Math.min(UPDATE_MAX, reported);
@@ -519,6 +521,9 @@ const bridge = {
     this.changed();
   },
   piece(payload, serial) {
+    if (!this.pending()[payload.re] && !this.waiting.has(payload.re)) return;
+    if (!Number.isInteger(payload.n) || payload.n < 1 || payload.n > 1000 || !Number.isInteger(payload.i)
+        || payload.i < 0 || payload.i >= payload.n || typeof payload.s !== "string" || payload.s.length > 45000) return;
     const parts = this.chunks.get(payload.re) || [];
     if (!parts.length && this.pending()[payload.re]) {
       const floors = store.get("floors", {});
@@ -558,9 +563,12 @@ const bridge = {
     if (!meta && !waiter) return;
     delete pending[answer.re];
     this.save(pending);
+    this.chunks.delete(answer.re);
     this.dropFloor(answer.re);
     const error = answer.ok ? "" : plain(answer.error) || t("failed");
     const data = answer.ok ? answer.data : null;
+    // Refresh the session but never repeat the uncertain work automatically.
+    if (answer.code === "session_changed" && typeof hello === "function") setTimeout(() => hello(true), 0);
     if (data && typeof data === "object" && !Array.isArray(data) && "quota" in data && typeof onQuota === "function") onQuota(data.quota);
     if (meta && this.handlers[meta.op]) this.handlers[meta.op](answer.ok ? answer.data : null, error, meta.ctx, answer.re);
     if (waiter) {

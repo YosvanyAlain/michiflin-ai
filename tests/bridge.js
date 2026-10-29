@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
 
-function boot(storage, sent, maximum = 128000) {
+function boot(storage, sent, maximum = 128000, hello = undefined) {
   const listeners = {};
   const ctx = {
     console, Blob, TextEncoder, btoa, setTimeout, clearTimeout, setInterval: () => 0, Date, Math, JSON, Promise, Map, Set, Object, Array, String, Number,
@@ -12,7 +12,7 @@ function boot(storage, sent, maximum = 128000) {
     navigator: { language: "es" },
     document: { addEventListener: (n, f) => { listeners[n] = f; }, documentElement: { lang: "es", dataset: {} }, visibilityState: "visible",
       createElement: () => ({ style: {}, setAttribute() {}, append() {}, classList: { add() {}, remove() {}, toggle() {} } }), querySelector: () => null, body: null },
-    indexedDB: undefined,
+    indexedDB: undefined, hello,
   };
   ctx.window = ctx;
   ctx.window.webxdc = { sendUpdate: (update) => sent.push(update.payload), selfAddr: "me@x", selfName: "Me", sendUpdateMaxSize: maximum };
@@ -102,7 +102,29 @@ setTimeout(() => {
   assert.strictEqual(separate.pending()[sentRequest.id].p, null, 'large projects are not silently resent');
 }
 
-// 6. Respect a messenger's advertised smaller update limit when splitting.
+// 6. A changed bot session refreshes only; the uncertain request is not repeated.
+{
+  const sent = [];
+  let refreshed = 0;
+  const safe = boot({ "mf.botSession": JSON.stringify("old-process") }, sent, 128000, (force) => {
+    assert.strictEqual(force, true);
+    refreshed += 1;
+  });
+  const requested = safe.request("image", { prompt: "fixture" });
+  assert.strictEqual(sent[0].session, "old-process");
+  safe.receive({ serial: 1, payload: { t: "chunk", re: requested.id, i: 0, n: 2, s: "partial" } });
+  assert.strictEqual(safe.chunks.size, 1);
+  safe.receive({ serial: 2, payload: { t: "res", re: requested.id, ok: false, code: "session_changed", error: "check charges" } });
+  assert.strictEqual(safe.chunks.size, 0);
+  safe.receive({ serial: 3, payload: { t: "chunk", re: requested.id, i: 1, n: 2, s: "late" } });
+  assert.strictEqual(safe.chunks.size, 0, "late fragments for a settled request are ignored");
+  setTimeout(() => {
+    assert.strictEqual(refreshed, 1);
+    assert.strictEqual(sent.filter(item => item.op === "image").length, 1);
+  }, 10);
+}
+
+// 7. Respect a messenger's advertised smaller update limit when splitting.
 {
   const sent = [];
   const small = boot({}, sent, 60000);

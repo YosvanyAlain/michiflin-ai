@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable
 from urllib.parse import urlsplit
 import ipaddress
@@ -302,13 +303,17 @@ def _extra_providers() -> list[Provider]:
 # Free model discovery (runs once in the background at startup).
 # ---------------------------------------------------------------------------
 def discover() -> None:
+    epoch = state.maintenance_generation()
     for function in (_discover_openrouter, _discover_groq, _discover_gemini, _discover_bazaarlink, _discover_orcarouter,
                      _discover_llm7, _discover_kilo):
+        if state.maintenance_active() or state.maintenance_generation() != epoch:
+            return
         try:
             function()
         except Exception:
             continue
-    _watch_catalog()
+    if not state.maintenance_active() and state.maintenance_generation() == epoch:
+        _watch_catalog()
 
 
 def _discover_openrouter() -> None:
@@ -925,34 +930,56 @@ def _mark(item: Provider, model: Model, status: str) -> None:
 
 
 def model_status(key: str) -> str:
-    return str((state.data.get("health", {}).get(key) or {}).get("status") or "")
+    item = state.data.get("health", {}).get(key) or {}
+    # Old results are not proof that a model is still available today.
+    return str(item.get("status") or "") if time.time() - float(item.get("at") or 0) < 86400 else ""
 
 
 def health_check(delay: float = 150.0) -> None:
-    """Once a day, a tiny request to every listed model so retired, paid or rejected ones are flagged before anyone taps them.
+    """Probe only the anonymous OVH endpoint; never spend a configured API key in the background.
 
-    OpenRouter shares 50 free requests a day across all its models, so only its router is checked."""
+    Other models remain unverified until used. Even anonymous probes stop on a
+    maintenance epoch change, including a quick on/off while a call is in flight.
+    """
+    epoch = state.maintenance_generation()
     time.sleep(delay)
+    if state.maintenance_active() or state.maintenance_generation() != epoch:
+        return
     today = state.utc_day()
     if state.flag("health") == today:
         return
-    state.set_flag("health", today)
     for item in providers():
-        if state.cooldown_until(item.key):
+        if item.key != "ovh" or item.api_key or item.personal or state.cooldown_until(item.key):
             continue
         pool = [model for model in item.models if model.roles & {"fast", "chat", "code", "reason", "long"}]
-        if item.key == "openrouter":
-            pool = [model for model in pool if model.model == "openrouter/free"][:1] or pool[:1]
         for model in pool:
+            if state.maintenance_active() or state.maintenance_generation() != epoch:
+                return
             if not available(model):
                 continue
-            result = _call(item, model, [{"role": "user", "content": "Reply with the word OK."}], None, 300)
+            # A completed probe is not repeated when only a later probe was paused.
+            status = (state.data.get("health", {}).get(model.key) or {})
+            if status.get("status") == "ok" and datetime.fromtimestamp(float(status.get("at") or 0), timezone.utc).date().isoformat() == today:
+                continue
+            generation = state.kill_generation("")
+            if state.maintenance_active() or state.maintenance_generation() != epoch:
+                return
+            try:
+                # _pace_ovh checks this guard while waiting, before making a request.
+                with state.guard_work("", generation):
+                    result = _call(item, model, [{"role": "user", "content": "Reply with the word OK."}], None, 300)
+            except state.WorkPaused:
+                return
+            if state.maintenance_active() or state.maintenance_generation() != epoch:
+                return
             log.info("AI health %s %s: %s", item.key, model.model, "ok" if result.ok else result.error)
             if result.ok:
                 _mark(item, model, "ok")
             elif result.error == "auth":
                 break
             time.sleep(4)
+    if not state.maintenance_active() and state.maintenance_generation() == epoch:
+        state.set_flag("health", today)
 
 
 def _watch_catalog() -> None:

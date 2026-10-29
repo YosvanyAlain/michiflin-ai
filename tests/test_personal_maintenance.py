@@ -356,8 +356,11 @@ class Isolated(unittest.TestCase):
 
     def test_paid_request_is_not_replayed_after_unknown_restart(self):
         with mock.patch.object(miniapp, "_admit", return_value="lost"), \
+             mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
+             mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
              mock.patch.object(miniapp, "respond") as respond, mock.patch.object(miniapp._pool, "submit") as submit:
             miniapp._route(8, {"chat": 2, "addr": ALICE}, {"id": "unique", "op": "image", "lang": "en",
+                                                              "session": miniapp.BOOT_SESSION,
                                                               "args": {"model": "personal-abcdef:image"}})
         submit.assert_not_called()
         self.assertIn("may have charged", respond.call_args.args[3])
@@ -398,7 +401,7 @@ class Isolated(unittest.TestCase):
             miniapp._notify_maintenance(notice)  # local queue failed, retry
             miniapp._notify_maintenance(notice)
             miniapp._notify_maintenance(notice)  # successful queueing is not repeated
-        self.assertEqual(attempts, [(1, "Notice"), (1, "Notice")])
+        self.assertEqual(attempts, [(1, "Maintenance: Notice"), (1, "Maintenance: Notice")])
         self.assertEqual(state.data["maintenance_notice"]["notified"]["1"], notice["revision"])
 
     def test_updates_preserve_old_apps_check_recipient_and_send_each_new_build(self):
