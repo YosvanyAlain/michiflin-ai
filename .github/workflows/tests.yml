@@ -45,7 +45,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt ruff
+          pip install -r requirements.txt ruff pytest
 
       - name: Install Playwright Chromium
         run: python -m playwright install --with-deps chromium
@@ -61,13 +61,16 @@ jobs:
           python -m unittest tests.test_personal_maintenance -v
           python -m unittest tests.test_operational_maintenance -v
           python -m unittest tests.test_owner_delivery -v
+          python -m pytest -q tests/test_5_1_features.py tests/test_relay_migration.py
           MICHIFLIN_SANDBOX_TESTS=1 python -m unittest tests.test_web_session tests.test_proxy_gateway -v
 
       - name: WebXDC behavior and package tests
         run: python tests/test_webxdc.py
 
       - name: WebXDC browser smoke test
-        run: python -m unittest tests.test_webxdc_browser -v
+        run: |
+          python -m unittest tests.test_webxdc_browser -v
+          python -m pytest -q tests/test_5_1_browser.py
 
       - name: Static checks
         run: |

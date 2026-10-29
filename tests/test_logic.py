@@ -24,6 +24,35 @@ os.environ.update(CONFIG_DIR=f"{_TMP}/cfg", JOB_DIR=f"{_TMP}/jobs", PREVIEW_DIR=
 from michiflin import ai, chat, commands, config, files, images, links, media, names, progress, queue, reader, state, tools  # noqa: E402
 
 
+def setUpModule() -> None:
+    """Pin synthetic settings even if another test imported config first."""
+    import copy
+    global _config_patch, _state_patch, _saved_state
+    _saved_state = copy.deepcopy(state.data)
+    root = Path(_TMP) / "cfg"
+    _config_patch = mock.patch.multiple(config, OWNER_ADDRESS="owner@example.org", ADMIN_ADDRESSES={"owner@example.org"},
+        ALLOWED_SENDERS={"owner@example.org"}, OWNER_ONLY=False, MAINTENANCE_MODE=False,
+        MIN_FREE_DISK_BYTES=config.MIB, GROQ_API_KEY="test", MISTRAL_API_KEY="test", ORCAROUTER_API_KEY="test",
+        FREE_GATEWAYS=False, AI_HORDE=False, POLLINATIONS_PUBLIC=False,
+        CONFIG_DIR=root, STATE_FILE=root / "michiflin-state.json", LEGACY_STATE_FILE=root / "queue-state.json",
+        JOB_ROOT=Path(_TMP) / "jobs", TEMP_ROOT=Path(_TMP) / "tmp")
+    _state_patch = mock.patch.multiple(state, CONFIG_DIR=root, STATE_FILE=root / "michiflin-state.json",
+                                      LEGACY_STATE_FILE=root / "queue-state.json")
+    _config_patch.start(); _state_patch.start()
+    from michiflin import access
+    access.reset()
+    ai.build_registry()
+
+
+def tearDownModule() -> None:
+    from michiflin import access
+    with state.lock:
+        state.data.clear(); state.data.update(_saved_state)
+    _state_patch.stop(); _config_patch.stop()
+    access.reset()
+    ai.build_registry()
+
+
 class Sent:
     def __init__(self) -> None:
         self.items: list[dict] = []

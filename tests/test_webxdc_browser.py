@@ -47,7 +47,9 @@ BRIDGE = r"""
   window.__sessionChangedNext = "";
   const responseFor = (request) => {
     switch (request.op) {
-      case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: [] };
+      case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: [],
+        modes: { kill_switch: {active:window.__modes.kill_switch}, nauta_strict: {active:window.__modes.nauta_strict, part_mb:3} },
+        maintenance_notice: {active:false, es:"Mensaje de mantenimiento", en:"Maintenance message", revision:0, expires:0} };
       case "kill_switch":
       case "nauta_strict":
         if (typeof request.args.value === "boolean") window.__modes[request.op] = request.args.value;
@@ -75,7 +77,13 @@ BRIDGE = r"""
       case "models": return models;
       case "health": return health;
       case "settings": return settings;
-      case "rates": return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() };
+      case "rates":
+        if (request.args.history) return { history: Array.from({length:request.args.days}, (_,i)=>({
+          date: new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates:{USD:390+i,EUR:420+i*2} })), complete:true, days:request.args.days, source:"elTOQUE API" };
+        return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() / 1000 };
+      case "weather": return {query: request.args.city, place:{id:1,label:"Havana, Cuba"}, candidates:[{id:1,label:"Havana, Cuba"},{id:2,label:"Havana, USA"}],
+        timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"sunny"},
+        days:[{date:"2026-10-29",code:0,description:"clear",high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",high:29,low:24,rain:65}],source:"Open-Meteo"};
       case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
       case "youtube_search": {
         const rows = window.__searchResults || [];
@@ -371,7 +379,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
                 self.assertTrue(page.get_by_role("tab", name="Sin cuota de modelos" if language == "es" else "No model quota").is_visible())
                 page.locator("#view textarea").fill("free-mode question")
-                page.locator("#view .composer button").click()
+                page.locator("#view .composer button.primary").click()
                 page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
                 sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
                 self.assertEqual(sent, "agent")
@@ -381,7 +389,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(page.get_by_text("free-mode question").count(), 0)
                 screenshot_if_requested(page, language + "-new-agent")
                 page.locator("#view textarea").fill("Weather in Havana")
-                page.locator("#view .composer button").click()
+                page.locator("#view .composer button.primary").click()
                 page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
                 sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
                 self.assertEqual(sent, "smart_agent")
@@ -482,7 +490,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     page.locator("#gear").click()
                 else:
                     page.locator('#rail [data-tab="settings"]').click()
-                self.assertEqual(page.locator('#view button[aria-pressed]').count(), 0, "must not guess while loading")
+                sent_modes = page.evaluate("window.__sentUpdates.filter(x => ['kill_switch','nauta_strict'].includes(x.payload?.op)).length")
+                self.assertEqual(sent_modes, 0, "opening settings must not send mode operations")
                 self.assertEqual(page.get_by_role("button", name="Estado" if language == "es" else "Status", exact=True).count(), 0)
                 toggle = page.locator('#view .mode-killswitch button[aria-pressed]')
                 toggle.wait_for(state="visible")
@@ -525,7 +534,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(page.evaluate("bus.local.filter(([kind]) => kind === 'jobs').length"), listeners_before)
 
                 page.locator('.tab[data-tab="ai"]:visible').click()
-                page.locator('#view .space-card').nth(1).click()
+                page.locator('#view .space-card').nth(0).click()
                 page.locator('#view .intro').wait_for(state="visible")
                 self.assertNotEqual(page.locator('#view .intro').evaluate("e => getComputedStyle(e).position"), "fixed")
                 area = page.locator('#view textarea')
@@ -726,19 +735,20 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.locator("#sheet").wait_for(state="hidden")
 
                 page.locator('.tab[data-tab="ai"]:visible').click()
-                page.get_by_role("button", name="Automático" if language == "es" else "Automatic", exact=False).first.click()
+                page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
+                page.get_by_role("tab", name="Con IA / API" if language == "es" else "With AI / API").click()
                 page.locator("#view textarea").fill("a red sailboat")
                 page.get_by_role("button", name="Crear imagen" if language == "es" else "Create image").click()
                 page.locator(".chat-image img").wait_for(state="visible")
                 self.assertTrue(page.get_by_text("OVH test", exact=False).first.is_visible())
                 image_request = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'image').at(-1).payload.args")
                 self.assertEqual(image_request["prompt"], "a red sailboat")
-                self.assertTrue(page.evaluate("messages('auto').some(m => m.imageId)"))
-                self.assertTrue(page.evaluate("(async () => !!(await media.get(messages('auto').find(m => m.imageId).imageId)))()"))
+                self.assertTrue(page.evaluate("messages('smart_agent').some(m => m.imageId)"))
+                self.assertTrue(page.evaluate("(async () => !!(await media.get(messages('smart_agent').find(m => m.imageId).imageId)))()"))
                 screenshot_if_requested(page, language + "-chat-image")
                 page.evaluate("go('chat', {space:'other:model'})")
                 self.assertEqual(page.get_by_text("a red sailboat", exact=True).count(), 0)
-                self.assertTrue(page.evaluate("messages('auto').some(m => m.imageId)"))
+                self.assertTrue(page.evaluate("messages('smart_agent').some(m => m.imageId)"))
                 self.assertEqual(errors, [])
 
     def test_personal_api_webcrypto_real_backend_synthetic_provider_bilingual(self) -> None:
@@ -778,6 +788,9 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     self.assertLessEqual(widths[0], widths[1])
                     screenshot_if_requested(page, language + "-personal-api")
                     page.locator('.tab[data-tab="ai"]:visible').click()
+                    provider = page.locator("#view .provider-card").filter(has_text="Synthetic")
+                    provider.locator(".provider-head").click()
+                    provider.locator(".model-category > summary").first.click()
                     page.get_by_text("simulated-chat", exact=True).first.click()
                     page.locator("#view textarea").fill("test question")
                     page.locator("#view .composer button.primary").click()
@@ -824,7 +837,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
         for language in ("es", "en"):
             with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
                 page.locator('.tab[data-tab="ai"]:visible').click()
-                page.get_by_role("button", name="Automático" if language == "es" else "Automatic", exact=False).first.click()
+                page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
+                page.get_by_role("tab", name="Con IA / API" if language == "es" else "With AI / API").click()
                 page.evaluate("""() => { window.__fixtureSession = 'new-synthetic-process'; window.__sessionChangedNext = 'image'; }""")
                 before = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'hello').length")
                 page.locator("#view textarea").fill("red sailboat")

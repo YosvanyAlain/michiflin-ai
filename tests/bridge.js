@@ -4,10 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const assert = require("assert");
 
-function boot(storage, sent, maximum = 128000, hello = undefined) {
+function boot(storage, sent, maximum = 128000, hello = undefined, schedule = setTimeout) {
   const listeners = {};
   const ctx = {
-    console, Blob, TextEncoder, btoa, setTimeout, clearTimeout, setInterval: () => 0, Date, Math, JSON, Promise, Map, Set, Object, Array, String, Number,
+    console, Blob, TextEncoder, btoa, setTimeout: schedule, clearTimeout, setInterval: () => 0, Date, Math, JSON, Promise, Map, Set, Object, Array, String, Number,
     localStorage: { getItem: (k) => (k in storage ? storage[k] : null), setItem: (k, v) => { storage[k] = String(v); }, removeItem: (k) => { delete storage[k]; } },
     navigator: { language: "es" },
     document: { addEventListener: (n, f) => { listeners[n] = f; }, documentElement: { lang: "es", dataset: {} }, visibilityState: "visible",
@@ -81,11 +81,11 @@ let failed = 0;
 second.promise.catch(() => { failed += 1; });
 sent = sent.slice(0, 0);
 bridge.repair();
-setTimeout(() => {
-  assert.strictEqual(failed, 1);
+setImmediate(() => {
+  assert.strictEqual(failed, 1); // promise rejection microtask has been processed
   assert.ok(bridge.pending()[third.id], "resendable request kept");
   console.log("bridge ok");
-}, 10);
+});
 
 // 5. A project larger than one update is split in bounded UTF-8-safe parts.
 {
@@ -106,10 +106,11 @@ setTimeout(() => {
 {
   const sent = [];
   let refreshed = 0;
+  const timers = [];
   const safe = boot({ "mf.botSession": JSON.stringify("old-process") }, sent, 128000, (force) => {
     assert.strictEqual(force, true);
     refreshed += 1;
-  });
+  }, (callback, delay) => { timers.push({ callback, delay }); return timers.length; });
   const requested = safe.request("image", { prompt: "fixture" });
   assert.strictEqual(sent[0].session, "old-process");
   safe.receive({ serial: 1, payload: { t: "chunk", re: requested.id, i: 0, n: 2, s: "partial" } });
@@ -118,10 +119,11 @@ setTimeout(() => {
   assert.strictEqual(safe.chunks.size, 0);
   safe.receive({ serial: 3, payload: { t: "chunk", re: requested.id, i: 1, n: 2, s: "late" } });
   assert.strictEqual(safe.chunks.size, 0, "late fragments for a settled request are ignored");
-  setTimeout(() => {
-    assert.strictEqual(refreshed, 1);
-    assert.strictEqual(sent.filter(item => item.op === "image").length, 1);
-  }, 10);
+  assert.strictEqual(timers.length, 1);
+  assert.strictEqual(timers[0].delay, 0);
+  timers[0].callback(); // exercise the scheduled refresh deterministically
+  assert.strictEqual(refreshed, 1);
+  assert.strictEqual(sent.filter(item => item.op === "image").length, 1);
 }
 
 // 7. Respect a messenger's advertised smaller update limit when splitting.

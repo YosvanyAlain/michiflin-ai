@@ -46,10 +46,10 @@ The theme follows the device (light or dark) unless you choose one in Settings.
   <img src="media/en/model-chat.png" width="230" alt="Chat with one model">
 </p>
 
-The AI tab has four spaces and a list of models:
+The AI tab has one unified agent, Coder, images and expandable model cards:
 
-- **Agent:** works on its own and never calls an AI model, so it spends no quota. It searches, reads the best sources and answers with their most relevant sentences, each with its source number. It also handles math, conversions, time, weather, rates, translation and page summaries (paste a link and ask for a summary). Answers take a few seconds.
-- **Automatic:** always uses the best free model available.
+- **Agent — No model quota:** searches and reads sources without calling an AI model. It handles math, conversions, time, weather, rates, translation and summaries, and can use limited conversational context.
+- **Agent — With AI / API:** chooses an exact model or automatic routing and may use up to four bounded public-tool steps. It consumes provider quota or balance. With an attachment it sends the supported media and recent context directly to the chosen model. It does not log in, send messages or execute code. Previous automatic-chat history is available separately and is not deleted.
 - **Coder:** builds small programs and web pages (see below).
 - **AI images:** a small studio to create images. Choose **Automatic** or one exact model; each chip shows today's uses. Cloudflare models share one free daily budget; when it is spent, all of them pause until it renews (00:00 UTC) and the studio says so.
 - **Models:** each model has its own chat, showing remaining uses and the daily reset time. Only successful answers count as uses. A paused model says why: limit reached (with the wait), key rejected (the provider key must be renewed) or no longer free; models that cannot work are dimmed. The bot checks each provider once a day and sends a notice when a model stops working, stops being free or comes back.
@@ -102,14 +102,14 @@ The default engine and the reader page size can be changed in Settings.
   <img src="media/en/translator.png" width="230" alt="Translator">
 </p>
 
-Each app asks the bot only for what it needs, to save data.
+Each app asks the bot only for what it needs, to save data. Weather uses [Open-Meteo](https://open-meteo.com/); exchange-rate history uses the [elTOQUE API](https://tasas.eltoque.com/docs/) under its [terms](https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso). The translation service receives the submitted text. External services may impose limits or be unavailable.
 
 | App | What it does |
 |---|---|
 | **YouTube** | Search videos, then download video or audio in the chosen quality, or read the transcript |
-| **Translator** | Free translator without AI, with automatic language detection |
-| **elTOQUE** | Informal exchange rates in Cuba, with a converter |
-| **Weather** | Forecast for any city |
+| **Translator** | Without AI model quota; automatic detection, external services and limits |
+| **elTOQUE** | Informal reference rates and converter; official history requires an authorized token, while the illustrative scenario is not an official forecast |
+| **Weather** | Open-Meteo current conditions, five-day forecast and location selection |
 | **News** | Headlines by topic or by search |
 | **Utilities** | Unit converter, local time and calculator |
 | **Join parts** | Joins and verifies split files (see below) |
@@ -168,7 +168,7 @@ Media segments play on their own, but joining gives one file: MP4, M4A and MP3 s
 </p>
 
 - **App:** language (automatic, Spanish or English), theme (system, light or dark) and default search engine.
-- **Safety and email:** Nauta strict limits parts to 10 MB or a smaller verified mailbox limit; the kill switch blocks new work and cooperatively pauses downloads. The controls wait for the bot's confirmed state.
+- **Safety and email:** Nauta strict limits parts to 10 MB or a smaller verified mailbox limit; the kill switch blocks new work and cooperatively pauses downloads. Opening settings only reads the saved/default state; it does not change either control. Changes are explicit and wait for the bot's confirmed state.
 - **Bot settings:** downloads, delivery, web and general options, including **Chat use** (app only, or app and commands). The owner controls the deployed bot. Legacy per-person settings can remain stored without granting access. See the [settings table](../README.md#settings).
 - **Device data:** delete AI chats, images, or history and notices. This cannot be undone.
 
@@ -184,6 +184,7 @@ Media segments play on their own, but joining gives one file: MP4, M4A and MP3 s
 
 It also includes:
 
+- **Maintenance and notice:** inactive by default; an explicit saved change starts or ends the pause. A duration may be set from 1 minute up to one year, or 0 for manual end. Authorized users are notified, and eligible queued work can resume; already-started requests may still finish.
 - **Performance:** CPU use and load, memory (total and the bot's own), disk (free space and the downloads folder), network rate, response times of quick and heavy requests, threads and the queue.
 - **Usage:** the private view shows the owner's usage; historical amounts remain stored without granting access. Pausing the queue or resetting usage are explicit owner actions; neither is performed as a historical-data purge automatically.
 - **Server:** hosting, system image, processor, session number, start time, time until the planned restart, and whether a newer version is waiting.

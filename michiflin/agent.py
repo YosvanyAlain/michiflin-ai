@@ -18,8 +18,16 @@ from . import ai, answer, chat, config, documents, extras, images, links, names,
 from .util import compact, first_url, local_today, tr
 
 GREETINGS = re.compile(r"^(hola+|buenas( tardes| noches| d[ií]as)?|buenos d[ií]as|hey|hi|hello|ey|saludos|qu[eé] tal|klk)[\s!.,😀-🙏]*$", re.I)
-CAPABILITIES = re.compile(r"^(qu[eé] (puedes|sabes) hacer|qu[eé] haces|para qu[eé] sirves|c[oó]mo funcionas|qui[eé]n eres|ayuda|help|"
-                          r"what can you do|what do you do|who are you|how do you work)[\s?!.]*$", re.I)
+CAPABILITIES = re.compile(
+    r"^(?:(?:hola|oye|dime|cu[eé]ntame|por favor|please|hi|hey|tell me)[,\s]+)*"
+    r"(?:qu[eé] (?:puedes|sabes|puedo) hacer|qu[eé] haces|para qu[eé] sirves|c[oó]mo funcionas|qui[eé]n eres|"
+    r"qu[eé] (?:funciones|herramientas|capacidades) tienes|ayuda|help|what can (?:you|i) do|what do you do|"
+    r"who are you|how do you work|what you can do|what are your (?:features|capabilities))"
+    r"(?:\s+(?:aqu[ií]|en este modo|por favor|please|here))?[\s?!.¿¡]*$", re.I)
+FOLLOW_MORE = re.compile(r"^(?:m[aá]s|m[aá]s detalles|ampl[ií]a(?:lo)?|cu[eé]ntame m[aá]s|contin[uú]a|"
+                         r"more|more details|tell me more|continue)[\s?!.]*$", re.I)
+FOLLOW_SUMMARY = re.compile(r"^(?:res[uú]melo|res[uú]mela|resume|resumen|summari[sz]e it|summary)[\s?!.]*$", re.I)
+FOLLOW_CITY = re.compile(r"^(?:y|and|what about)\s+(?:en|in)?\s*([\w\sáéíóúñ,.-]{2,60})[?!.]*$", re.I)
 THANKS = re.compile(r"^(gracias|muchas gracias|thanks|thank you|ok|okay|vale|listo|perfecto|genial|👍|🙏|❤️)[\s!.]*$", re.I)
 WEATHER = re.compile(r"\b(clima|tiempo|temperatura|pron[oó]stico|llover[aá]?|lluvia|weather|forecast)\b.*?\b(en|de|para|in|for)\s+([\w\sáéíóúñ,.-]{2,60})\??$", re.I)
 CURRENCY = {"dolar": "USD", "dólar": "USD", "dolares": "USD", "dólares": "USD", "usd": "USD", "euro": "EUR", "euros": "EUR",
@@ -132,8 +140,8 @@ def reply(chat_id: int, query: str, locale: str, results: list[tools.Result] | N
             entries = "\n".join(links.entry(index, hit.title, hit.url, hit.snippet) for index, hit in enumerate(hits[:5], 1))
             return tr(locale, "🔎 No encontré una respuesta directa. Estas fuentes pueden ayudar:\n\n",
                       "🔎 No direct answer found. These sources may help:\n\n") + entries
-        return tr(locale, "🤔 No encontré información clara sobre eso. Prueba con otras palabras o con /buscar.",
-                  "🤔 I found no clear information about that. Try other words or /search.")
+        return tr(locale, "🤔 No encontré fuentes claras sobre esa consulta. Prueba con el tema y un lugar o fecha; también puedes decir ‘busca …’ o preguntarme qué puedo hacer.",
+                  "🤔 I found no clear sources for that question. Try a topic with a place or date; you can also say ‘search …’ or ask what I can do.")
     tail = "\n".join(f"[{index}] {compact(source.title, 70)} · {links.command('v', source.url)}" for index, source in enumerate(cited, 1))
     more_hint = names.cmd(locale, "more") + tr(locale, " → más detalle", " → more detail")
     return f"💡 {text}\n\n{tail}\n\n{more_hint}".replace("\n\n\n\n", "\n\n")
@@ -218,19 +226,29 @@ def send_image(chat_id: int, prompt: str, locale: str) -> None:
     chat.send(chat_id, f"🎨 {compact(images.clean_prompt(prompt), 160)}\n— {result.source}", file=target, filename=target.name, viewtype="Image")
 
 
-def handle(chat_id: int, text: str, locale: str) -> None:
+def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> None:
     """Route one plain-text message through free tools only; models and their keys are never touched."""
     with ai.isolated():
-        _handle(chat_id, text, locale)
+        _handle(chat_id, text, locale, history)
 
 
-def _handle(chat_id: int, text: str, locale: str) -> None:
+def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> None:
     address = (chat.sender() or "").strip().lower()
     if address and state.get_kill_switch(address):
         chat.text(chat_id, tr(locale, "🛑 Kill switch activo. Usa /kill_switch no para reanudar.",
                               "🛑 Kill switch is on. Use /kill_switch no to resume."))
         return
-    stripped = text.strip().lstrip("¿¡").strip()
+    stripped = text.strip().strip("\"“”‘’«»").lstrip("¿¡").strip()
+    item = memory(chat_id)
+    # Restore a limited local conversational topic after a restart. History is
+    # supplied by this same app instance and never interpreted as instructions.
+    if not item.last_query and (FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped) or FOLLOW_CITY.match(stripped)):
+        prior = next((str(turn[1])[:6000] for turn in reversed((history or [])[-12:])
+                      if isinstance(turn, list) and len(turn) == 2 and turn[0] == "user" and isinstance(turn[1], str)), "")
+        if prior:
+            previous_weather = WEATHER.search(prior.strip(" ¿¡?"))
+            item.last_query = prior
+            item.last_kind = "weather" if previous_weather else "answer"
     if GREETINGS.match(stripped):
         chat.text(chat_id, tr(locale, "👋 ¡Hola! Pregúntame lo que quieras o pega un enlace. Busco, leo las fuentes y te traigo lo esencial.",
                               "👋 Hi! Ask me anything or paste a link. I search, read the sources and bring you the essentials."))
@@ -242,12 +260,28 @@ def _handle(chat_id: int, text: str, locale: str) -> None:
             "- Busco en la web, leo las fuentes y extraigo las frases clave.\n- Explico conceptos con Wikipedia.\n"
             "- Resumo y traduzco páginas.\n- Calculo y convierto monedas, unidades y horas.\n"
             "- Consulto el clima, la tasa informal y las noticias.\n- Abro enlaces y busco videos.\n\n"
-            "Para conversar, redactar o programar, usa Automático o un modelo en la pestaña IA.",
+            "Prueba: ‘clima en La Habana’, ‘convierte 5 km a millas’, ‘traduce al inglés buenos días’ o ‘busca energías renovables’. "
+            "Puedo ampliar una búsqueda si dices ‘más’. Para redactar o razonar con un modelo, cambia al modo Con IA; "
+            "para proyectos usa Programador. No inicio sesión ni realizo acciones privadas por mi cuenta.",
             "I am the Michiflin AI agent. I only use free tools, never an AI model or its quota:\n"
             "- I search the web, read the sources and extract the key sentences.\n- I explain concepts with Wikipedia.\n"
             "- I summarize and translate pages.\n- I calculate and convert currencies, units and time zones.\n"
             "- I check the weather, the informal exchange rate and the news.\n- I open links and find videos.\n\n"
-            "To chat, write or code, use Automatic or a model in the AI tab."))
+            "Try: ‘weather in Havana’, ‘convert 5 km to miles’, ‘translate to Spanish good morning’ or ‘search renewable energy’. "
+            "Say ‘more’ to expand a search. For writing or reasoning with a model, switch to With AI; "
+            "use Coder for projects. I do not log in or perform private actions on my own."))
+        return
+    if FOLLOW_MORE.match(stripped):
+        chat.text(chat_id, more(chat_id, locale))
+        return
+    if FOLLOW_SUMMARY.match(stripped):
+        chat.text(chat_id, summary(chat_id, locale))
+        return
+    follow_city = FOLLOW_CITY.match(stripped)
+    if follow_city and item.last_kind == "weather":
+        city = follow_city.group(1).strip(" ?.,")
+        item.last_query = tr(locale, f"clima en {city}", f"weather in {city}")
+        chat.text(chat_id, tools.weather_text(city, locale))
         return
     if THANKS.match(stripped):
         chat.text(chat_id, tr(locale, "😺 ¡A la orden!", "😺 You're welcome!"))
@@ -287,6 +321,7 @@ def _handle(chat_id: int, text: str, locale: str) -> None:
         return
     match = WEATHER.search(stripped)
     if match and len(stripped) < 120:
+        item.last_query, item.last_kind, item.last_results = stripped, "weather", []
         chat.text(chat_id, tools.weather_text(match.group(3).strip(" ?.,"), locale))
         return
     match = CONVERT.search(stripped)
@@ -312,9 +347,9 @@ def _handle(chat_id: int, text: str, locale: str) -> None:
         return
     match = DEFINITION.match(stripped)
     if match and not CURRENT.search(stripped):
-        summary = tools.wiki_summary(match.group(2), locale)
-        if summary and answer._about(summary[0], stripped):
-            title, extract, page_url = summary
+        wiki_result = tools.wiki_summary(match.group(2), locale)
+        if wiki_result and answer._about(wiki_result[0], stripped):
+            title, extract, page_url = wiki_result
             item = memory(chat_id)
             item.last_query, item.last_kind, item.last_results = stripped, "wiki", []
             chat.text(chat_id, f"📚 {title}\n\n{extract}\n\n{links.command('v', page_url)} · {names.cmd(locale, 'more')}")

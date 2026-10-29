@@ -16,6 +16,8 @@ DEFAULT_ES = "El bot está en mantenimiento. Sus tareas están pausadas y la col
 DEFAULT_EN = "The bot is under maintenance. Work is paused and the queue will continue when maintenance ends."
 MAX_TEXT = 280
 _profile_lock = threading.Lock()
+MAX_MINUTES = 525_600  # up to one year; zero is an explicit manual end
+_schedule_wake = threading.Event()
 
 
 def _text(value: Any) -> str:
@@ -26,15 +28,18 @@ def _text(value: Any) -> str:
 
 
 def get() -> dict[str, Any]:
+    expire_if_due()
     with state.lock:
         value = state.data.get("maintenance_notice")
         value = dict(value) if isinstance(value, dict) else {}
     return {"active": value.get("active") is True, "es": _text(value.get("es")) or DEFAULT_ES,
-            "en": _text(value.get("en")) or DEFAULT_EN, "revision": int(value.get("revision") or 0)}
+            "en": _text(value.get("en")) or DEFAULT_EN, "revision": int(value.get("revision") or 0),
+            "expires": float(value.get("expires") or 0)}
 
 
-def set_notice(active: bool, es: str, en: str) -> dict[str, Any]:
-    if type(active) is not bool or not isinstance(es, str) or not isinstance(en, str):
+def set_notice(active: bool, es: str, en: str, minutes: int | None = None) -> dict[str, Any]:
+    if (type(active) is not bool or not isinstance(es, str) or not isinstance(en, str)
+            or (minutes is not None and (type(minutes) is not int or not 0 <= minutes <= MAX_MINUTES))):
         raise ValueError("notice")
     if len(es) > MAX_TEXT or len(en) > MAX_TEXT or (active and not _text(es)):
         raise ValueError("notice")
@@ -42,8 +47,9 @@ def set_notice(active: bool, es: str, en: str) -> dict[str, Any]:
         current = state.data.get("maintenance_notice")
         current = dict(current) if isinstance(current, dict) else {}
         starting = active and current.get("active") is not True
+        expires = (time.time() + minutes * 60 if minutes else 0.0) if active and minutes is not None else (float(current.get("expires") or 0) if active and not starting else 0.0)
         updated = {**current, "active": active, "es": _text(es) or DEFAULT_ES,
-                   "en": _text(en) or DEFAULT_EN,
+                   "en": _text(en) or DEFAULT_EN, "expires": expires,
                    "generation": int(current.get("generation") or 0) + int(starting),
                    "revision": int(current.get("revision") or 0) + 1, "updated": time.time()}
         state.data["maintenance_notice"] = updated
@@ -51,11 +57,53 @@ def set_notice(active: bool, es: str, en: str) -> dict[str, Any]:
         state.save()
     from . import queue
     queue.wake()
+    _schedule_wake.set()
     if starting:
         # Stop active browser sessions without waiting for a network operation.
         from . import live_web
         live_web.pause_for_maintenance()
     return get()
+
+
+def expire_if_due() -> bool:
+    """Atomically end an expired pause; never alter access or manual queue pauses."""
+    with state.lock:
+        current = state.data.get("maintenance_notice")
+        if not isinstance(current, dict) or current.get("active") is not True:
+            return False
+        try:
+            expires = float(current.get("expires") or 0)
+        except (TypeError, ValueError):
+            return False  # malformed state fails closed
+        if not expires or time.time() < expires:
+            return False
+        current.update(active=False, expires=0.0, revision=int(current.get("revision") or 0) + 1, updated=time.time())
+        state.save()
+    from . import queue
+    queue.wake()
+
+    def announce() -> None:
+        from . import miniapp
+        notice = get()
+        sync_profile()
+        miniapp._notify_maintenance(notice)
+    threading.Thread(target=announce, name="maintenance-expired", daemon=True).start()
+    return True
+
+
+def scheduler() -> None:
+    """Wake near a deadline, including after restart; no automatic activation."""
+    while True:
+        _schedule_wake.clear()
+        expire_if_due()
+        with state.lock:
+            current = state.data.get("maintenance_notice") or {}
+            try:
+                expires = float(current.get("expires") or 0) if current.get("active") is True else 0.0
+            except (TypeError, ValueError, AttributeError):
+                expires = 0.0
+        wait = max(0.1, min(30.0, expires - time.time())) if expires else 30.0
+        _schedule_wake.wait(wait)
 
 
 def text(locale: str) -> str:

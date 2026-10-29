@@ -693,3 +693,88 @@ details[open] .caret { transform: rotate(180deg); }
 
 /* Provider names and base URLs are user supplied and may be unbroken. */
 .personal-providers .card { min-width: 0; overflow-wrap: anywhere; }
+
+/* Compact, non-overlapping navigation and progressive disclosure. */
+.tab { min-width: 0; }
+.tab .tab-icon { display: grid; place-items: center; }
+.tab .ic { padding-left: clamp(3px, 2.5vw, 16px); padding-right: clamp(3px, 2.5vw, 16px); }
+.tab > span:last-child { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Keep only the compact mode switch sticky. Model lists and help scroll, so
+   expanded controls never overlap the conversation on a small phone. */
+.view.chat-view { gap: 8px; }
+.agent-mode { position: sticky; top: 0; z-index: 5; padding: 8px 0; margin-bottom: 0; background: var(--bg); min-width: 0; }
+.agent-mode ~ .chat-meta { position: static; }
+.agent-options { gap: 5px; min-width: 0; }
+.agent-mode .segmented { width: 100%; overflow: visible; }
+.agent-mode .segmented button { min-width: 0; white-space: normal; line-height: 1.2; min-height: 42px; }
+.chat-meta { gap: 5px; padding: 3px 0; }
+.chat-meta .chip { font-size: 12px; }
+.composer-wrap { z-index: 2; }
+.context-help { max-width: 100%; color: var(--muted); font-size: 12.5px; }
+.context-help summary { display: inline-flex; gap: 5px; padding: 5px 1px; color: var(--accent-strong); font-weight: 650; }
+.context-help summary .ic { width: 15px; height: 15px; }
+.context-help p { margin: 4px 0 8px; line-height: 1.45; }
+.context-help .caret { margin-left: 1px; }
+.search-selectors { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); gap: 8px; }
+.search-selectors > .stack { gap: 4px; min-width: 0; }
+.search-selectors .segmented button { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 7px 4px; min-width: 0; }
+.search-selectors .segmented .ic { width: 15px; height: 15px; }
+.provider-card, .image-provider, .settings-group, .utility-card { min-width: 0; }
+.provider-card summary small, .utility-card summary small, .agent-picker summary small, .model-choice small { display: block; }
+.provider-body, .picker-body, .utility-body { margin-top: 12px; }
+.model-category, .agent-provider, .image-family { border-top: 1px solid var(--line); padding: 10px 0 2px; }
+.model-category summary, .agent-provider summary, .image-family summary { min-height: 34px; }
+.model-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; padding: 8px 0; }
+.model-choice { display: flex; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 10px; text-align: left;
+  border: 1px solid var(--line); border-radius: 13px; background: var(--surface-2); }
+.model-choice .grow, .provider-head .grow, .agent-picker .grow { min-width: 0; overflow-wrap: anywhere; }
+.model-choice[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); }
+.model-choice .chip { max-width: 45%; white-space: normal; }
+.agent-picker { padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.agent-provider .model-choice { margin-top: 6px; }
+.mode-card small { display: block; margin: 8px 0; }
+.mode-card .btn { margin-top: 4px; }
+
+/* Forecasts use Open-Meteo codes rather than decorative, unrelated icons. */
+.weather-hero { position: relative; overflow: hidden; display: grid; grid-template-columns: 1fr auto; gap: 14px;
+  border-radius: 22px; padding: 20px; color: #fff; background: linear-gradient(130deg, #126a80, #3488b1 60%, #85bec8); box-shadow: var(--shadow); }
+.weather-place { grid-column: 1; grid-row: 1; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.weather-place small { opacity: .9; overflow-wrap: anywhere; }
+.weather-place b { text-transform: capitalize; }
+.weather-temp { font-size: clamp(42px, 11vw, 64px); font-weight: 750; line-height: 1.1; letter-spacing: -2px; }
+.weather-sky { grid-column: 2; grid-row: 1; display: grid; place-items: center; align-self: start; }
+.weather-art.ic { width: 80px; height: 80px; stroke-width: 1.2; animation: weather-float 5s ease-in-out infinite; }
+.weather-stats { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.weather-stats > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 9px; border-radius: 12px; background: rgba(255,255,255,.15); }
+.weather-stats .ic { width: 17px; height: 17px; }
+.weather-stats small { opacity: .85; }
+.weather-stats b { font-size: 13px; overflow-wrap: anywhere; }
+.weather-days { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; }
+.weather-day { flex: 1 0 104px; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 12px 7px; border-radius: 14px;
+  background: var(--surface); border: 1px solid var(--line); text-align: center; }
+.weather-day .ic { width: 28px; height: 28px; color: var(--accent); }
+.weather-desc { text-transform: capitalize; min-height: 2.6em; }
+@keyframes weather-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+
+/* Charts show only retrieved observations. Scenario is a separate, labelled card. */
+.rate-chart { display: flex; align-items: stretch; gap: 6px; overflow-x: auto; height: 190px; padding: 12px 4px 4px; border-bottom: 1px solid var(--line); }
+.chart-day { flex: 1 0 42px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 4px; min-width: 0; }
+.chart-short .chart-day { flex: 1 1 0; }
+.chart-value { font-size: 10px; color: var(--muted); }
+.chart-bar { display: block; max-height: 120px; width: min(24px, 80%); min-height: 5px; border-radius: 7px 7px 2px 2px;
+  background: linear-gradient(180deg, var(--accent), #7fcdb8); }
+.chart-day small { font-size: 10px; white-space: nowrap; color: var(--muted); }
+.scenario { padding: 12px; border: 1px dashed var(--line); border-radius: 14px; background: var(--surface-2); }
+.scenario p { margin: 5px 0; }
+.scenario strong { font-size: 20px; color: var(--accent-strong); }
+@media (max-width: 390px) {
+  .search-selectors { grid-template-columns: 1fr; }
+  .weather-hero { padding: 16px; }
+  .weather-art.ic { width: 62px; height: 62px; }
+  .weather-stats > span { padding: 7px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .weather-art.ic { animation: none; }
+}
+
+@media (max-width: 350px) { .tabs .tab { font-size: 10px; } }

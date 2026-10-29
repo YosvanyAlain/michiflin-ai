@@ -530,6 +530,7 @@ def on_start(bot: Any, args: Any) -> None:
                      name="coder-probe", daemon=True).start()
     if browser.available():
         threading.Thread(target=_background_after_maintenance, args=(browser.warm_up,), name="browser-warmup", daemon=True).start()
+    threading.Thread(target=maintenance.scheduler, name="maintenance-scheduler", daemon=True).start()
     queue.start()
     _start_cursor(bot, accid)
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()

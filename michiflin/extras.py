@@ -6,10 +6,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 
 import requests
 
-from . import names
+from . import config, names
 from .util import compact, tr
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"}
@@ -22,6 +23,8 @@ LANGUAGES = {
     "it": ("italiano", "Italian"), "de": ("alemán", "German"), "ru": ("ruso", "Russian"), "zh-CN": ("chino", "Chinese"),
     "ja": ("japonés", "Japanese"), "ko": ("coreano", "Korean"), "ar": ("árabe", "Arabic"), "nl": ("neerlandés", "Dutch"),
     "pl": ("polaco", "Polish"), "tr": ("turco", "Turkish"), "uk": ("ucraniano", "Ukrainian"), "hi": ("hindi", "Hindi"),
+    "sv": ("sueco", "Swedish"), "el": ("griego", "Greek"), "he": ("hebreo", "Hebrew"), "ca": ("catalán", "Catalan"),
+    "ro": ("rumano", "Romanian"), "vi": ("vietnamita", "Vietnamese"), "id": ("indonesio", "Indonesian"),
 }
 _LANGUAGE_WORDS = {
     "español": "es", "espanol": "es", "spanish": "es", "es": "es", "inglés": "en", "ingles": "en", "english": "en", "en": "en",
@@ -44,29 +47,111 @@ def language_name(code: str, locale: str) -> str:
     return (pair[1] if locale == "en" else pair[0]) if pair else code
 
 
+def _translation_chunks(text: str, max_bytes: int) -> list[tuple[str, str]]:
+    """Split at whitespace without dropping content; keep separators outside translations.
+
+    Providers limit UTF-8 bytes, not necessarily Unicode characters. Never
+    silently return a translated prefix as if it was the entire text.
+    """
+    parts: list[tuple[str, str]] = []
+    rest = text
+    while rest:
+        used = 0
+        end = 0
+        for char in rest:
+            size = len(char.encode("utf-8"))
+            if used + size > max_bytes:
+                break
+            used += size
+            end += 1
+        if end == len(rest):
+            parts.append((rest, ""))
+            break
+        if not end:
+            raise ValueError("segment")
+        # Prefer a natural boundary, but retain a long word rather than truncating it.
+        boundary = max(rest.rfind("\n", 0, end), rest.rfind(" ", 0, end))
+        if boundary > end // 3:
+            end = boundary
+        segment = rest[:end]
+        tail = rest[end:]
+        sep_match = re.match(r"\s+", tail)
+        separator = sep_match.group() if sep_match else ""
+        parts.append((segment, separator))
+        rest = tail[len(separator):]
+    return parts
+
+
+def translate_detailed(text: str, target: str, source: str = "auto") -> dict[str, str]:
+    """Translate without AI-provider quota; output is all-or-nothing.
+
+    Public services are external, may impose their own limits, and receive the text.
+    The optional LibreTranslate fallback is an operator-configured HTTPS API.
+    Never silently guess a source language or truncate text.
+    """
+    if not text or len(text) > 4500 or target not in LANGUAGES or (source != "auto" and source not in LANGUAGES):
+        return {"text": "", "detected": source, "provider": ""}
+    if source == target:
+        return {"text": text, "detected": source, "provider": "identity"}
+    try:
+        translated, detected = [], source
+        for segment, separator in _translation_chunks(text, 3500):
+            state_check_translation()
+            response = requests.get("https://translate.googleapis.com/translate_a/single",
+                                    params={"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": segment}, headers=UA, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            part = "".join(str(item[0]) for item in data[0] if item and item[0])
+            if not part:
+                raise ValueError("empty translation")
+            if source == "auto" and len(data) > 2 and data[2]:
+                # Keep the first detected language; subsequent chunks may differ.
+                if detected == "auto":
+                    detected = str(data[2])
+            translated.append(part + separator)
+        return {"text": "".join(translated), "detected": detected, "provider": "Google Translate"}
+    except (requests.RequestException, ValueError, IndexError, TypeError, KeyError):
+        pass
+    # Public translation-memory matches are not reliably machine translations:
+    # an exact match can contain vandalized or unrelated text. Do not silently
+    # present those as a fallback. An operator may configure LibreTranslate.
+    endpoint = config.LIBRETRANSLATE_URL.strip()
+    try:
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("invalid translation endpoint")
+        translated, detected = [], source
+        for segment, separator in _translation_chunks(text, 3500):
+            state_check_translation()
+            body = {"q": segment, "source": source, "target": target, "format": "text"}
+            if config.LIBRETRANSLATE_API_KEY:
+                body["api_key"] = config.LIBRETRANSLATE_API_KEY
+            response = requests.post(endpoint, json=body, timeout=25, allow_redirects=False)
+            response.raise_for_status()
+            if response.status_code != 200:
+                raise ValueError("translation unavailable")
+            data = response.json()
+            part = str(data.get("translatedText") or "")
+            if not part:
+                raise ValueError("translation unavailable")
+            if source == "auto" and detected == "auto":
+                detected = str((data.get("detectedLanguage") or {}).get("language") or "auto")
+            translated.append(part + separator)
+        return {"text": "".join(translated), "detected": detected, "provider": "LibreTranslate"}
+    except (requests.RequestException, ValueError, TypeError, KeyError):
+        return {"text": "", "detected": source, "provider": ""}
+
+
+def state_check_translation() -> None:
+    # Respect maintenance and the user's kill switch between chunks.
+    from . import state
+    state.check_work_allowed()
+
+
 def translate(text: str, target: str, source: str = "auto") -> tuple[str, str]:
-    """Return (translation, detected source language); empty translation when every service fails."""
-    try:
-        response = requests.get("https://translate.googleapis.com/translate_a/single",
-                                params={"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": text}, headers=UA, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        translated = "".join(part[0] for part in data[0] if part and part[0])
-        if translated:
-            return translated, str(data[2] or source)
-    except (requests.RequestException, ValueError, IndexError, TypeError):
-        pass
-    try:
-        pair = f"{'autodetect' if source == 'auto' else source}|{target}"
-        response = requests.get("https://api.mymemory.translated.net/get", params={"q": text[:500], "langpair": pair}, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-        translated = str((data.get("responseData") or {}).get("translatedText") or "")
-        if translated and data.get("responseStatus") == 200:
-            return translated, source
-    except (requests.RequestException, ValueError):
-        pass
-    return "", source
+    """Compatibility wrapper for chat commands and old miniapp instances."""
+    result = translate_detailed(text, target, source)
+    return result["text"], result["detected"]
 
 
 def translate_text(argument: str, locale: str) -> str:
@@ -77,10 +162,13 @@ def translate_text(argument: str, locale: str) -> str:
                   f"Usage: {names.cmd(locale, 'translate')} [language] text · e.g. {names.cmd(locale, 'translate')} spanish good morning")
     target = language_code(words[0]) if len(words) == 2 else ""
     text = words[1] if target else argument.strip()
-    translated, detected = translate(text[:4500], target or "es")
+    if len(text) > 4500:
+        return tr(locale, "⚠️ El texto supera 4500 caracteres; divídelo antes de traducir.",
+                  "⚠️ Text exceeds 4500 characters; split it before translating.")
+    translated, detected = translate(text, target or "es")
     if translated and not target and detected.startswith("es"):
         target = "en"
-        translated, detected = translate(text[:4500], "en")
+        translated, detected = translate(text, "en")
     target = target or "es"
     if not translated:
         return tr(locale, "⚠️ Los traductores no respondieron. Prueba más tarde.", "⚠️ The translators did not answer. Try again later.")
