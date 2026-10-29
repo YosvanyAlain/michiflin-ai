@@ -108,3 +108,40 @@ def test_nested_model_and_image_selection_with_legacy_history_preserved(language
         assert page.evaluate("store.get('chat.auto')[0].text") == "legacy preserved"
         screenshot_if_requested(page, f"{language}-models-5-1")
         assert errors == []
+
+
+@pytest.mark.parametrize("language", ["es", "en"])
+def test_failed_model_fallback_uses_unified_agent_without_resetting_selection(language):
+    with browser_fixture(language, {"width": 320, "height": 720}) as (page, errors):
+        page.evaluate("""() => {
+          prefs.agentModel = 'test:chosen';
+          saveMessages('smart_agent', [
+            {role:'user',text:'Retry this task',ts:101},
+            {role:'assistant',text:'',error:'SIMULATED failure',ts:102}
+          ]);
+          go('chat', {space:'smart_agent'});
+        }""")
+        page.get_by_role("button", name="Usar Agente con IA (automático)" if language == "es" else "Use AI Agent (automatic)").click()
+        request = page.evaluate("window.__sentUpdates.map(x => x.payload).filter(x => x && x.op === 'ask').at(-1).args")
+        assert request["space"] == "smart_agent"
+        assert "agent_model" not in request
+        assert page.evaluate("prefs.agentModel") == "test:chosen"
+        assert page.evaluate("(store.get('chat.auto', []) || []).length") == 0
+        assert errors == []
+
+
+@pytest.mark.parametrize("language", ["es", "en"])
+def test_retry_never_silently_drops_lost_attachment(language):
+    with browser_fixture(language, {"width": 320, "height": 720}) as (page, errors):
+        page.evaluate("""() => {
+          saveMessages('smart_agent', [
+            {role:'user',text:'Please read',ts:201,file:{name:'example.txt',size:10,kind:'document'}},
+            {role:'assistant',text:'',error:'SIMULATED failure',ts:202}
+          ]);
+          go('chat', {space:'smart_agent'});
+        }""")
+        page.get_by_role("button", name="Usar Agente con IA (automático)" if language == "es" else "Use AI Agent (automatic)").click()
+        page.get_by_text("El adjunto ya no está en memoria. Vuelve a adjuntarlo para reintentar." if language == "es" else
+                         "The attachment is no longer in memory. Attach it again to retry.").wait_for()
+        assert page.evaluate("window.__sentUpdates.filter(x => x.payload && x.payload.op === 'ask').length") == 0
+        assert errors == []

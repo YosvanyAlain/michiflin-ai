@@ -880,7 +880,7 @@ function saveMessages(space, list) {
 
 const attachments = new Map(); // message time -> attachment, kept in memory for retries only
 
-function ask(space, text, file = null) {
+function ask(space, text, file = null, options = {}) {
   const list = messages(space);
   // Stay within the 128 KB WebXDC update limit, especially with a large attachment.
   const history = [];
@@ -898,7 +898,7 @@ function ask(space, text, file = null) {
     }
   }
   const args = { space, text, history };
-  if (space === "smart_agent" && prefs.agentModel) args.agent_model = prefs.agentModel;
+  if (space === "smart_agent" && prefs.agentModel && !options.automaticModel) args.agent_model = prefs.agentModel;
   if (file) args.file = { name: file.name, mime: file.mime, b64: file.b64 };
   const { id } = bridge.request("ask", args, { space });
   if (!id) return false;
@@ -1015,12 +1015,23 @@ function bubble(space, item, list) {
   if (item.error) {
     const index = list.indexOf(item);
     const question = list.slice(0, index).reverse().find((entry) => entry.role === "user");
+    const retryFile = () => {
+      const file = attachments.get(question.ts) || null;
+      if (question.file && !file) { toast(t("retry_attachment_missing"), "bad"); return undefined; }
+      return file;
+    };
     const retry = () => {
+      const file = retryFile();
+      if (file === undefined) return;
       saveMessages(space, list.filter((entry) => entry !== item && entry !== question));
       if (item.imageRequest) createChatImage(space, question.text);
-      else ask(space, question.text, attachments.get(question.ts) || null);
+      else ask(space, question.text, file);
     };
-    const automatic = () => { ask("auto", question.text); go("chat", { space: "auto" }); };
+    const automatic = () => {
+      const file = retryFile();
+      if (file === undefined) return;
+      if (ask("smart_agent", question.text, file, { automaticModel: true })) go("chat", { space: "smart_agent" });
+    };
     return h("div", { class: "bubble bot error" }, icon("alert"), h("span", { class: "grow" }, item.error),
       question ? h("div", { class: "error-actions" },
         h("button", { class: "btn small ghost", onclick: retry }, icon("refresh"), t("retry")),
