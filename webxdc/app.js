@@ -648,6 +648,10 @@ async function pinProvider(key) {
   }
 }
 
+function modelCount(count) {
+  return t(count === 1 ? "model_count_one" : "model_count", { n: count });
+}
+
 function modelCategory(model) {
   const roles = model.roles || [];
   for (const key of ["vision", "code", "reason", "long", "fast", "chat"]) if (roles.includes(key)) return key;
@@ -668,7 +672,7 @@ function modelSections() {
       groups.get(key).push(model);
     }
     const categories = [...groups.entries()].map(([name, models]) => h("details", { class: "model-category" },
-      h("summary", {}, h("b", {}, role(name)), h("small", { class: "muted" }, t("model_count", { n: models.length })), icon("down", "caret")),
+      h("summary", {}, h("b", {}, role(name)), h("small", { class: "muted" }, modelCount(models.length)), icon("down", "caret")),
       h("div", { class: "model-cards" }, models.map((model) =>
         h("button", { class: "model-choice" + (modelBroken(model, provider) ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
           brandMark(brandOf(model, provider)),
@@ -676,7 +680,7 @@ function modelSections() {
           modelState(model, provider), icon("next"))))));
     out.push(h("details", { class: "card provider-card" },
       h("summary", { class: "provider-head" }, brandMark(brandOf(null, provider)),
-        h("span", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, t("model_count", { n: (provider.models || []).length }))),
+        h("span", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, modelCount((provider.models || []).length))),
         icon("down", "caret")),
       h("div", { class: "provider-body stack" },
         h("div", { class: "row between wrap" }, h("small", { class: "muted" }, provider.personal ?
@@ -1281,11 +1285,13 @@ VIEWS.images = {
             if (!families.has(family)) families.set(family, []);
             families.get(family).push(source);
           }
+          const providerNames = { cf: "Cloudflare", hf: "Hugging Face", ovh: "OVHcloud", horde: "AI Horde", pollinations: "Pollinations" };
+          const providerName = providerNames[provider] || (sources[0].personal ? String(sources[0].label || "").split(" · ")[0] : provider.toUpperCase());
           return h("details", { class: "card image-provider wide" },
-            h("summary", {}, icon("image"), h("b", { class: "grow" }, provider.toUpperCase()), h("small", { class: "muted" }, t("model_count", { n: sources.length })), icon("down", "caret")),
+            h("summary", {}, icon("image"), h("b", { class: "grow" }, providerName), h("small", { class: "muted" }, modelCount(sources.length)), icon("down", "caret")),
             h("div", { class: "provider-body stack" }, [...families.entries()].map(([family, options]) =>
               h("details", { class: "image-family" },
-                h("summary", {}, h("b", { class: "grow" }, family), h("small", { class: "muted" }, t("model_count", { n: options.length })), icon("down", "caret")),
+                h("summary", {}, h("b", { class: "grow" }, family), h("small", { class: "muted" }, modelCount(options.length)), icon("down", "caret")),
                 h("div", { class: "model-cards" }, options.map((source) => {
                   const resting = source.cooldown > now();
                   return h("button", { class: "model-choice", "aria-pressed": String(prefs.imageModel === source.key),
