@@ -18,7 +18,9 @@ os.environ.setdefault("PREVIEW_DIR", "/tmp/michiflin-test/tmp")
 
 def dictionaries() -> dict:
     script = f"{(APP / 'i18n.js').read_text()}\nprocess.stdout.write(JSON.stringify(I18N));"
-    return json.loads(subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout)
+    # Pass the growing dictionary over stdin; a single argv string can exceed
+    # the OS per-argument limit even when total argv is otherwise small.
+    return json.loads(subprocess.run(["node", "-"], input=script, capture_output=True, text=True, check=True).stdout)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is required")
@@ -56,7 +58,7 @@ class Translations(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.i18n = dictionaries()
-        cls.code = "\n".join((APP / name).read_text() for name in ("app.js", "core.js", "coder.js", "live.js"))
+        cls.code = "\n".join((APP / name).read_text() for name in ("app.js", "core.js", "coder.js", "live.js", "filekit.js"))
 
     def test_same_keys(self):
         self.assertEqual(set(self.i18n["es"]) ^ set(self.i18n["en"]), set())
@@ -110,7 +112,9 @@ class Package(unittest.TestCase):
         target = miniapp.build()
         with zipfile.ZipFile(target) as archive:
             self.assertEqual(sorted(archive.namelist()), sorted(miniapp.APP_FILES))
-        self.assertLess(target.stat().st_size, 400_000)
+        # Includes the offline WASM archive engine and its corresponding source.
+        # Keep a margin under common 10 MiB mailbox-part limits.
+        self.assertLess(target.stat().st_size, 6_000_000)
 
 
 

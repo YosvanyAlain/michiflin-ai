@@ -1,0 +1,7 @@
+Synthetic RAR fixtures from libarchive/libarchive, master commit
+348e5a2e27503f5bf114e298e2bd9ddcd59ab48e, libarchive/test/:
+- test_read_format_rar_encryption_data.rar.uu (password 12345678)
+- test_rar_multivolume_single_file.part1.rar.uu through part3.rar.uu
+The upstream uuencoded fixtures were decoded without modification. See
+LICENSE-libarchive.txt and the upstream test sources for the BSD-style terms.
+https://github.com/libarchive/libarchive/tree/348e5a2e27503f5bf114e298e2bd9ddcd59ab48e/libarchive/test

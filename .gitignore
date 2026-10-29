@@ -11,6 +11,9 @@ michiflin-queue/
 attachments/
 downloads/
 *.tar.gz
+# Corresponding source archives for the separately licensed offline 7-Zip engine.
+!webxdc/vendor/7zip/source-7zip-26.05.tar.gz
+!webxdc/vendor/7zip/source-wrapper-26.5.0.tar.gz
 *.pem
 *.key
 

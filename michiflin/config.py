@@ -122,6 +122,10 @@ ELTOQUE_REFRESH_SECONDS = max(120, min(3600, env_int("ELTOQUE_REFRESH_SECONDS", 
 ELTOQUE_DERIVED_CALCULATIONS = env("ELTOQUE_DERIVED_CALCULATIONS", "1").lower() in {"1", "true", "yes", "on"}
 LIBRETRANSLATE_URL = env("LIBRETRANSLATE_URL")
 LIBRETRANSLATE_API_KEY = env("LIBRETRANSLATE_API_KEY")
+# A separate, public rule-based fallback; empty disables it. Text is sent to
+# this service, which can impose its own limits and has varying pair quality.
+APERTIUM_URL = env("APERTIUM_URL", "https://beta.apertium.org/apy").rstrip("/")
+APERTIUM_ENABLED = env("APERTIUM_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
 MICHIFLIN_GITHUB_TOKEN = env("MICHIFLIN_GITHUB_TOKEN")
 
 # Network egress helpers for blocked media/web sources (e.g. socks5://127.0.0.1:40000).

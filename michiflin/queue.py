@@ -17,7 +17,7 @@ import time
 import zipfile
 from pathlib import Path
 from urllib.parse import quote
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
 from . import access, admin, chat, config, files, identity_guard, media, names, progress, state, usage, mail_profiles
 from .config import MIB
@@ -197,6 +197,77 @@ def enqueue_file(chat_id: int, info: files.FileInfo, locale: str) -> tuple[dict[
     usage.note(job["addr"], jobs=1)
     _wake.set()
     return job, ""
+
+
+def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: str, locale: str,
+                  part_mb: int | None = None) -> tuple[dict[str, Any] | None, str]:
+    """Queue an explicit file-kit export without changing or deleting its source.
+
+    A complete copy is committed before the ordinary queue sees this job. If an
+    ephemeral runner loses the copy, recovery must pause instead of trying a URL.
+    """
+    if not chat.sender() or size < 0 or (part_mb is not None and not 1 <= part_mb <= 20):
+        return None, tr(locale, "⚠️ Solicitud de envío no válida.", "⚠️ Invalid delivery request.")
+    problem = _capacity_error(size, locale)
+    if problem:
+        return None, problem
+    filename = clean_filename(name, "archivo")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
+    extra: dict[str, Any] = {"name": filename, "ext": ext, "mime": mime or "application/octet-stream", "label": "Archivo" if locale == "es" else "File",
+                             "locale": locale, "filekit_local": True, "send_requested": True}
+    if part_mb is not None:
+        extra["part_mb"] = part_mb
+    job = _new_job(chat_id, "file", "", filename, size, **extra)
+    root = folder(job)
+    created = False
+    registered = False
+    committed = False
+    try:
+        root.mkdir(parents=True, exist_ok=False)
+        created = True
+        work = root / "src"
+        work.mkdir()
+        target = work / "download.bin"
+        digest = hashlib.sha256()
+        count = 0
+        with target.open("xb") as output:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                state.check_work_allowed()
+                count += len(block)
+                if count > size:
+                    raise ValueError("source_changed")
+                digest.update(block)
+                output.write(block)
+            state.check_work_allowed()
+            if count != size:
+                raise ValueError("source_changed")
+            output.flush()
+            os.fsync(output.fileno())
+        job.update(source_complete=target.name, source_complete_size=size, source_complete_sha=digest.hexdigest())
+        with state.lock:
+            state.check_work_allowed()
+            jobs()[job["id"]] = job
+            registered = True
+            state.save()
+            committed = True
+        try:
+            usage.note(job["addr"], jobs=1)
+        except Exception as exc:
+            # The handoff is already durable: accounting failure must not make
+            # the caller believe it is safe to enqueue the same file again.
+            log.warning("file kit accounting failed: %s", exc.__class__.__name__)
+        _wake.set()
+        return job, ""
+    except BaseException:
+        # Once state.save committed, preserve both the durable job and its bytes;
+        # the caller must check the queue rather than assume no handoff occurred.
+        if not committed:
+            if registered:
+                with state.lock:
+                    jobs().pop(job["id"], None)
+            if created:
+                shutil.rmtree(root, ignore_errors=True)
+        raise
 
 
 def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, locale: str, audio_format: str = "", video_format: str = "") -> tuple[dict[str, Any] | None, str]:
@@ -476,7 +547,9 @@ def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = 
         final = out / job["name"]
         named.replace(final)
         return [final]
-    if job["kind"] in {"video", "audio"} or named.suffix.lstrip(".").lower() in SEGMENT_FORMATS:
+    # A kit export is an exact copy, not a request to remux it as media.
+    # Ordinary video/audio downloads retain their existing playable segments.
+    if not job.get("filekit_local") and (job["kind"] in {"video", "audio"} or named.suffix.lstrip(".").lower() in SEGMENT_FORMATS):
         pieces = _segments(named, out, job, part_bytes, stop)
         if pieces:
             job["part_format"] = "segments"
@@ -525,7 +598,8 @@ def _retained_progress(job: dict[str, Any], work: Path) -> int:
         return 0
     name = str(job.get("source_complete") or "")
     source = work / name if name and Path(name).name == name else None
-    if source and not source.is_symlink() and source.is_file() and source.stat().st_size == int(job.get("source_complete_size") or -1):
+    marked_size = job.get("source_complete_size")
+    if source and not source.is_symlink() and source.is_file() and source.stat().st_size == int(marked_size if marked_size is not None else -1):
         return source.stat().st_size
     partial = work / "download.bin"
     if job["kind"] == "file" and job.get("resumable") and not partial.is_symlink() and partial.is_file():
@@ -561,7 +635,8 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     # source has been read and checked; a failed re-download keeps old bytes.
     name = str(job.get("source_complete") or "")
     candidate = work / name if name and Path(name).name == name else None
-    if candidate and (not candidate.is_file() or candidate.stat().st_size != int(job.get("source_complete_size") or -1)):
+    marked_size = job.get("source_complete_size")
+    if candidate and (candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size != int(marked_size if marked_size is not None else -1)):
         candidate = None
     retained = _retained_progress(job, work)
     values: dict[str, Any] = {"status": "downloading", "progress": retained, "error": ""}
@@ -587,6 +662,10 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
             update(job, status="queued", hold=True, error="source_preservation")
             return
         if candidate is None:
+            if job.get("filekit_local"):
+                # There is no network source to recover on a new runner.
+                update(job, status="queued", hold=True, error="source_preservation", recovery_note="progress_lost")
+                return
             if not retained and job.get("range_unverified"):
                 update(job, range_unverified=False)
             files.download(job["url"], source, int(job.get("size_est") or 0), bool(job.get("resumable")), progress,
@@ -595,13 +674,14 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
             # continue to use the existing resumable path instead.
             update(job, source_complete=source.name, source_complete_size=source.stat().st_size, source_complete_sha="")
         _checkpoint(interrupted)
-        with source.open("rb") as handle:
-            head = handle.read(65536)
-        hint = job["ext"] if job.get("ext") else ""
-        kind = files.sniff(head, hint)
-        if kind not in {"bin", "txt", "html"} and kind != hint and hint not in {"tar.gz", "xls", "ppt", "msi", "apks", "xapk"}:
-            stem = job["name"].rsplit(".", 1)[0] if "." in job["name"] else job["name"]
-            update(job, ext=kind, name=clean_filename(f"{stem}.{kind}"), mime=files.KINDS[kind][0], label=files.describe(kind, job.get("locale", "es")))
+        if not job.get("filekit_local"):
+            with source.open("rb") as handle:
+                head = handle.read(65536)
+            hint = job["ext"] if job.get("ext") else ""
+            kind = files.sniff(head, hint)
+            if kind not in {"bin", "txt", "html"} and kind != hint and hint not in {"tar.gz", "xls", "ppt", "msi", "apks", "xapk"}:
+                stem = job["name"].rsplit(".", 1)[0] if "." in job["name"] else job["name"]
+                update(job, ext=kind, name=clean_filename(f"{stem}.{kind}"), mime=files.KINDS[kind][0], label=files.describe(kind, job.get("locale", "es")))
     else:
         source = candidate
         if source is None:
@@ -1134,7 +1214,8 @@ def _recover_packing_source(job: dict[str, Any]) -> bool:
         if source.exists():
             # A wrong-sized marker may be a useful partial or a different file;
             # never overwrite it even if another candidate happens to exist.
-            return (source.is_file() and marked_size > 0 and source.stat().st_size == marked_size
+            return (source.is_file() and (marked_size > 0 or (job.get("filekit_local") and marked_size == 0))
+                    and source.stat().st_size == marked_size
                     and (job.get("status") != "packing" or not packed_size or packed_size == marked_size))
 
     named = folder(job) / "named"

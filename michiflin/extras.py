@@ -1,9 +1,13 @@
 """Quota-free utilities: translation, unit conversion, local time and video subtitles as text."""
 from __future__ import annotations
 
+import math
 import re
 import tempfile
-from datetime import datetime
+import threading
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
@@ -82,64 +86,185 @@ def _translation_chunks(text: str, max_bytes: int) -> list[tuple[str, str]]:
     return parts
 
 
-def translate_detailed(text: str, target: str, source: str = "auto") -> dict[str, str]:
-    """Translate without AI-provider quota; output is all-or-nothing.
+# ISO-639-3 codes used by Apertium APy for the languages in the app.
+_APERTIUM_LANGUAGES = {
+    "es": "spa", "en": "eng", "fr": "fra", "pt": "por", "it": "ita", "de": "deu", "ru": "rus",
+    "zh-CN": "zho", "ja": "jpn", "ko": "kor", "ar": "ara", "nl": "nld", "pl": "pol", "tr": "tur",
+    "uk": "ukr", "hi": "hin", "sv": "swe", "el": "ell", "he": "heb", "ca": "cat", "ro": "ron",
+    "vi": "vie", "id": "ind",
+}
+_APERTIUM_BY_CODE = {value: key for key, value in _APERTIUM_LANGUAGES.items()}
+_TRANSLATION_BACKOFF: dict[str, float] = {}
+_TRANSLATION_LOCK = threading.Lock()
 
-    Public services are external, may impose their own limits, and receive the text.
-    The optional LibreTranslate fallback is an operator-configured HTTPS API.
-    Never silently guess a source language or truncate text.
+
+class _TranslationFailure(Exception):
+    """Non-sensitive internal reason; never includes input or provider response."""
+
+
+def _translation_ready(provider: str) -> bool:
+    with _TRANSLATION_LOCK:
+        return time.monotonic() >= _TRANSLATION_BACKOFF.get(provider, 0.0)
+
+
+def _translation_status(response: requests.Response, provider: str) -> None:
+    if response.status_code == 429:
+        # Honour Retry-After, or wait five minutes when the provider omits it.
+        value = str(getattr(response, "headers", {}).get("Retry-After", "")).strip()
+        delay = 300.0
+        if value.isdigit():
+            try:
+                delay = max(1.0, float(value))
+            except (ValueError, OverflowError):
+                pass
+        elif value:
+            try:
+                when = parsedate_to_datetime(value)
+                if when.tzinfo is None:
+                    when = when.replace(tzinfo=timezone.utc)
+                delay = max(1.0, when.timestamp() - time.time())
+            except (ValueError, OverflowError, TypeError):
+                pass
+        if not math.isfinite(delay):
+            delay = 300.0
+        with _TRANSLATION_LOCK:
+            _TRANSLATION_BACKOFF[provider] = max(_TRANSLATION_BACKOFF.get(provider, 0.0), time.monotonic() + delay)
+        raise _TranslationFailure("rate_limited")
+    response.raise_for_status()
+
+
+def _translation_timeout(deadline: float, maximum: int) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise _TranslationFailure("unavailable")
+    return max(0.1, min(float(maximum), left))
+
+
+def _translation_https_endpoint(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise _TranslationFailure("unavailable")
+    return value.rstrip("/")
+
+
+def _google_translation(text: str, target: str, source: str, deadline: float) -> dict[str, str]:
+    if not _translation_ready("google"):
+        raise _TranslationFailure("rate_limited")
+    translated, detected = [], source
+    for segment, separator in _translation_chunks(text, 3500):
+        state_check_translation()
+        response = requests.get("https://translate.googleapis.com/translate_a/single",
+                                params={"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": segment},
+                                headers=UA, timeout=_translation_timeout(deadline, 12))
+        _translation_status(response, "google")
+        data = response.json()
+        part = "".join(str(item[0]) for item in data[0] if item and item[0])
+        if not part:
+            raise _TranslationFailure("unavailable")
+        if source == "auto" and len(data) > 2 and data[2] and detected == "auto":
+            detected = str(data[2])
+        translated.append(part + separator)
+    return {"text": "".join(translated), "detected": detected, "provider": "Google Translate"}
+
+
+def _libre_translation(text: str, target: str, source: str, deadline: float) -> dict[str, str]:
+    endpoint = _translation_https_endpoint(config.LIBRETRANSLATE_URL.strip())
+    if not _translation_ready("libre"):
+        raise _TranslationFailure("rate_limited")
+    translated, detected = [], source
+    for segment, separator in _translation_chunks(text, 3500):
+        state_check_translation()
+        body = {"q": segment, "source": source, "target": target, "format": "text"}
+        if config.LIBRETRANSLATE_API_KEY:
+            body["api_key"] = config.LIBRETRANSLATE_API_KEY
+        response = requests.post(endpoint, json=body, timeout=_translation_timeout(deadline, 18), allow_redirects=False)
+        _translation_status(response, "libre")
+        if response.status_code != 200:
+            raise _TranslationFailure("unavailable")
+        data = response.json()
+        part = str(data.get("translatedText") or "")
+        if not part:
+            raise _TranslationFailure("unavailable")
+        if source == "auto" and detected == "auto":
+            detected = str((data.get("detectedLanguage") or {}).get("language") or "auto")
+        translated.append(part + separator)
+    return {"text": "".join(translated), "detected": detected, "provider": "LibreTranslate"}
+
+
+def _apertium_translation(text: str, target: str, source: str, deadline: float) -> dict[str, str]:
+    if not config.APERTIUM_ENABLED:
+        raise _TranslationFailure("unavailable")
+    endpoint = _translation_https_endpoint(config.APERTIUM_URL.strip())
+    if not _translation_ready("apertium"):
+        raise _TranslationFailure("rate_limited")
+    detected = source
+    if source == "auto":
+        # Detection is fallible, especially for one-word inputs. Never silently
+        # choose a low-confidence language; ask the person to select it instead.
+        state_check_translation()
+        sample = _translation_chunks(text, 1000)[0][0]
+        response = requests.post(endpoint + "/identifyLang", data={"q": sample}, headers=UA,
+                                 timeout=_translation_timeout(deadline, 12), allow_redirects=False)
+        _translation_status(response, "apertium")
+        if response.status_code != 200:
+            raise _TranslationFailure("unavailable")
+        scores = response.json()
+        if not isinstance(scores, dict):
+            raise _TranslationFailure("detection_uncertain")
+        choices = [(str(code), float(score)) for code, score in scores.items()
+                   if isinstance(score, (int, float)) and not isinstance(score, bool) and math.isfinite(score)]
+        best, confidence = max(choices, key=lambda item: item[1]) if choices else ("", 0.0)
+        detected = _APERTIUM_BY_CODE.get(best, "")
+        if not detected or confidence < 0.80:
+            raise _TranslationFailure("detection_uncertain")
+    if detected == target:
+        return {"text": text, "detected": detected, "provider": "Apertium (beta)"}
+    pair = _APERTIUM_LANGUAGES[detected] + "|" + _APERTIUM_LANGUAGES[target]
+    translated = []
+    for segment, separator in _translation_chunks(text, 3500):
+        state_check_translation()
+        # POST keeps the text out of the URL; the provider still receives it.
+        response = requests.post(endpoint + "/translate", data={"q": segment, "langpair": pair, "format": "txt"},
+                                 headers=UA, timeout=_translation_timeout(deadline, 12), allow_redirects=False)
+        if response.status_code == 400:
+            raise _TranslationFailure("pair_unavailable")
+        _translation_status(response, "apertium")
+        if response.status_code != 200:
+            raise _TranslationFailure("unavailable")
+        data = response.json()
+        if not isinstance(data, dict) or data.get("responseStatus") != 200 or not isinstance(data.get("responseData"), dict):
+            raise _TranslationFailure("unavailable")
+        part = data["responseData"].get("translatedText")
+        if not isinstance(part, str) or not part:
+            raise _TranslationFailure("unavailable")
+        # Preserve Apertium's * markers for words it does not recognize.
+        translated.append(part + separator)
+    return {"text": "".join(translated), "detected": detected, "provider": "Apertium (beta)"}
+
+
+def translate_detailed(text: str, target: str, source: str = "auto") -> dict[str, str]:
+    """Translate all-or-nothing without configured AI-model quota.
+
+    Providers receive the text and can rate-limit it. Apertium is an independent,
+    rule-based beta fallback, not a way around another provider's rate limit.
+    Never silently guess a low-confidence language or return a partial result.
     """
     if not text or len(text) > 4500 or target not in LANGUAGES or (source != "auto" and source not in LANGUAGES):
-        return {"text": "", "detected": source, "provider": ""}
+        return {"text": "", "detected": source, "provider": "", "error": "invalid"}
     if source == target:
         return {"text": text, "detected": source, "provider": "identity"}
-    try:
-        translated, detected = [], source
-        for segment, separator in _translation_chunks(text, 3500):
-            state_check_translation()
-            response = requests.get("https://translate.googleapis.com/translate_a/single",
-                                    params={"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": segment}, headers=UA, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            part = "".join(str(item[0]) for item in data[0] if item and item[0])
-            if not part:
-                raise ValueError("empty translation")
-            if source == "auto" and len(data) > 2 and data[2]:
-                # Keep the first detected language; subsequent chunks may differ.
-                if detected == "auto":
-                    detected = str(data[2])
-            translated.append(part + separator)
-        return {"text": "".join(translated), "detected": detected, "provider": "Google Translate"}
-    except (requests.RequestException, ValueError, IndexError, TypeError, KeyError):
-        pass
-    # Public translation-memory matches are not reliably machine translations:
-    # an exact match can contain vandalized or unrelated text. Do not silently
-    # present those as a fallback. An operator may configure LibreTranslate.
-    endpoint = config.LIBRETRANSLATE_URL.strip()
-    try:
-        parsed = urlsplit(endpoint)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError("invalid translation endpoint")
-        translated, detected = [], source
-        for segment, separator in _translation_chunks(text, 3500):
-            state_check_translation()
-            body = {"q": segment, "source": source, "target": target, "format": "text"}
-            if config.LIBRETRANSLATE_API_KEY:
-                body["api_key"] = config.LIBRETRANSLATE_API_KEY
-            response = requests.post(endpoint, json=body, timeout=25, allow_redirects=False)
-            response.raise_for_status()
-            if response.status_code != 200:
-                raise ValueError("translation unavailable")
-            data = response.json()
-            part = str(data.get("translatedText") or "")
-            if not part:
-                raise ValueError("translation unavailable")
-            if source == "auto" and detected == "auto":
-                detected = str((data.get("detectedLanguage") or {}).get("language") or "auto")
-            translated.append(part + separator)
-        return {"text": "".join(translated), "detected": detected, "provider": "LibreTranslate"}
-    except (requests.RequestException, ValueError, TypeError, KeyError):
-        return {"text": "", "detected": source, "provider": ""}
+    deadline = time.monotonic() + 70
+    reason = "unavailable"
+    for translate_provider in (_google_translation, _libre_translation, _apertium_translation):
+        try:
+            return translate_provider(text, target, source, deadline)
+        except _TranslationFailure as exc:
+            # Prefer a specific actionable reason from the last independent provider.
+            if str(exc) in {"detection_uncertain", "pair_unavailable", "rate_limited"}:
+                reason = str(exc)
+        except (requests.RequestException, ValueError, IndexError, TypeError, KeyError):
+            continue
+    return {"text": "", "detected": source, "provider": "", "error": reason}
 
 
 def state_check_translation() -> None:

@@ -103,6 +103,10 @@ La [guía integral en PDF](docs/Manual_Michiflin.pdf) explica el uso, el código
 
 Todos los derechos reservados. El código se publica solo para leerlo y aprender; ejecutarlo para otras personas o redistribuirlo requiere permiso. Consulta [LICENSE](LICENSE).
 
+## Traducción sin cuota de IA
+
+El traductor envía el texto al proveedor externo: el servicio habitual de Google, LibreTranslate si el operador lo configura o Apertium beta como alternativa independiente. No envíes secretos: el proveedor puede conservar los datos y aplicar límites. Apertium es orientativo, marca algunas palabras desconocidas con `*` y no admite todos los pares de idiomas. Si la detección es dudosa, elige el idioma de origen. La app indica el servicio; ninguno garantiza disponibilidad o traducción ilimitada. El operador puede desactivar el respaldo con `APERTIUM_ENABLED=0`.
+
 ## Tasas de elTOQUE
 
 La API oficial comparte una consulta aproximadamente cada cinco minutos mientras el bot esté activo (`ELTOQUE_REFRESH_SECONDS`, 120–3600 segundos). El banner abre la misma vista compacta de tasas. La antigüedad y cualquier ausencia de datos se indican sin inventar valores. El histórico de 7, 14 o 30 días usa solo ventanas consultadas; la zona horaria de la API no está documentada.

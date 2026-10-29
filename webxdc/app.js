@@ -134,6 +134,7 @@ function back() {
 }
 
 function render(scroll = 0) {
+  FileKitUI.stop();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
   bus.local = [];
@@ -482,18 +483,15 @@ const TILES = [
   ["weather", "tile_weather", "weather"],
   ["news", "tile_news", "news"],
   ["tools", "tile_tools", "tools"],
-  ["join", "tile_join", "join"],
   ["health", "tile_health", "health"],
   ["notes", "tile_notes", "notes"],
 ];
 
 function tiles(extra = [], omit = []) {
   const list = [...TILES, ...extra].filter(([name]) => !omit.includes(name));
-  if (IOS) list.sort((a, b) => (b[0] === "join") - (a[0] === "join"));
   return h("div", { class: "tiles" }, list.map(([name, label, view, params]) =>
     h("button", { class: `tile tile-${name}`, onclick: () => go(view, params || {}) },
-      h("span", { class: "tile-icon" }, icon(name)), h("span", { class: "tile-label" }, t(label)),
-      name === "join" && IOS ? h("span", { class: "badge" }, "iOS") : null)));
+      h("span", { class: "tile-icon" }, icon(name)), h("span", { class: "tile-label" }, t(label)))));
 }
 
 function greeting() {
@@ -2044,17 +2042,21 @@ VIEWS.translate = {
       const text = area.value.trim();
       if (!text) return;
       if (text.length > 4500) { toast(t("translate_limit"), "bad"); return; }
+      if (button.disabled) return;
       store.set("tr.text", text);
+      button.disabled = true;
       button.classList.add("busy");
       fill(output, loading(t("translating")));
       try {
         const data = await bridge.call("translate", { text, source, target });
         fill(output, h("p", { class: "translated" }, data.text),
+          data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
           h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
             iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
       } catch (error) {
         if (!error.cancelled) fill(output, failure(error.message));
       } finally {
+        button.disabled = false;
         button.classList.remove("busy");
       }
     };
@@ -2200,9 +2202,9 @@ async function pickFiles(multiple = true) {
 }
 
 VIEWS.join = {
-  tab: "apps",
+  tab: "downloads",
   title: () => t("tile_join"),
-  render(main) {
+  render(main, params = {}) {
     let parts = [];
     let name = "";
     const list = h("div", { class: "stack" });
@@ -2222,9 +2224,17 @@ VIEWS.join = {
       const method = joinMethod(parts);
       const total = parts.reduce((sum, part) => sum + part.file.size, 0);
       const job = (parts.find((part) => part.known) || {}).known;
-      const expected = job ? job.total : (parts.find((part) => part.marker) || { marker: null }).marker?.total;
-      const have = new Set(parts.map(orderOf));
-      const missing = expected ? Array.from({ length: expected }, (_, index) => index + 1).filter((index) => !have.has(index)) : [];
+      const declared = job ? job.total : (parts.find((part) => part.marker) || { marker: null }).marker?.total;
+      const allRaw = parts.every((part) => part.info.kind === "raw");
+      const indexes = parts.map(orderOf).filter(Number.isFinite);
+      const have = new Set(indexes);
+      const expected = Number(declared || (allRaw && indexes.length ? indexes.reduce((max, value) => Math.max(max, value), 0) : 0));
+      const allKnownSame = parts.every((part) => part.known && part.known.job.id === parts[0].known?.job.id);
+      const mixed = expected > 10000 || indexes.some((index) => index < 1) || have.size !== indexes.length ||
+        (allRaw && parts.some((part) => part.info.index < 1 && !part.known)) ||
+        (allRaw && new Set(parts.map((part) => part.info.base.toLowerCase())).size > 1 && !allKnownSame) ||
+        new Set(parts.filter((part) => part.known).map((part) => part.known.job.id)).size > 1;
+      const missing = expected > 0 && expected <= 10000 ? Array.from({ length: expected }, (_, index) => index + 1).filter((index) => !have.has(index)) : [];
       const unordered = parts.some((part) => orderOf(part) === Infinity);
       const label = (part) => (part.known ? t("join_by_hash") : part.marker ? t("join_by_tag") : part.info.index ? t("join_by_name") : t("join_by_none"));
       fill(list,
@@ -2238,22 +2248,16 @@ VIEWS.join = {
           iconButton("down", t("move_down"), () => move(index, index + 1), "tiny"),
           iconButton("close", t("remove"), () => { parts.splice(index, 1); draw(); }, "tiny")))),
           h("p", { class: "muted small" }, t("join_total", { n: parts.length, size: fmtSize(total) }))),
-        missing.length ? h("p", { class: "note bad" }, icon("alert"), t("join_missing", { list: missing.join(", ") })) : null,
+        missing.length ? h("p", { class: "note bad" }, icon("alert"), t("join_missing", { list: missing.slice(0, 100).join(", ") })) : null,
+        mixed ? h("p", { class: "note bad" }, icon("alert"), t("join_mixed")) : null,
         unordered ? h("p", { class: "note warn" }, icon("info"), t("join_unordered")) : null,
         method === "none" ? h("p", { class: "note warn" }, icon("info"), t("join_segments")) : null,
         h("label", { class: "field-label" }, t("join_name")), nameInput,
-        h("button", { class: "btn primary wide", disabled: method === "none" || parts.length < 2 && method !== "bytes", onclick: (event) => join(event.currentTarget, method) },
+        h("button", { class: "btn primary wide", disabled: mixed || !!missing.length || method === "none" || parts.length < 2 && method !== "bytes", onclick: (event) => join(event.currentTarget, method) },
           icon("join"), t("join_go")));
       nameInput.value = name;
     };
-    const pick = async () => {
-      let files;
-      try {
-        files = await pickFiles();
-      } catch (error) {
-        toast(t("pick_failed"), "bad");
-        return;
-      }
+    const addFiles = async (files) => {
       const known = new Set(parts.map((part) => part.file.name + part.file.size));
       const fresh = files.filter((file) => !known.has(file.name + file.size));
       if (!fresh.length) return;
@@ -2282,6 +2286,10 @@ VIEWS.join = {
         name = job ? job.job.title : tagged ? tagged.marker.name : parts[0].info.base;
       }
       draw();
+    };
+    const pick = async () => {
+      try { await addFiles(await pickFiles()); }
+      catch (error) { toast(t("pick_failed"), "bad"); }
     };
     const join = async (button, method) => {
       button.classList.add("busy");
@@ -2329,14 +2337,32 @@ VIEWS.join = {
       const type = blob.type.split("/")[0];
       const preview = type === "video" ? h("video", { src: url, controls: true, playsinline: true, class: "viewer" })
         : type === "audio" ? h("audio", { src: url, controls: true }) : type === "image" ? h("img", { src: url, class: "viewer" }) : null;
+      const saveCopy = h("button", { class: "btn wide", onclick: async () => {
+        saveCopy.disabled = true;
+        try {
+          FileKitStore.name(finalName);
+          await FileKitStore.put(params.kitFolder || "", [{ path: finalName, blob }]);
+          toast(t("kit_saved"), "ok");
+        } catch (error) {
+          saveCopy.disabled = false;
+          const key = `kit_err_${error.message}`;
+          toast(has(key) ? t(key) : t("kit_error"), "bad");
+        }
+      } }, icon("folder"), t("kit_save_join"));
       fill(output, card(h("div", { class: "row" }, icon("file", "big"), h("span", { class: "grow" }, h("b", {}, finalName), h("small", { class: "muted" }, fmtSize(blob.size)))),
-        verdict, preview, h("button", { class: "btn primary wide", onclick: () => exportSheet(blob, finalName) }, icon("share"), t("export"))));
+        verdict, preview, saveCopy, h("button", { class: "btn primary wide", onclick: () => exportSheet(blob, finalName) }, icon("share"), t("export"))));
       output.scrollIntoView({ behavior: "smooth", block: "start" });
     };
     add(main, card(h("div", { class: "row" }, icon("join", "big accent"), h("p", { class: "grow" }, t("join_intro"))),
       h("button", { class: "btn primary wide", onclick: pick }, icon("plus"), t("join_pick")),
       h("p", { class: "note" }, icon("info"), t("join_files_hint"))), list, output);
     draw();
+    if (Array.isArray(params.filekitPaths) && params.filekitPaths.length) {
+      Promise.all(params.filekitPaths.map(async (path) => {
+        const { blob } = await FileKitStore.get(path);
+        return new File([blob], FileKitStore.base(path), { type: blob.type });
+      })).then(addFiles).catch(() => toast(t("kit_err_content_missing"), "bad"));
+    }
   },
 };
 
@@ -2398,6 +2424,7 @@ function jobCard(job) {
       !maintenancePause && !FINAL.includes(job.status) ? tool("close", t("cancel"), "cancel") : null,
       job.status === "failed" || job.status === "cancelled" ? tool("refresh", t("retry"), "retry") : null,
       job.status === "done" && job.parts > 0 ? h("button", { class: "chip action", onclick: () => resendSheet(job) }, icon("send"), t("act_resend")) : null,
+      ["ready", "done"].includes(job.status) && job.parts > 0 ? h("button", { class: "chip action", onclick: () => go("downloads", { section: "kit", jobId: String(job.id), jobName: niceName(job.title, `Descarga ${job.id}`) }) }, icon("folder"), t("kit_import_job")) : null,
       job.status === "done" && job.parts > 1 && job.format === "raw" ? h("button", { class: "chip action", onclick: () => go("join") }, icon("join"), t("tile_join")) : null));
 }
 
@@ -2440,17 +2467,22 @@ VIEWS.downloads = {
   title: () => t("tab_downloads"),
   render(main, params) {
     const body = h("div", { class: "stack" });
-    const chosen = params.section === "links" ? "links" : "downloads";
+    const chosen = ["links", "kit"].includes(params.section) ? params.section : "downloads";
+    let pendingJob = params.jobId ? { jobId: params.jobId, jobName: params.jobName } : {};
     let drawJobs = null;
     ["jobs", "maintenance"].forEach((kind) => bus.on(kind, () => { if (drawJobs) drawJobs(); }));
     const draw = (which) => {
+      FileKitUI.stop();
+      const kitOptions = which === "kit" ? pendingJob : {};
+      if (which === "kit") pendingJob = {};
       current.params = { section: which };
       drawJobs = null;
       fill(body);
       if (which === "links") VIEWS.links.render(body);
+      else if (which === "kit") FileKitUI.render(body, kitOptions);
       else drawJobs = downloadPanel(body);
     };
-    add(main, segmented(chosen, [["downloads", t("downloads_section"), "downloads"], ["links", t("links_section"), "links"]], draw), body);
+    add(main, segmented(chosen, [["downloads", t("downloads_section"), "downloads"], ["kit", t("kit_title"), "folder"], ["links", t("links_section"), "links"]], draw), body);
     draw(chosen);
   },
 };

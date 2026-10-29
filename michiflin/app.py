@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, identity_guard, links, live_web, miniapp, names, perf, profile, progress, queue, rates_monitor, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, identity_guard, links, live_web, miniapp, names, perf, profile, progress, queue, rates_monitor, state
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -100,6 +100,15 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
                 miniapp.point_to_app(chat_id, locale)
                 return
             with nullcontext() if safe else state.guard_work(address, generation):
+                if has_file and filekit_transfer.is_import_caption(text):
+                    try:
+                        filekit_transfer.receive(address, msg, text)
+                    except filekit.FileKitError as exc:
+                        chat.text(chat_id, "⚠️ " + filekit.error_text(str(exc), locale))
+                    else:
+                        chat.text(chat_id, tr(locale, "✅ Copia importada al kit del servidor temporal. El adjunto original se conservó.",
+                                               "✅ Copy imported into the temporary server file kit. The original attachment was kept."))
+                    return
                 if text.startswith("/") and commands.dispatch(chat_id, text, locale):
                     return
                 if has_file:
