@@ -513,23 +513,25 @@ class RateError(Exception):
 
 
 def rate_unit(code: str) -> str:
-    """Return a conservative denomination, not an assumed exchange rate.
+    """Denomination of the unchanged API value, not a whole-coin guess.
 
-    elTOQUE states BTC and USDT represent the CUP price of USD 1 in that
-    crypto, unlike TRX which is quoted per unit. The API does not publish a
-    field dictionary for every ticker (including ECU), so unknowns are not
-    made available to the currency converter.
+    elTOQUE's published crypto table explicitly marks BTC and USDT (TRC20)
+    as CUP per USD represented in the asset, and TRX as CUP per token. ECU is
+    the API's legacy Euro code (the API does not document this alias); its
+    value has been cross-checked with elTOQUE's Euro table. Unknown future
+    variants remain unknown, rather than inheriting a suffix's denomination.
     """
     code = str(code).upper()
-    if code in {"BTC", "USDT"}:
+    if code in {"BTC", "USDT", "USDT_TRC20"}:
         return "usd_crypto"
-    # The provider has not documented the denomination of each suffixed API
-    # variant (for example USDT_TRC20); do not extrapolate its unit.
-    if code.startswith("USDT_"):
-        return "unknown"
-    if code in {"USD", "EUR", "MLC", "TRX", "CAD", "MXN", "CUP"}:
+    if code in {"USD", "EUR", "ECU", "MLC", "TRX", "CAD", "MXN", "CUP"}:
         return "unit"
     return "unknown"
+
+
+def rate_display_code(code: str) -> str:
+    """Display human-friendly names without changing source keys or values."""
+    return {"ECU": "EUR", "USDT_TRC20": "USDT (TRC20)"}.get(code, code)
 
 
 def rate_units(rates: dict[str, float]) -> dict[str, str]:
@@ -763,7 +765,9 @@ def _rate_number(value: float, locale: str) -> str:
 
 
 def rate_text(argument: str, locale: str) -> str:
-    usage = tr(locale, "Uso: /tasa · /tasa USD · /tasa 100 USD · /tasa 5000 CUP USD", "Usage: /rate · /rate USD · /rate 100 USD · /rate 5000 CUP USD")
+    usage = tr(locale,
+        "Uso: /tasa · /tasa EUR · /tasa 100 EUR · /tasa 5000 CUP EUR · /tasa 100 USD_BTC",
+        "Usage: /rate · /rate EUR · /rate 100 EUR · /rate 5000 CUP EUR · /rate 100 USD_BTC")
     parts = argument.upper().replace(",", ".").split()
     try:
         snapshot = rates_snapshot()
@@ -779,13 +783,15 @@ def rate_text(argument: str, locale: str) -> str:
     footer = tr(locale, f"elTOQUE · mercado informal · {local_time(snapshot['at'])}", f"elTOQUE · informal market · {local_time(snapshot['at'])}")
     if snapshot.get("stale"):
         footer += tr(locale, " · último dato guardado; la API no respondió ahora", " · last saved value; the API is unavailable now")
+
     def label(code: str) -> str:
-        kind = rate_unit(code)
+        shown, kind = rate_display_code(code), rate_unit(code)
         if kind == "usd_crypto":
-            return tr(locale, f"1 USD en {code}", f"1 USD in {code}")
+            return tr(locale, f"1 USD en {shown}", f"1 USD in {shown}")
         if kind == "unknown":
-            return tr(locale, f"{code} (unidad por confirmar)", f"{code} (unit unconfirmed)")
-        return f"1 {code}"
+            return tr(locale, f"{shown} (unidad por confirmar)", f"{shown} (unit unconfirmed)")
+        return f"1 {shown}"
+
     if not parts:
         preferred = ["USD", "EUR", "ECU", "MLC", "ZELLE", "USDT", "USDT_TRC20", "CAD", "MXN", "BTC", "TRX"]
         ordered = [code for code in preferred if code in rates] + sorted(code for code in rates if code not in preferred)
@@ -793,11 +799,11 @@ def rate_text(argument: str, locale: str) -> str:
                          + [f"{label(code)}: {_rate_number(rates[code], locale)} CUP" for code in ordered] + ["", footer])
     try:
         if len(parts) == 1:
-            amount, source, target = 1.0, parts[0], "CUP"
+            amount, source_input, target_input = 1.0, parts[0], "CUP"
         elif len(parts) == 2:
-            amount, source, target = float(parts[0]), parts[1], "CUP"
+            amount, source_input, target_input = float(parts[0]), parts[1], "CUP"
         elif len(parts) == 3:
-            amount, source, target = float(parts[0]), parts[1], parts[2]
+            amount, source_input, target_input = float(parts[0]), parts[1], parts[2]
         else:
             return usage
     except ValueError:
@@ -805,16 +811,26 @@ def rate_text(argument: str, locale: str) -> str:
     if not math.isfinite(amount) or amount < 0:
         return usage
     value = {"CUP": 1.0, **rates}
+    explicit_crypto = {"USD_BTC": "BTC", "USD_USDT": "USDT", "USD_USDT_TRC20": "USDT_TRC20"}
+
+    def resolve(code: str) -> str:
+        if code in explicit_crypto:
+            return explicit_crypto[code]
+        return "ECU" if code == "EUR" and "EUR" not in value and "ECU" in value else code
+
+    source, target = resolve(source_input), resolve(target_input)
     if source not in value or target not in value:
-        return tr(locale, f"⚠️ Sin tasa para {source if source not in value else target}.", f"⚠️ No rate for {source if source not in value else target}.")
-    for code in (source, target):
+        missing = source_input if source not in value else target_input
+        return tr(locale, f"⚠️ Sin tasa para {missing}.", f"⚠️ No rate for {missing}.")
+    for raw, code in ((source_input, source), (target_input, target)):
         kind = rate_unit(code)
-        if kind == "usd_crypto":
+        if kind == "usd_crypto" and raw not in explicit_crypto:
             quote = f"{label(code)} ≈ {_rate_number(rates[code], locale)} CUP"
             if len(parts) == 1:
                 return f"💱 {quote}\n\n{footer}"
-            return tr(locale, f"⚠️ {quote}. Esta tasa corresponde a un dólar en {code}, no a una unidad de {code}; no puedo convertir esa cantidad.",
-                      f"⚠️ {quote}. This rate is for one dollar in {code}, not one {code}; I cannot convert that amount.")
+            example = "USD_BTC" if code == "BTC" else ("USD_USDT_TRC20" if code == "USDT_TRC20" else "USD_USDT")
+            return tr(locale, f"⚠️ {quote}. Es por dólar representado, no por una moneda completa. Para convertir dólares en ese activo usa {example}.",
+                      f"⚠️ {quote}. This is per represented dollar, not per whole coin. To convert dollars in that asset use {example}.")
         if kind == "unknown":
             return tr(locale, f"⚠️ {code}: {_rate_number(rates[code], locale)}. La unidad de este código no está confirmada; no puedo convertirla.",
                       f"⚠️ {code}: {_rate_number(rates[code], locale)}. The unit for this code is unconfirmed; I cannot convert it.")
@@ -824,10 +840,19 @@ def rate_text(argument: str, locale: str) -> str:
         return tr(locale, "La conversión está pausada porque la tasa guardada puede estar desactualizada.",
                   "Conversion is paused because the saved rate may be out of date.")
     if not config.ELTOQUE_DERIVED_CALCULATIONS:
-        return tr(locale, "Las tasas se muestran sin alterar. Las conversiones estarán disponibles tras confirmar su autorización con elTOQUE.",
-                  "Rates are displayed unchanged. Conversions will be available after elTOQUE's authorization is confirmed.")
+        return tr(locale, "Las tasas se muestran sin alterar. Las conversiones están desactivadas en la configuración.",
+                  "Rates are displayed unchanged. Conversions are disabled in the configuration.")
     converted = amount * value[source] / value[target]
-    return f"💱 {_number(amount, locale)} {source} ≈ {_number(converted, locale)} {target}\n\n{footer}"
+    if not math.isfinite(converted):
+        return tr(locale, "⚠️ La cantidad es demasiado grande para convertirla.", "⚠️ The amount is too large to convert.")
+
+    def amount_label(code: str) -> str:
+        shown = rate_display_code(code)
+        return tr(locale, f"USD en {shown}", f"USD in {shown}") if rate_unit(code) == "usd_crypto" else shown
+
+    note = tr(locale, "Conversión calculada por Michiflin; no es una cotización nueva de elTOQUE.",
+              "Conversion calculated by Michiflin; it is not a new elTOQUE quote.")
+    return f"💱 {_number(amount, locale)} {amount_label(source)} ≈ {_number(converted, locale)} {amount_label(target)}\n{note}\n\n{footer}"
 
 
 # ---------------------------------------------------------------------------

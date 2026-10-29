@@ -1,5 +1,12 @@
 # Changelog
 
+## 5.3.0
+
+- Preserve all elTOQUE codes while presenting ECU as EUR, the confirmed USDT TRC20 and BTC USD-denominated rates, and TRX per unit. Unify the compact home banner and rates view. Enable clearly labelled local conversions and scenarios at the operator’s request; permission for derivative uses is unconfirmed and they can be disabled. Original provider data remain unchanged.
+- Mark eligible new authorized messages read using Delta Chat’s real MDN mechanism after a durable checkpoint; rejected messages and old messages seeded at cursor initialization remain silent. Receipt delivery depends on both clients and the network and does not prove task completion.
+- Add guarded profile carryover and an independently recoverable, encrypted owner-history export which excludes account databases and old identity keys. Preserve distinct owner records and available attachments across reviewed old snapshots. The export does not restore the old account or WebXDC local storage; absent files remain absent.
+- Update Spanish/English help and recovery documentation.
+
 ## 5.2.0
 
 - Hardened the authorized elTOQUE API integration: preserve provider codes, display confirmed cryptocurrency denominations without guessing suffixed fields, stop on rate limits, persist received observations and windows, and show only real partial history. A shared monitor and home banner show honest freshness; verified-owner anomaly notices are coalesced. Derived calculations are off by default until provider approval. Website scraping is no longer a fallback; a valid application token is required for current rates and history. The optional 30-day view is on demand. Enable derived calculations only with explicit provider approval.

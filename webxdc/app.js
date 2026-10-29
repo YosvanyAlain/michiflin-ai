@@ -601,12 +601,12 @@ function homeRatesBanner() {
   const data = store.get("rates", null);
   const valid = data && data.rates && typeof data.rates === "object";
   const stale = valid && (data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300));
-  const picks = valid ? ["USD", "ECU", "MLC"].filter((code) => Number(data.rates[code]) > 0) : [];
+  const picks = valid ? ["USD", Number(data.rates.EUR) > 0 ? "EUR" : "ECU", "MLC"].filter((code) => Number(data.rates[code]) > 0) : [];
   return h("button", { class: `rate-banner${stale ? " is-stale" : ""}`, onclick: () => go("rates") },
     h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
-      h("span", { class: "rate-banner-brand" }, "elTOQUE", icon("next"))),
+      h("span", { class: "rate-banner-brand" }, "elTOQUE · ", t("rates_open_tool"), icon("next"))),
     picks.length ? h("div", { class: "rate-banner-values" }, picks.map((code) =>
-      h("span", {}, h("small", {}, code), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
+      h("span", {}, h("small", {}, rateDisplayCode(code)), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
       h("span", { class: "rate-banner-empty" }, t("rates_banner_empty")),
     h("span", { class: "rate-banner-foot" }, valid ? [t(stale ? "rates_saved_status" : "rates_live_status"), " · ", fmtTime(data.at), " · ", since(data.at)] : t("rates_banner_sub")));
 }
@@ -636,7 +636,7 @@ VIEWS.home = {
       advisory,
       ratesBanner,
       searchBox(),
-      section(t("shortcuts"), tiles([], ["health"])),
+      section(t("shortcuts"), tiles([], ["health", "rates"])),
       section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })), noticeList()),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
@@ -644,7 +644,7 @@ VIEWS.home = {
   },
 };
 
-const HELP = [["how", "info"], ["ai", "ai"], ["coder", "code"], ["web", "web"], ["downloads", "downloads"], ["join", "join"], ["save", "bolt"], ["privacy", "shield"]];
+const HELP = [["how", "info"], ["rates", "rates"], ["ai", "ai"], ["coder", "code"], ["web", "web"], ["downloads", "downloads"], ["join", "join"], ["save", "bolt"], ["privacy", "shield"]];
 
 VIEWS.help = {
   tab: "home",
@@ -1726,18 +1726,21 @@ function askBox({ placeholder, value = "", onsubmit, iconName = "search", label 
   return h("div", { class: "search-field" }, icon(iconName), input, h("button", { class: "btn primary small", onclick: submit }, label || t("go")));
 }
 
-// Preserve source denominations. In particular, elTOQUE's BTC/USDT values
-// are per USD represented in the crypto, not per whole crypto coin. Older
-// cached payloads have no metadata, so the conservative fallback matters too.
-function rateUnit(data, code) {
-  // Legacy caches may have guessed the unit of an API suffix; keep those
-  // variants unconfirmed until the provider documents the exact field.
-  if (code === "BTC" || code === "USDT") return "usd_crypto";
-  if (code.startsWith("USDT_")) return "unknown";
-  const supplied = data && data.units && data.units[code];
-  if (["unit", "usd_crypto", "unknown"].includes(supplied)) return supplied;
-  if (["USD", "EUR", "MLC", "TRX", "CAD", "MXN", "CUP"].includes(code)) return "unit";
-  return "unknown";
+// Source keys and observations remain unchanged. ECU is displayed as EUR;
+// elTOQUE's table marks BTC and USDT (TRC20) per USD in the crypto, not per coin.
+function rateUnit(_data, code) {
+  if (["BTC", "USDT", "USDT_TRC20"].includes(code)) return "usd_crypto";
+  if (["USD", "EUR", "ECU", "MLC", "TRX", "CAD", "MXN", "CUP"].includes(code)) return "unit";
+  return "unknown"; // do not extrapolate to future, undocumented suffixes
+}
+
+function rateDisplayCode(code) {
+  return ({ ECU: "EUR", USDT_TRC20: "USDT (TRC20)" })[code] || code;
+}
+
+function rateAmountLabel(data, code) {
+  const shown = rateDisplayCode(code);
+  return rateUnit(data, code) === "usd_crypto" ? t("rates_crypto_amount", { code: shown }) : shown;
 }
 
 function fmtRate(value) {
@@ -1745,10 +1748,10 @@ function fmtRate(value) {
 }
 
 function rateLabel(data, code) {
-  const kind = rateUnit(data, code);
-  if (kind === "usd_crypto") return t("rates_crypto_unit", { code });
-  if (kind === "unknown") return t("rates_unknown_unit", { code });
-  return `1 ${code}`;
+  const kind = rateUnit(data, code), shown = rateDisplayCode(code);
+  if (kind === "usd_crypto") return t("rates_crypto_unit", { code: shown });
+  if (kind === "unknown") return t("rates_unknown_unit", { code: shown });
+  return `1 ${shown}`;
 }
 
 function rateHistory() {
@@ -1768,7 +1771,7 @@ function rateHistory() {
     if (!points.length) { fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return; }
     const vals = points.map((point) => point.value);
     const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
-    const chart = h("div", { class: "rate-chart" + (points.length <= 7 ? " chart-short" : ""), role: "img", "aria-label": t("history_chart", { code }) },
+    const chart = h("div", { class: "rate-chart" + (points.length <= 7 ? " chart-short" : ""), role: "img", "aria-label": t("history_chart", { code: rateDisplayCode(code) }) },
       points.map((point) => h("div", { class: "chart-day", title: `${point.date}: ${fmtRate(point.value)} CUP` },
         h("span", { class: "chart-value" }, fmtRate(point.value)),
         h("span", { class: "chart-bar", style: `height:${30 + 70 * (point.value - min) / span}%` }),
@@ -1790,8 +1793,8 @@ function rateHistory() {
         points.map((point) => h("div", { class: "history-row" }, h("span", {}, point.date),
           h("b", {}, `${fmtRate(point.value)} CUP`)))));
     fill(body,
-      h("div", { class: "row between wrap" }, h("b", {}, t("history_chart", { code })),
-        select(code, codes.map((item) => [item, item]), (value) => { code = value; draw(); })),
+      h("div", { class: "row between wrap" }, h("b", {}, t("history_chart", { code: rateDisplayCode(code) })),
+        select(code, codes.map((item) => [item, rateDisplayCode(item)]), (value) => { code = value; draw(); })),
       h("small", { class: "muted" }, rateLabel(history, code)),
       chart, h("small", { class: "muted" }, t("history_scale")),
       points.length > 7 ? h("small", { class: "muted" }, t("history_scroll")) : null,
@@ -1851,13 +1854,15 @@ VIEWS.rates = {
     const convert = () => {
       const data = store.get("rates", null);
       if (!rateDerivedApproved || !data || data.derived_allowed !== true || data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300)
-          || !data.rates || rateUnit(data, code) !== "unit" || !(Number(data.rates[code]) > 0)) {
+          || !data.rates || rateUnit(data, code) === "unknown" || !(Number(data.rates[code]) > 0)) {
         result.textContent = ""; return;
       }
       const value = Number(String(amount).replace(",", "."));
       if (!Number.isFinite(value) || value < 0) { result.textContent = ""; return; }
       const out = toCup ? value * data.rates[code] : value / data.rates[code];
-      fill(result, h("b", {}, `${fmtNumber(value, 2)} ${toCup ? code : "CUP"}`), " = ", h("b", { class: "accent" }, `${fmtNumber(out, 2)} ${toCup ? "CUP" : code}`));
+      if (!Number.isFinite(out)) { result.textContent = ""; return; }
+      const denomination = rateAmountLabel(data, code);
+      fill(result, h("b", {}, `${fmtNumber(value, 2)} ${toCup ? denomination : "CUP"}`), " ≈ ", h("b", { class: "accent" }, `${fmtNumber(out, 2)} ${toCup ? "CUP" : denomination}`));
       store.set("rates.amount", amount); store.set("rates.code", code); store.set("rates.toCup", toCup);
     };
     const codes = h("div", { class: "row" });
@@ -1865,8 +1870,10 @@ VIEWS.rates = {
     const swapButton = iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); });
     const draw = (data) => {
       if (!data || !data.rates) return;
-      const entries = Object.entries(data.rates).filter(([_name, value]) => Number.isFinite(Number(value)) && Number(value) > 0);
-      const convertible = entries.filter(([name]) => rateUnit(data, name) === "unit");
+      const order = ["USD", "EUR", "ECU", "MLC", "CAD", "MXN", "ZELLE", "CLA", "BTC", "USDT_TRC20", "TRX"];
+      const entries = Object.entries(data.rates).filter(([_name, value]) => Number.isFinite(Number(value)) && Number(value) > 0)
+        .sort(([a], [b]) => (order.indexOf(a) < 0 ? 999 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 999 : order.indexOf(b)) || a.localeCompare(b));
+      const convertible = entries.filter(([name]) => rateUnit(data, name) !== "unknown");
       const stale = !!data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300);
       fill(board,
         h("div", { class: "rates-summary" },
@@ -1885,7 +1892,7 @@ VIEWS.rates = {
       swapButton.disabled = !allowed || !convertible.length;
       derivedNotice.hidden = allowed;
       if (!allowed) fill(derivedNotice, icon("info"), t(data.derived_allowed === true && stale ? "rates_calc_stale" : "rates_derived_disabled"));
-      fill(codes, allowed && convertible.length ? select(code, convertible.map(([name]) => [name, name]), (value) => { code = value; convert(); }) :
+      fill(codes, allowed && convertible.length ? select(code, convertible.map(([name]) => [name, rateAmountLabel(data, name)]), (value) => { code = value; convert(); }) :
         allowed ? h("small", { class: "muted" }, t("rates_no_convertible")) : null);
       convert();
     };
@@ -1907,14 +1914,15 @@ VIEWS.rates = {
     const about = h("details", { class: "card rate-about" },
       h("summary", {}, icon("info"), h("b", {}, t("rates_about_title")), icon("down", "caret")),
       h("div", { class: "stack" }, h("p", {}, t("rates_about_offers")), h("p", {}, t("rates_about_crypto")),
-        h("p", {}, t("rates_about_time")), h("b", {}, t("rates_about_sources")),
+        h("p", {}, t("rates_about_api")), h("p", {}, t("rates_about_time")), h("b", {}, t("rates_about_sources")),
         h("div", { class: "row wrap" },
           h("button", { class: "btn ghost small", onclick: () => openLiveAddress(methodology) }, icon("web"), t("rates_open_source")),
           h("button", { class: "btn ghost small", onclick: () => copyText(methodology) }, icon("copy"), t("rates_copy_source"))),
         h("small", { class: "rate-source-url" }, methodology)));
     bus.on("rates", () => { const data = store.get("rates", null); if (board.isConnected && data) draw(data); });
     add(main, headRow(t("rates_title"), refreshButton), board,
-      section(t("converter"), card(derivedNotice, h("div", { class: "row convert-row" }, amountInput, codes, swapButton), result)),
+      section(t("converter"), card(derivedNotice, h("div", { class: "row convert-row" }, amountInput, codes, swapButton), result,
+        h("p", { class: "muted small" }, t("rates_calc_note")))),
       section(t("history_title"), card(rateHistory())), about);
     if (saved) draw(saved);
     if (!saved || now() - saved.at > Number(saved.refresh_seconds || 300)) refresh();

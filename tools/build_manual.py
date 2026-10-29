@@ -250,11 +250,11 @@ def screenshot_pair() -> Table:
 
 
 def screenshot_51() -> Table:
-    paths = (ROOT / "docs/manual-media/agent-5-1-simulado.png", ROOT / "docs/manual-media/rates-5-1-simulado.png")
+    paths = (ROOT / "docs/manual-media/agent-5-1-simulado.png", ROOT / "docs/manual-media/rates-5-3-simulado.png")
     images = [Image(str(paths[0]), width=4.2 * cm, height=9.45 * cm),
               Image(str(paths[1]), width=4.2 * cm, height=9.45 * cm)]
     result = Table([images, [p("Agente · prueba de móvil simulada", "CaptionM"),
-                              p("Tasas y escenario · datos simulados", "CaptionM")]],
+                              p("Tasas compactas · datos simulados", "CaptionM")]],
                    colWidths=[BODY_W / 2, BODY_W / 2], hAlign="CENTER")
     result.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
                                 ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
@@ -376,9 +376,9 @@ def build_story() -> list:
               p("El agente unificado ofrece dos modos: sin cuota de modelos y con IA/API. El primero usa herramientas y fuentes sin activar imágenes por sí solo; el segundo puede elegir un modelo o usar selección automática y realizar hasta cuatro pasos. Los adjuntos compatibles van directamente al modelo elegido con el contexto reciente. Verifica el resultado y el coste real del proveedor."),
               p("La conversación automática anterior conserva una entrada separada de historial. Los catálogos de texto e imagen se abren por proveedor; los modelos de texto también se agrupan por categoría. La disponibilidad real puede cambiar."),
               sub("Identidad nueva y verificación"),
-              p("Para una identidad realmente nueva hay que crear otra cuenta y otras claves; cambiar solo el relay o una época no basta. La protección compara la huella pública principal del dueño obtenida por un canal independiente, exige chat cifrado y rechaza mensajes no firmados o no cifrados. El corte solo acepta una cuenta ya verificada, conserva primero una copia cifrada y comprobada de los datos presentes, separa los vínculos antiguos y sella la nueva identidad contra retrocesos silenciosos. Los trabajos viejos quedan guardados, pero no se reanudan con identificadores antiguos. La miniapp local no migra automáticamente. Nunca guardes una clave privada ni una frase semilla en el ajuste de huella."),
+              p("Para una identidad realmente nueva hay que crear otra cuenta y otras claves; cambiar solo el relay o una época no basta. La protección compara la huella pública principal del dueño obtenida por un canal independiente, exige chat cifrado y rechaza mensajes no firmados o no cifrados. El corte solo acepta una cuenta ya verificada, conserva primero una copia cifrada y comprobada de los datos presentes, separa los vínculos antiguos y sella la nueva identidad contra retrocesos silenciosos. Los trabajos viejos quedan guardados, pero no se reanudan con identificadores antiguos. La miniapp local no migra automáticamente. La exportación independiente del historial conserva mensajes y adjuntos disponibles, pero no recrea la cuenta ni sus claves; consulta docs/RECOVER_OWNER_HISTORY.md. Los acuses de lectura reales dependen de los clientes y la red, y no prueban que una tarea haya terminado. Nunca guardes una clave privada ni una frase semilla en el ajuste de huella."),
               sub("Traducción, clima y elTOQUE"),
-              p("El traductor no usa cuota de modelos de IA, acepta hasta 4500 caracteres y envía el texto al proveedor externo. Puede tener límites o fallar. Clima usa Open-Meteo. Las tasas usan la API autorizada de elTOQUE: una consulta compartida actualiza aproximadamente cada cinco minutos mientras el bot funciona. El banner muestra la antigüedad real; si falla, se muestran únicamente datos guardados con aviso. El historial usa ventanas reales, indica huecos y permite copiar el enlace oficial. BTC y USDT sin sufijo se expresan por dólar equivalente; TRX por unidad. Las unidades de ECU y USDT_TRC20 están por confirmar. Conversiones y escenarios están desactivados hasta una autorización expresa del proveedor."),
+              p("El traductor no usa cuota de modelos de IA, acepta hasta 4500 caracteres y envía el texto al proveedor externo. Puede tener límites o fallar. Clima usa Open-Meteo. Las tasas usan la API autorizada de elTOQUE: una consulta compartida actualiza aproximadamente cada cinco minutos mientras el bot funciona. El banner muestra la antigüedad real; si falla, se muestran únicamente datos guardados con aviso. El historial usa ventanas reales, indica huecos y permite copiar el enlace oficial. Los códigos originales se conservan; ECU se presenta EUR por comparación con el sitio, sin alias documentado en la API. BTC y USDT (TRC20) se expresan por dólar equivalente; TRX por unidad. Las conversiones y el escenario están activados por el operador y son cálculos propios, no cotizaciones ni pronósticos de elTOQUE. La autorización para derivados no está confirmada; revisa las condiciones del proveedor o desactívalos."),
               screenshot_51(),
               p("En Mis APIs y modelos, una persona autorizada puede registrar su propio proveedor HTTPS, revisar los modelos detectados y elegir capacidades. La clave no se vuelve a mostrar; el proveedor elegido sí recibe la clave y las consultas. Detectar una etiqueta o activar una casilla no demuestra que esa función exista o sea gratis."),
               bullet("Usa un proveedor de confianza y comprueba sus tarifas, límites y permisos."),
@@ -451,7 +451,7 @@ def build_story() -> list:
                   ["BOT_EPOCH", "Vincula miniapps y trabajos con el despliegue.", "En modo estricto los trabajos antiguos quedan guardados, sin enviarse."],
                   ["ELTOQUE_API_TOKEN", "Autoriza consultas oficiales de tasas.", "Guardar como secreto; no compartir."],
                   ["ELTOQUE_REFRESH_SECONDS", "Intervalo compartido (120–3600 s).", "Por defecto 300 s; sujeto a límites del proveedor."],
-                  ["ELTOQUE_DERIVED_CALCULATIONS", "Controla conversiones y escenarios.", "0 por defecto; requiere autorización del proveedor."],
+                  ["ELTOQUE_DERIVED_CALCULATIONS", "Controla conversiones y escenarios.", "1 por solicitud del operador; 0 desactiva. Autorización de derivados no confirmada."],
                   ["CONFIG_DIR / JOB_DIR", "Estado de cuenta / archivos temporales.", "No confundir el respaldo del estado con el de los parciales."],
                   ["STATE_BACKUP_*", "Ubicación y frase de cifrado del respaldo.", "Nunca publiques valores ni los coloques en el ZIP."],
               ], [145, 166, BODY_W - 311]),

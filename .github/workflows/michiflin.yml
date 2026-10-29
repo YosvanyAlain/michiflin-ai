@@ -37,6 +37,9 @@ jobs:
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # A separately verified candidate is imported only for an exact reviewed revision.
       IDENTITY_CUTOVER_REVISION: ${{ vars.IDENTITY_CUTOVER_REVISION }}
+      # Preserve recoverable old owner content only for the reviewed revision.
+      OWNER_HISTORY_EXPORT_REVISION: ${{ vars.OWNER_HISTORY_EXPORT_REVISION }}
+      OWNER_HISTORY_EXISTING_ASSET_ID: ${{ vars.OWNER_HISTORY_EXISTING_ASSET_ID }}
       CANDIDATE_BUNDLE_ASSET_ID: ${{ secrets.CANDIDATE_BUNDLE_ASSET_ID }}
       CANDIDATE_BUNDLE_KEY: ${{ secrets.CANDIDATE_BUNDLE_KEY }}
       # The previous root SHA is the stable fallback for existing app instances.
@@ -71,8 +74,8 @@ jobs:
       AI_EXTRA_ALLOWED_HOSTS: ${{ secrets.AI_EXTRA_ALLOWED_HOSTS }}
       ELTOQUE_API_TOKEN: ${{ secrets.ELTOQUE_API_TOKEN }}
       ELTOQUE_REFRESH_SECONDS: ${{ vars.ELTOQUE_REFRESH_SECONDS || '300' }}
-      # Enable only when the provider has explicitly authorized these uses.
-      ELTOQUE_DERIVED_CALCULATIONS: ${{ vars.ELTOQUE_DERIVED_CALCULATIONS || '0' }}
+      # Separate Michiflin calculations; never replace the received provider values.
+      ELTOQUE_DERIVED_CALCULATIONS: ${{ vars.ELTOQUE_DERIVED_CALCULATIONS || '1' }}
       LIBRETRANSLATE_URL: ${{ vars.LIBRETRANSLATE_URL }}
       LIBRETRANSLATE_API_KEY: ${{ secrets.LIBRETRANSLATE_API_KEY }}
       GOOGLE_OAUTH_CLIENT_ID: ${{ secrets.GOOGLE_OAUTH_CLIENT_ID }}
@@ -168,6 +171,12 @@ jobs:
           python bot.py --config-dir "$CONFIG_DIR" config displayname "Michiflin AI"
           python bot.py --config-dir "$CONFIG_DIR" config selfavatar "$GITHUB_WORKSPACE/assets/michiflin-avatar.png"
 
+      - name: Preserve the previous profile description once
+        run: |
+          if ! python tools/profile_carryover_once.py; then
+            echo "::warning::Profile description could not be merged; the active account and old recovery copy remain unchanged."
+          fi
+
       - name: Apply profile status
         id: profile_status
         run: |
@@ -197,6 +206,17 @@ jobs:
             rm -rf -- "$CONFIG_DIR"
             mv "$RUNNER_TEMP/purge-original" "$CONFIG_DIR"
             echo "applied=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Preserve recoverable owner history once
+        id: owner_history_export
+        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.OWNER_HISTORY_EXPORT_REVISION != '' && env.OWNER_HISTORY_EXPORT_REVISION == github.sha }}
+        run: |
+          if python tools/export_owner_history_once.py; then
+            echo "verified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "verified=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Owner history was not exported; all legacy copies remain untouched."
           fi
 
       - name: Back up configured account
