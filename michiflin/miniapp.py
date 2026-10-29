@@ -857,6 +857,7 @@ def job_view(job: dict[str, Any], locale: str) -> dict[str, Any]:
         "parts": parts, "delivered": max(0, delivered), "format": job.get("part_format", ""),
         "error": (queue._error_text(job["error"], locale)
                   if (job["status"] == "failed" or job.get("error") == "source_preservation") and job.get("error") else ""),
+        "warning": queue.recovery_warning(job, locale),
         "created": float(job.get("created") or 0), "updated": float(job.get("updated") or 0),
         "sha": job.get("sha", ""), "part_sha": job.get("part_sha", []), "part_sizes": job.get("part_sizes", []),
     }

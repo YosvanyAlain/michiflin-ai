@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
-from michiflin import access, admin, chat, config, miniapp, state
+from michiflin import access, admin, chat, config, miniapp, queue, state
 
 try:
     from playwright.sync_api import sync_playwright
@@ -223,6 +223,28 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_paused_queue_shows_retained_bytes_and_loss_warning_bilingual(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.locator('.tab[data-tab="downloads"]:visible').click()
+                job = {"id": "7", "title": "SIMULATED partial", "kind": "file", "status": "queued", "hold": False,
+                       "size": 1000, "done": 300, "parts": 0, "delivered": 0, "format": "", "created": 0,
+                       "error": "", "warning": queue.recovery_warning({"recovery_note": "progress_lost"}, language)}
+                page.evaluate("""job => {
+                    cache.maintenance_notice = {active:true, es:'Pausa', en:'Paused'};
+                    setJobs([job]); bus.emit('maintenance');
+                }""", job)
+                card = page.locator("#view article.job")
+                card.wait_for(state="visible")
+                self.assertIn("300 B /", card.inner_text())
+                self.assertIn("30.0%", card.locator(".bar i").get_attribute("style"))
+                self.assertGreater(card.locator(".row .grow").bounding_box()["width"], 180)
+                self.assertIn("progreso" if language == "es" else "progress", card.locator(".note.warn").inner_text())
+                self.assertIn("mantenimiento" if language == "es" else "maintenance", card.locator(".status").inner_text().lower())
+                self.assertEqual(card.locator(".chips button").count(), 0)
+                screenshot_if_requested(page, language + "-partial-progress-warning")
+                self.assertEqual(errors, [])
+
     def test_live_view_zoom_quality_navigation_and_search_with_simulated_realtime(self) -> None:
         # The bridge and picture below are deliberately simulated; the separate
         # sandbox integration verifies real Chromium screenshots and clicks.
