@@ -501,19 +501,21 @@ def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = 
 
 
 def _retained_progress(job: dict[str, Any], work: Path) -> int:
+    if work.is_symlink():
+        return 0
     name = str(job.get("source_complete") or "")
     source = work / name if name and Path(name).name == name else None
-    if source and source.is_file() and source.stat().st_size == int(job.get("source_complete_size") or -1):
+    if source and not source.is_symlink() and source.is_file() and source.stat().st_size == int(job.get("source_complete_size") or -1):
         return source.stat().st_size
     partial = work / "download.bin"
-    if job["kind"] == "file" and job.get("resumable") and partial.is_file():
+    if job["kind"] == "file" and job.get("resumable") and not partial.is_symlink() and partial.is_file():
         return partial.stat().st_size
     if job["kind"] in {"audio", "video"}:
         sizes = []
         for attempt in work.glob(".resume-*"):
-            if attempt.is_dir():
+            if not attempt.is_symlink() and attempt.is_dir():
                 sizes.append(sum(path.stat().st_size for path in attempt.glob("media.*")
-                                 if path.is_file() and not path.name.endswith((".ytdl", ".temp"))))
+                                 if not path.is_symlink() and path.is_file() and not path.name.endswith((".ytdl", ".temp"))))
         return max(sizes, default=0)
     return 0
 
@@ -524,15 +526,28 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     admitted = state.kill_generation(owner) if generation is None else generation
     interrupted = lambda: stop.is_set() or not access.job_allowed(job) or state.work_interrupted(owner, admitted)
     _checkpoint(interrupted)
+    # Files may have disappeared after startup (for example on an ephemeral
+    # runner). Protect any surviving packing artifacts before clearing them.
+    try:
+        preserved = _recover_packing_source(job)
+    except (OSError, TypeError, ValueError):
+        preserved = False
+    if not preserved:
+        update(job, status="queued", hold=True, error="source_preservation")
+        return
     work = folder(job) / "src"
-    shutil.rmtree(folder(job) / "parts", ignore_errors=True)
     work.mkdir(parents=True, exist_ok=True)
+    # _split clears reproducible packing artifacts only after the completed
+    # source has been read and checked; a failed re-download keeps old bytes.
     name = str(job.get("source_complete") or "")
     candidate = work / name if name and Path(name).name == name else None
     if candidate and (not candidate.is_file() or candidate.stat().st_size != int(job.get("source_complete_size") or -1)):
         candidate = None
     retained = _retained_progress(job, work)
-    update(job, status="downloading", progress=retained, error="")
+    values: dict[str, Any] = {"status": "downloading", "progress": retained, "error": ""}
+    if int(job.get("progress") or 0) > retained:
+        values["recovery_note"] = "progress_lost"
+    update(job, **values)
     sample: dict[str, float] = {}
     _status(job, tr(job.get("locale", "es"), "⬇️ Iniciando descarga…", "⬇️ Starting download…"))
 
@@ -542,14 +557,23 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
             job["size_est"] = total
         _status(job, _rate_line(job, done, total or int(job.get("size_est") or 0), sample))
 
+    def integrity(note: str) -> None:
+        if note == "range_unverified" and not job.get("range_unverified"):
+            update(job, range_unverified=True)
+
     if job["kind"] == "file":
         source = candidate or (work / "download.bin")
+        if source.is_symlink() or (source.exists() and not source.is_file()):
+            update(job, status="queued", hold=True, error="source_preservation")
+            return
         if candidate is None:
+            if not retained and job.get("range_unverified"):
+                update(job, range_unverified=False)
             files.download(job["url"], source, int(job.get("size_est") or 0), bool(job.get("resumable")), progress,
-                           interrupted, config.MAX_FILE_BYTES)
+                           interrupted, config.MAX_FILE_BYTES, integrity)
             # Only a completed download gets this marker; partial range downloads
             # continue to use the existing resumable path instead.
-            update(job, source_complete=source.name, source_complete_size=source.stat().st_size)
+            update(job, source_complete=source.name, source_complete_size=source.stat().st_size, source_complete_sha="")
         _checkpoint(interrupted)
         with source.open("rb") as handle:
             head = handle.read(65536)
@@ -565,7 +589,7 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
                                     lambda done, total: progress(done, total), interrupted)
             if source.parent != work:
                 raise ValueError("media_error")
-            update(job, source_complete=source.name, source_complete_size=source.stat().st_size)
+            update(job, source_complete=source.name, source_complete_size=source.stat().st_size, source_complete_sha="")
         _checkpoint(interrupted)
         ext = source.suffix.lstrip(".").lower() or job["ext"]
         mime = files.KINDS.get(ext, files.KINDS["bin"])[0]
@@ -575,9 +599,15 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     if size > config.MAX_FILE_BYTES:
         raise ValueError("too_large")
     digest = _sha256(source, interrupted)
+    recorded_source_sha = str(job.get("source_complete_sha") or "")
+    if recorded_source_sha and recorded_source_sha != digest:
+        # A same-sized local copy can still be corrupt. Keep it and every old
+        # artifact for review rather than replacing either copy.
+        update(job, status="queued", hold=True, error="source_preservation")
+        return
     previous = job.get("sha")
     sent_before = int(job.get("sent") or 0)
-    update(job, status="packing", size=size, progress=size)
+    update(job, status="packing", size=size, progress=size, source_complete_sha=digest)
     if size > int(job["part_mb"]) * MIB:
         _status(job, tr(job.get("locale", "es"), f"🗜️ Empaquetando {human_size(size)} en partes…", f"🗜️ Packing {human_size(size)} into parts…"))
     parts = _split(source, job, interrupted)
@@ -597,7 +627,7 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
         # A restart may have occurred after the last delivered part was recorded.
         # Do not turn an empty todo list back into a full resend.
         update(job, status="done", done_at=time.time(), todo=[], sha=digest, parts=len(parts),
-               part_files=[str(path) for path in parts])
+               part_files=[str(path) for path in parts], source_complete="", source_complete_size=0, source_complete_sha="")
         shutil.rmtree(work, ignore_errors=True)
         shutil.rmtree(folder(job) / "named", ignore_errors=True)
         return
@@ -607,7 +637,7 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
     part_sha = [_sha256(path, interrupted) for path in parts] if len(parts) > 1 else []
     _checkpoint(interrupted)
     update(job, sha=digest, parts=len(parts), part_files=[str(path) for path in parts], todo=todo, status=next_status, restart_note=note,
-           part_sha=part_sha, source_complete="", source_complete_size=0,
+           part_sha=part_sha, source_complete="", source_complete_size=0, source_complete_sha="",
            part_sizes=[path.stat().st_size for path in parts] if len(parts) > 1 else [])
     # These are redundant links/copies only after the new parts were persisted.
     shutil.rmtree(work, ignore_errors=True)
@@ -664,8 +694,11 @@ def _preparer() -> None:
                 if state.work_interrupted(owner, generation) or job.get("status") == "cancelled":
                     _interrupted_preparation(job)
                     continue
-                code = str(exc) if str(exc) in {"too_large", "disk_full", "network", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid"} else exc.__class__.__name__
-                log.warning("job %s failed: %s", job["id"], exc)
+                text = str(exc)
+                known = {"too_large", "disk_full", "network", "source_preservation", "source_changed", "range_invalid", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid"}
+                code = text if text in known or re.fullmatch(r"http_\d{3}", text) else exc.__class__.__name__
+                # Provider exceptions can include signed URLs or credentials.
+                log.warning("job %s failed: %s", job["id"], code)
                 update(job, status="failed", error=code)
                 # Keep reusable sources and partials for an explicit retry; normal
                 # expiry or a user-requested cleanup still controls storage.
@@ -681,12 +714,19 @@ def _interrupted_preparation(job: dict[str, Any]) -> None:
         shutil.rmtree(folder(job), ignore_errors=True)
         _status_done(job)
         return
-    # src retains either the completed source or a range-resumable partial file.
-    # Only incomplete, reproducible packing artifacts are discarded.
-    shutil.rmtree(folder(job) / "parts", ignore_errors=True)
-    shutil.rmtree(folder(job) / "named", ignore_errors=True)
-    retained = _retained_progress(job, folder(job) / "src")
-    update(job, status="queued", progress=retained, error="")
+    # Preserve source *and* packing artifacts during the pause. The next
+    # successful preparation clears reproducible artifacts only after it has
+    # verified a complete source; otherwise they may be the last surviving copy.
+    previous = int(job.get("progress") or 0)
+    try:
+        retained = _retained_progress(job, folder(job) / "src")
+        values: dict[str, Any] = {"status": "queued", "progress": retained, "error": ""}
+    except (OSError, TypeError, ValueError):
+        retained = 0
+        values = {"status": "queued", "progress": 0, "hold": True, "error": "source_preservation"}
+    if previous > retained:
+        values["recovery_note"] = "progress_lost"
+    update(job, **values)
     _status(job, tr(job.get("locale", "es"), "⏸️ Trabajo pausado; continuará al terminar la pausa.",
                     "⏸️ Job paused; it will continue when the pause ends."), timer=False)
     _wake.set()
@@ -700,6 +740,12 @@ def _error_text(code: str, locale: str) -> str:
     if code == "source_preservation":
         return tr(locale, "archivo anterior protegido; requiere revisión antes de reanudar",
                   "previous source protected; review is required before resuming")
+    if code == "source_changed":
+        return tr(locale, "el origen cambió o no aceptó la reanudación; se conservó el archivo parcial",
+                  "the source changed or did not accept resumption; the partial file was retained")
+    if code == "range_invalid":
+        return tr(locale, "el servidor respondió con un rango incompatible; se conservó el archivo parcial",
+                  "the server returned an incompatible range; the partial file was retained")
     if code == "pack_error":
         return tr(locale, "no se pudo dividir en partes", "splitting into parts failed")
     if code == "network":
@@ -1033,44 +1079,92 @@ def cleanup() -> None:
 
 
 def _recover_packing_source(job: dict[str, Any]) -> bool:
-    """Preserve a complete source left in old versions' named/ during packaging."""
-    if job.get("status") != "packing" or job.get("source_complete") or int(job.get("size") or 0) <= 0:
-        return True
-    expected = int(job["size"])
-    work = folder(job) / "src"
-    candidates = [work / "download.bin"] if job.get("kind") == "file" else list(work.glob("media.*"))
-    candidates = [path for path in candidates if path.is_file() and not path.name.endswith((".part", ".ytdl", ".temp"))
-                  and path.stat().st_size == expected]
-    if not candidates:
-        named = folder(job) / "named"
-        candidates = [path for path in named.glob("*") if path.is_file() and path.stat().st_size == expected]
-        if not candidates:
-            # Old code may have moved a small, complete file straight into parts/.
-            parts = folder(job) / "parts"
-            whole = parts / str(job.get("name") or "")
-            if (expected <= int(job.get("part_mb") or 0) * MIB and whole.is_file()
-                    and whole.stat().st_size == expected):
-                candidates = [whole]
-            elif any(parts.glob("*")) or any(named.glob("*")):
-                return False  # retain incomplete or ambiguous artifacts for review
-            else:
-                return True  # no local source remains; normal re-download can proceed
-        if len(candidates) != 1:
-            return False  # do not guess or overwrite among multiple candidates
-        source = candidates[0]
-        target = work / ("download.bin" if job.get("kind") == "file" else "media" + (source.suffix or ".bin"))
-        try:
-            work.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
-                os.link(source, target)  # never delete or overwrite the only old copy
-            if target.stat().st_size != expected:
-                return False
-        except OSError:
-            return False
-        candidates = [target]
-    if len(candidates) != 1:
+    """Protect a missing or legacy packing source before any artifact is removed.
+
+    A stored marker is not proof that its file still exists. If the bytes are
+    absent, recover one unambiguous complete local copy, or hold the job when
+    surviving artifacts cannot be identified safely. No remote durability is
+    implied; when no local copy exists the ordinary download must start again.
+    """
+    marker = str(job.get("source_complete") or "")
+    base = folder(job)
+    if base.is_symlink() or any((base / name).is_symlink() for name in ("src", "named", "parts")):
         return False
-    job["source_complete"] = candidates[0].name
+    if job.get("status") != "packing" and not marker:
+        return True
+    try:
+        marked_size = int(job.get("source_complete_size") or 0)
+        packed_size = int(job.get("size") or 0)
+        expected = marked_size if marker else packed_size
+    except (TypeError, ValueError):
+        return False
+    work = folder(job) / "src"
+    if work.is_symlink() or (marker and (Path(marker).name != marker or marker in {".", ".."})):
+        return False
+    if marker:
+        source = work / marker
+        if source.is_symlink():
+            return False
+        if source.exists():
+            # A wrong-sized marker may be a useful partial or a different file;
+            # never overwrite it even if another candidate happens to exist.
+            return (source.is_file() and marked_size > 0 and source.stat().st_size == marked_size
+                    and (job.get("status") != "packing" or not packed_size or packed_size == marked_size))
+
+    named = folder(job) / "named"
+    parts = folder(job) / "parts"
+    if named.is_symlink() or parts.is_symlink():
+        return False
+    named_items = list(named.iterdir()) if named.is_dir() else []
+    part_items = list(parts.iterdir()) if parts.is_dir() else []
+    if expected <= 0:
+        # With no trustworthy complete size, do not guess which artifact is a source.
+        return not marker and not named_items and not part_items
+
+    if job.get("kind") == "file":
+        source_items = [work / "download.bin"]
+    else:
+        source_items = [path for path in work.glob("media*")
+                        if re.fullmatch(r"(?:media\.[a-zA-Z0-9]{1,8}|media-result-[0-9a-f]{16}\.[a-zA-Z0-9]{1,8})", path.name)]
+    candidates = [path for path in source_items if not path.is_symlink() and path.is_file() and path.stat().st_size == expected]
+    surviving = [path for path in source_items if path.exists() or path.is_symlink()]
+    if len(candidates) > 1 or len(surviving) != len(candidates):
+        return False  # do not overwrite an incomplete or competing source
+    if candidates:
+        job["source_complete"] = candidates[0].name
+        job["source_complete_size"] = expected
+        return True
+
+    valid_named = [path for path in named_items if not path.is_symlink() and path.is_file() and path.stat().st_size == expected]
+    if len(named_items) > 1:
+        return False  # a second full or partial named file is ambiguous
+    # A previous version may have moved a small, complete file into parts/.
+    name = str(job.get("name") or "")
+    whole = parts / name if name and Path(name).name == name else None
+    valid_whole = (whole is not None and not whole.is_symlink() and whole.is_file()
+                   and expected <= int(job.get("part_mb") or 0) * MIB and whole.stat().st_size == expected)
+    if valid_named and valid_whole and not valid_named[0].samefile(whole):
+        return False  # two different complete-looking copies: never guess
+    old_source = valid_named[0] if valid_named else whole if valid_whole else None
+    if old_source is None:
+        if named_items or part_items or any(path.is_symlink() for path in source_items):
+            return False  # incomplete or ambiguous artifacts remain for review
+        if marker:
+            job["source_complete"] = ""
+            job["source_complete_size"] = 0
+            job["source_complete_sha"] = ""
+        return True  # no completed local source remains; re-download is necessary
+
+    target_name = marker or ("download.bin" if job.get("kind") == "file" else "media" + (old_source.suffix or ".bin"))
+    target = work / target_name
+    try:
+        work.mkdir(parents=True, exist_ok=True)
+        if target.exists() or target.is_symlink():
+            return False  # never overwrite a different surviving local file
+        os.link(old_source, target)  # preserve the old copy until packing succeeds
+    except OSError:
+        return False
+    job["source_complete"] = target.name
     job["source_complete_size"] = expected
     return True
 
@@ -1088,7 +1182,7 @@ def recover() -> None:
             if job["status"] in ACTIVE:
                 try:
                     preserved = _recover_packing_source(job)
-                except OSError:
+                except (OSError, TypeError, ValueError):
                     preserved = False
                 if not preserved:
                     job["hold"] = True
@@ -1103,8 +1197,19 @@ def recover() -> None:
                     job["status"] = "done"
                     job["done_at"] = time.time()
                 elif job["status"] in {"downloading", "packing"} or not paths or not all(Path(path).exists() for path in paths):
+                    previous = int(job.get("progress") or 0)
+                    try:
+                        retained = _retained_progress(job, folder(job) / "src")
+                    except (OSError, TypeError, ValueError):
+                        retained = 0
+                        job["hold"] = True
+                        job["error"] = "source_preservation"
                     job["status"] = "queued"
-                    job["progress"] = 0
+                    job["progress"] = retained
+                    if previous > retained:
+                        # On ephemeral runners state may outlive the actual bytes.
+                        # Show the loss rather than claiming the old progress survived.
+                        job["recovery_note"] = "progress_lost"
                     if job.get("parts"):
                         job["send_requested"] = True
     state.save()
@@ -1138,11 +1243,23 @@ def status_label(job: dict[str, Any], locale: str) -> str:
     return label
 
 
+def recovery_warning(job: dict[str, Any], locale: str) -> str:
+    warnings = []
+    if job.get("recovery_note") == "progress_lost":
+        warnings.append(tr(locale,
+                           "Parte del progreso local anterior no estaba disponible tras la pausa o el reinicio; solo se conservan los bytes guardados.",
+                           "Some previous local progress was unavailable after a pause or restart; only the stored bytes are retained."))
+    if job.get("range_unverified"):
+        warnings.append(tr(locale, "No se pudo verificar si el origen cambió al reanudar; debes verificar el archivo.",
+                           "The source could not be verified when resuming; verify the file."))
+    return " ".join(warnings)
+
+
 def describe_job(job: dict[str, Any], locale: str, detailed: bool = False) -> str:
     size = job.get("size") or job.get("size_est") or 0
     head = f"#{job['id']} {job.get('name') or job['title']}"[:110]
     lines = [head, f"   {status_label(job, locale)} · {human_size(size)}"]
-    if job["status"] == "downloading" and size:
+    if job["status"] in {"queued", "downloading", "packing"} and size and job.get("progress"):
         lines[-1] += f" · {min(100, int(job.get('progress', 0) * 100 / max(1, size)))}%"
     if job.get("parts"):
         delivered = int(job["parts"]) - len(job.get("todo") or []) if job["status"] in {"sending", "done", "ready"} else int(job.get("sent") or 0)
@@ -1151,6 +1268,8 @@ def describe_job(job: dict[str, Any], locale: str, detailed: bool = False) -> st
         lines.append("   🕒 " + local_time(float(job["not_before"]), "%d/%m %H:%M"))
     if (job["status"] == "failed" or job.get("error") == "source_preservation") and job.get("error"):
         lines.append(f"   {_error_text(job['error'], locale)}")
+    if warning := recovery_warning(job, locale):
+        lines.append(f"   ⚠️ {warning}")
     ops = []
     if job["status"] in ACTIVE:
         ops.append(names.cmd(locale, "resume" if job.get("hold") or job["status"] == "ready" else "pause", job["id"]))

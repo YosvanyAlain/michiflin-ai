@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hashlib
 import json
 import os
 import tempfile
@@ -200,6 +201,7 @@ class OperationalMaintenanceTests(unittest.TestCase):
             def __init__(self, resumed):
                 self.status_code = 206 if resumed else 200
                 self.resumed = resumed
+                self.headers = {"ETag": '"fixture-v1"', "Content-Range": "bytes 300-599/600"} if resumed else {"ETag": '"fixture-v1"'}
             def iter_content(self, chunk_size):
                 if not self.resumed:
                     yield first
@@ -239,6 +241,182 @@ class OperationalMaintenanceTests(unittest.TestCase):
             queue._prepare(job)
         self.assertEqual(requested, ["", "bytes=300-"])
         self.assertEqual(Path(job["part_files"][0]).read_bytes(), first + second)
+
+    def test_http_resume_uses_saved_strong_etag_without_leaking_url(self):
+        target = Path(self.temp.name) / "etag.bin"
+        url = "https://example.org/file?token=synthetic-test-secret"
+        stop = [False]
+        seen = []
+        class Response:
+            def __init__(self, resumed):
+                self.status_code = 206 if resumed else 200
+                self.headers = {"ETag": '"v1"', "Content-Range": "bytes 3-5/6"} if resumed else {"ETag": '"v1"'}
+                self.resumed = resumed
+            def iter_content(self, chunk_size):
+                if not self.resumed:
+                    yield b"abc"
+                    stop[0] = True
+                yield b"def"
+            def close(self):
+                pass
+        def fetch(_url, **kwargs):
+            seen.append(dict(kwargs["headers"]))
+            return Response(bool(kwargs["headers"].get("Range")))
+        with mock.patch.object(files.net, "fetch", side_effect=fetch):
+            with self.assertRaises(InterruptedError):
+                files.download(url, target, 6, True, stop=lambda: stop[0])
+            stop[0] = False
+            files.download(url, target, 6, True, stop=lambda: stop[0])
+        self.assertEqual(target.read_bytes(), b"abcdef")
+        self.assertEqual(seen[1].get("Range"), "bytes=3-")
+        self.assertEqual(seen[1].get("If-Range"), '"v1"')
+        self.assertNotIn("synthetic-test-secret", target.with_name(target.name + ".resume.json").read_text())
+
+    def test_http_resume_refuses_changed_source_without_overwriting_partial(self):
+        target = Path(self.temp.name) / "changed.bin"
+        target.write_bytes(b"abc")
+        url = "https://example.org/file"
+        files._save_resume_metadata(target, url, '"v1"')
+        class Response:
+            status_code = 200
+            headers = {"ETag": '"v2"'}
+            def iter_content(self, chunk_size):
+                yield b"UVWXYZ"
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()) as fetch:
+            with self.assertRaisesRegex(ValueError, "source_changed"):
+                files.download(url, target, 6, True)
+        self.assertEqual(fetch.call_args.kwargs["headers"].get("If-Range"), '"v1"')
+        self.assertEqual(target.read_bytes(), b"abc")
+
+    def test_http_resume_refuses_wrong_content_range_before_writing(self):
+        target = Path(self.temp.name) / "range.bin"
+        target.write_bytes(b"abc")
+        class Response:
+            status_code = 206
+            headers = {"Content-Range": "bytes 0-2/6"}
+            def iter_content(self, chunk_size):
+                yield b"XYZ"
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            with self.assertRaisesRegex(ValueError, "range_invalid"):
+                files.download("https://example.org/file", target, 6, True)
+        self.assertEqual(target.read_bytes(), b"abc")
+
+    def test_http_resume_without_strong_validator_is_explicitly_marked_unverified(self):
+        target = Path(self.temp.name) / "unverified.bin"
+        target.write_bytes(b"abc")  # legacy partial has no saved validator
+        warnings = []
+        class Response:
+            status_code = 206
+            headers = {"Content-Range": "bytes 3-5/6"}
+            def iter_content(self, chunk_size):
+                yield b"def"
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            files.download("https://example.org/file", target, 6, True, integrity=warnings.append)
+        self.assertEqual(target.read_bytes(), b"abcdef")
+        self.assertEqual(warnings, ["range_unverified"])
+        self.assertIn("verify", queue.recovery_warning({"range_unverified": True}, "en").lower())
+        self.assertIn("verificar", queue.recovery_warning({"range_unverified": True}, "es").lower())
+
+    def test_http_resume_rejects_inconsistent_etag_even_on_206(self):
+        target = Path(self.temp.name) / "bad-etag.bin"
+        target.write_bytes(b"abc")
+        url = "https://example.org/file"
+        files._save_resume_metadata(target, url, '"v1"')
+        class Response:
+            status_code = 206
+            headers = {"ETag": '"v2"', "Content-Range": "bytes 3-5/6"}
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            with self.assertRaisesRegex(ValueError, "source_changed"):
+                files.download(url, target, 6, True)
+        self.assertEqual(target.read_bytes(), b"abc")
+
+    def test_http_resume_refuses_symlink_metadata_without_touching_it(self):
+        target = Path(self.temp.name) / "unsafe.bin"
+        target.write_bytes(b"abc")
+        other = Path(self.temp.name) / "external.txt"
+        other.write_text("protected")
+        target.with_name(target.name + ".resume.json").symlink_to(other)
+        with mock.patch.object(files.net, "fetch") as fetch:
+            with self.assertRaisesRegex(ValueError, "source_preservation"):
+                files.download("https://example.org/file", target, 6, True)
+        fetch.assert_not_called()
+        self.assertEqual(other.read_text(), "protected")
+        self.assertEqual(target.read_bytes(), b"abc")
+
+    def test_nonresumable_restart_preserves_previous_bytes_on_failure(self):
+        target = Path(self.temp.name) / "no-range.bin"
+        target.write_bytes(b"abc")
+        class Response:
+            status_code = 403
+            headers = {}
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            with self.assertRaisesRegex(ValueError, "http_403"):
+                files.download("https://example.org/file", target, 6, False)
+        saved = list(target.parent.glob("no-range.bin.previous-*"))
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].read_bytes(), b"abc")
+
+    def test_incomplete_nonresumable_response_stops_without_destroying_bytes(self):
+        target = Path(self.temp.name) / "short.bin"
+        target.write_bytes(b"old")
+        class Response:
+            status_code = 200
+            headers = {}  # some servers omit Content-Length
+            def iter_content(self, chunk_size):
+                yield b"new"
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()) as fetch:
+            with self.assertRaisesRegex(ValueError, "network"):
+                files.download("https://example.org/file", target, 6, False)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(target.read_bytes(), b"new")
+        self.assertEqual(list(target.parent.glob("short.bin.previous-*"))[0].read_bytes(), b"old")
+
+    def test_unverified_resume_warning_reaches_both_miniapp_languages(self):
+        job = self.new_job(resumable=True, size_est=6)
+        target = queue.folder(job) / "src" / "download.bin"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"abc")
+        class Response:
+            status_code = 206
+            headers = {"Content-Range": "bytes 3-5/6"}
+            def iter_content(self, chunk_size):
+                yield b"def"
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            queue._prepare(job)
+        self.assertTrue(job.get("range_unverified"))
+        self.assertEqual(Path(job["part_files"][0]).read_bytes(), b"abcdef")
+        self.assertIn("verificar", miniapp.job_view(job, "es")["warning"])
+        self.assertIn("verify", miniapp.job_view(job, "en")["warning"])
+
+    def test_http_416_requires_a_matching_total(self):
+        target = Path(self.temp.name) / "range-416.bin"
+        target.write_bytes(b"abc")
+        class Response:
+            status_code = 416
+            headers = {"Content-Range": "bytes */6"}
+            def close(self):
+                pass
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            with self.assertRaisesRegex(ValueError, "range_invalid"):
+                files.download("https://example.org/file", target, 0, True)
+        self.assertEqual(target.read_bytes(), b"abc")
+        Response.headers = {"Content-Range": "bytes */3"}
+        with mock.patch.object(files.net, "fetch", return_value=Response()):
+            self.assertEqual(files.download("https://example.org/file", target, 0, True), 3)
 
     def test_completed_file_is_preserved_if_pause_hits_after_packing_move(self):
         payload = b"fully downloaded before packing"
@@ -412,6 +590,224 @@ class OperationalMaintenanceTests(unittest.TestCase):
             queue._prepare(job)
         download.assert_not_called()
         self.assertEqual(Path(job["part_files"][0]).read_bytes(), payload)
+
+    def test_marked_missing_source_is_recovered_from_named_before_cleanup(self):
+        payload = b"marked complete source in named"
+        job = self.new_job()
+        job.update(status="packing", size=len(payload), progress=len(payload),
+                   source_complete="download.bin", source_complete_size=len(payload))
+        named = queue.folder(job) / "named" / job["name"]
+        named.parent.mkdir(parents=True)
+        named.write_bytes(payload)
+        queue.recover()
+        self.assertFalse(job["hold"])
+        self.assertEqual(job["progress"], len(payload))
+        self.assertEqual((queue.folder(job) / "src" / job["source_complete"]).read_bytes(), payload)
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertEqual(Path(job["part_files"][0]).read_bytes(), payload)
+
+    def test_marked_missing_source_is_recovered_from_whole_part(self):
+        payload = b"marked complete source in a part"
+        job = self.new_job()
+        job.update(status="packing", size=len(payload), progress=len(payload),
+                   source_complete="download.bin", source_complete_size=len(payload))
+        part = queue.folder(job) / "parts" / job["name"]
+        part.parent.mkdir(parents=True)
+        part.write_bytes(payload)
+        queue.recover()
+        self.assertFalse(job["hold"])
+        self.assertEqual((queue.folder(job) / "src" / job["source_complete"]).read_bytes(), payload)
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertEqual(Path(job["part_files"][0]).read_bytes(), payload)
+
+    def test_marked_wrong_size_source_is_held_without_overwriting_any_copy(self):
+        job = self.new_job()
+        job.update(status="packing", size=6, progress=6, source_complete="download.bin", source_complete_size=6)
+        source = queue.folder(job) / "src" / "download.bin"
+        named = queue.folder(job) / "named" / job["name"]
+        source.parent.mkdir(parents=True)
+        named.parent.mkdir(parents=True)
+        source.write_bytes(b"partial")
+        named.write_bytes(b"full!!")
+        queue.recover()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual(source.read_bytes(), b"partial")
+        self.assertEqual(named.read_bytes(), b"full!!")
+        self.assertIsNone(queue._next_queued())
+
+    def test_same_size_corrupt_complete_source_is_held_before_deleting_artifacts(self):
+        good, corrupt = b"correct!", b"damaged!"
+        job = self.new_job()
+        job.update(status="queued", size=len(good), progress=len(good), source_complete="download.bin",
+                   source_complete_size=len(good), source_complete_sha=hashlib.sha256(good).hexdigest())
+        source = queue.folder(job) / "src" / "download.bin"
+        named = queue.folder(job) / "named" / job["name"]
+        part = queue.folder(job) / "parts" / job["name"]
+        for path in (source, named, part):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(corrupt)
+        named.write_bytes(good)
+        part.write_bytes(good)
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual(source.read_bytes(), corrupt)
+        self.assertEqual(named.read_bytes(), good)
+        self.assertEqual(part.read_bytes(), good)
+
+    def test_interruption_does_not_remove_last_packing_artifacts(self):
+        job = self.new_job(resumable=True)
+        job.update(status="downloading", progress=10)
+        named = queue.folder(job) / "named" / "source.bin"
+        part = queue.folder(job) / "parts" / "piece.001"
+        for path in (named, part):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        named.write_bytes(b"valuable source")
+        part.write_bytes(b"valuable part")
+        queue._interrupted_preparation(job)
+        self.assertEqual(named.read_bytes(), b"valuable source")
+        self.assertEqual(part.read_bytes(), b"valuable part")
+        self.assertEqual(job["progress"], 0)
+        self.assertEqual(job["recovery_note"], "progress_lost")
+
+    def test_marked_missing_source_with_ambiguous_artifacts_is_held(self):
+        job = self.new_job()
+        job.update(status="packing", size=4, progress=4, source_complete="download.bin", source_complete_size=4)
+        named = queue.folder(job) / "named"
+        named.mkdir(parents=True)
+        (named / "one.bin").write_bytes(b"aaaa")
+        (named / "two.bin").write_bytes(b"bbbb")
+        queue.recover()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual((named / "one.bin").read_bytes(), b"aaaa")
+        self.assertEqual((named / "two.bin").read_bytes(), b"bbbb")
+
+    def test_complete_and_partial_named_artifacts_are_both_protected(self):
+        job = self.new_job()
+        job.update(status="packing", size=4, progress=4, source_complete="download.bin", source_complete_size=4)
+        named = queue.folder(job) / "named"
+        named.mkdir(parents=True)
+        (named / "complete.bin").write_bytes(b"aaaa")
+        (named / "partial.bin").write_bytes(b"bb")
+        queue.recover()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual((named / "complete.bin").read_bytes(), b"aaaa")
+        self.assertEqual((named / "partial.bin").read_bytes(), b"bb")
+
+    def test_marked_missing_media_source_finds_result_name_without_redownload(self):
+        payload = b"result media content"
+        job = self.new_job(kind="video", quality=360)
+        job.update(status="packing", size=len(payload), progress=len(payload),
+                   source_complete="media-missing.mp4", source_complete_size=len(payload))
+        result = queue.folder(job) / "src" / "media-result-0123456789abcdef.mp4"
+        result.parent.mkdir(parents=True)
+        result.write_bytes(payload)
+        queue.recover()
+        self.assertFalse(job["hold"])
+        self.assertEqual(job["source_complete"], result.name)
+        with mock.patch.object(media, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertEqual(Path(job["part_files"][0]).read_bytes(), payload)
+
+    def test_recover_reports_actual_partial_bytes_and_warns_on_progress_loss(self):
+        job = self.new_job(resumable=True)
+        job.update(status="downloading", progress=500, size_est=1000)
+        partial = queue.folder(job) / "src" / "download.bin"
+        partial.parent.mkdir(parents=True)
+        partial.write_bytes(b"x" * 300)
+        queue.recover()
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["progress"], 300)
+        self.assertEqual(job["recovery_note"], "progress_lost")
+        self.assertIn("progreso", miniapp.job_view(job, "es")["warning"])
+        self.assertIn("progress", miniapp.job_view(job, "en")["warning"])
+
+    def test_recover_missing_bytes_does_not_claim_progress_survived(self):
+        job = self.new_job(resumable=True)
+        job.update(status="downloading", progress=500, size_est=1000,
+                   source_complete="download.bin", source_complete_size=500)
+        queue.recover()
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["progress"], 0)
+        self.assertFalse(job.get("source_complete"))
+        self.assertEqual(job["recovery_note"], "progress_lost")
+        self.assertIn("progress", miniapp.job_view(job, "en")["warning"])
+
+    def test_prepare_reports_bytes_lost_after_startup(self):
+        job = self.new_job(resumable=True)
+        job.update(status="queued", progress=500, size_est=1000,
+                   source_complete="download.bin", source_complete_size=500)
+        with mock.patch.object(files, "download", side_effect=ValueError("network")):
+            with self.assertRaisesRegex(ValueError, "network"):
+                queue._prepare(job)
+        self.assertEqual(job["progress"], 0)
+        self.assertFalse(job.get("source_complete"))
+        self.assertEqual(job["recovery_note"], "progress_lost")
+
+    def test_source_hash_is_committed_before_packing_can_be_interrupted(self):
+        payload = b"verified complete source"
+        job = self.new_job()
+        def download(_url, target, *_args):
+            target.write_bytes(payload)
+        with mock.patch.object(files, "download", side_effect=download), \
+             mock.patch.object(queue, "_split", side_effect=InterruptedError()):
+            with self.assertRaises(InterruptedError):
+                queue._prepare(job)
+        self.assertEqual(job["status"], "packing")
+        self.assertEqual(job["source_complete_sha"], hashlib.sha256(payload).hexdigest())
+        self.assertEqual((queue.folder(job) / "src" / job["source_complete"]).read_bytes(), payload)
+
+    def test_prepare_refuses_a_symlinked_source_directory(self):
+        job = self.new_job()
+        outside = Path(self.temp.name) / "outside"
+        outside.mkdir()
+        (outside / "valuable").write_bytes(b"keep")
+        root = queue.folder(job)
+        root.mkdir(parents=True)
+        (root / "src").symlink_to(outside, target_is_directory=True)
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual((outside / "valuable").read_bytes(), b"keep")
+
+    def test_prepare_refuses_a_symlinked_partial_file(self):
+        job = self.new_job(resumable=True)
+        outside = Path(self.temp.name) / "valuable"
+        outside.write_bytes(b"keep")
+        work = queue.folder(job) / "src"
+        work.mkdir(parents=True)
+        (work / "download.bin").symlink_to(outside)
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual(outside.read_bytes(), b"keep")
+
+    def test_prepare_rechecks_missing_source_before_deleting_parts(self):
+        job = self.new_job()
+        job.update(status="queued", size=4, progress=4, source_complete="download.bin", source_complete_size=4)
+        parts = queue.folder(job) / "parts"
+        parts.mkdir(parents=True)
+        (parts / "incomplete.001").write_bytes(b"ab")
+        with mock.patch.object(files, "download") as download:
+            queue._prepare(job)
+        download.assert_not_called()
+        self.assertTrue(job["hold"])
+        self.assertEqual(job["error"], "source_preservation")
+        self.assertEqual((parts / "incomplete.001").read_bytes(), b"ab")
 
     def test_old_packing_source_in_named_is_preserved_without_redownload(self):
         payload = b"original from old version"

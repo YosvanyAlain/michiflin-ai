@@ -881,6 +881,7 @@ class SafetyTests(unittest.TestCase):
             def __init__(self, resumed):
                 self.status_code = 206 if resumed else 200
                 self.resumed = resumed
+                self.headers = {"ETag": '"fixture-v1"', "Content-Range": "bytes 300-599/600"} if resumed else {"ETag": '"fixture-v1"'}
             def iter_content(self, chunk_size):
                 if not self.resumed:
                     yield initial

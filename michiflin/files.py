@@ -1,8 +1,13 @@
 """Direct-link inspection: resolve share pages, probe size/resume support, detect real file type."""
 from __future__ import annotations
 
+import hashlib
+import json
 import mimetypes
+import os
 import re
+import secrets
+import tempfile
 import time
 from dataclasses import dataclass, asdict
 from email.message import Message
@@ -330,55 +335,174 @@ def card(info: FileInfo, locale: str, part_mb: int) -> list[str]:
     return lines
 
 
+def _strong_etag(value: str) -> str:
+    """Return only a syntactically valid strong HTTP ETag, never a weak validator."""
+    tag = str(value or "").strip()
+    return tag if len(tag) <= 512 and re.fullmatch(r'"[\x21\x23-\x7e\x80-\xff]*"', tag) else ""
+
+
+def _resume_metadata_path(target: Path) -> Path:
+    return target.with_name(target.name + ".resume.json")
+
+
+def _save_resume_metadata(target: Path, url: str, etag: str) -> None:
+    """Store an opaque URL digest and validator, atomically and without secrets in logs."""
+    path = _resume_metadata_path(target)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("source_preservation")
+    body = {"version": 1, "url_sha256": hashlib.sha256(url.encode("utf-8")).hexdigest(), "etag": _strong_etag(etag)}
+    temporary = ""
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".resume-", delete=False) as handle:
+            temporary = handle.name
+            json.dump(body, handle, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _load_resume_metadata(target: Path, url: str) -> dict[str, str] | None:
+    path = _resume_metadata_path(target)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("source_preservation")
+    if not path.exists():
+        return None  # partial made by an older version
+    try:
+        if path.stat().st_size > 4096:
+            raise ValueError("metadata")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if (not isinstance(data, dict) or data.get("version") != 1
+                or data.get("url_sha256") != hashlib.sha256(url.encode("utf-8")).hexdigest()
+                or not isinstance(data.get("etag"), str)):
+            raise ValueError("metadata")
+        etag = data["etag"]
+        if etag and not _strong_etag(etag):
+            raise ValueError("metadata")
+        return {"etag": etag}
+    except (OSError, TypeError, ValueError, UnicodeError):
+        raise ValueError("source_preservation") from None
+
+
 def download(url: str, target: Path, size: int, resumable: bool, progress: Callable[[int], None] | None = None,
-             stop: Callable[[], bool] | None = None, max_bytes: int = 0) -> int:
-    """Resumable download with retries; returns the final byte count."""
+             stop: Callable[[], bool] | None = None, max_bytes: int = 0,
+             integrity: Callable[[str], None] | None = None) -> int:
+    """Download with guarded HTTP Range resumption; return the final byte count.
+
+    Strong ETags are saved before writing and used with If-Range. Legacy or
+    validator-less partials can still resume, but are explicitly reported as
+    unverified: a dishonest or validator-less server can change the source.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     attempts = 0
     while True:
         if stop and stop():
             raise InterruptedError()
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise ValueError("source_preservation")
         done = target.stat().st_size if target.exists() else 0
-        if size and done >= size:
+        metadata = _load_resume_metadata(target, url) if done else None
+        if size and done == size:
+            if resumable and not (metadata and metadata["etag"]) and integrity:
+                integrity("range_unverified")
             return done
+        if size and done > size:
+            raise ValueError("source_changed")
         headers = {"Accept-Encoding": "identity"}
         if done and resumable:
             headers["Range"] = f"bytes={done}-"
+            if metadata and metadata["etag"]:
+                headers["If-Range"] = metadata["etag"]
         elif done:
+            # A server without Range support cannot resume this file. Preserve
+            # the old bytes under a fresh name until a new download succeeds.
+            old = target.with_name(target.name + ".previous-" + secrets.token_hex(8))
+            os.link(target, old)
             target.unlink()
-            done = 0
+            done, metadata = 0, None
         try:
             response = net.fetch(url, stream=True, headers=headers, timeout=(20, 90))
             try:
                 if stop and stop():
                     raise InterruptedError()
+                response_headers = getattr(response, "headers", {})
+                raw_etag = str(response_headers.get("ETag", "") or "").strip()
+                observed_etag = _strong_etag(raw_etag)
+                if metadata and metadata["etag"] and raw_etag and raw_etag != metadata["etag"]:
+                    raise ValueError("source_changed")
                 if response.status_code == 416 and done:
+                    match = re.fullmatch(r"bytes\s+\*/(\d+)", str(response_headers.get("Content-Range", "")), re.I)
+                    if not match or int(match.group(1)) != done or (size and size != done):
+                        raise ValueError("range_invalid")
                     return done
                 if response.status_code >= 400:
                     raise ValueError(f"http_{response.status_code}")
+                if response.status_code not in {200, 206}:
+                    raise ValueError("range_invalid")
                 if done and response.status_code != 206:
-                    done = 0
-                    mode = "wb"
-                else:
-                    mode = "ab" if done else "wb"
-                last = time.monotonic()
+                    # If-Range can return 200 when the object changed; never
+                    # truncate the partial or join bytes from different versions.
+                    raise ValueError("source_changed")
+                length = 0
+                if response.status_code == 206:
+                    match = re.fullmatch(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", str(response_headers.get("Content-Range", "")), re.I)
+                    if not match:
+                        raise ValueError("range_invalid")
+                    start, end = int(match.group(1)), int(match.group(2))
+                    total = int(match.group(3)) if match.group(3) != "*" else 0
+                    if start != done or end < start or (total and end >= total) or (size and total and size != total):
+                        raise ValueError("range_invalid")
+                    if not total and not size:
+                        raise ValueError("range_invalid")
+                    length = end - start + 1
+                    if not size and total:
+                        size = total
+                    if done and not (metadata and metadata["etag"]) and integrity:
+                        integrity("range_unverified")
+                elif response.status_code == 200 and not done:
+                    declared = str(response_headers.get("Content-Length", ""))
+                    if declared.isdigit():
+                        if size and int(declared) != size:
+                            raise ValueError("source_changed")
+                        if not size:
+                            size = int(declared)
+                if not done:
+                    # Persist the identity before writing even the first block.
+                    _save_resume_metadata(target, url, observed_etag)
+                mode = "ab" if done else "wb"
+                received, last = 0, time.monotonic()
                 with target.open(mode) as handle:
                     for chunk in response.iter_content(chunk_size=256 * 1024):
                         if stop and stop():
                             raise InterruptedError()
                         if not chunk:
                             continue
+                        if length and received + len(chunk) > length:
+                            raise ValueError("range_invalid")
+                        if size and done + len(chunk) > size:
+                            raise ValueError("source_changed")
+                        if max_bytes and done + len(chunk) > max_bytes:
+                            raise ValueError("too_large")
                         handle.write(chunk)
                         done += len(chunk)
-                        if max_bytes and done > max_bytes:
-                            raise ValueError("too_large")
+                        received += len(chunk)
                         if progress and time.monotonic() - last > 3:
                             progress(done)
                             last = time.monotonic()
+                if length and received != length:
+                    raise requests.ConnectionError("incomplete range")
+                if size and done < size and response.status_code == 200:
+                    if not resumable:
+                        raise ValueError("network")
+                    raise requests.ConnectionError("incomplete response")
             finally:
                 response.close()
-            if not size or done >= size:
+            if not size or done == size:
                 return done
+            if done > size:
+                raise ValueError("source_changed")
         except (requests.RequestException, OSError) as exc:
             if isinstance(exc, InterruptedError):
                 raise

@@ -2033,7 +2033,8 @@ function jobCard(job) {
     const button = h("button", { class: "chip action", onclick: () => queueOp(action, job.id, button) }, icon(name), label);
     return button;
   };
-  const progress = job.status === "downloading" && job.size ? [bar(job.done, job.size), h("small", { class: "muted" }, `${fmtSize(job.done)} / ${fmtSize(job.size)}`)]
+  const hasBytes = ["queued", "downloading", "packing"].includes(job.status) && job.size && (job.done || job.status === "downloading");
+  const progress = hasBytes ? [bar(job.done, job.size), h("small", { class: "muted" }, `${fmtSize(job.done)} / ${fmtSize(job.size)}`)]
     : job.status === "sending" && job.parts ? [bar(job.delivered, job.parts), h("small", { class: "muted" }, t("parts_sent", { n: job.delivered, m: job.parts }))]
       : job.status === "queued" || job.status === "packing" ? [bar(0, 0, "indeterminate")] : [];
   const meta = [job.size ? fmtSize(job.size) : "", job.parts > 1 ? t("parts_n", { n: job.parts }) : "", job.parts > 1 ? formatLabel(job.format) : "", fmtTime(job.created)];
@@ -2044,6 +2045,7 @@ function jobCard(job) {
         maintenancePause ? t("status_maintenance") : job.hold && !FINAL.includes(job.status) ? t("status_paused") : t("status_" + job.status))),
     ...progress,
     job.error ? h("p", { class: "note bad" }, icon("alert"), plain(job.error)) : null,
+    job.warning ? h("p", { class: "note warn" }, icon("info"), plain(job.warning)) : null,
     h("div", { class: "chips" },
       !maintenancePause && !FINAL.includes(job.status) ? (job.hold ? tool("play", t("resume"), "resume") : tool("pause", t("pause"), "pause")) : null,
       !maintenancePause && !FINAL.includes(job.status) ? tool("close", t("cancel"), "cancel") : null,
