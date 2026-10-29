@@ -213,7 +213,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                         const msg = {v:1, sid:req.sid, t:'frame', seq:req.seq || 0,
                                      image, width:480, height:760, rendered:req.detail || 'sharp',
                                      route:window.__liveRoute, warning:window.__proxyWarning};
-                        setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), 15);
+                        // Model a real asynchronous reply: an operation stays pending until this frame arrives.
+                        setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), 200);
                       },
                       leave() {},
                     };
@@ -266,12 +267,14 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 expected_y = int((y - image_bounds["y"]) / image_bounds["height"] * 760)
                 page.mouse.click(x, y)
                 page.wait_for_function("window.__liveActions.some(x => x.action === 'click')")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
                 click = page.evaluate("window.__liveActions.filter(x => x.action === 'click').at(-1)")
                 self.assertAlmostEqual(click["x"], expected_x, delta=1)
                 self.assertAlmostEqual(click["y"], expected_y, delta=1)
                 page.get_by_text("Calidad y actualización" if language == "es" else "Quality and refresh").click()
                 page.get_by_role("tab", name="Menos datos" if language == "es" else "Less data").click()
                 page.wait_for_function("window.__liveActions.some(x => x.action === 'frame' && x.detail === 'economy')")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
                 input_address = page.get_by_placeholder("Dirección HTTPS del mismo sitio" if language == "es" else "HTTPS address on this site")
                 input_address.fill("https://facebook.com/")
                 input_address.press("Enter")
@@ -280,8 +283,10 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 input_address.fill("https://www.tiktok.com/@sample/video/67890")
                 input_address.press("Enter")
                 page.wait_for_function("window.__liveActions.some(x => x.action === 'goto' && x.url.includes('67890'))")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+                frames_before_auto = page.evaluate("window.__liveActions.filter(x => x.action === 'frame').length")
                 page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").check()
-                page.wait_for_function("window.__liveActions.filter(x => x.action === 'frame').length >= 2", timeout=8000)
+                page.wait_for_function("n => window.__liveActions.filter(x => x.action === 'frame').length > n", arg=frames_before_auto, timeout=9000)
                 screenshot_if_requested(page, f"navegador-{language}")
                 page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").uncheck()
                 self.assertEqual(errors, [])
