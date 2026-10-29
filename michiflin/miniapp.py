@@ -40,6 +40,8 @@ _pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app")
 # Emergency control must not wait behind long-running app operations.
 _control_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control")
 _instance_locks: dict[int, threading.Lock] = {}
+# Welcome, recovery and proactive upgrade must decide and hand off together.
+_upgrade_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
 Op = Callable[[int, dict[str, Any], str], Any]
 OPS: dict[str, Op] = {}
@@ -182,24 +184,42 @@ def latest_instance(chat_id: int) -> int:
 
 
 def point_to_app(chat_id: int, locale: str) -> None:
-    """The chat is only a carrier: answer typed messages by pointing at the app (sending it when missing)."""
-    msg_id = latest_instance(chat_id)
-    if not msg_id:
-        send_app(chat_id, locale)
-        return
+    """Point at an app, or deliver one only when no current binding is known."""
+    with _upgrade_lock:
+        msg_id = latest_instance(chat_id)
+        if not msg_id:
+            current_build = app_build()
+            if not any(entry.get("build") == current_build for entry in _bound_apps(chat_id)):
+                send_app(chat_id, locale)
+                return
     if time.time() - _pointed.get(chat_id, 0) < 180:
         return
     _pointed[chat_id] = time.time()
-    chat.send(chat_id, tr(locale, "Michiflin funciona dentro de la mini app de este chat: ábrela con «Iniciar» y pide ahí lo que necesites.",
-                          "Michiflin works inside the mini app in this chat: open it with “Start” and ask for what you need there."), quote=msg_id)
+    if msg_id:
+        text = tr(locale, "Michiflin funciona dentro de la mini app de este chat: ábrela con «Iniciar» y pide ahí lo que necesites.",
+                  "Michiflin works inside the mini app in this chat: open it with “Start” and ask for what you need there.")
+    else:
+        # An RPC failure is not proof the previous message disappeared. Offer a
+        # deliberate recovery command instead of automatically creating a duplicate.
+        text = tr(locale, "No pude localizar la mini app. Abre la que ya tienes; si no la ves, escribe /app para pedir otra.",
+                  "I couldn't locate the mini app. Open the one you already have; if you can't find it, type /app to request another.")
+    chat.send(chat_id, text, quote=msg_id or None)
 
 
 def welcome(chat_id: int, locale: str) -> None:
     """First contact after the secure join: deliver the app once."""
-    with state.lock:
-        recent = any(int(entry["chat"]) == chat_id and access.bound_allowed(entry)
-                     and time.time() - float(entry.get("sent", 0)) < 600 for entry in _apps().values())
-    if not recent:
+    with _upgrade_lock:
+        entries = _bound_apps(chat_id)
+        current_build = app_build()
+        now = time.time()
+        for entry in entries:
+            if entry.get("build") == current_build:
+                return
+            try:
+                if now - float(entry.get("sent", 0)) < 600:
+                    return
+            except (TypeError, ValueError):
+                pass
         send_app(chat_id, locale)
 
 
@@ -215,6 +235,26 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     return entry
 
 
+def _bound_apps(chat_id: int) -> list[dict[str, Any]]:
+    """Registered, currently authorized instances in this identity and chat.
+
+    A missing or unreadable core message is not evidence that the owner's
+    instance-local data is gone. Callers still allow explicit /app recovery.
+    """
+    entries: list[dict[str, Any]] = []
+    with state.lock:
+        for key, entry in _apps().items():
+            if not str(key).isdigit() or not isinstance(entry, dict):
+                continue
+            try:
+                if int(entry.get("chat") or 0) != chat_id or _instance(int(key)) is None or not access.bound_allowed(entry):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            entries.append(dict(entry))
+    return entries
+
+
 SAFE_REPLAY = {"hello", "models", "health", "repair"}  # no provider calls or billable side effects
 BOOT_SESSION = secrets.token_urlsafe(24)  # deliberately never stored in a backup
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
@@ -228,7 +268,6 @@ UPGRADE_GAP = 1800.0    # suppress duplicate sends of the same build, not later 
 _answers: dict[str, dict[str, Any]] = {}
 _answers_lock = threading.Lock()
 _upgraded: dict[tuple[int, str], float] = {}
-_upgrade_lock = threading.Lock()
 
 
 def _seen() -> dict[str, list[float]]:
@@ -385,6 +424,15 @@ def on_status_update(msg_id: int) -> None:
                     payload = _request_piece(entry, payload)
                 if isinstance(payload, dict) and payload.get("t") == "req":
                     entry["active"] = time.time()
+                    # The UI chooses its own language per instance. Remember the
+                    # most recently observed language for future chat notices;
+                    # do not change the device or any other instance's settings.
+                    address = str(entry.get("addr", "")).strip().lower()
+                    language = payload.get("lang")
+                    if (isinstance(language, str) and language in {"es", "en"} and address and access.bound_allowed(entry)
+                            and admin.is_allowed(address) and config.service_access_allowed(address)):
+                        with state.lock:
+                            entry["locale"] = language
                     _route(msg_id, dict(entry), payload)
         state.save()
 
@@ -661,9 +709,7 @@ def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None
         return
     chat_id = int(entry["chat"])
     with _upgrade_lock:
-        with state.lock:
-            already_sent = any(int(other.get("chat", 0)) == chat_id and other.get("build") == current_build
-                               and access.bound_allowed(other) for other in _apps().values())
+        already_sent = any(other.get("build") == current_build for other in _bound_apps(chat_id))
         marker = (chat_id, current_build)
         if already_sent or time.time() - _upgraded.get(marker, 0.0) < UPGRADE_GAP:
             return
