@@ -3,6 +3,7 @@ import base64
 import copy
 import hashlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -83,6 +84,18 @@ class FileKitApiTests(unittest.TestCase):
         chat.set_sender("owner@example.invalid")
         self.assertEqual(self.space.content("/doc.txt")[1].read_bytes(), b"antes")
 
+    def test_bulk_rename_api_and_rollback(self):
+        self.space.put("", [{"path": "segundo.txt", "source": io.BytesIO(b"dos")}])
+        self.call("rename_many", changes=[{"path": "/doc.txt", "name": "segundo.txt"},
+                                          {"path": "/segundo.txt", "name": "doc.txt"}])
+        self.assertEqual(self.space.content("/doc.txt")[1].read_bytes(), b"dos")
+        before = self.space.view()
+        with self.assertRaises(miniapp.AppError):
+            self.call("rename_many", changes=[{"path": "/doc.txt", "name": "x"}, {"path": "/segundo.txt", "name": "x"}])
+        self.assertEqual(self.space.view(), before)
+        self.call("undo")
+        self.assertEqual(self.space.content("/doc.txt")[1].read_bytes(), b"antes")
+
     def test_encrypted_read_edit_and_concurrent_write_guard(self):
         private = X25519PrivateKey.generate()
         result = self.call("read", path="/doc.txt", replyKey=enc(public(private)))
@@ -99,6 +112,44 @@ class FileKitApiTests(unittest.TestCase):
         with self.assertRaisesRegex(miniapp.AppError, "UTF-8"):
             self.call("write", path="/binary.dat", version=item["blob"], sealed=seal("incorrecto"))
         self.assertEqual(self.space.content("/binary.dat")[1].read_bytes(), b"\xff\x00")
+
+    def test_remote_raw_join_keeps_full_hash_encrypted(self):
+        self.space.put("", [{"path": "unido.rar.001", "source": io.BytesIO(b"uno")},
+                            {"path": "unido.rar.002", "source": io.BytesIO(b"dos")}])
+        digest = hashlib.sha256(b"unodos").hexdigest()
+        args = {"paths": ["/unido.rar.002", "/unido.rar.001"], "folder": "", "name": "unido.rar",
+                "sealed": seal(json.dumps({"sha256": digest}))}
+        self.assertNotIn(digest, str(args))
+        self.call("join_raw", **args)
+        self.assertEqual(self.space.content('/unido.rar')[1].read_bytes(), b"unodos")
+        with self.assertRaises(miniapp.AppError):
+            self.call("join_raw", paths=args["paths"], folder="", name="otro.rar", sha256=digest)
+
+    def test_selective_rar_listing_and_selection_are_encrypted(self):
+        private = X25519PrivateKey.generate()
+        listing = {"entries": [{"path": "nombre-privado.txt", "size": 18, "type": "file", "encrypted": True}],
+                   "version": "a" * 64, "solid": True, "multiVolume": False}
+        with mock.patch.object(filekit_api.filekit_rar_native, "inspect", return_value=listing) as inspect, \
+             mock.patch.object(filekit_api.filekit_rar_native, "extract", return_value={}) as extract:
+            result = self.call("rar_list", paths=["/doc.txt"], first="/doc.txt",
+                               secret=seal("clave-sintetica"), replyKey=enc(public(private)))
+            self.assertNotIn("nombre-privado", str(result))
+            self.assertNotIn("clave-sintetica", str(result))
+            self.assertEqual(json.loads(decrypt_reply(private, result["sealed"])), listing)
+            self.assertEqual(inspect.call_args.args[1:], (["/doc.txt"], "/doc.txt", "clave-sintetica"))
+            choice = json.dumps({"members": ["nombre-privado.txt"], "version": listing["version"]})
+            request = {"paths": ["/doc.txt"], "first": "/doc.txt", "folder": "", "name": "salida",
+                       "secret": seal("clave-sintetica"), "sealed": seal(choice)}
+            self.assertNotIn("nombre-privado", str(request))
+            self.assertNotIn("clave-sintetica", str(request))
+            self.assertEqual(self.call("rar_extract", **request), {"changed": True})
+            self.assertEqual(extract.call_args.args[4:], (["nombre-privado.txt"], listing["version"]))
+            with self.assertRaises(miniapp.AppError):
+                self.call("rar_extract", paths=["/doc.txt"], first="/doc.txt", folder="", name="salida",
+                          members=["nombre-privado.txt"], version=listing["version"])
+            with self.assertRaises(miniapp.AppError):
+                self.call("rar_list", paths=["/doc.txt"], first="/doc.txt", password="clave-en-claro",
+                          replyKey=enc(public(private)))
 
     def test_prepare_import_and_queue_handoff_are_explicit(self):
         draft = self.call("prepare_import", folder="", name="copia.txt", size=5, secret=seal(hashlib.sha256(b"antes").hexdigest()))

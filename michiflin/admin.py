@@ -98,7 +98,7 @@ def _access() -> dict[str, Any]:
 
 def is_admin(address: str) -> bool:
     address = (address or "").strip().lower()
-    return address == config.OWNER_ADDRESS if config.OWNER_ADDRESS else address in config.ADMIN_ADDRESSES
+    return config.is_owner_admin(address) if config.OWNER_ADDRESS else address in config.ADMIN_ADDRESSES
 
 
 def is_allowed(address: str) -> bool:
@@ -150,8 +150,8 @@ def alert_admins(message: str) -> None:
 def alert_text(address: str, text: str) -> str:
     locale = "en" if state.setting("language") == "en" else "es"
     if access.snapshot()["private_mode"]:
-        return tr(locale, f"🛡️ Contacto ajeno bloqueado: {address}\nModo privado: solo puede entrar el dueño.",
-                  f"🛡️ Unknown contact blocked: {address}\nPrivate mode: only the owner can enter.")
+        return tr(locale, f"🛡️ Contacto ajeno bloqueado: {address}\nModo privado: solo pueden entrar el dueño y el administrador de respaldo configurado.",
+                  f"🛡️ Unknown contact blocked: {address}\nPrivate mode: only the owner and configured backup administrator can enter.")
     allow = names.cmd(locale, "admin", "allow")
     return tr(locale, f"🛡️ Contacto ajeno bloqueado: {address}\nPara darle acceso: {allow} {address}",
               f"🛡️ Unknown contact blocked: {address}\nTo grant access: {allow} {address}")
@@ -177,15 +177,17 @@ def admin_chats() -> list[int]:
         if not is_admin(address) or not config.service_access_allowed(address):
             continue
         try:
-            contact = chat.rpc().lookup_contact_id_by_addr(chat.account(), address)
-            if contact:
-                chat_id = chat.rpc().get_chat_id_by_contact_id(chat.account(), contact)
-                if chat_id:
-                    # In a sealed deployment an address lookup alone is not
-                    # proof that this chat still belongs to the owner.
-                    from . import identity_guard
-                    if identity_guard.authorized_chat(chat.rpc(), chat.account(), int(chat_id), address, contact_id=int(contact)):
-                        found.append(int(chat_id))
+            from . import identity_guard
+            chat_id = identity_guard.current_email_chat(address)
+            if chat_id:
+                members = chat.rpc().get_chat_contacts(chat.account(), chat_id)
+                contact = int(members[0]) if len(members) == 1 else 0
+            else:
+                contact = chat.rpc().lookup_contact_id_by_addr(chat.account(), address)
+                chat_id = chat.rpc().get_chat_id_by_contact_id(chat.account(), contact) if contact else 0
+            if chat_id and contact and identity_guard.authorized_chat(chat.rpc(), chat.account(), int(chat_id),
+                                                                      address, contact_id=int(contact)):
+                found.append(int(chat_id))
         except Exception:
             continue
     return found
@@ -195,7 +197,7 @@ def grant_one(address: str, minutes: int, nonce: str) -> bool:
     """From owner-only mode, temporarily authorize exactly one named contact."""
     address = (address or "").strip().lower()
     mode = access.snapshot()
-    if (not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address) or address == config.OWNER_ADDRESS
+    if (not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address) or config.is_owner_admin(address)
             or type(minutes) is not int or minutes not in access.DURATIONS or state.maintenance_active()
             or mode["maintenance"] or not mode["owner_only"]
             or not secrets.compare_digest(str(nonce), mode["nonce"])):
@@ -233,9 +235,9 @@ def grant(address: str) -> bool:
     if not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address):
         return False
     mode = access.snapshot()
-    if mode["private_mode"] and address != config.OWNER_ADDRESS:
+    if mode["private_mode"] and not config.is_owner_admin(address):
         return False
-    if mode["controlled"] and address != config.OWNER_ADDRESS:
+    if mode["controlled"] and not config.is_owner_admin(address):
         # A core-level block prevents delivery even when our allowlist says yes.
         if not _set_blocked_contact(address, False) or not access.allow_guest(address, mode["revision"]):
             return False
@@ -333,8 +335,8 @@ def overview(locale: str) -> str:
     data, mode = _access(), access.snapshot()
     now = time.time()
     private = mode["private_mode"]
-    users = ([config.OWNER_ADDRESS] + mode["guests"] if mode["controlled"]
-             else sorted(config.ALLOWED_SENDERS | set(data["allowed"])))
+    users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
+             else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
     users = sorted(set(address for address in users if address and is_allowed(address)))
     lines = [tr(locale, "🛡️ Administración", "🛡️ Administration"), "",
              tr(locale, f"OWNER_ONLY={'1' if mode['owner_only'] else '0'} · "
@@ -368,8 +370,8 @@ def snapshot() -> dict[str, Any]:
     """Structured administration view; hidden history remains untouched in state."""
     data, mode = _access(), access.snapshot()
     private = mode["private_mode"]
-    users = ([config.OWNER_ADDRESS] + mode["guests"] if mode["controlled"]
-             else sorted(config.ALLOWED_SENDERS | set(data["allowed"])))
+    users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
+             else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
     users = sorted(set(address for address in users if address and is_allowed(address)))
     now = time.time()
     recent_only = private or mode["controlled"]
@@ -392,6 +394,7 @@ def snapshot() -> dict[str, Any]:
         "private_mode": private, "owner_only": mode["owner_only"], "maintenance": mode["maintenance"],
         "owner_only_expires": mode["expires"], "server_now": now, "session_control": mode["controlled"],
         "control_nonce": mode["nonce"], "preserve_history": access.preserve_history(),
+        "email_key_recovery": bool(config.EMAIL_KEY_RECOVERY),
         "users": [{"address": address, "admin": is_admin(address), "last": _activity.get(address, 0.0),
                    "active": is_allowed(address)} for address in users],
         "attempts": [{"address": address, "count": entry["count"], "last": entry["last"]}

@@ -5,3 +5,7 @@ Synthetic RAR fixtures from libarchive/libarchive, master commit
 The upstream uuencoded fixtures were decoded without modification. See
 LICENSE-libarchive.txt and the upstream test sources for the BSD-style terms.
 https://github.com/libarchive/libarchive/tree/348e5a2e27503f5bf114e298e2bd9ddcd59ab48e/libarchive/test
+
+Additional RAR4/RAR5 encryption, solid, multivolume, links and Unicode fixtures
+from the same pinned libarchive commit; all decoded unchanged from .uu.
+Synthetic RAR with a 600 MiB sparse zero-filled file and a small text file, created for streaming tests; no compressor binary is redistributed.

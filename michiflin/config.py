@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -26,19 +27,38 @@ def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in env(name, default).split(",") if item.strip()]
 
 
-# Access control: an empty allow-list locks the bot.
+# Access control: an empty allow-list locks the bot. The backup administrator
+# is an explicit exception; arbitrary allow-listed guests are never admins.
 OWNER_ADDRESS = env("OWNER_ADDRESS").lower()
+OWNER_BACKUP_ADDRESS = env("OWNER_BACKUP_ADDRESS").lower()
+if OWNER_BACKUP_ADDRESS and not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", OWNER_BACKUP_ADDRESS):
+    raise RuntimeError("invalid OWNER_BACKUP_ADDRESS; refusing to start")
 MAINTENANCE_MODE = env("MAINTENANCE_MODE", "0").lower() in {"1", "true", "yes", "on"}
-# Private single-user mode: only the explicitly configured OWNER_ADDRESS may use the bot.
+# Still private: only the configured owner and explicitly named backup admin.
 OWNER_ONLY = env("OWNER_ONLY", "0").lower() in {"1", "true", "yes", "on"}
+# Opt-in weakens identity authentication: a permitted email can rotate keys
+# without proving ownership of its previously verified key.
+EMAIL_KEY_RECOVERY = env("EMAIL_KEY_RECOVERY", "0").lower() in {"1", "true", "yes", "on"}
 ALLOWED_SENDERS = {item.lower() for item in env_list("ALLOWED_SENDERS")}
 if OWNER_ADDRESS:
     ALLOWED_SENDERS.add(OWNER_ADDRESS)
 if not OWNER_ADDRESS and not (OWNER_ONLY or MAINTENANCE_MODE) and len(ALLOWED_SENDERS) == 1:
     OWNER_ADDRESS = next(iter(ALLOWED_SENDERS))
-# Once an owner is configured, allow-listed guests are never administrators.
-ADMIN_ADDRESSES = {OWNER_ADDRESS} if OWNER_ADDRESS else set(ALLOWED_SENDERS)
+ADMIN_ADDRESSES = ({OWNER_ADDRESS, OWNER_BACKUP_ADDRESS} - {""}) if OWNER_ADDRESS else set(ALLOWED_SENDERS)
+if OWNER_BACKUP_ADDRESS and not OWNER_ADDRESS:
+    raise RuntimeError("OWNER_BACKUP_ADDRESS requires OWNER_ADDRESS; refusing to start")
 MAILBOX_PROFILES_JSON = env("MAILBOX_PROFILES_JSON")
+
+
+def is_owner_admin(address: str) -> bool:
+    """The designated owner or the separately configured backup administrator."""
+    address = str(address or "").strip().casefold()
+    return bool(address and OWNER_ADDRESS and address in {OWNER_ADDRESS.casefold(), OWNER_BACKUP_ADDRESS.casefold()})
+
+
+def owner_admin_addresses() -> set[str]:
+    return {address for address in (OWNER_ADDRESS, OWNER_BACKUP_ADDRESS) if address}
+
 # Opaque deployment epoch: miniapps built under another epoch are rejected (no migration path).
 BOT_EPOCH = env("BOT_EPOCH") or env("RUNNING_SHA", "local")[:12]
 # A newly provisioned identity must reject even legacy bindings with no epoch.

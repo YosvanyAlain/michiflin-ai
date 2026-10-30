@@ -171,18 +171,22 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
         try:
             bot.rpc.accept_chat(accid, msg.chat_id)
         except Exception:
-            pass
+            if config.EMAIL_KEY_RECOVERY:
+                raise  # retry instead of responding to an unaccepted request
+        if config.EMAIL_KEY_RECOVERY and not identity_guard.authorized_chat(
+                bot.rpc, accid, int(msg.chat_id), address, contact_id=int(msg.from_id)):
+            raise RuntimeError("accepted chat is not ready for encrypted delivery")
     # Apply an authenticated emergency ON immediately, rather than queueing it
     # behind a slow request in the same chat. Its confirmation stays in order.
     parsed = commands.parse(text) if not getattr(msg, "file", None) else None
-    if parsed and parsed[0] == "maintenance" and address == config.OWNER_ADDRESS:
+    if parsed and parsed[0] == "maintenance" and config.is_owner_admin(address):
         # Do not queue the emergency control behind another request from this chat.
         chat.set_sender(address)
         with chat.recipient_guard(msg.chat_id, address, int(msg.from_id), msg):
             if chat.recipient_allowed(msg.chat_id):
                 commands.cmd_maintenance(msg.chat_id, parsed[1], parsed[2], locale)
         return None
-    owner_control = bool(address == config.OWNER_ADDRESS and parsed and (
+    owner_control = bool(config.is_owner_admin(address) and parsed and (
         parsed[0] in {"app", "kill_switch", "estado", "health", "owner_only"}
         or (parsed[0] == "admin" and parsed[1] and names.word_key(parsed[1][0]) in {"allow", "remove", "block"})))
     if state.maintenance_active() and not owner_control:
@@ -454,8 +458,15 @@ def _welcome(bot: Any, accid: int, contact_id: int) -> None:
         if not admin.is_allowed(address):
             return
         chat_id = int(bot.rpc.create_chat_by_contact_id(accid, contact_id))
-        if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
+        if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id,
+                                              allow_rotation=config.EMAIL_KEY_RECOVERY):
             return
+        if config.EMAIL_KEY_RECOVERY:
+            info = bot.rpc.get_basic_chat_info(accid, chat_id)
+            if getattr(info, "is_contact_request", False):
+                bot.rpc.accept_chat(accid, chat_id)
+            if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
+                return
         lock = _chat_locks.setdefault(chat_id, threading.Lock())
         with lock:
             chat.set_sender(address)
@@ -466,7 +477,7 @@ def _welcome(bot: Any, accid: int, contact_id: int) -> None:
 
 def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
     """Offer the new miniapp in the already verified owner chat, once bound."""
-    if not (config.BOT_EPOCH_STRICT and config.BOT_VERIFIED_CONTACTS_ONLY and config.OWNER_ONLY):
+    if config.EMAIL_KEY_RECOVERY or not (config.BOT_EPOCH_STRICT and config.BOT_VERIFIED_CONTACTS_ONLY and config.OWNER_ONLY):
         return
     try:
         marker = json.loads((config.CONFIG_DIR / ".verified-identity-v1.json").read_text(encoding="utf-8"))
@@ -487,6 +498,82 @@ def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
                 miniapp.welcome(chat_id, _locale("", chat_id))
     except Exception as exc:
         log.warning("verified-owner startup deferred (%s)", type(exc).__name__)
+
+
+def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
+    """Restore automatic welcomes for configured admins without reading text.
+
+    In opt-in email mode the newest encrypted incoming message may identify a
+    replacement key. This is deliberately vulnerable to address impersonation;
+    no wider address list or historical guest grant is activated here.
+    """
+    if not config.EMAIL_KEY_RECOVERY:
+        return
+    try:
+        addresses = {address.casefold() for address in config.owner_admin_addresses() if admin.is_allowed(address)}
+        if not addresses:
+            return
+        # Only the two explicitly configured admins may be unblocked. No other
+        # historical address or individual grant is restored by this step.
+        for address in addresses:
+            admin._set_blocked_contact(address, False)
+        candidates: dict[str, tuple[int, int, int, Any]] = {}
+        entries: list[int] = []
+        for flags in (0, 1):
+            entries.extend(int(x) for x in bot.rpc.get_chatlist_entries(accid, flags, None, None) if int(x) > 9)
+        for chat_id in list(dict.fromkeys(entries))[:500]:
+            try:
+                info = bot.rpc.get_basic_chat_info(accid, chat_id)
+                kind = getattr(info.chat_type, "value", info.chat_type)
+                if str(kind) != "Single" or info.is_encrypted is not True or info.is_self_talk is not False:
+                    continue
+                members = bot.rpc.get_chat_contacts(accid, chat_id)
+                if len(members) != 1:
+                    continue
+                contact_id = int(members[0])
+                address = str(bot.rpc.get_contact(accid, contact_id).address or "").strip().casefold()
+                if address not in addresses:
+                    continue
+                bound = identity_guard.current_email_chat(address)
+                if bound:
+                    if bound == chat_id and getattr(info, "is_contact_request", False):
+                        # A crash may have happened after the new key was saved
+                        # but before its pending contact request was accepted.
+                        contact = bot.rpc.get_contact(accid, contact_id)
+                        fingerprint = identity_guard.contact_fingerprint(bot.rpc, accid, contact_id)
+                        if (contact.is_key_contact is True and contact.e2ee_avail is True
+                                and identity_guard._email_binding(address, chat_id, fingerprint, False)):
+                            bot.rpc.accept_chat(accid, chat_id)
+                    if bound == chat_id and identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
+                        candidates[address] = (2**63 - 1, chat_id, contact_id, None)
+                    continue
+                for msg_id in reversed(bot.rpc.get_message_ids(accid, chat_id, False, False)[-40:]):
+                    msg = bot.rpc.get_message(accid, int(msg_id))
+                    if int(msg.from_id) != contact_id or msg.show_padlock is not True or getattr(msg, "is_info", False):
+                        continue
+                    timestamp = int(getattr(msg, "received_timestamp", 0) or 0)
+                    old = candidates.get(address)
+                    if old is None or (timestamp, int(msg_id)) > (old[0], int(getattr(old[3], "id", 0) or 0)):
+                        candidates[address] = (timestamp, chat_id, contact_id, msg)
+                    break
+            except Exception:
+                continue
+        for address, (_, chat_id, contact_id, msg) in candidates.items():
+            if msg is not None and not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address,
+                                                                       contact_id=contact_id, message=msg):
+                continue
+            info = bot.rpc.get_basic_chat_info(accid, chat_id)
+            if getattr(info, "is_contact_request", False):
+                bot.rpc.accept_chat(accid, chat_id)
+            if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
+                continue
+            lock = _chat_locks.setdefault(chat_id, threading.Lock())
+            with lock, chat.recipient_guard(chat_id, address, contact_id):
+                chat.set_sender(address)
+                if chat.recipient_allowed(chat_id):
+                    miniapp.welcome(chat_id, _locale("", chat_id))
+    except Exception as exc:
+        log.warning("email recovery startup deferred (%s)", type(exc).__name__)
 
 
 _core_seen: dict[str, float] = {}
@@ -638,6 +725,7 @@ def on_start(bot: Any, args: Any) -> None:
     queue.start()
     _start_cursor(bot, accid)
     _pool.submit(_bootstrap_verified_owner, bot, accid)
+    _pool.submit(_bootstrap_email_recovery, bot, accid)
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()
     threading.Thread(target=_watch_updates, name="update-watch", daemon=True).start()
     threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()

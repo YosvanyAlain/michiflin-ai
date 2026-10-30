@@ -87,10 +87,17 @@ const FileKitUI = (() => {
 
   function render(main, options = {}) {
     const root = h("div", { class: "kit-shell", "data-testid": "filekit" });
-    const tree = h("div", { class: "kit-tree", role: "tree", "aria-label": t("kit_tree"), tabindex: "0" });
+    // This scrollable region contains native buttons and checkboxes, not an
+    // ARIA tree widget (which would require a different arrow-key model).
+    const tree = h("div", { class: "kit-tree", role: "region", "aria-label": t("kit_tree"), tabindex: "0" });
+    const selectionBar = h("div", { class: "kit-selection" });
     const tools = h("div", { class: "kit-tools" });
     const crumbs = h("div", { class: "kit-crumbs" });
     const preview = h("div", { class: "kit-preview" }, h("p", { class: "muted small" }, t("kit_preview_empty")));
+    const joinBody = h("div", { class: "stack", "data-testid": "filekit-join" });
+    const joinPanel = h("details", { class: "card kit-join" }, h("summary", {}, t("kit_join")),
+      h("p", { class: "muted small" }, t("kit_join_hint")), joinBody);
+    let joiner = null;
     const status = h("div", { class: "kit-status", role: "status", hidden: true });
     const note = h("p", { class: "kit-note" });
     const importHint = h("p", { class: "muted small" });
@@ -128,6 +135,7 @@ const FileKitUI = (() => {
       switch (action) {
         case "mkdir": return FileKitStore.mkdir(args.folder, args.name);
         case "rename": return FileKitStore.rename(args.path, args.name);
+        case "rename_many": return FileKitStore.renameMany(args.changes);
         case "copy": case "move": return FileKitStore.transfer(args.paths, args.folder, action === "copy");
         case "delete": return FileKitStore.remove(args.paths);
         case "undo": return FileKitStore.undo();
@@ -143,7 +151,7 @@ const FileKitUI = (() => {
       status.hidden = false;
       fill(status, h("i", { class: "spinner" }), h("span", { class: "grow" }, t("kit_working")),
         cancellable ? actionButton("kit_cancel_work", "close", stop, false, "cancel-work") : null);
-      drawTools();
+      drawSelection(); drawTools();
       try {
         await task();
         if (isHere() && successKey) toast(t(successKey), "ok");
@@ -154,8 +162,43 @@ const FileKitUI = (() => {
         return false;
       } finally {
         busy = false;
-        if (isHere()) { status.hidden = true; drawTools(); }
+        if (isHere()) { status.hidden = true; drawSelection(); drawTools(); }
       }
+    };
+
+    const showJoin = async (paths = []) => {
+      joinPanel.open = true;
+      try {
+        if (paths.length && joiner) await joiner.addPaths(paths);
+        if (isHere()) joinPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch (error) { if (isHere()) toast(message(error), "bad"); }
+    };
+
+    const joinRemoteDialog = () => {
+      const entries = selectedEntries();
+      if (entries.length < 2 || entries.length > 999 || entries.some((entry) => entry.type !== "file" || !/\.\d{3}$/.test(entry.path))) {
+        toast(t("kit_join_remote_unsupported"), "bad"); return;
+      }
+      const paths = entries.map((entry) => entry.path), firstName = FileKitStore.base(paths[0]);
+      const suggested = firstName.replace(/\.\d{3}$/, "");
+      const filename = field({ type: "text", value: suggested, maxlength: "255" });
+      const hash = field({ type: "text", autocomplete: "off", placeholder: t("kit_join_remote_hash"), maxlength: "64" });
+      const destination = folder;
+      const submit = h("button", { class: "btn primary wide", type: "button", "data-kit-action": "run-remote-join", onclick: () => {
+        const name = filename.value.trim(), digest = hash.value.trim();
+        try {
+          FileKitStore.name(name);
+          if (digest && !/^[a-f\d]{64}$/i.test(digest)) throw new Error("invalid_hash");
+          const sealed = FileKitCrypto.sealText(view.key, JSON.stringify({ sha256: digest }));
+          hash.value = "";
+          closeSheet();
+          work(() => remote("join_raw", { paths, folder: destination, name, sealed }));
+        } catch (error) { toast(message(error), "bad"); }
+      } }, t("kit_join_selected"));
+      openSheet(t("kit_join_remote_title"), [h("p", { class: "muted small" }, t("kit_join_remote_hint")),
+        h("label", { class: "field-label" }, t("kit_name")), filename,
+        h("label", { class: "field-label" }, t("kit_join_remote_hash")), hash,
+        h("p", { class: "muted small" }, t("kit_join_remote_hash_hint")), submit]);
     };
 
     const upload = async (blob, filename, destination) => {
@@ -191,6 +234,105 @@ const FileKitUI = (() => {
       }, false, false, "");
     };
 
+    // A bulk rename is previewed, validated and committed as one history event.
+    const renameDialog = () => {
+      const roots = selectionRoots();
+      if (!roots.length) { toast(t("kit_nothing"), "bad"); return; }
+      if (roots.length === 1) {
+        const entry = byPath(roots[0]);
+        if (entry) inputDialog(t("kit_rename"), t("kit_name"), FileKitStore.base(entry.path),
+          (name) => work(() => mutate("rename", { path: entry.path, name })));
+        return;
+      }
+      if (roots.length > 1000) { toast(t("kit_bulk_limit"), "bad"); return; }
+      const selectedMode = mode;
+      const modeInput = h("select", { class: "input", "data-kit-bulk": "mode" },
+        h("option", { value: "prefix" }, t("kit_bulk_prefix")), h("option", { value: "suffix" }, t("kit_bulk_suffix")),
+        h("option", { value: "replace" }, t("kit_bulk_replace")), h("option", { value: "number" }, t("kit_bulk_number")));
+      const value = field({ type: "text", maxlength: "255", autocomplete: "off", "data-kit-bulk": "value" });
+      const find = field({ type: "text", maxlength: "255", autocomplete: "off", "data-kit-bulk": "find" });
+      const start = field({ type: "number", min: "0", max: "999999", step: "1", value: "1", "data-kit-bulk": "start" });
+      const findBox = h("div", {}, h("label", { class: "field-label" }, t("kit_bulk_find")), find);
+      const startBox = h("div", {}, h("label", { class: "field-label" }, t("kit_bulk_start")), start);
+      const valueLabel = h("label", { class: "field-label" });
+      const preview = h("div", { class: "kit-bulk-preview", tabindex: "0", "aria-label": t("kit_bulk_preview") });
+      const warning = h("p", { class: "note bad", role: "status", hidden: true });
+      let plan = [];
+      const submit = h("button", { class: "btn primary", type: "button", "data-kit-bulk": "submit", onclick: async () => {
+        if (submit.disabled || mode !== selectedMode) return;
+        const changes = plan.map((item) => ({ path: item.path, name: item.name }));
+        submit.disabled = true;
+        closeSheet();
+        await work(async () => { await mutate("rename_many", { changes }); selected.clear(); });
+      } }, t("kit_bulk_apply"));
+      const update = () => {
+        const kind = modeInput.value;
+        findBox.hidden = kind !== "replace";
+        startBox.hidden = kind !== "number";
+        valueLabel.textContent = t(kind === "replace" ? "kit_bulk_with" : kind === "number" ? "kit_bulk_base" : "kit_bulk_text");
+        warning.hidden = true; plan = [];
+        try {
+          const first = Number(start.value);
+          if ((kind === "prefix" || kind === "suffix") && !value.value) throw new Error("kit_bulk_enter");
+          if (kind === "replace" && !find.value) throw new Error("kit_bulk_find_required");
+          if (kind === "number" && (!Number.isInteger(first) || first < 0 || first > 999999)) throw new Error("kit_bulk_start_invalid");
+          const padding = Math.max(3, String(first + roots.length - 1).length);
+          for (const [index, source] of roots.entries()) {
+            const entry = byPath(source);
+            if (!entry) throw new Error("kit_err_missing");
+            const original = FileKitStore.base(source);
+            const dot = entry.type === "file" ? original.lastIndexOf(".") : -1;
+            const hasExt = dot > 0 && dot < original.length - 1;
+            const stem = hasExt ? original.slice(0, dot) : original;
+            const ext = hasExt ? original.slice(dot) : "";
+            const name = kind === "prefix" ? value.value + original : kind === "suffix" ? stem + value.value + ext
+              : kind === "replace" ? original.split(find.value).join(value.value) : value.value + String(first + index).padStart(padding, "0") + ext;
+            FileKitStore.name(name);
+            plan.push({ path: source, name, target: FileKitStore.child(FileKitStore.parent(source), name) });
+          }
+          const changed = plan.filter((item) => item.path !== item.target);
+          if (!changed.length) throw new Error("kit_bulk_no_change");
+          const moved = view.entries.filter((entry) => changed.some((item) => within(entry.path, item.path)));
+          const old = new Set(moved.map((entry) => entry.path));
+          const taken = new Set(view.entries.filter((entry) => !old.has(entry.path)).map((entry) => entry.path));
+          for (const item of changed) for (const entry of moved) {
+            if (!within(entry.path, item.path)) continue;
+            const target = item.target + entry.path.slice(item.path.length);
+            if (taken.has(target)) throw new Error("kit_err_exists");
+            taken.add(target);
+          }
+          fill(preview, ...plan.map((item) => h("div", { class: "kit-bulk-row" },
+            h("span", {}, item.path), h("span", { "aria-hidden": "true" }, " → "), h("strong", {}, item.target))));
+          submit.disabled = false;
+        } catch (error) {
+          const key = error && error.message;
+          warning.textContent = has(key) ? t(key) : message(error);
+          warning.hidden = false; submit.disabled = true;
+          fill(preview);
+        }
+      };
+      for (const input of [modeInput, value, find, start]) { input.addEventListener("input", update); input.addEventListener("change", update); }
+      openSheet(t("kit_bulk_title"), [h("p", { class: "muted small" }, t("kit_bulk_hint", { n: roots.length })),
+        h("label", { class: "field-label" }, t("kit_bulk_mode")), modeInput, findBox, valueLabel, value, startBox,
+        h("h3", {}, t("kit_bulk_preview")), preview, warning, submit]);
+      update();
+    };
+
+    const drawSelection = () => {
+      const members = view.entries.filter((entry) => FileKitStore.parent(entry.path) === folder);
+      const selectedHere = members.filter((entry) => selected.has(entry.path)).length;
+      const check = h("input", { type: "checkbox", checked: !!members.length && selectedHere === members.length,
+        disabled: busy || !members.length, "data-kit-action": "select-folder", "aria-label": t("kit_select_folder"),
+        onchange: (event) => {
+          for (const entry of members) { if (event.target.checked) selected.add(entry.path); else selected.delete(entry.path); }
+          drawTree(); drawSelection(); drawTools();
+        } });
+      check.indeterminate = selectedHere > 0 && selectedHere < members.length;
+      fill(selectionBar, h("label", { class: "kit-select-all" }, check, h("span", {}, t("kit_select_folder"))),
+        actionButton("kit_clear_selection", "close", () => { selected.clear(); drawTree(); drawSelection(); drawTools(); }, busy || !selected.size, "clear-selection"),
+        h("small", { class: "muted" }, t("kit_selection_scope")));
+    };
+
     const drawTools = () => {
       if (modeControl) modeControl.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
       const one = selected.size === 1, any = selected.size > 0;
@@ -200,10 +342,7 @@ const FileKitUI = (() => {
           actionButton("kit_new_folder", "folder", () => inputDialog(t("kit_new_folder"), t("kit_name"), "", (name) => work(() => mutate("mkdir", { folder, name }))), busy, "mkdir"),
           actionButton("kit_refresh", "refresh", refresh, busy, "refresh")),
         h("div", { class: "kit-actions" },
-          actionButton("kit_rename", "notes", () => {
-            const entry = single();
-            if (entry) inputDialog(t("kit_rename"), t("kit_name"), FileKitStore.base(entry.path), (name) => work(() => mutate("rename", { path: entry.path, name })));
-          }, busy || !one, "rename"),
+          actionButton("kit_rename", "notes", renameDialog, busy || !any, "rename"),
           actionButton("kit_copy", "copy", () => { if (requireSelection()) { clip = { paths: selectionRoots(), mode: "copy", space: mode }; toast(t("kit_clip_copy"), "ok"); drawTools(); } }, busy || !any, "copy"),
           actionButton("kit_cut", "swap", () => { if (requireSelection()) { clip = { paths: selectionRoots(), mode: "move", space: mode }; toast(t("kit_clip_move"), "ok"); drawTools(); } }, busy || !any, "move"),
           actionButton("kit_paste", "clip", () => {
@@ -225,11 +364,12 @@ const FileKitUI = (() => {
             if (await confirmBox(t("kit_clear_history"), t("kit_clear_confirm"), t("kit_clear_history"))) work(() => mutate("clear_history"));
           }, busy || !(view.canUndo || view.canRedo), "clear-history"),
           mode === "local" ? actionButton("kit_to_server", "send", copyToServer, busy || !one, "to-server") : null,
-          mode === "local" ? actionButton("kit_join_selected", "join", () => {
+          actionButton("kit_join_selected", "join", () => {
             const entries = selectedEntries();
             if (!entries.length || entries.some((entry) => entry.type !== "file")) { toast(t("kit_select_file"), "bad"); return; }
-            go("join", { filekitPaths: entries.map((entry) => entry.path), kitFolder: folder });
-          }, busy || !any, "join-selected") : null),
+            if (mode === "remote") joinRemoteDialog();
+            else showJoin(entries.map((entry) => entry.path));
+          }, busy || !any, "join-selected")),
         h("small", { class: "muted" }, t("kit_items", { n: selected.size })));
     };
 
@@ -260,9 +400,9 @@ const FileKitUI = (() => {
           const isDir = entry.type === "dir", name = FileKitStore.base(entry.path), open = expanded.has(entry.path);
           const check = h("input", { type: "checkbox", checked: selected.has(entry.path), "aria-label": t("kit_select", { name }), onchange: (event) => {
             if (event.target.checked) selected.add(entry.path); else selected.delete(entry.path);
-            drawTools(); event.currentTarget.closest(".kit-row").classList.toggle("selected", event.target.checked);
+            drawSelection(); drawTools(); event.currentTarget.closest(".kit-row").classList.toggle("selected", event.target.checked);
           } });
-          const toggle = isDir ? h("button", { class: "kit-toggle", type: "button", "aria-label": t(open ? "kit_collapse" : "kit_expand"), "aria-expanded": String(open), onclick: () => {
+          const toggle = isDir ? h("button", { class: "kit-toggle", type: "button", "aria-label": `${t(open ? "kit_collapse" : "kit_expand")}: ${name}`, "aria-expanded": String(open), onclick: () => {
             if (open) expanded.delete(entry.path); else expanded.add(entry.path); drawTree();
           } }, icon(open ? "down" : "next")) : h("span", { class: "kit-toggle placeholder" });
           const openItem = h("button", { class: "kit-item", type: "button", "data-kit-open": entry.path, onclick: () => {
@@ -271,8 +411,7 @@ const FileKitUI = (() => {
           } }, icon(isDir ? "folder" : "file"), h("span", { class: "kit-item-name" }, name),
           isDir ? null : h("small", { class: "muted" }, fmtSize(entry.size || 0)));
           nodes.push(h("div", { class: `kit-row${selected.has(entry.path) ? " selected" : ""}${folder === entry.path ? " current" : ""}`,
-            role: "treeitem", "aria-level": String(depth + 1), "data-kit-path": entry.path,
-            style: `padding-inline-start:${Math.min(depth, 12) * 16 + 5}px` }, toggle, check, openItem));
+            "data-kit-path": entry.path, style: `padding-inline-start:${Math.min(depth, 12) * 16 + 5}px` }, toggle, check, openItem));
           if (isDir && open) visit(entry.path, depth + 1);
         }
       };
@@ -284,7 +423,7 @@ const FileKitUI = (() => {
     const draw = () => {
       note.textContent = t(mode === "local" ? "kit_local_note" : "kit_remote_note");
       importHint.textContent = mode === "local" ? t("kit_import_local_hint") : `${t("kit_import_remote_hint")} ${t("kit_upload_limit", { n: view.partMiB || 10 })}`;
-      drawCrumbs(); drawTree(); drawTools();
+      drawCrumbs(); drawTree(); drawSelection(); drawTools();
     };
 
     const refresh = async () => {
@@ -408,6 +547,43 @@ const FileKitUI = (() => {
       return files;
     };
 
+    const chooseRar = (listing, args, sealedPass) => {
+      if (!listing || !Array.isArray(listing.entries) || typeof listing.version !== "string") throw new Error("unsafe_listing");
+      const entries = listing.entries.filter((item) => item && item.type === "file" && typeof item.path === "string");
+      if (!entries.length) { toast(t("kit_rar_no_files"), "bad"); return; }
+      const boxes = [];
+      const list = h("div", { class: "kit-rar-list", tabindex: "0", role: "group", "aria-label": t("kit_rar_choose") });
+      const all = h("input", { type: "checkbox", "data-kit-action": "rar-select-all" });
+      const go = h("button", { class: "btn primary wide", type: "button", disabled: true, "data-kit-action": "rar-extract-selected" }, t("kit_rar_extract_selected"));
+      const update = () => {
+        const count = boxes.filter((item) => item.box.checked).length;
+        all.checked = count === boxes.length;
+        all.indeterminate = count > 0 && count < boxes.length;
+        go.disabled = count === 0;
+      };
+      for (const entry of entries) {
+        const box = h("input", { type: "checkbox", "data-rar-member": entry.path, onchange: update });
+        boxes.push({ box, path: entry.path });
+        add(list, h("label", { class: "kit-rar-row" }, box, h("span", {}, entry.path), h("small", {}, fmtSize(entry.size || 0))));
+      }
+      all.addEventListener("change", () => { for (const item of boxes) item.box.checked = all.checked; update(); });
+      go.addEventListener("click", () => {
+        const members = boxes.filter((item) => item.box.checked).map((item) => item.path);
+        if (!members.length) { toast(t("kit_nothing"), "bad"); return; }
+        if (members.length > 1000) { toast(t("kit_rar_max"), "bad"); return; }
+        let sealed;
+        try { sealed = FileKitCrypto.sealText(view.key, JSON.stringify({ members, version: listing.version })); }
+        catch (error) { toast(message(error), "bad"); return; }
+        closeSheet();
+        work(() => remote("rar_extract", { ...args, ...(sealedPass ? { secret: sealedPass } : {}), sealed }));
+      });
+      openSheet(t("kit_rar_choose"), [h("p", { class: "muted small" }, t("kit_rar_hint")),
+        h("p", { class: "muted small" }, t("kit_rar_password_check")),
+        listing.solid ? h("p", { class: "note warn" }, t("kit_rar_solid")) : null,
+        h("label", { class: "kit-select-all" }, all, t("kit_rar_select_all")), list,
+        h("p", { class: "muted small" }, t("kit_rar_resource_hint")), go]);
+    };
+
     const archiveDialog = (action) => {
       if (!requireSelection()) return;
       const paths = selectionRoots(), files = selectedEntries().filter((entry) => entry.type === "file");
@@ -423,13 +599,47 @@ const FileKitUI = (() => {
       const savedMemory = Math.max(16, Math.min(128, Number(store.get("kit.memory", 64)) || 64));
       const memory = h("select", { class: "field", "aria-label": t("kit_memory") }, ...[16, 32, 64, 128].map((n) => h("option", { value: String(n), selected: n === savedMemory }, `${n} MB`)));
       const destination = folder, selectedMode = mode;
-      const submit = h("button", { class: "btn primary wide", "data-kit-action": "run-archive", onclick: () => {
-        const name = filename.value.trim(), pass = password.value, amount = Number(volume.value), chosen = first.value;
+      const submit = h("button", { class: "btn primary wide", "data-kit-action": "run-archive", onclick: async () => {
+        const name = filename.value.trim(), amount = Number(volume.value), chosen = first.value;
+        let pass = password.value;
         try {
           FileKitStore.name(name);
           if (/[\u0000\r\n]/.test(pass) || pass.length > 1024) throw new Error("invalid_password");
           if (!Number.isInteger(amount) || amount < 0 || amount > 512) throw new Error("invalid_volume");
         } catch (error) { toast(message(error), "bad"); return; }
+        // Raw mail-sized fragments must be joined before the native reader;
+        // genuine RAR volumes named .part1.rar remain separate inputs.
+        if (selectedMode === "remote" && action === "extract" && /\.rar\.\d{3}$/i.test(chosen)) {
+          toast(t("kit_rar_join_first"), "bad"); return;
+        }
+        // The native remote RAR reader lists the contents first, then asks
+        // which entries to extract. Member names and selection use envelopes.
+        if (selectedMode === "remote" && action === "extract" && /\.rar$/i.test(chosen)) {
+          if (!view.rarNative) { toast(t("kit_rar_unavailable"), "bad"); return; }
+          if (paths.some((path) => !byPath(path) || byPath(path).type !== "file")) { toast(t("kit_rar_only_files"), "bad"); return; }
+          let sealedPass = null;
+          try { if (pass) sealedPass = FileKitCrypto.seal(view.key, pass); }
+          catch (error) { toast(message(error), "bad"); return; }
+          password.value = ""; pass = "";
+          closeSheet();
+          let listing = null;
+          const args = { paths, first: chosen, folder: destination, name };
+          const ok = await work(async () => {
+            const reply = FileKitCrypto.replyKey();
+            try {
+              const result = await remote("rar_list", { paths, first: chosen, replyKey: reply.publicKey,
+                ...(sealedPass ? { secret: sealedPass } : {}) });
+              const raw = FileKitCrypto.openReply(reply, result.sealed);
+              try { listing = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)); }
+              finally { raw.fill(0); }
+            } finally { reply.secretKey.fill(0); }
+          }, false, false, "");
+          if (ok && isHere() && mode === selectedMode) {
+            try { chooseRar(listing, args, sealedPass); }
+            catch (error) { toast(message(error), "bad"); }
+          }
+          return;
+        }
         password.value = "";
         const budget = Number(memory.value) * MiB, ticket = cancellation;
         if (selectedMode === "local") store.set("kit.memory", Number(memory.value));
@@ -464,6 +674,9 @@ const FileKitUI = (() => {
           }
         }, true, selectedMode === "local");
       } }, t("kit_run"));
+      const labelSubmit = () => { submit.textContent = t(selectedMode === "remote" && action === "extract" && /\.rar$/i.test(first.value) ? "kit_rar_list" : "kit_run"); };
+      first.addEventListener("change", labelSubmit);
+      labelSubmit();
       openSheet(t(action === "create" ? "kit_create" : "kit_extract"), [
         action === "create" ? [h("label", { class: "field-label" }, t("kit_format")), format] : [h("label", { class: "field-label" }, t("kit_first")), first],
         h("label", { class: "field-label" }, t(action === "create" ? "kit_archive_name" : "kit_extract_name")), filename,
@@ -471,6 +684,7 @@ const FileKitUI = (() => {
         action === "create" ? [h("label", { class: "field-label" }, t("kit_volume")), volume] : null,
         selectedMode === "local" ? [h("label", { class: "field-label" }, t("kit_memory")), memory, h("p", { class: "muted small" }, t("kit_memory_hint"))]
           : h("p", { class: "muted small" }, t("kit_server_engine")),
+        selectedMode === "remote" && action === "extract" ? h("p", { class: "muted small" }, t("kit_rar_resource_hint")) : null,
         h("p", { class: "muted small" }, t("kit_compat")), submit]);
     };
 
@@ -483,18 +697,23 @@ const FileKitUI = (() => {
     add(main, root);
     add(root,
       h("div", { class: "kit-heading" }, h("div", {}, h("h2", {}, t("kit_title")), h("p", { class: "muted small" }, t("kit_archive_hint"))),
-        h("button", { class: "chip action", onclick: () => go("join") }, icon("join"), t("kit_join"))),
+        h("button", { class: "chip action", "data-kit-action": "open-join", onclick: () => showJoin() }, icon("join"), t("kit_join"))),
       modeControl, note, importHint, status,
-      card(h("div", { class: "row between" }, h("h3", {}, t("kit_tree")), h("small", { class: "muted" }, t("kit_folder"))), crumbs, tree, tools),
+      card(h("div", { class: "row between" }, h("h3", {}, t("kit_tree")), h("small", { class: "muted" }, t("kit_folder"))),
+        crumbs, selectionBar, h("p", { class: "muted small kit-scroll-hint" }, t("kit_scroll_hint")), tree, tools),
       card(h("h3", {}, t("kit_preview")), preview),
       card(h("h3", {}, t("kit_archive")), h("p", { class: "muted small" }, t("kit_archive_hint")),
         h("div", { class: "kit-actions" }, actionButton("kit_create", "join", () => archiveDialog("create"), false, "archive-create"),
           actionButton("kit_extract", "open", () => archiveDialog("extract"), false, "archive-extract")),
         h("p", { class: "muted small" }, t("kit_compat"))),
-      card(h("h3", {}, t("kit_join")), h("p", { class: "muted small" }, t("kit_join_hint")),
-        h("button", { class: "btn", onclick: () => go("join") }, icon("join"), " ", t("kit_join"))));
+      joinPanel);
+    joiner = FileKitJoin.mount(joinBody, { getFolder: () => folder, canSave: () => mode === "local", onSaved: () => refresh() });
     draw();
-    refresh().then(() => { if (options.jobId && isHere()) importJobDialog(options.jobId, options.jobName); }).catch(() => {});
+    refresh().then(() => {
+      if (!isHere()) return;
+      if (options.jobId) importJobDialog(options.jobId, options.jobName);
+      else if (options.openJoin) showJoin();
+    }).catch(() => {});
   }
 
   return { render, stop };

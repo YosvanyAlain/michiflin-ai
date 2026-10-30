@@ -10,8 +10,10 @@ from __future__ import annotations
 import base64
 import binascii
 from collections import OrderedDict
+import copy
 import hashlib
 import hmac
+import os
 import re
 import subprocess
 import tempfile
@@ -111,23 +113,101 @@ def contact_fingerprint(rpc: Any, account: int, contact_id: int) -> str:
         return ""  # transient failure or unsupported vCard: fail closed
 
 
-def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
-                    *, contact_id: int | None = None, message: Any = None) -> bool:
-    """Verify a chat and, for the owner, the independently configured key pin.
+def _key_digest(fingerprint: str) -> str:
+    value = normalize_fingerprint(fingerprint)
+    return hashlib.sha256(("email-key-v1:" + value).encode("ascii")).hexdigest() if value else ""
 
-    When strict mode is off this is a no-op for compatibility with the old
-    identity.  With strict mode on, missing metadata or RPC errors fail closed.
-    An incoming message must itself have been correctly encrypted and signed.
-    WebXDC updates have no per-update padlock in this RPC; they are admitted
-    only in the verified encrypted one-to-one chat of a current bound instance.
+
+def current_email_chat(address: str) -> int:
+    """Return the most recently bound chat without revealing a stored key."""
+    if not config.EMAIL_KEY_RECOVERY:
+        return 0
+    from . import state
+    with state.lock:
+        record = state.data.get("email_key_bindings", {}).get(str(address or "").strip().casefold(), {})
+        try:
+            return max(0, int(record.get("chat") or 0)) if isinstance(record, dict) else 0
+        except (TypeError, ValueError):
+            return 0
+
+
+def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) -> bool:
+    """Bind an allowed email to its latest encrypted key; retire older keys.
+
+    This deliberately trusts an address rather than proving who owns it. It is
+    off by default. A forged allowed sender can therefore replace a binding.
+    Only an inbound encrypted message or explicit secure-join event may learn;
+    background delivery is restricted to the last bound chat and key.
     """
-    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+    from . import state
+    digest = _key_digest(fingerprint)
+    if not digest or int(chat_id) <= 9:
+        return False
+    with state.lock:
+        bindings = state.data.setdefault("email_key_bindings", {})
+        if not isinstance(bindings, dict):
+            return False
+        previous = copy.deepcopy(bindings.get(address))
+        if previous is not None and not isinstance(previous, dict):
+            return False
+        active = str((previous or {}).get("key") or "")
+        retired = (previous or {}).get("retired", [])
+        if not isinstance(retired, list) or len(retired) > 256 or any(not re.fullmatch(r"[0-9a-f]{64}", str(x)) for x in retired):
+            return False
+        if active and not re.fullmatch(r"[0-9a-f]{64}", active):
+            return False
+        # Preserve the old owner's pin only as a retired digest if the first
+        # accepted message already uses a different key; old backups stay intact.
+        old_pin = _key_digest(config.OWNER_PGP_FINGERPRINT) if address == config.OWNER_ADDRESS.casefold() else ""
+        if not active and old_pin and old_pin != digest:
+            retired = list(dict.fromkeys([*retired, old_pin]))
+        if digest in retired:
+            return False
+        old_chat = (previous or {}).get("chat")
+        if active == digest and old_chat == int(chat_id):
+            return True
+        if not learn:
+            return False
+        if active and active != digest:
+            retired = list(dict.fromkeys([*retired, active]))
+        if len(retired) > 256:
+            return False
+        bindings[address] = {"key": digest, "chat": int(chat_id), "retired": retired}
+        try:
+            state.save()
+            # Production explicitly requires backups: verify this change in a
+            # non-rotating encrypted checkpoint before admitting the new key.
+            if os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1":
+                import state_backup
+                state_backup.save(rotate=False)
+        except Exception:
+            if previous is None:
+                bindings.pop(address, None)
+            else:
+                bindings[address] = previous
+            try:
+                state.save()
+            except Exception:
+                pass
+            return False
+        return True
+
+
+def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
+                    *, contact_id: int | None = None, message: Any = None,
+                    allow_rotation: bool = False) -> bool:
+    """Verify a chat, defaulting to a pinned owner and directly verified contacts.
+
+    Explicit email-key recovery is weaker and applies only to an address with a
+    current access grant. Single-chat and end-to-end encryption requirements
+    still apply. Old keys cannot be reused after a new one has been bound.
+    """
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True
     try:
         info = rpc.get_basic_chat_info(account, chat_id)
         kind = getattr(info.chat_type, "value", info.chat_type)
-        if (str(kind) != "Single" or info.is_encrypted is not True or info.is_contact_request is not False
-                or info.is_self_talk is not False):
+        if str(kind) != "Single" or info.is_encrypted is not True or info.is_self_talk is not False:
             return False
         members = rpc.get_chat_contacts(account, chat_id)
         if len(members) != 1 or (contact_id is not None and int(members[0]) != int(contact_id)):
@@ -135,11 +215,21 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
         contact = rpc.get_contact(account, int(members[0]))
         actual = str(contact.address or "").strip().casefold()
         expected = str(address or "").strip().casefold()
-        if (not expected or actual != expected or contact.is_key_contact is not True or contact.e2ee_avail is not True
-                or contact.is_verified is not True or contact.verifier_id != 1):
+        if (not expected or actual != expected or contact.is_key_contact is not True or contact.e2ee_avail is not True):
             return False
         if message is not None and (int(message.chat_id) != int(chat_id) or int(message.from_id) != int(members[0])
                                     or message.show_padlock is not True):
+            return False
+        if config.EMAIL_KEY_RECOVERY:
+            from . import admin
+            if admin.is_allowed(expected):
+                learn = bool(message is not None or allow_rotation)
+                if info.is_contact_request is not False and not learn:
+                    return False
+                return _email_binding(expected, int(chat_id), contact_fingerprint(rpc, account, int(members[0])), learn)
+        if not config.BOT_VERIFIED_CONTACTS_ONLY:
+            return True
+        if info.is_contact_request is not False or contact.is_verified is not True or contact.verifier_id != 1:
             return False
         if expected == config.OWNER_ADDRESS.strip().casefold():
             expected_fp = normalize_fingerprint(config.OWNER_PGP_FINGERPRINT)
@@ -152,7 +242,7 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
 
 def authorized_entry(rpc: Any, account: int, entry: dict[str, Any]) -> bool:
     """Apply the same chat/key check to a bound WebXDC instance."""
-    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True
     try:
         return authorized_chat(rpc, account, int(entry["chat"]), str(entry["addr"]))

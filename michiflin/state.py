@@ -101,7 +101,7 @@ def _valid(key: str, value: Any) -> bool:
 def act_as(address: str) -> None:
     """Personal settings read and written by this thread belong to this person; administrators use the shared ones."""
     address = (address or "").strip().lower()
-    _acting.address = "" if address in config.ADMIN_ADDRESSES else address
+    _acting.address = "" if config.is_owner_admin(address) or address in config.ADMIN_ADDRESSES else address
     _acting.sender = address
     _acting.charged = False
     _acting.personal_ai_secure = False

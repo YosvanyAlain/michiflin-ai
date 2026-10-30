@@ -1,5 +1,13 @@
 # Changelog
 
+## 5.5.0
+
+- Integrate the existing parts joiner directly inside the file kit, retaining raw and compatible media joining, ordering, gap checks and available verification. Add streaming remote `.001` joins with optional encrypted SHA-256 verification; media remuxing remains on-device.
+- Add folder-scoped select-all, long-name scrolling and previewed, atomic bulk renaming with extension-aware modes and undo/redo.
+- Add selective server-side RAR inspection and extraction in a restricted, networkless native worker. Archive bytes and selected output are streamed, passwords and member selections are sealed, and unsafe paths or links are rejected. Include the separately licensed official UnRAR 7.30 beta 2 source; compatibility, isolation and resources are not guaranteed.
+- Cover encrypted RAR4/RAR5, solid and multivolume samples, untrusted paths, unavailable isolation, low resources, real encrypted bridge and synthetic Chromium/WebKit UI. A separate local 600 MiB streaming check does not prove all large archives or physical devices work.
+- The server workspace and RAR scratch files remain temporary, not a backup. Existing identity/access settings, previous miniapps, jobs and original phone files are not migrated or replaced by this update.
+
 ## 5.4.0
 
 - Add an ES/EN file kit under Downloads, with a scrollable tree, offline copies, a temporary authenticated server workspace, folder organization, text editing, preview, undo/redo and explicit history cleanup. The existing parts joiner is nested under the kit and can open selected local copies.

@@ -1,0 +1,17 @@
+Portable UnRAR source 7.30 beta 2 (source package 7.3.2), downloaded from
+https://www.rarlab.com/rar/unrarsrc-7.3.2.tar.gz on 2026-10-30.
+SHA-256: f61a1160d6e2ebbda2ad353c8e82f62ab4312f97fde23c6c2c982d25e0014f99
+This version is a beta; it includes security-related fixes not present in the
+then-current 7.23 stable release. It must be reviewed and updated as releases
+and security advisories evolve. It is used only for unpacking in a restricted,
+networkless worker; it is not used to create RAR archives.
+
+UnRAR is distributed under the separately supplied LICENSE, not this project's
+MIT license. UnRAR source code may be used in any software to handle RAR
+archives without limitations free of charge, but cannot be used to develop
+RAR (WinRAR) compatible archiver and to re-create RAR compression algorithm,
+which is proprietary. Distribution of modified UnRAR source code in separate
+form or as a part of other software is permitted, provided that full text of
+this paragraph, starting from "UnRAR source code" words, is included in license,
+or in documentation if license is not available, and in source code comments
+of resulting package.
