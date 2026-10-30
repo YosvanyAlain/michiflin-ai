@@ -125,6 +125,30 @@ class FileKitApiTests(unittest.TestCase):
         with self.assertRaises(miniapp.AppError):
             self.call("join_raw", paths=args["paths"], folder="", name="otro.rar", sha256=digest)
 
+    def test_fast_rar_listing_is_delayed_for_existing_clients_and_can_pause(self):
+        private = X25519PrivateKey.generate()
+        listing = {"entries": [{"path": "a.txt", "size": 1, "type": "file"}], "version": "v", "solid": False}
+        request = {"paths": ["/doc.txt"], "first": "/doc.txt", "replyKey": enc(public(private))}
+        with mock.patch.object(filekit_api.filekit_rar_native, "inspect", return_value=listing), \
+             mock.patch.object(filekit_api, "monotonic", side_effect=[100.0, 100.1]), \
+             mock.patch.object(filekit_api, "sleep") as wait:
+            result = self.call("rar_list", **request)
+            self.assertEqual(json.loads(decrypt_reply(private, result["sealed"])), listing)
+            self.assertAlmostEqual(wait.call_args.args[0], 0.25)
+        # Slow listings already outlive the transition and need no extra delay.
+        with mock.patch.object(filekit_api.filekit_rar_native, "inspect", return_value=listing), \
+             mock.patch.object(filekit_api, "monotonic", side_effect=[100.0, 101.0]), \
+             mock.patch.object(filekit_api, "sleep") as wait:
+            self.call("rar_list", **request)
+            wait.assert_not_called()
+        # Maintenance/cancellation is checked after any waiting, before returning data.
+        with mock.patch.object(filekit_api.filekit_rar_native, "inspect", return_value=listing), \
+             mock.patch.object(filekit_api, "monotonic", side_effect=[100.0, 100.1]), \
+             mock.patch.object(filekit_api, "sleep"), \
+             mock.patch.object(state, "check_work_allowed", side_effect=state.WorkPaused(maintenance=True)):
+            with self.assertRaises(state.WorkPaused):
+                self.call("rar_list", **request)
+
     def test_selective_rar_listing_and_selection_are_encrypted(self):
         private = X25519PrivateKey.generate()
         listing = {"entries": [{"path": "nombre-privado.txt", "size": 18, "type": "file", "encrypted": True}],

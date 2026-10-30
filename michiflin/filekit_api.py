@@ -8,12 +8,17 @@ from __future__ import annotations
 
 import io
 import json
+from time import monotonic, sleep
 from typing import Any
 
 from . import chat, config, filekit, filekit_archive, filekit_crypto, filekit_join_remote, filekit_rar_native, filekit_transfer, mail_profiles, queue, state
 
 _PREVIEW_BYTES = 200_000
 _TEXT_BYTES = 70_000
+# Existing clients close one sheet over 220 ms before opening the selection.
+# A very fast RAR response can otherwise reopen it before the old close timer
+# clears, which hides the new selector. Keep deployed WebXDC builds compatible.
+_RAR_LIST_MIN_SECONDS = 0.35
 
 
 class DeliveryRefused(Exception):
@@ -161,6 +166,7 @@ def dispatch(chat_id: int, args: dict[str, Any], locale: str) -> dict[str, Any]:
                                  name=_string(args, "name", limit=255), sha256=protected.get("sha256", ""))
         return {"changed": True}
     elif action == "rar_list":
+        started = monotonic()
         password = _password(args)
         try:
             result = filekit_rar_native.inspect(space, _selected(args), _string(args, "first"), password)
@@ -168,9 +174,14 @@ def dispatch(chat_id: int, args: dict[str, Any], locale: str) -> dict[str, Any]:
             if len(raw) > 300_000:
                 raise filekit.FileKitError("listing_limit")
             # Member names, sizes and the version token are not persisted in clear.
-            return {"sealed": filekit_crypto.encrypt_reply(args.get("replyKey"), raw)}
+            sealed = filekit_crypto.encrypt_reply(args.get("replyKey"), raw)
         finally:
             password = ""
+        delay = _RAR_LIST_MIN_SECONDS - (monotonic() - started)
+        if delay > 0:
+            sleep(delay)
+        state.check_work_allowed()  # maintenance/cancellation still wins during the bounded delay
+        return {"sealed": sealed}
     elif action == "rar_extract":
         password = _password(args)
         try:
