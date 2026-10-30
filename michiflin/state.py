@@ -34,6 +34,10 @@ data: dict[str, Any] = {
     "sent": [],
     "flags": {},
     "access": {},
+    # Current SecureJoin grants are distinct from historical allow-lists.
+    # Key digests and per-grant stamps live in the encrypted state backup.
+    "invitees": {},
+    "invite_policy": {},
     "apps": {},
     "people": {},
     "prefs": {},

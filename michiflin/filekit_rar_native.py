@@ -95,7 +95,7 @@ def available() -> bool:
 
 def _memory_limit() -> tuple[int, int]:
     available_bytes = filekit_archive._available_memory()
-    limit = min(int(available_bytes * 0.65), 2 * 1024 * _MIB)
+    limit = min(int(available_bytes * 0.65), 2 * 1024 * _MIB, filekit_archive.memory_cap())
     if limit < 256 * _MIB:
         raise filekit.FileKitError("memory_unavailable")
     return limit, max(64, (limit - 128 * _MIB) // _MIB)
@@ -248,6 +248,7 @@ def _validated_listing(result: dict[str, Any]) -> list[dict[str, Any]]:
     return safe
 
 
+@filekit_archive.memory_limited
 def inspect(space: filekit.Workspace, paths: list[str], first: str, password: str) -> dict[str, Any]:
     if not available():
         raise filekit.FileKitError("engine_unavailable")
@@ -262,6 +263,7 @@ def inspect(space: filekit.Workspace, paths: list[str], first: str, password: st
                 "solid": bool(result.get("solid")), "multiVolume": bool(result.get("multiVolume"))}
 
 
+@filekit_archive.memory_limited
 def extract(space: filekit.Workspace, paths: list[str], first: str, password: str, selected: list[str], version: str,
             *, folder: str, name: str) -> dict[str, Any]:
     if not available():

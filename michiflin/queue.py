@@ -10,6 +10,7 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -41,6 +42,13 @@ STATUS_LABELS = {
 PREPARERS = 2  # downloads run side by side, so one long download never blocks everyone else
 _wake = threading.Event()
 _claim = threading.Lock()
+_admission_lock = threading.RLock()
+_pending_admissions: dict[str, tuple[str, int]] = {}
+_prepare_turns: dict[str, int] = {}
+_delivery_turns: dict[str, int] = {}
+_delivery_job_turns: dict[str, int] = {}
+_prepare_seq = 0
+_delivery_seq = 0
 _stop_flags: dict[str, threading.Event] = {}
 _claim_generations: dict[str, int] = {}
 _delivery_generations: dict[str, int] = {}
@@ -100,8 +108,11 @@ def queue_bytes() -> int:
     total = 0
     if config.JOB_ROOT.exists():
         for item in config.JOB_ROOT.rglob("*"):
-            if item.is_file():
-                total += item.stat().st_size
+            try:
+                if item.is_file() and not item.is_symlink():
+                    total += item.stat().st_size
+            except FileNotFoundError:
+                continue  # another worker finished or cleaned this temporary file
     return total
 
 
@@ -160,9 +171,10 @@ def _person_error(locale: str) -> str:
     if not address or admin.is_admin(address):
         return ""
     limit = int(state.setting("user_jobs"))
-    with state.lock:
+    with _admission_lock, state.lock:
         running = sum(1 for job in jobs().values() if job.get("addr") == address and job["status"] not in FINAL
                       and access.job_allowed(job))
+        running += sum(1 for owner, _size in _pending_admissions.values() if owner == address)
     if running >= limit:
         return tr(locale, f"⚠️ Ya tienes {running} descargas en curso (máximo {limit}). Espera a que terminen para que todos tengan su turno.",
                   f"⚠️ You already have {running} downloads in progress (limit {limit}). Wait for them so everyone gets a turn.")
@@ -170,33 +182,71 @@ def _person_error(locale: str) -> str:
 
 
 def _capacity_error(size: int, locale: str) -> str:
-    problem = _person_error(locale)
-    if problem:
-        return problem
-    if size and size > config.MAX_FILE_BYTES:
-        return tr(locale, f"⚠️ El archivo ({human_size(size)}) supera el máximo de {human_size(config.MAX_FILE_BYTES)}.",
-                  f"⚠️ The file ({human_size(size)}) exceeds the {human_size(config.MAX_FILE_BYTES)} maximum.")
-    reserved = sum(int(job.get("size_est") or 0) for job in jobs().values() if job["status"] in {"queued", "downloading"}
-                   and access.job_allowed(job))
-    if size and queue_bytes() + reserved + size > config.MAX_QUEUE_BYTES:
-        return tr(locale, "⚠️ La cola está llena. Espera a que termine o usa /cola_limpiar.", "⚠️ The queue is full. Wait or use /queue_clear.")
-    if size and free_disk() - reserved - size * 2 < config.MIN_FREE_DISK_BYTES:
-        return tr(locale, "⚠️ No hay espacio en disco suficiente ahora.", "⚠️ Not enough disk space right now.")
-    return ""
+    with _admission_lock:
+        problem = _person_error(locale)
+        if problem:
+            return problem
+        if size < 0 or (size and size > config.MAX_FILE_BYTES):
+            return tr(locale, f"⚠️ El archivo ({human_size(size)}) supera el máximo de {human_size(config.MAX_FILE_BYTES)}.",
+                      f"⚠️ The file ({human_size(size)}) exceeds the {human_size(config.MAX_FILE_BYTES)} maximum.")
+        with state.lock:
+            active = [dict(job) for job in jobs().values() if job["status"] in {"queued", "downloading"} and access.job_allowed(job)]
+        # Reserve both the remaining download and a later packing copy. Avoid
+        # counting already downloaded bytes twice against the queue ceiling.
+        remaining = sum(max(0, int(job.get("size_est") or 0) - int(job.get("progress") or 0)) for job in active)
+        packing = sum(max(0, int(job.get("size_est") or 0)) for job in active)
+        pending = sum(max(0, amount) for _owner, amount in _pending_admissions.values())
+        used = queue_bytes()
+        if used + remaining + pending + size > config.MAX_QUEUE_BYTES or (not size and used + remaining + pending >= config.MAX_QUEUE_BYTES):
+            return tr(locale, "⚠️ La cola está llena. Espera a que termine o usa /cola_limpiar.", "⚠️ The queue is full. Wait or use /queue_clear.")
+        if free_disk() - remaining - packing - pending * 2 - size * 2 < config.MIN_FREE_DISK_BYTES:
+            return tr(locale, "⚠️ No hay espacio en disco suficiente ahora.", "⚠️ Not enough disk space right now.")
+        return ""
+
+
+def _reserve_admission(size: int, locale: str) -> tuple[str, str]:
+    with _admission_lock:
+        problem = _capacity_error(size, locale)
+        if problem:
+            return "", problem
+        token = secrets.token_hex(16)
+        _pending_admissions[token] = (chat.sender().strip().lower(), size)
+        return token, ""
+
+
+def _release_admission(token: str) -> None:
+    with _admission_lock:
+        _pending_admissions.pop(token, None)
+
+
+def _register_job(job: dict[str, Any]) -> None:
+    with state.lock:
+        state.check_work_allowed()
+        jobs()[job["id"]] = job
+        try:
+            state.save()
+        except BaseException:
+            jobs().pop(job["id"], None)
+            raise
+    try:
+        usage.note(job["addr"], jobs=1)
+    except Exception as exc:
+        # A saved handoff must not look like a safe-to-repeat failure.
+        log.warning("job accounting failed: %s", type(exc).__name__)
+    _wake.set()
 
 
 def enqueue_file(chat_id: int, info: files.FileInfo, locale: str) -> tuple[dict[str, Any] | None, str]:
-    problem = _capacity_error(info.size, locale)
+    token, problem = _reserve_admission(info.size, locale)
     if problem:
         return None, problem
-    job = _new_job(chat_id, "file", info.final_url, info.name, info.size, name=info.name, ext=info.ext, mime=info.mime,
-                   label=files.describe(info.kind, locale), resumable=info.resumable, source_url=info.url, locale=locale)
-    with state.lock:
-        jobs()[job["id"]] = job
-    state.save()
-    usage.note(job["addr"], jobs=1)
-    _wake.set()
-    return job, ""
+    try:
+        job = _new_job(chat_id, "file", info.final_url, info.name, info.size, name=info.name, ext=info.ext, mime=info.mime,
+                       label=files.describe(info.kind, locale), resumable=info.resumable, source_url=info.url, locale=locale)
+        _register_job(job)
+        return job, ""
+    finally:
+        _release_admission(token)
 
 
 def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: str, locale: str,
@@ -208,9 +258,6 @@ def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: st
     """
     if not chat.sender() or size < 0 or (part_mb is not None and not 1 <= part_mb <= 20):
         return None, tr(locale, "⚠️ Solicitud de envío no válida.", "⚠️ Invalid delivery request.")
-    problem = _capacity_error(size, locale)
-    if problem:
-        return None, problem
     filename = clean_filename(name, "archivo")
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
     extra: dict[str, Any] = {"name": filename, "ext": ext, "mime": mime or "application/octet-stream", "label": "Archivo" if locale == "es" else "File",
@@ -218,6 +265,9 @@ def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: st
     if part_mb is not None:
         extra["part_mb"] = part_mb
     job = _new_job(chat_id, "file", "", filename, size, **extra)
+    token, problem = _reserve_admission(size, locale)
+    if problem:
+        return None, problem
     root = folder(job)
     created = False
     registered = False
@@ -236,6 +286,8 @@ def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: st
                 count += len(block)
                 if count > size:
                     raise ValueError("source_changed")
+                if free_disk() - len(block) < config.MIN_FREE_DISK_BYTES:
+                    raise ValueError("disk_full")
                 digest.update(block)
                 output.write(block)
             state.check_work_allowed()
@@ -268,6 +320,8 @@ def enqueue_local(chat_id: int, source: BinaryIO, name: str, size: int, mime: st
             if created:
                 shutil.rmtree(root, ignore_errors=True)
         raise
+    finally:
+        _release_admission(token)
 
 
 def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, locale: str, audio_format: str = "", video_format: str = "") -> tuple[dict[str, Any] | None, str]:
@@ -276,21 +330,20 @@ def enqueue_media(chat_id: int, info: media.MediaInfo, kind: str, quality: int, 
     if kind == "video" and sizes and quality not in sizes:
         fitting = [height for height in sizes if height <= quality]
         estimate = sizes[max(fitting)] if fitting else min(sizes.values())
-    problem = _capacity_error(estimate, locale)
-    if problem:
-        return None, problem
     fmt = (audio_format or state.setting("audio_format")) if kind == "audio" else (video_format or "mp4")
     if ((kind == "audio" and fmt not in {"mp3", "m4a", "opus"}) or
             (kind == "video" and fmt not in {"mp4", "mkv", "webm"})):
         return None, tr(locale, "⚠️ Formato de salida no válido.", "⚠️ Invalid output format.")
-    job = _new_job(chat_id, kind, info.webpage or info.url, info.title, estimate, quality=quality, audio_format=fmt,
-                   ext=fmt, label=(tr(locale, "Audio", "Audio") if kind == "audio" else "Video"), duration=info.duration, locale=locale)
-    with state.lock:
-        jobs()[job["id"]] = job
-    state.save()
-    usage.note(job["addr"], jobs=1)
-    _wake.set()
-    return job, ""
+    token, problem = _reserve_admission(estimate, locale)
+    if problem:
+        return None, problem
+    try:
+        job = _new_job(chat_id, kind, info.webpage or info.url, info.title, estimate, quality=quality, audio_format=fmt,
+                       ext=fmt, label=(tr(locale, "Audio", "Audio") if kind == "audio" else "Video"), duration=info.duration, locale=locale)
+        _register_job(job)
+        return job, ""
+    finally:
+        _release_admission(token)
 
 
 def parts_for(size: int, part_mb: int) -> int:
@@ -313,7 +366,7 @@ def _verified_target(job: dict[str, Any]) -> bool:
     """Revalidate a persisted job's target before any outbound delivery."""
     if not access.job_allowed(job):
         return False
-    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True
     try:
         address = str(job.get("addr") or "").strip().lower()
@@ -383,6 +436,11 @@ def _checkpoint(stop: Callable[[], bool] | None) -> None:
         raise InterruptedError()
 
 
+def _ensure_space(additional: int = 0) -> None:
+    if free_disk() - max(0, additional) < config.MIN_FREE_DISK_BYTES:
+        raise ValueError("disk_full")
+
+
 def _sha256(path: Path, stop: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -399,11 +457,13 @@ def _run_interruptible(command: list[str], timeout: int, stop: Callable[[], bool
     if stop is None:
         return subprocess.run(command, cwd=cwd, capture_output=True, timeout=timeout)
     _checkpoint(stop)
+    _ensure_space()
     process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     deadline = time.monotonic() + timeout
     try:
         while True:
             _checkpoint(stop)
+            _ensure_space()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(command, timeout)
@@ -522,6 +582,7 @@ def _copy_source(source: Path, target: Path, stop: Callable[[], bool] | None) ->
             block = incoming.read(1024 * 1024)
             if not block:
                 break
+            _ensure_space(len(block))
             outgoing.write(block)
     _checkpoint(stop)
 
@@ -585,6 +646,7 @@ def _split(source: Path, job: dict[str, Any], stop: Callable[[], bool] | None = 
             block = handle.read(part_bytes)
             if not block:
                 break
+            _ensure_space(len(block))
             target = out / f"{stem}.{ext}.{index:03d}"
             target.write_bytes(block)
             parts.append(target)
@@ -669,7 +731,7 @@ def _prepare(job: dict[str, Any], generation: int | None = None) -> None:
             if not retained and job.get("range_unverified"):
                 update(job, range_unverified=False)
             files.download(job["url"], source, int(job.get("size_est") or 0), bool(job.get("resumable")), progress,
-                           interrupted, config.MAX_FILE_BYTES, integrity)
+                           interrupted, config.MAX_FILE_BYTES, integrity, config.MIN_FREE_DISK_BYTES)
             # Only a completed download gets this marker; partial range downloads
             # continue to use the existing resumable path instead.
             update(job, source_complete=source.name, source_complete_size=source.stat().st_size, source_complete_sha="")
@@ -759,16 +821,27 @@ def _blocked(job: dict[str, Any]) -> bool:
 
 
 def _next_queued() -> dict[str, Any] | None:
-    """Claim the next queued job fairly: people with fewer running downloads and less delivered today go first."""
+    """Take turns by person without starving someone who previously used more."""
+    global _prepare_seq
     with _claim, state.lock:
         busy: dict[str, int] = {}
         for job in jobs().values():
-            if job["status"] in {"downloading", "packing"}:
-                busy[usage.job_owner(job)] = busy.get(usage.job_owner(job), 0) + 1
+            if job["status"] in {"downloading", "packing"} and access.job_allowed(job):
+                owner = usage.job_owner(job)
+                busy[owner] = busy.get(owner, 0) + 1
         pending = [job for job in jobs().values() if job["status"] == "queued" and not job.get("hold") and not _blocked(job)]
         if not pending:
+            _prepare_turns.clear()
             return None
-        job = min(pending, key=lambda item: usage.priority(item, busy))
+        owners = {usage.job_owner(item) for item in pending} | set(busy)
+        for owner in list(_prepare_turns):
+            if owner not in owners:
+                _prepare_turns.pop(owner, None)
+        for owner in owners:
+            _prepare_turns.setdefault(owner, _prepare_seq)
+        job = min(pending, key=lambda item: (_prepare_turns[usage.job_owner(item)], *usage.priority(item, busy)))
+        _prepare_seq += 1
+        _prepare_turns[usage.job_owner(job)] = _prepare_seq
         _claim_generations[str(job["id"])] = state.kill_generation(usage.job_owner(job))
         job["status"] = "downloading"
         return job
@@ -933,15 +1006,34 @@ def _notify(job: dict[str, Any], message: str) -> None:
 
 
 def _deliverable() -> dict[str, Any] | None:
-    """Next part to send, taking turns between people (one part each) instead of draining one job first."""
+    """Take turns per person and per job, one part at a time, without starvation."""
+    global _delivery_seq
     now = time.time()
     with state.lock:
         candidates = [job for job in jobs().values() if job["status"] == "sending" and not job.get("hold")
                       and float(job.get("not_before") or 0) <= now and job.get("todo") and not _blocked(job)]
         candidates = [job for job in candidates if in_window(now, job)]
         if not candidates:
+            _delivery_turns.clear()
+            _delivery_job_turns.clear()
             return None
-        job = min(candidates, key=usage.priority)
+        owners = {usage.job_owner(item) for item in candidates}
+        identifiers = {str(item["id"]) for item in candidates}
+        for owner in list(_delivery_turns):
+            if owner not in owners:
+                _delivery_turns.pop(owner, None)
+        for key in list(_delivery_job_turns):
+            if key not in identifiers:
+                _delivery_job_turns.pop(key, None)
+        for owner in owners:
+            _delivery_turns.setdefault(owner, _delivery_seq)
+        for key in identifiers:
+            _delivery_job_turns.setdefault(key, _delivery_seq)
+        job = min(candidates, key=lambda item: (_delivery_turns[usage.job_owner(item)],
+                                                _delivery_job_turns[str(item["id"])], *usage.priority(item)))
+        _delivery_seq += 1
+        _delivery_turns[usage.job_owner(job)] = _delivery_seq
+        _delivery_job_turns[str(job["id"])] = _delivery_seq
         _delivery_generations[str(job["id"])] = state.kill_generation(usage.job_owner(job))
         return job
 

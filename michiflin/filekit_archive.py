@@ -6,12 +6,14 @@ fresh network/mount/PID namespaces. Failure to create the isolation fails closed
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -92,10 +94,55 @@ def _available_memory() -> int:
     return available_bytes
 
 
+_memory_lock = threading.Lock()
+_memory_local = threading.local()
+_memory_reserved = 0
+
+
+@contextmanager
+def memory_reservation() -> Iterator[None]:
+    """Share RAM across independent archive sandboxes, including timed-out work.
+
+    Each worker's existing OS limit is capped to its reservation. Free memory
+    already excludes allocations made by earlier sandboxes, so also counting
+    their full reservations is intentionally conservative on a busy host.
+    """
+    global _memory_reserved
+    if getattr(_memory_local, "limit", 0):
+        yield
+        return
+    with _memory_lock:
+        free = _available_memory()
+        available = max(0, int(free * 0.75) - _memory_reserved)
+        grant = min(int(free * 0.65), 2 * 1024 * 1024 * 1024, available)
+        if grant < 192 * 1024 * 1024:
+            raise filekit.FileKitError("memory_unavailable")
+        _memory_reserved += grant
+        _memory_local.limit = grant
+    try:
+        yield
+    finally:
+        with _memory_lock:
+            _memory_reserved -= grant
+        _memory_local.limit = 0
+
+
+def memory_limited(function: Any) -> Any:
+    @functools.wraps(function)
+    def guarded(*args: Any, **kwargs: Any) -> Any:
+        with memory_reservation():
+            return function(*args, **kwargs)
+    return guarded
+
+
+def memory_cap() -> int:
+    return int(getattr(_memory_local, "limit", 0) or 2 * 1024 * 1024 * 1024)
+
+
 def limits() -> tuple[int, int]:
     """Bound real writable mappings and the virtual filesystem before parsing."""
     free = _available_memory()
-    data_limit = min(int(free * 0.65), 2 * 1024 * 1024 * 1024)
+    data_limit = min(int(free * 0.65), 2 * 1024 * 1024 * 1024, memory_cap())
     if data_limit < 192 * 1024 * 1024:
         raise filekit.FileKitError("memory_unavailable")
     # Input, output, transfer buffers and library overhead coexist. 512 MiB is
@@ -212,6 +259,7 @@ def _safe_result(root: Path, relative: str) -> Path:
     return target
 
 
+@memory_limited
 def archive(space: filekit.Workspace, action: str, paths: list[str], *, folder: str, name: str = "", password: str = "",
             format: str = "", volume_bytes: int = 0, first: str = "") -> dict[str, Any]:
     """Copy a snapshot into the jail; publish checked output in one transaction."""

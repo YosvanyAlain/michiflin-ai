@@ -36,6 +36,9 @@ if OWNER_BACKUP_ADDRESS and not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", OWN
 MAINTENANCE_MODE = env("MAINTENANCE_MODE", "0").lower() in {"1", "true", "yes", "on"}
 # Still private: only the configured owner and explicitly named backup admin.
 OWNER_ONLY = env("OWNER_ONLY", "0").lower() in {"1", "true", "yes", "on"}
+# Separate opt-in: a completed, directly verified SecureJoin automatically
+# admits that key as an ordinary user. It never grants administrative powers.
+INVITE_AUTO_ACCESS = env("INVITE_AUTO_ACCESS", "0").lower() in {"1", "true", "yes", "on"}
 # Opt-in weakens identity authentication: a permitted email can rotate keys
 # without proving ownership of its previously verified key.
 EMAIL_KEY_RECOVERY = env("EMAIL_KEY_RECOVERY", "0").lower() in {"1", "true", "yes", "on"}
@@ -68,8 +71,8 @@ BOT_EPOCH_STRICT = env("BOT_EPOCH_STRICT", "0").lower() in {"1", "true", "yes", 
 # primary OpenPGP fingerprint independently before enabling it.
 BOT_VERIFIED_CONTACTS_ONLY = env("BOT_VERIFIED_CONTACTS_ONLY", "0").lower() in {"1", "true", "yes", "on"}
 OWNER_PGP_FINGERPRINT = env("OWNER_PGP_FINGERPRINT")
-if (MAINTENANCE_MODE or OWNER_ONLY) and not OWNER_ADDRESS:
-    raise RuntimeError("OWNER_ONLY/MAINTENANCE_MODE requires OWNER_ADDRESS; refusing to start without an owner")
+if (MAINTENANCE_MODE or OWNER_ONLY or INVITE_AUTO_ACCESS) and not OWNER_ADDRESS:
+    raise RuntimeError("OWNER_ONLY/MAINTENANCE_MODE/INVITE_AUTO_ACCESS requires OWNER_ADDRESS; refusing to start without an owner")
 
 
 def service_access_allowed(address: str) -> bool:
@@ -211,3 +214,14 @@ DEFAULTS = {
     "nauta_strict": env("NAUTA_STRICT", "0").lower() in {"1", "true", "yes", "on"},
     "kill_switch": env("KILL_SWITCH", "0").lower() in {"1", "true", "yes", "on"},
 }
+
+# Community defaults are concurrency/capacity based, not tiny fixed daily
+# quotas. Explicit administrator settings and provider limits still prevail.
+if INVITE_AUTO_ACCESS:
+    DEFAULTS.update({
+        "user_jobs": env_int("USER_MAX_JOBS", 5),
+        "ai_daily": env_int("USER_AI_DAILY", 0),
+        "image_daily": env_int("USER_IMAGE_DAILY", 0),
+        "code_daily": env_int("USER_CODE_DAILY", 0),
+        "ai_reserve": env_int("AI_RESERVE_PERCENT", 10),
+    })

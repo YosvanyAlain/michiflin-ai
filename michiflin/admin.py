@@ -107,6 +107,8 @@ def is_allowed(address: str) -> bool:
         return False
     if is_admin(address):
         return True
+    if config.INVITE_AUTO_ACCESS:
+        return True  # the service gate already requires a current key-bound grant
     if access.snapshot()["controlled"]:
         return address not in _access()["blocked"]  # service gate already requires an explicit current grant
     return address in config.ALLOWED_SENDERS or address in _access()["allowed"]
@@ -152,6 +154,9 @@ def alert_text(address: str, text: str) -> str:
     if access.snapshot()["private_mode"]:
         return tr(locale, f"🛡️ Contacto ajeno bloqueado: {address}\nModo privado: solo pueden entrar el dueño y el administrador de respaldo configurado.",
                   f"🛡️ Unknown contact blocked: {address}\nPrivate mode: only the owner and configured backup administrator can enter.")
+    if config.INVITE_AUTO_ACCESS:
+        return tr(locale, f"🛡️ Contacto no autorizado: {address}\nDebe completar la invitación privada y la verificación cifrada.",
+                  f"🛡️ Unauthorized contact: {address}\nThey must complete the private invitation and encrypted verification.")
     allow = names.cmd(locale, "admin", "allow")
     return tr(locale, f"🛡️ Contacto ajeno bloqueado: {address}\nPara darle acceso: {allow} {address}",
               f"🛡️ Unknown contact blocked: {address}\nTo grant access: {allow} {address}")
@@ -159,7 +164,9 @@ def alert_text(address: str, text: str) -> str:
 
 def block_unknown(address: str, contact_id: int = 0) -> None:
     address = address.lower()
-    if not address or is_allowed(address):
+    if not address or is_allowed(address) or config.INVITE_AUTO_ACCESS:
+        # Do not automatically core-block a person who may be in the middle
+        # of SecureJoin. Explicit owner blocks remain enforced separately.
         return
     with state.lock:
         blocked = _access()["blocked"]
@@ -197,7 +204,7 @@ def grant_one(address: str, minutes: int, nonce: str) -> bool:
     """From owner-only mode, temporarily authorize exactly one named contact."""
     address = (address or "").strip().lower()
     mode = access.snapshot()
-    if (not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address) or config.is_owner_admin(address)
+    if (config.INVITE_AUTO_ACCESS or not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address) or config.is_owner_admin(address)
             or type(minutes) is not int or minutes not in access.DURATIONS or state.maintenance_active()
             or mode["maintenance"] or not mode["owner_only"]
             or not secrets.compare_digest(str(nonce), mode["nonce"])):
@@ -234,6 +241,18 @@ def grant(address: str) -> bool:
     address = address.strip().lower()
     if not re.fullmatch(r"[^\s@]{1,128}@[^\s@]{1,255}", address):
         return False
+    if config.INVITE_AUTO_ACCESS and not config.is_owner_admin(address):
+        from . import community
+        # This explicitly removes a block; it is not itself an admission.
+        # Even an address already in an old allow-list must rejoin securely.
+        if not _set_blocked_contact(address, False) or not community.unblock(address):
+            return False
+        with state.lock:
+            blocked = _access()["blocked"]
+            if address in blocked:
+                blocked.remove(address)
+            state.save()
+        return True
     mode = access.snapshot()
     if mode["private_mode"] and not config.is_owner_admin(address):
         return False
@@ -272,6 +291,17 @@ def revoke(address: str, block: bool = False) -> bool:
     address = address.strip().lower()
     if "@" not in address or is_admin(address):
         return False
+    if config.INVITE_AUTO_ACCESS:
+        from . import community
+        changed = community.revoke(address, block=block)
+        if changed and block:
+            with state.lock:
+                blocked = _access()["blocked"]
+                if address not in blocked:
+                    blocked.append(address)
+                state.save()
+            _set_blocked_contact(address, True)
+        return changed
     mode = access.snapshot()
     if mode["controlled"] or mode["private_mode"]:
         # Revocation closes live access without deleting settings, jobs or history.
@@ -335,8 +365,12 @@ def overview(locale: str) -> str:
     data, mode = _access(), access.snapshot()
     now = time.time()
     private = mode["private_mode"]
-    users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
-             else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
+    if config.INVITE_AUTO_ACCESS:
+        from . import community
+        users = list(config.owner_admin_addresses()) + ([] if private else community.addresses())
+    else:
+        users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
+                 else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
     users = sorted(set(address for address in users if address and is_allowed(address)))
     lines = [tr(locale, "🛡️ Administración", "🛡️ Administration"), "",
              tr(locale, f"OWNER_ONLY={'1' if mode['owner_only'] else '0'} · "
@@ -370,8 +404,12 @@ def snapshot() -> dict[str, Any]:
     """Structured administration view; hidden history remains untouched in state."""
     data, mode = _access(), access.snapshot()
     private = mode["private_mode"]
-    users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
-             else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
+    if config.INVITE_AUTO_ACCESS:
+        from . import community
+        users = list(config.owner_admin_addresses()) + ([] if private else community.addresses())
+    else:
+        users = (list(config.owner_admin_addresses()) + mode["guests"] if mode["controlled"]
+                 else sorted(config.owner_admin_addresses() | config.ALLOWED_SENDERS | set(data["allowed"])))
     users = sorted(set(address for address in users if address and is_allowed(address)))
     now = time.time()
     recent_only = private or mode["controlled"]
@@ -379,6 +417,9 @@ def snapshot() -> dict[str, Any]:
                 if not recent_only or now - float(entry.get("last") or 0) <= RECENT_ATTEMPT_SECONDS]
     recent_addresses = {address for address, _entry in attempts}
     blocked = [] if private else [address for address in data["blocked"] if not mode["controlled"] or address in recent_addresses]
+    if config.INVITE_AUTO_ACCESS and not private:
+        from . import community
+        blocked = sorted(set(blocked) | set(community.blocked_addresses()))
     with _recent_lock:
         entries: list[dict[str, Any]] = []
         budget = 60_000
@@ -390,10 +431,17 @@ def snapshot() -> dict[str, Any]:
             budget -= size
             if len(entries) == 60:
                 break
+    with state.lock:
+        policy = state.data.get("invite_policy") or {}
+        persistent_open = bool(config.INVITE_AUTO_ACCESS and not mode["owner_only"]
+                               and isinstance(policy, dict) and not policy.get("closed", False)
+                               and not config.OWNER_ONLY)
     return {
         "private_mode": private, "owner_only": mode["owner_only"], "maintenance": mode["maintenance"],
+        "invite_persistent_open": persistent_open,
         "owner_only_expires": mode["expires"], "server_now": now, "session_control": mode["controlled"],
         "control_nonce": mode["nonce"], "preserve_history": access.preserve_history(),
+        "invite_auto_access": bool(config.INVITE_AUTO_ACCESS),
         "email_key_recovery": bool(config.EMAIL_KEY_RECOVERY),
         "users": [{"address": address, "admin": is_admin(address), "last": _activity.get(address, 0.0),
                    "active": is_allowed(address)} for address in users],

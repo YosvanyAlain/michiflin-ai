@@ -32,7 +32,15 @@ from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
 cli = BotCli(config.APP_NAME)
-_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="worker")      # app updates and welcomes
+_pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="worker")      # startup and housekeeping
+_app_event_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-events")
+_owner_event_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="owner-events")
+_app_event_slots = threading.BoundedSemaphore(64)
+_owner_event_slots = threading.BoundedSemaphore(16)
+_app_event_lock = threading.Lock()
+_app_events_pending: dict[int, bool] = {}  # coalesce duplicate notifications per instance
+_join_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="secure-join")
+_join_slots = threading.BoundedSemaphore(256)
 _realtime_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="realtime")
 _realtime_slots = threading.BoundedSemaphore(32)
 _chat_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chat")   # one drainer per busy chat
@@ -198,7 +206,10 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     if parsed and parsed[0] == "owner_only" and admin.is_admin(address):
         values = parsed[1] + parsed[2].split()
         if values and values[0].lower() in commands.YES:
-            access.set_owner_only(True)  # close guest access before any slow per-chat work
+            if config.INVITE_AUTO_ACCESS:
+                access.close_immediately()  # checkpoint later, outside the event thread
+            else:
+                access.set_owner_only(True)
             queue.wake()
     ticket = (state.kill_generation(address), state.get_kill_switch(address))
     if not admin.is_admin(address) and (not admin.is_allowed(address) or access.session_stamp(address) != grant_stamp):
@@ -449,30 +460,79 @@ def _watch_updates() -> None:
             return
 
 
-def _welcome(bot: Any, accid: int, contact_id: int) -> None:
-    """Send the app as soon as an authorized contact finishes the secure join."""
+def _welcome(bot: Any, accid: int, contact_id: int) -> bool:
+    """Process only a successful inviter event; False asks the bounded worker to retry."""
+    from . import community
     try:
         if not chat.ready():
             chat.bind(bot, accid)
         address = str(bot.rpc.get_contact(accid, contact_id).address or "").lower()
+        if config.INVITE_AUTO_ACCESS and not config.is_owner_admin(address):
+            if not community.admit_from_securejoin(bot.rpc, accid, contact_id):
+                return True
         if not admin.is_allowed(address):
-            return
+            return True
         chat_id = int(bot.rpc.create_chat_by_contact_id(accid, contact_id))
         if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id,
-                                              allow_rotation=config.EMAIL_KEY_RECOVERY):
-            return
-        if config.EMAIL_KEY_RECOVERY:
+                                              allow_rotation=config.EMAIL_KEY_RECOVERY and (not config.INVITE_AUTO_ACCESS or config.is_owner_admin(address))):
+            return True
+        if config.EMAIL_KEY_RECOVERY and (not config.INVITE_AUTO_ACCESS or config.is_owner_admin(address)):
             info = bot.rpc.get_basic_chat_info(accid, chat_id)
             if getattr(info, "is_contact_request", False):
                 bot.rpc.accept_chat(accid, chat_id)
             if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=contact_id):
-                return
+                return True
         lock = _chat_locks.setdefault(chat_id, threading.Lock())
-        with lock:
+        with lock, chat.recipient_guard(chat_id, address, contact_id):
             chat.set_sender(address)
             miniapp.welcome(chat_id, _locale("", chat_id))
+        return True
     except Exception as exc:
-        log.warning("welcome failed: %s", exc)
+        # The email address and invitation must never appear in logs.
+        log.warning("secure-join welcome deferred (%s)", type(exc).__name__)
+        return False
+
+
+def _submit_welcome(bot: Any, accid: int, contact_id: int) -> None:
+    if not _join_slots.acquire(blocking=False):
+        log.warning("secure-join capacity reached; the contact can retry the invitation")
+        return
+    def run() -> None:
+        try:
+            for delay in (0, 5, 20):
+                if delay and _draining.wait(delay):
+                    return
+                if _welcome(bot, accid, contact_id):
+                    return
+        finally:
+            _join_slots.release()
+    try:
+        _join_pool.submit(run)
+    except Exception:
+        _join_slots.release()
+        raise
+
+
+def _bootstrap_invitees(bot: Any, accid: int) -> None:
+    """Finish a welcome after a crash, without adopting any historic allow-list."""
+    if not config.INVITE_AUTO_ACCESS:
+        return
+    from . import community
+    for address in community.addresses():
+        if _draining.is_set() or not admin.is_allowed(address):
+            continue
+        try:
+            entry = community.record(address)
+            chat_id = int(entry["chat"]) if entry else 0
+            members = bot.rpc.get_chat_contacts(accid, chat_id)
+            if len(members) != 1 or not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address, contact_id=int(members[0])):
+                continue
+            lock = _chat_locks.setdefault(chat_id, threading.Lock())
+            with lock, chat.recipient_guard(chat_id, address, int(members[0])):
+                chat.set_sender(address)
+                miniapp.welcome(chat_id, _locale("", chat_id))
+        except Exception as exc:
+            log.warning("invitee welcome deferred (%s)", type(exc).__name__)
 
 
 def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
@@ -608,7 +668,7 @@ def on_core_event(bot: Any, accid: int, event: Any) -> None:
     if isinstance(event, EventTypeSecurejoinInviterProgress):
         log.info("secure join progress %s for contact %s", event.progress, event.contact_id)
         if int(event.progress) == 1000:
-            _pool.submit(_welcome, bot, accid, int(event.contact_id))
+            _submit_welcome(bot, accid, int(event.contact_id))
         return
     # Preserve more diagnostic context, but sanitize before deduplication or logging.
     text = admin.redact_log(str(getattr(event, "msg", "")))[:2000]
@@ -629,7 +689,43 @@ def on_app_update(bot: Any, accid: int, event: Any) -> None:
         return
     if not chat.ready():
         chat.bind(bot, accid)
-    _pool.submit(miniapp.on_status_update, int(event.msg_id))
+    msg_id = int(event.msg_id)
+    with state.lock:
+        entry = miniapp._instance(msg_id)
+        if entry:
+            entry["active"] = time.time()  # an overflowed event remains eligible for the next sweep
+        owner = bool(entry and admin.is_admin(str(entry.get("addr") or "")))
+    slots, pool = (_owner_event_slots, _owner_event_pool) if owner else (_app_event_slots, _app_event_pool)
+    with _app_event_lock:
+        if msg_id in _app_events_pending:
+            _app_events_pending[msg_id] = True
+            return
+        if not slots.acquire(blocking=False):
+            return  # the periodic sweep re-reads the durable update later
+        _app_events_pending[msg_id] = False
+    def dispatch() -> None:
+        removed = False
+        try:
+            for _ in range(4):
+                miniapp.on_status_update(msg_id)
+                with _app_event_lock:
+                    if not _app_events_pending.get(msg_id):
+                        _app_events_pending.pop(msg_id, None)
+                        removed = True
+                        break
+                    _app_events_pending[msg_id] = False
+        finally:
+            if not removed:
+                with _app_event_lock:
+                    _app_events_pending.pop(msg_id, None)
+            slots.release()
+    try:
+        pool.submit(dispatch)
+    except Exception:
+        with _app_event_lock:
+            _app_events_pending.pop(msg_id, None)
+        slots.release()
+        raise
 
 
 @cli.on(events.RawEvent(func=lambda event: isinstance(event, (EventTypeWebxdcRealtimeAdvertisementReceived, EventTypeWebxdcRealtimeData))))
@@ -721,12 +817,13 @@ def on_start(bot: Any, args: Any) -> None:
         log.warning("bot profile status could not be updated (%s)", type(exc).__name__)
     links.set_bot_address(chat.self_address())
     state.load()
+    access.restore_policy()
     # Restore the owner's operational pause after a restart; access gates remain separate.
     from . import maintenance
     notice_state = state.data.get("maintenance_notice") or {}
     if (maintenance.get()["active"] or notice_state.get("profile_suffix")) and not maintenance.sync_profile():
         log.warning("maintenance notice profile could not be updated")
-    if not (config.OWNER_ONLY or config.MAINTENANCE_MODE):
+    if not access.preserve_history():
         shutil.rmtree(config.TEMP_ROOT, ignore_errors=True)
     config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     # Never purge pending mail automatically: the owner must explicitly choose
@@ -744,6 +841,8 @@ def on_start(bot: Any, args: Any) -> None:
     _start_cursor(bot, accid)
     _pool.submit(_bootstrap_verified_owner, bot, accid)
     _pool.submit(_bootstrap_email_recovery, bot, accid)
+    if config.INVITE_AUTO_ACCESS:
+        _join_pool.submit(_bootstrap_invitees, bot, accid)
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()
     threading.Thread(target=_watch_updates, name="update-watch", daemon=True).start()
     threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()
