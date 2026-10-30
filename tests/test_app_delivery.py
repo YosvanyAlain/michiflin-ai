@@ -192,6 +192,8 @@ def test_authorized_hello_remembers_actual_app_language(app_state, monkeypatch):
     monkeypatch.setattr(miniapp, "_route", route)
     miniapp.on_status_update(100)
     assert app_state["locale"] == "es"
+    assert app_state["language_observed"] is True
+    assert miniapp.observed_locale(CHAT) == "es"
     assert app_state["serial"] == 1
     route.assert_called_once()
 

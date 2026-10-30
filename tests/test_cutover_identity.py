@@ -195,7 +195,7 @@ def test_bootstrap_delivers_only_to_verified_owner_and_never_duplicates(tmp_path
     monkeypatch.setattr(chat, "_accid", 1)
     monkeypatch.setattr(admin, "is_allowed", lambda _a: True)
     monkeypatch.setattr(identity_guard, "authorized_chat", lambda *_a, **_kw: True)
-    monkeypatch.setattr(app, "_locale", lambda *_a: "es")
+    monkeypatch.setattr(app, "_welcome_locale", lambda *_a: "es")
     welcome = mock.Mock()
     monkeypatch.setattr(miniapp, "welcome", welcome)
     monkeypatch.setattr(miniapp, "latest_instance", lambda _chat: 0)

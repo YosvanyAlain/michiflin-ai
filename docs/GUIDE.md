@@ -18,7 +18,7 @@ This guide walks through the mini app and the chat features. For setup and confi
 ## Getting started
 
 1. Open the bot's private invitation in Delta Chat and complete the encrypted SecureJoin if the operator has enabled automatic invitation access. Old allow-list entries do not grant access. Do not publish or forward the invitation without the owner's permission.
-2. The bot sends one mini app and welcomes you in Spanish and English; tap **Start** to open it. The first time, a brief introduction shows the tabs and how answers arrive (you can watch it again from **How it works**). You need not type `/app` to join. If you later lose the app, `/app` can request a fresh copy. Pin the chat or keep the app message at hand.
+2. The bot sends one mini app with one welcome. When your language is not known yet, the same message includes short Spanish and English instructions. Tap **Download** if shown, then **Start** or the app icon to open it. The interface follows the device language or your chosen setting. A brief introduction explains the tabs and how answers arrive; you can replay it from **How it works**. No command is needed to join. If you later lose the app, `/app` can request a fresh copy. Pin the chat or keep the app message at hand.
 3. Use the app for everything. Every action is sent to the bot as a small message inside the same chat, and the answer comes back to the app, usually within a few seconds to a couple of minutes.
 
 You can close the app at any time: pending work completes and shows up when you return. The indicator at the top shows requests in progress, and a request with no answer after a few minutes is marked so you can retry it.
