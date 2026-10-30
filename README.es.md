@@ -73,13 +73,15 @@ El ajuste **Uso del chat** → *App y comandos* activa el modo clásico, con com
 
 ## Instalación
 
-La configuración y la puesta en marcha se describen en el [README](README.md#configuration). En producción, `OWNER_ONLY=1` exige `OWNER_ADDRESS` y comienza cerrado a otras direcciones, aunque figuren en listas antiguas. Las claves de IA son opcionales. La IA usa proveedores remotos, que reciben las consultas y el código; no incluyas contraseñas ni claves privadas.
+La configuración y la puesta en marcha se describen en el [README](README.md#configuration). En producción, `OWNER_ONLY=1` exige `OWNER_ADDRESS` y admite al dueño y a un administrador de respaldo solo si está configurado explícitamente; las listas antiguas no se reactivan. Las claves de IA son opcionales. La IA usa proveedores remotos, que reciben las consultas y el código; no incluyas contraseñas ni claves privadas.
+
+Si se autoriza la recuperación por correo, una dirección permitida puede cambiar de clave sin demostrar la anterior. **Una dirección suplantada podría obtener sus permisos**, aunque el transporte esté cifrado. Al aceptar la clave nueva se retira la anterior y se guarda el cambio; los trabajos del chat antiguo y el almacenamiento de la miniapp anterior se conservan, pero no se trasladan automáticamente.
 
 ## Control del acceso
 
 En **Administración → Autorizar a una persona**, el dueño puede introducir una dirección y aprobar una sesión para ese invitado con una sola confirmación. También puede abrir primero **Control de acceso · OWNER_ONLY** por 15 minutos, 1, 4 o 24 horas, o hasta el reinicio. La apertura desde el control general exige confirmación y **no autoriza a nadie por sí sola**; la opción individual concede solo a la dirección indicada. Cada invitado se puede revocar. Al cerrar o vencer, los trabajos pendientes de invitados se bloquean sin borrar datos históricos. Una entrega ya pasada al core de correo podría completarse.
 
-También puede consultar `/solo_dueno`, cerrar con `/solo_dueno 1` o solicitar una apertura con `/solo_dueno 0 15`; el código de confirmación vence a los cinco minutos. `/admin_permitir` y `/admin_quitar` actúan sobre una dirección concreta. Los permisos viven solo en memoria: al reiniciar vuelve el valor configurado del entorno; con `OWNER_ONLY=1`, se vuelve al acceso del dueño. Mantenimiento prevalece y no permite abrir invitados. La respuesta visual puede demorarse porque viaja por correo; los invitados deben solicitar una miniapp nueva al ser reautorizados.
+También puede consultar `/solo_dueno`, cerrar con `/solo_dueno 1` o solicitar una apertura con `/solo_dueno 0 15`; el código de confirmación vence a los cinco minutos. `/admin_permitir` y `/admin_quitar` actúan sobre una dirección concreta. Los permisos viven solo en memoria: al reiniciar vuelve el valor configurado del entorno; con `OWNER_ONLY=1`, se vuelve al acceso del dueño y del administrador de respaldo configurado. Mantenimiento prevalece y no permite abrir invitados. La respuesta visual puede demorarse porque viaja por correo; los invitados deben solicitar una miniapp nueva al ser reautorizados.
 
 ## Seguridad y pausa
 

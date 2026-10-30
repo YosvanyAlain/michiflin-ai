@@ -6,7 +6,8 @@
 - Add folder-scoped select-all, long-name scrolling and previewed, atomic bulk renaming with extension-aware modes and undo/redo.
 - Add selective server-side RAR inspection and extraction in a restricted, networkless native worker. Archive bytes and selected output are streamed, passwords and member selections are sealed, and unsafe paths or links are rejected. Include the separately licensed official UnRAR 7.30 beta 2 source; compatibility, isolation and resources are not guaranteed.
 - Cover encrypted RAR4/RAR5, solid and multivolume samples, untrusted paths, unavailable isolation, low resources, real encrypted bridge and synthetic Chromium/WebKit UI. A separate local 600 MiB streaming check does not prove all large archives or physical devices work.
-- The server workspace and RAR scratch files remain temporary, not a backup. Existing identity/access settings, previous miniapps, jobs and original phone files are not migrated or replaced by this update.
+- The server workspace and RAR scratch files remain temporary, not a backup. The bot identity, previous miniapps, jobs and original phone files are not replaced or migrated by this update.
+- Allow one explicitly configured backup administrator. The default verified-contact policy remains unchanged; an independently opted-in email-key recovery mode accepts a new encrypted key for a currently permitted address, retires the prior key and checkpoints the change. This mode is vulnerable to sender impersonation, which encryption alone cannot prevent. Older chat-bound jobs and local WebXDC storage are preserved but are not automatically moved to the replacement chat.
 
 ## 5.4.0
 
