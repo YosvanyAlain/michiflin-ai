@@ -421,7 +421,8 @@ def build_story() -> list:
               p("No pulses Reintentar repetidamente. Revisa primero el chat y la lista de partes: un mensaje aceptado por el servidor puede tardar o llegar después. El bot registra intención y evita algunos reenvíos automáticos, pero un fallo o una copia antigua impiden garantizar ausencia absoluta de duplicados."),
               PageBreak(), chapter("04 · Acceso y datos personales"),
               sub("El dueño y las invitaciones"),
-              p("La instalación productiva mantiene OWNER_ONLY=1. En Administración, el dueño puede aprobar una dirección concreta y abrir una sesión temporal en una sola confirmación; nadie más queda autorizado. También puede abrir primero una sesión y gestionar invitados por separado. Si está activada la protección de identidad, el invitado debe completar SecureJoin. Al cerrar, vencer o reiniciar se bloquean los invitados; no se reactivan permisos históricos."),
+              p("La instalación productiva mantiene OWNER_ONLY=1. Además del dueño, puede existir un administrador de respaldo configurado expresamente. En Administración se puede aprobar una dirección concreta y abrir una sesión temporal en una sola confirmación; nadie más queda autorizado. Al cerrar, vencer o reiniciar se bloquean los invitados; no se reactivan permisos históricos."),
+              note("Recuperación por correo", "Si se habilita expresamente, una dirección permitida puede cambiar de clave sin demostrar la anterior. Esto facilita la recuperación tras cambiar de teléfono, pero una dirección suplantada podría obtener sus permisos aunque la conexión esté cifrada. Se retira la clave anterior tras guardar la nueva. Los trabajos vinculados al chat antiguo y los datos locales de una miniapp previa se conservan, pero no se trasladan automáticamente.", True),
               p("Mantenimiento tiene prioridad. No publiques invitaciones, direcciones internas, códigos de confirmación, tokens, cookies o archivos de estado. La aplicación no debe configurarse como un servicio abierto al público sin revisar expresamente seguridad y términos del proveedor."),
               sub("Qué contiene una copia cifrada"),
               p("El estado puede incluir claves de la cuenta Delta Chat, notas, ajustes, metadatos de trabajos, enlaces y bóvedas cifradas. El respaldo usa una contraseña independiente para cifrar el conjunto y se almacena en un repositorio privado. Trátalo como sensible aunque esté cifrado."),
@@ -462,6 +463,8 @@ def build_story() -> list:
               table(["Nombre", "Función", "Cuidado"], [
                   ["OWNER_ADDRESS", "Identifica al dueño.", "Verifica que sea la cuenta correcta; no sustituye una verificación de claves."],
                   ["OWNER_ONLY", "Arranque privado del servicio.", "Mantener 1 en producción."],
+                  ["OWNER_BACKUP_ADDRESS", "Administrador de respaldo opcional.", "Tiene permisos administrativos; no publicar su dirección."],
+                  ["EMAIL_KEY_RECOVERY", "Permite cambiar la clave de una dirección autorizada.", "0 por defecto; 1 acepta riesgo de suplantación."],
                   ["WEB_SESSION_KEY", "Protege bóvedas personales y sesiones web.", "Estable, larga y respaldada por separado."],
                   ["BOT_EPOCH", "Vincula miniapps y trabajos con el despliegue.", "En modo estricto los trabajos antiguos quedan guardados, sin enviarse."],
                   ["ELTOQUE_API_TOKEN", "Autoriza consultas oficiales de tasas.", "Guardar como secreto; no compartir."],
