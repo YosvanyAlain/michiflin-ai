@@ -749,8 +749,8 @@ _owner_challenges: dict[int, tuple[str, float, int, str]] = {}
 @command("maintenance", owner=True)
 def cmd_maintenance(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     """Emergency text control works even if the owner's mini app is unavailable."""
-    if chat.sender().strip().lower() != config.OWNER_ADDRESS:
-        chat.text(chat_id, tr(locale, "Solo el dueño puede cambiar mantenimiento.", "Only the owner can change maintenance."))
+    if not config.is_owner_admin(chat.sender()):
+        chat.text(chat_id, tr(locale, "Solo los administradores autorizados pueden cambiar mantenimiento.", "Only authorized administrators can change maintenance."))
         return
     from . import maintenance, miniapp
     import threading
@@ -779,8 +779,8 @@ def cmd_maintenance(chat_id: int, args: list[str], rest: str, locale: str) -> No
 
 @command("owner_only", owner=True)
 def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> None:
-    if chat.sender().strip().lower() != config.OWNER_ADDRESS:
-        chat.text(chat_id, tr(locale, "Solo el dueño puede cambiar el acceso.", "Only the owner can change access."))
+    if not config.is_owner_admin(chat.sender()):
+        chat.text(chat_id, tr(locale, "Solo los administradores autorizados pueden cambiar el acceso.", "Only authorized administrators can change access."))
         return
     words = args + rest.split()
     mode = access.snapshot()
@@ -796,7 +796,7 @@ def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> Non
         _owner_challenges.pop(chat_id, None)
         access.set_owner_only(True)
         queue.wake()
-        chat.text(chat_id, tr(locale, "🔒 OWNER_ONLY=1. Solo entra el dueño.", "🔒 OWNER_ONLY=1. Only the owner may enter."))
+        chat.text(chat_id, tr(locale, "🔒 OWNER_ONLY=1. Solo entran el dueño y su administrador de respaldo, si está configurado.", "🔒 OWNER_ONLY=1. Only the owner and configured backup administrator may enter."))
         return
     if value not in NO or mode["maintenance"]:
         chat.text(chat_id, tr(locale, "Modo inválido o mantenimiento activo.", "Invalid mode or maintenance is active."))

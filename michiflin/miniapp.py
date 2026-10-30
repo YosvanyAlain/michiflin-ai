@@ -36,7 +36,7 @@ log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
-    "filekit-store.js", "filekit-worker.js", "filekit.js",
+    "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
     "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
@@ -97,7 +97,7 @@ def _apps() -> dict[str, dict[str, Any]]:
 
 
 def _verified_binding(entry: dict[str, Any]) -> bool:
-    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True
     try:
         return identity_guard.authorized_entry(chat.rpc(), chat.account(), entry)
@@ -129,7 +129,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
     if advisory:
         text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
-    if config.BOT_VERIFIED_CONTACTS_ONLY:
+    if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY:
         def interrupted_or_changed() -> bool:
             return bool((interrupted is not None and interrupted()) or not admin.is_allowed(recipient)
                         or not _verified_binding({"chat": chat_id, "addr": recipient}))
@@ -524,7 +524,7 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 def _status_allowed(instance_id: int) -> bool:
     """Recheck epoch, access grant and verified contact at the actual handoff."""
-    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY):
+    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True  # preserve existing deployments until a deliberate cutover
     try:
         entry = _instance(instance_id)
@@ -537,7 +537,7 @@ def _status_allowed(instance_id: int) -> bool:
 
 
 def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
-    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY:
+    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY:
         return chat.send_update(instance_id, payload, notify, interrupted=lambda: not _status_allowed(instance_id))
     return chat.send_update(instance_id, payload, notify) if notify else chat.send_update(instance_id, payload)
 
@@ -545,7 +545,7 @@ def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None =
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
     if entry is not None and (not access.bound_allowed(entry) or not _verified_binding(entry)):
         return
-    if config.BOT_VERIFIED_CONTACTS_ONLY and entry is None:
+    if (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY) and entry is None:
         current = _instance(instance_id)
         if current is None or not _verified_binding(current):
             return
@@ -561,7 +561,7 @@ WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_s
             "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
-OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 240}
+OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 2100}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control-op")
 _ai_gates: dict[str, threading.Lock] = {}
@@ -612,7 +612,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     # Maintenance does not rewrite manual pauses or grants. Status and the
     # owner's access/maintenance controls remain usable, but work is refused.
-    owner_control = (address == config.OWNER_ADDRESS and op == "admin"
+    owner_control = (config.is_owner_admin(address) and op == "admin"
                      and args.get("do", "") in {"", "allow", "remove", "block", "alerts", "pause_queue", "limit", "unlimit"})
     maintenance_safe = (op in {"hello", "health", "maintenance_notice", "owner_only", "kill_switch"}
                         or (op == "queue" and not args.get("do")) or owner_control)
@@ -1830,8 +1830,8 @@ def op_estado(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("owner_only")
 def op_owner_only(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    if not admin.is_admin(chat.sender()) or chat.sender().strip().lower() != config.OWNER_ADDRESS:
-        raise AppError(tr(locale, "Solo el dueño puede cambiar el acceso.", "Only the owner can change access."))
+    if not admin.is_admin(chat.sender()):
+        raise AppError(tr(locale, "Solo los administradores autorizados pueden cambiar el acceso.", "Only authorized administrators can change access."))
     if "enabled" in args:
         enabled, minutes = args.get("enabled"), args.get("minutes", 60)
         if type(enabled) is not bool or type(minutes) is not int or minutes not in access.DURATIONS:
@@ -1867,14 +1867,19 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
         if chat.ready():
             mode = access.snapshot()
             with state.lock:
-                addresses = ({config.OWNER_ADDRESS} | set(mode["guests"]) if mode["controlled"] else
-                             {config.OWNER_ADDRESS} | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
+                addresses = (config.owner_admin_addresses() | set(mode["guests"]) if mode["controlled"] else
+                             config.owner_admin_addresses() | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
             for address in addresses - {item[0] for item in chats.values()}:
                 if not address or not admin.is_allowed(address):
                     continue
                 try:
-                    contact = int(chat.rpc().lookup_contact_id_by_addr(chat.account(), address) or 0)
-                    target = int(chat.rpc().get_chat_id_by_contact_id(chat.account(), contact) or 0) if contact else 0
+                    target = identity_guard.current_email_chat(address)
+                    if target:
+                        members = chat.rpc().get_chat_contacts(chat.account(), target)
+                        contact = int(members[0]) if len(members) == 1 else 0
+                    else:
+                        contact = int(chat.rpc().lookup_contact_id_by_addr(chat.account(), address) or 0)
+                        target = int(chat.rpc().get_chat_id_by_contact_id(chat.account(), contact) or 0) if contact else 0
                     info = chat.rpc().get_basic_chat_info(chat.account(), target) if target else None
                     kind = getattr(getattr(info, "chat_type", ""), "value", getattr(info, "chat_type", ""))
                     actual = str(chat.rpc().get_contact(chat.account(), contact).address or "").strip().lower()
@@ -1920,8 +1925,8 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
 
 @op("maintenance_notice")
 def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    if not admin.is_admin(chat.sender()) or chat.sender().strip().lower() != config.OWNER_ADDRESS:
-        raise AppError(tr(locale, "Solo el dueño puede editar este aviso.", "Only the owner can edit this notice."))
+    if not admin.is_admin(chat.sender()):
+        raise AppError(tr(locale, "Solo los administradores autorizados pueden editar este aviso.", "Only authorized administrators can edit this notice."))
     if "active" not in args:
         return {"notice": maintenance.get(), "profile_updated": None}
     try:
@@ -1942,8 +1947,8 @@ def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     message = ""
     if action in {"allow_one", "allow", "remove", "block"}:
         if action == "allow_one":
-            if chat.sender().strip().lower() != config.OWNER_ADDRESS:
-                raise AppError(tr(locale, "Solo el dueño puede autorizar a un invitado.", "Only the owner can approve a guest."))
+            if not config.is_owner_admin(chat.sender()):
+                raise AppError(tr(locale, "Solo los administradores autorizados pueden autorizar a un invitado.", "Only authorized administrators can approve a guest."))
             done = admin.grant_one(address, args.get("minutes", 60), str(args.get("nonce") or ""))
         else:
             done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")

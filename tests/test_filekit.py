@@ -79,6 +79,32 @@ class WorkspaceTests(unittest.TestCase):
                 self.add("no-se-guarda")
         self.assertEqual({p.name for p in self.space.objects.iterdir()}, before_objects)
 
+    def test_bulk_rename_is_atomic_can_swap_and_undo(self):
+        self.add("uno.txt", b"uno")
+        self.add("dos.txt", b"dos")
+        self.space.mkdir("", "carpeta")
+        self.space.put("/carpeta", [{"path": "dentro.bin", "source": io.BytesIO(b"dentro")}])
+        self.space.rename_many([{"path": "/uno.txt", "name": "dos.txt"},
+                                {"path": "/dos.txt", "name": "uno.txt"},
+                                {"path": "/carpeta", "name": "otra"}])
+        self.assertEqual(self.read(self.space, "/uno.txt"), b"dos")
+        self.assertEqual(self.read(self.space, "/dos.txt"), b"uno")
+        self.assertEqual(self.read(self.space, "/otra/dentro.bin"), b"dentro")
+        self.assertTrue(self.space.travel(True))
+        self.assertEqual(self.read(self.space, "/uno.txt"), b"uno")
+        self.assertEqual(self.read(self.space, "/carpeta/dentro.bin"), b"dentro")
+        self.assertTrue(self.space.travel(False))
+        before = self.space.view()
+        for changes, code in [
+            ([{"path": "/uno.txt", "name": "repetido"}, {"path": "/dos.txt", "name": "repetido"}], "exists"),
+            ([{"path": "/otra", "name": "x"}, {"path": "/otra/dentro.bin", "name": "y"}], "overlapping_selection"),
+            ([{"path": "/uno.txt", "name": "otro"}, {"path": "/no-existe", "name": "x"}], "missing"),
+            ([{"path": "/uno.txt", "name": "../fuera"}], "invalid_name"),
+        ]:
+            with self.subTest(changes=changes), self.assertRaisesRegex(filekit.FileKitError, code):
+                self.space.rename_many(changes)
+            self.assertEqual(self.space.view(), before)
+
     def test_original_files_symlinks_and_history_cleanup(self):
         original = self.root / "original.txt"
         original.write_text("no cambiar", encoding="utf-8")

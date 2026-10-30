@@ -272,6 +272,40 @@ const FileKitStore = (() => {
     return mutate("rename", (all) => relocate(all, [value], parent(value), false, { [value]: target }));
   }
 
+  // Plan the entire batch before publishing it. Names can be swapped atomically;
+  // a selected parent and child are deliberately refused as ambiguous.
+  async function renameMany(changes) {
+    if (!Array.isArray(changes) || !changes.length || changes.length > 1000) throw new Error("nothing_selected");
+    const targets = new Map();
+    for (const item of changes) {
+      if (!item || typeof item !== "object") throw new Error("invalid_request");
+      const source = path(item.path, false);
+      const target = child(parent(source), item.name);
+      if (targets.has(source)) throw new Error("duplicate_path");
+      targets.set(source, target);
+    }
+    if (roots([...targets.keys()]).length !== targets.size) throw new Error("overlapping_selection");
+    return mutate("rename_many", (all) => {
+      for (const source of targets.keys()) if (!lookup(all, source)) throw new Error("missing");
+      const changed = [...targets].filter(([source, target]) => source !== target);
+      if (!changed.length) return { before: [], after: [] };
+      const before = all.filter((entry) => changed.some(([source]) => within(entry.path, source)));
+      const moved = new Set(before.map((entry) => entry.path));
+      const taken = new Set(all.map((entry) => entry.path).filter((entry) => !moved.has(entry)));
+      const after = [];
+      for (const [source, target] of changed) {
+        for (const entry of before) {
+          if (!within(entry.path, source)) continue;
+          const nextPath = path(target + entry.path.slice(source.length), false);
+          if (taken.has(nextPath)) throw new Error("exists");
+          taken.add(nextPath);
+          after.push({ ...entry, path: nextPath });
+        }
+      }
+      return { before, after };
+    });
+  }
+
   function relocate(all, values, folder, copy, targets = {}) {
     requireDir(all, folder);
     const selected = roots(values);
@@ -356,5 +390,5 @@ const FileKitStore = (() => {
     }
   }
 
-  return { view, get, mkdir, put, write, rename, transfer, remove, undo: () => travel(true), redo: () => travel(false), clearHistory, name, path, parent, base, child };
+  return { view, get, mkdir, put, write, rename, renameMany, transfer, remove, undo: () => travel(true), redo: () => travel(false), clearHistory, name, path, parent, base, child };
 })();

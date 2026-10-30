@@ -29,6 +29,9 @@ jobs:
       BOT_TIMEZONE: America/Havana
       SESSION_DURATION_SECONDS: "19200"
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      # Explicit backup admin; email-based rekeying is a separately opted-in risk.
+      OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
+      EMAIL_KEY_RECOVERY: ${{ vars.EMAIL_KEY_RECOVERY || '0' }}
       OWNER_ONLY: "1"
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
@@ -121,10 +124,18 @@ jobs:
         run: |
           echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg p7zip-full socat iproute2 util-linux gnupg
+          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg p7zip-full socat iproute2 util-linux gnupg
           pip install -r requirements.txt
           pip install -U --pre "yt-dlp[default]"
           echo "PW_VERSION=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_ENV"
+
+      - name: Build the isolated selective RAR reader
+        run: |
+          if python tools/build_unrar_native.py --output "$RUNNER_TEMP/michiflin-unrar/libunrar.so"; then
+            echo "MICHIFLIN_UNRAR_LIB=$RUNNER_TEMP/michiflin-unrar/libunrar.so" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Selective RAR is unavailable this session; the bot will continue without it."
+          fi
 
       - uses: actions/cache@v6
         with:

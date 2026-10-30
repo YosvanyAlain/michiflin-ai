@@ -9,3 +9,5 @@ Include the affected version/commit, impact, and steps to reproduce. Do not test
 ## Scope
 
 This project handles private Delta Chat account state, third-party AI/API credentials, user-supplied URLs, and downloaded files. Treat backups and CI logs as sensitive even when the backup is encrypted.
+
+The default verified-contact mode pins the owner's key. The separately opted-in email-key recovery mode deliberately does not: anyone able to impersonate an already permitted sender may replace its key and gain that sender's privileges. Encryption in transit does not prove ownership of an email address. A configured backup administrator has administrative privileges; leave it unset unless explicitly intended.

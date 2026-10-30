@@ -7,9 +7,10 @@ metadata such as file names remains visible to the encrypted chat's updates.
 from __future__ import annotations
 
 import io
+import json
 from typing import Any
 
-from . import chat, config, filekit, filekit_archive, filekit_crypto, filekit_transfer, mail_profiles, queue, state
+from . import chat, config, filekit, filekit_archive, filekit_crypto, filekit_join_remote, filekit_rar_native, filekit_transfer, mail_profiles, queue, state
 
 _PREVIEW_BYTES = 200_000
 _TEXT_BYTES = 70_000
@@ -76,11 +77,19 @@ def dispatch(chat_id: int, args: dict[str, Any], locale: str) -> dict[str, Any]:
         part_mib = min(settings["part_mb"], 10) if state.get_nauta_strict(sender) else settings["part_mb"]
         return {**view, "key": filekit_crypto.public_key(), "previewBytes": _PREVIEW_BYTES,
                 "textBytes": _TEXT_BYTES, "partMiB": part_mib,
-                "storage": "temporary", "archive": "sandbox_required"}
+                "storage": "temporary", "archive": "sandbox_required", "rarNative": filekit_rar_native.available()}
     if action == "mkdir":
         space.mkdir(_string(args, "folder", ""), _string(args, "name", limit=255))
     elif action == "rename":
         space.rename(_string(args, "path"), _string(args, "name", limit=255))
+    elif action == "rename_many":
+        changes = args.get("changes")
+        if not isinstance(changes, list) or not changes or len(changes) > 1000:
+            raise filekit.FileKitError("nothing_selected")
+        if any(not isinstance(item, dict) or not isinstance(item.get("path"), str) or len(item["path"]) > 4096
+               or not isinstance(item.get("name"), str) or len(item["name"]) > 255 for item in changes):
+            raise filekit.FileKitError("invalid_name")
+        space.rename_many(changes)
     elif action in ("copy", "move"):
         space.transfer(_selected(args), _string(args, "folder", ""), copy=(action == "copy"))
     elif action == "delete":
@@ -141,6 +150,45 @@ def dispatch(chat_id: int, args: dict[str, Any], locale: str) -> dict[str, Any]:
                     raise DeliveryRefused(error)
                 raise filekit.FileKitError("invalid_file")
         return {"job": job["id"]}
+    elif action == "join_raw":
+        try:
+            protected = json.loads(filekit_crypto.decrypt_text(args.get("sealed")))
+        except ValueError:
+            raise filekit.FileKitError("invalid_hash") from None
+        if not isinstance(protected, dict):
+            raise filekit.FileKitError("invalid_hash")
+        filekit_join_remote.join(space, _selected(args), folder=_string(args, "folder", ""),
+                                 name=_string(args, "name", limit=255), sha256=protected.get("sha256", ""))
+        return {"changed": True}
+    elif action == "rar_list":
+        password = _password(args)
+        try:
+            result = filekit_rar_native.inspect(space, _selected(args), _string(args, "first"), password)
+            raw = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(raw) > 300_000:
+                raise filekit.FileKitError("listing_limit")
+            # Member names, sizes and the version token are not persisted in clear.
+            return {"sealed": filekit_crypto.encrypt_reply(args.get("replyKey"), raw)}
+        finally:
+            password = ""
+    elif action == "rar_extract":
+        password = _password(args)
+        try:
+            # Selection and version travel in an encrypted envelope, just like
+            # the password. Never accept a cleartext member list as a fallback.
+            payload = filekit_crypto.decrypt_text(args.get("sealed"))
+            try:
+                selection = json.loads(payload)
+            except ValueError:
+                raise filekit.FileKitError("invalid_path") from None
+            if not isinstance(selection, dict):
+                raise filekit.FileKitError("invalid_path")
+            filekit_rar_native.extract(space, _selected(args), _string(args, "first"), password,
+                                       selection.get("members"), selection.get("version"),
+                                       folder=_string(args, "folder", ""), name=_string(args, "name", limit=255))
+        finally:
+            password = ""
+        return {"changed": True}
     elif action == "archive_create":
         fmt = _string(args, "format", limit=8)
         folder = _string(args, "folder", "")

@@ -50,7 +50,7 @@ def account() -> int:
 def recipient_guard(chat_id: int, address: str, contact_id: int, message: Any = None):
     """Revalidate a strict chat's recipient before each ordinary outbound handoff."""
     previous = getattr(_thread, "recipient_guard", None)
-    if config.BOT_VERIFIED_CONTACTS_ONLY:
+    if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY:
         def allowed(target: int) -> bool:
             try:
                 from . import admin, identity_guard

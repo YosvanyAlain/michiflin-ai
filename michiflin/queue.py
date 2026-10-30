@@ -313,7 +313,7 @@ def _verified_target(job: dict[str, Any]) -> bool:
     """Revalidate a persisted job's target before any outbound delivery."""
     if not access.job_allowed(job):
         return False
-    if not config.BOT_VERIFIED_CONTACTS_ONLY:
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True
     try:
         address = str(job.get("addr") or "").strip().lower()

@@ -41,17 +41,25 @@ def error_text(code: str, locale: str) -> str:
         "missing": ("El elemento ya no está disponible o no te pertenece.", "The item is unavailable or does not belong to you."),
         "content_missing": ("Los datos ya no están disponibles en este servidor temporal.", "The data is no longer available on this temporary server."),
         "nothing_selected": ("Selecciona al menos un elemento.", "Select at least one item."),
+        "overlapping_selection": ("Una carpeta y su contenido no pueden renombrarse a la vez; selecciona solo uno de ellos.",
+                                  "A folder and its contents cannot be renamed together; select only one."),
         "inside_source": ("No se puede mover o copiar una carpeta dentro de sí misma.", "A folder cannot be moved or copied inside itself."),
         "source_changed": ("El archivo cambió durante la copia; no se guardó nada.", "The file changed during copying; nothing was saved."),
         "integrity_missing": ("La descarga antigua no tiene huellas suficientes para verificar sus partes; no se copió.", "The older download lacks enough hashes to verify its parts; it was not copied."),
+        "join_parts": ("Selecciona partes .001, .002… del mismo archivo y de la misma carpeta.", "Select .001, .002… parts of the same file in the same folder."),
+        "join_missing_parts": ("Falta una parte numerada o el conjunto no empieza por .001; no se guardó nada.", "A numbered part is missing or the set does not start at .001; nothing was saved."),
+        "invalid_hash": ("La huella SHA-256 debe tener 64 caracteres hexadecimales.", "The SHA-256 fingerprint must contain 64 hexadecimal characters."),
+        "join_mismatch": ("Las partes cambiaron o la huella no coincide; no se guardó nada.", "The parts changed or the fingerprint does not match; nothing was saved."),
         "edit_conflict": ("El archivo cambió en otra ventana; vuelve a abrirlo antes de guardar.", "The file changed in another window; reopen it before saving."),
         "text_limit": ("Este texto supera 70.000 bytes; usa una copia local para editarlo.", "This text exceeds 70,000 bytes; use a local copy to edit it."),
         "preview_limit": ("La previsualización remota admite hasta 200.000 bytes; envía una copia al chat para abrir este archivo.", "Remote preview supports up to 200,000 bytes; send a copy to the chat to open this file."),
         "binary_not_text": ("Este archivo no parece texto UTF-8 y no se modificó.", "This file does not appear to be UTF-8 text and was not modified."),
         "disk_full": ("No hay espacio seguro suficiente en el servidor.", "There is not enough safe free space on the server."),
         "input_limit": ("Los archivos superan la memoria o el tamaño disponible para esta operación.", "The files exceed the available memory or size for this operation."),
-        "output_limit": ("El contenido extraído supera la memoria disponible; no se guardó nada.", "Extracted content exceeds available memory; nothing was saved."),
+        "output_limit": ("El contenido supera los límites de tamaño o memoria; no se guardó nada.", "The content exceeds size or memory limits; nothing was saved."),
         "wrong_password": ("Contraseña incorrecta o archivo cifrado incompatible.", "Wrong password or incompatible encrypted archive."),
+        "wrong_password_or_corrupt": ("La contraseña es incorrecta o el contenido cifrado está dañado; no se guardó nada.",
+                                      "The password is wrong or the encrypted data is damaged; nothing was saved."),
         "archive_failed": ("No se pudo procesar el archivo; comprueba el formato, la contraseña y todas las partes.", "Could not process the archive; check the format, password and all parts."),
         "unsafe_path": ("El comprimido contiene una ruta insegura; no se extrajo.", "The archive contains an unsafe path; nothing was extracted."),
         "unsafe_link": ("El comprimido contiene un enlace no admitido; no se extrajo.", "The archive contains an unsupported link; nothing was extracted."),
@@ -462,6 +470,47 @@ class Workspace:
         if target == path:
             return
         self._transaction("rename", lambda all_entries: self._relocate(all_entries, [path], folder, False, {path: target}))
+
+    def rename_many(self, changes: list[dict[str, str]]) -> None:
+        """Rename disjoint roots in one transaction, including atomic name swaps.
+
+        Existing descendants move with a directory. Reject ambiguous nested
+        selections and collisions before touching any entry or history.
+        """
+        if not isinstance(changes, list) or not changes or len(changes) > 1000:
+            raise FileKitError("nothing_selected")
+        targets: dict[str, str] = {}
+        for item in changes:
+            if not isinstance(item, dict):
+                raise FileKitError("invalid_request")
+            source = _path(item.get("path"), root=False)
+            target = _child(_parent(source), item.get("name"))
+            if source in targets:
+                raise FileKitError("duplicate_path")
+            targets[source] = target
+        if len(_roots(list(targets))) != len(targets):
+            raise FileKitError("overlapping_selection")
+
+        def plan(all_entries: dict[str, dict]) -> tuple[list, list]:
+            if any(source not in all_entries for source in targets):
+                raise FileKitError("missing")
+            changed = {source: target for source, target in targets.items() if source != target}
+            if not changed:
+                return [], []
+            before = [entry for path, entry in all_entries.items() if any(_within(path, source) for source in changed)]
+            taken = set(all_entries).difference(entry["path"] for entry in before)
+            after = []
+            for source, target in changed.items():
+                for entry in before:
+                    if not _within(entry["path"], source):
+                        continue
+                    next_path = _path(target + entry["path"][len(source):], root=False)
+                    if next_path in taken:
+                        raise FileKitError("exists")
+                    taken.add(next_path)
+                    after.append({**entry, "path": next_path})
+            return before, after
+        self._transaction("rename_many", plan)
 
     def transfer(self, values: list[str], folder: str, copy: bool) -> None:
         folder = _path(folder)

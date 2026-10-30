@@ -14,6 +14,8 @@ downloads/
 # Corresponding source archives for the separately licensed offline 7-Zip engine.
 !webxdc/vendor/7zip/source-7zip-26.05.tar.gz
 !webxdc/vendor/7zip/source-wrapper-26.5.0.tar.gz
+# Source package for the separately licensed native RAR unpacker.
+!vendor/unrar/unrarsrc-7.3.2.tar.gz
 *.pem
 *.key
 
@@ -23,3 +25,4 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 tmp/
+/rar-test-*/

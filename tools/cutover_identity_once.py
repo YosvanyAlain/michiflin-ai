@@ -82,17 +82,21 @@ def unpack_bundle(blob: bytes, password: str, path: Path) -> dict[str, Any]:
 
 @contextmanager
 def strict_owner(address: str, fingerprint: str) -> Iterator[None]:
-    previous = (config.BOT_VERIFIED_CONTACTS_ONLY, config.OWNER_ADDRESS, config.OWNER_PGP_FINGERPRINT)
+    previous = (config.BOT_VERIFIED_CONTACTS_ONLY, config.OWNER_ADDRESS, config.OWNER_PGP_FINGERPRINT,
+                config.EMAIL_KEY_RECOVERY)
     config.BOT_VERIFIED_CONTACTS_ONLY = True
     config.OWNER_ADDRESS = address
     config.OWNER_PGP_FINGERPRINT = fingerprint
+    config.EMAIL_KEY_RECOVERY = False  # a new identity cutover always needs a real pin
     try:
         yield
     finally:
-        config.BOT_VERIFIED_CONTACTS_ONLY, config.OWNER_ADDRESS, config.OWNER_PGP_FINGERPRINT = previous
+        (config.BOT_VERIFIED_CONTACTS_ONLY, config.OWNER_ADDRESS, config.OWNER_PGP_FINGERPRINT,
+         config.EMAIL_KEY_RECOVERY) = previous
 
 
-def validate_candidate(path: Path, metadata: dict[str, Any], expected_owner: str, *, require_probe: bool = True) -> dict[str, Any]:
+def validate_candidate(path: Path, metadata: dict[str, Any], expected_owner: str, *,
+                       require_probe: bool = True, allow_owner_rotation: bool = False) -> dict[str, Any]:
     expected_owner = str(expected_owner or "").strip().casefold()
     observed_owner = str(metadata.get("owner_address") or "").strip().casefold()
     owner_fp = identity_guard.normalize_fingerprint(metadata.get("owner_fingerprint", ""))
@@ -104,6 +108,13 @@ def validate_candidate(path: Path, metadata: dict[str, Any], expected_owner: str
     candidate = relay.identity(path)
     if len(candidate["transports"]) != 1 or candidate["fingerprint"].upper() != bot_fp:
         raise CutoverError("candidate identity does not match the confirmed key")
+    # For an already sealed deployment only, the owner explicitly may allow
+    # email-based key changes. Keep validating the bot's own identity and the
+    # private seal, but do not require the phone's obsolete key to survive.
+    if allow_owner_rotation:
+        if require_probe:
+            raise CutoverError("new identity cutovers still require a verified owner probe")
+        return candidate
     with strict_owner(expected_owner, owner_fp), relay.account_rpc(path / "accounts") as rpc:
         account = relay.only_account(rpc)
         if not identity_guard.authorized_chat(rpc, account, owner_chat, expected_owner):
@@ -338,7 +349,8 @@ def activate(path: Path, storage: Any, expected_owner: str) -> dict[str, Any] | 
     metadata = {"verified": True, "owner_address": marker.get("owner_address"),
                 "owner_fingerprint": marker.get("owner_fingerprint"), "bot_fingerprint": marker.get("bot_fingerprint"),
                 "chat_id": marker.get("owner_chat")}
-    validate_candidate(path, metadata, expected_owner, require_probe=False)
+    validate_candidate(path, metadata, expected_owner, require_probe=False,
+                       allow_owner_rotation=config.EMAIL_KEY_RECOVERY)
     return marker
 
 

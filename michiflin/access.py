@@ -71,7 +71,7 @@ def open_one_guest(address: str, minutes: int, nonce: str) -> int | None:
     """Open a session and grant only this address in one atomic transition."""
     global _controlled, _owner_only, _deadline, _revision, _nonce
     address = (address or "").strip().lower()
-    if not address or address == config.OWNER_ADDRESS or type(minutes) is not int or minutes not in DURATIONS:
+    if not address or config.is_owner_admin(address) or type(minutes) is not int or minutes not in DURATIONS:
         return None
     with _lock:
         _refresh_locked()
@@ -102,7 +102,7 @@ def rollback_one_guest(address: str, expected_revision: int) -> None:
 
 def allow_guest(address: str, expected_revision: int) -> bool:
     address = (address or "").strip().lower()
-    if not address or address == config.OWNER_ADDRESS:
+    if not address or config.is_owner_admin(address):
         return False
     with _lock:
         _refresh_locked()
@@ -118,7 +118,7 @@ def revoke_guest(address: str) -> bool:
     address = (address or "").strip().lower()
     with _lock:
         _refresh_locked()
-        if not _controlled or address == config.OWNER_ADDRESS:
+        if not _controlled or config.is_owner_admin(address):
             return False
         _guests.pop(address, None)
         _revision += 1  # also invalidate a still-pending grant of this address
@@ -129,7 +129,7 @@ def service_allowed(address: str) -> bool:
     address = (address or "").strip().lower()
     with _lock:
         _refresh_locked()
-        if address and address == config.OWNER_ADDRESS:
+        if config.is_owner_admin(address):
             return True
         if config.MAINTENANCE_MODE or (_owner_only if _controlled else config.OWNER_ONLY):
             return False
@@ -140,7 +140,7 @@ def revision(address: str) -> int:
     address = (address or "").strip().lower()
     with _lock:
         _refresh_locked()
-        if address == config.OWNER_ADDRESS:
+        if config.is_owner_admin(address):
             return 0
         # Independent per-grant revisions keep revoking one guest from interrupting others.
         return int(_guests.get(address, "0"), 16) if _controlled else _revision
@@ -160,7 +160,7 @@ def bound_allowed(item: dict[str, Any]) -> bool:
         _refresh_locked()
         if not service_allowed(address):
             return False
-        if _controlled and address != config.OWNER_ADDRESS:
+        if _controlled and not config.is_owner_admin(address):
             stamp = _guests.get(address, "")
             return bool(stamp) and item.get("access_session") == stamp
         return True

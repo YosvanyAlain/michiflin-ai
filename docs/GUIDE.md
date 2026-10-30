@@ -154,7 +154,7 @@ Reactions on your message show the state: ⏳ while working, then ✅ or ❌.
 
 ## File kit and joining parts
 
-Open **Downloads → File kit** for local offline copies or the authorized user's temporary server workspace. The tree supports folders, multiple selection, rename, copy, move, delete and undo/redo. It creates ZIP/7z and opens supported ZIP/7z/RAR variants. Archive processing is bounded by memory and the remote sandbox must be available. Originals on your phone are not changed. Read the [detailed bilingual guide](FILE_KIT.md) for import drafts, sizes, privacy and storage limitations.
+Open **Downloads → File kit** for local offline copies or the authorized user's temporary server workspace. The tree supports folder select-all, previewed bulk rename, copy, move, delete, long-name scrolling and undo/redo. The joiner is integrated; raw numbered parts can also be streamed together on the server. ZIP/7z and compatible RAR variants can be opened; the server RAR reader can list and extract selected files in a restricted sandbox. Original phone files are not changed. Resources, variants and temporary storage have real limits; see the [detailed bilingual guide](FILE_KIT.md).
 
 The existing **Join parts** tool is inside the kit and can load selected local copies or files you choose from the device. The screenshots below show an earlier navigation layout.
 
