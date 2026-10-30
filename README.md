@@ -35,9 +35,9 @@
   <img src="docs/media/en/clip-tour.gif" width="260" alt="Mini app tour">
   <img src="docs/media/en/clip-web.gif" width="260" alt="Searching and reading a page">
 </p>
-<p align="center"><sub>Tour (<a href="docs/media/en/clip-tour.mp4">MP4</a>) · Search and read (<a href="docs/media/en/clip-web.mp4">MP4</a>)</sub></p>
+<p align="center"><sub>Updated 5.5 tour with synthetic data (<a href="docs/media/en/clip-tour.mp4">MP4</a>) · Search and read (<a href="docs/media/en/clip-web.mp4">MP4</a>)</sub></p>
 
-The app is sent by the bot and talks to it through WebXDC updates, so it works wherever Delta Chat works, with no internet access of its own.
+The bot sends a WebXDC app bound to the authorized chat. The interface exchanges updates through Delta Chat; operations that need the server wait for the bot and can be unavailable offline. The tour uses synthetic examples and does not represent a physical-device test.
 
 | Tab | What it does |
 |---|---|
@@ -45,7 +45,7 @@ The app is sent by the bot and talks to it through WebXDC updates, so it works w
 | **AI** | Unified agent with no-quota or AI/API modes, image studio and provider/category model cards |
 | **Web** | Results from the selected engine, reader view, history, PDF, screenshot and download actions |
 | **Apps** | YouTube, translator, rates, weather, news, utilities, status and administration |
-| **Downloads** | Download queue plus a separate saved-links section with reader, screenshot and download actions |
+| **Downloads** | Queue, saved links and the integrated file kit: local copies, temporary server workspace, bulk operations, archives and parts joining |
 | **Settings** | App language and theme, Nauta strict and kill switch, bot settings and data cleanup |
 
 The app follows the device language (Spanish or English) and theme, and adapts from phones to desktop.
@@ -186,6 +186,14 @@ The current GitHub Actions deployment is temporary. GitHub says hosted Actions s
 ## Owner's manual
 
 The [Spanish owner and developer manual](docs/Manual_Michiflin.pdf) covers operation, source structure, limitations and migration. To rebuild it from source, install the DejaVu fonts and `pip install -r docs/requirements-manual.txt`, then run `python tools/build_manual.py`. Its screenshots use synthetic data and are labelled as real or simulated.
+
+## Collaborations, suggestions and hosting support
+
+Michiflin is an independent project. Thoughtful suggestions, testing reports, accessibility improvements, documentation, code review and help finding appropriate hosting are welcome. Please use the repository's [Issues](https://github.com/YosvanyAlain/michiflin-ai/issues) for non-sensitive proposals: describe the goal, platform, steps and expected result, and mark synthetic examples as such. Do **not** post invitations, account addresses, tokens, passwords, user files, private keys or state backups. For a security issue, use GitHub's private vulnerability reporting if enabled, or an already established private channel; do not disclose exploit details publicly before coordination.
+
+A hosting offer should explain the operating system, resource and traffic limits, availability, expected costs, backup and privacy practices, isolation and who administers it. A change of host requires an independently verified backup and a planned single-instance handover; no credentials should be handed over before a trust and security review. Offers and contributions require the owner's explicit agreement and remain subject to [LICENSE](LICENSE).
+
+No official payment link, account or cryptocurrency address is published here. If you would like to support the project financially, discuss a verified method with the owner first; do not send money to an unverified address.
 
 ## License
 

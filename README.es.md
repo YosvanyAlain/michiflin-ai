@@ -34,7 +34,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/clip-tour.gif" width="260" alt="Recorrido por la miniapp">
   <img src="docs/media/es/clip-web.gif" width="260" alt="Buscar y leer una página">
 </p>
-<p align="center"><sub>Recorrido (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>)</sub></p>
+<p align="center"><sub>Recorrido 5.5 actualizado con datos sintéticos (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>)</sub></p>
 
 | Pestaña | Para qué sirve |
 |---|---|
@@ -42,7 +42,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 | **IA** | Agente unificado en dos modos, estudio de imágenes y tarjetas de modelos por proveedor y categoría |
 | **Web** | Resultados del buscador elegido, lector, historial, PDF, captura y descarga |
 | **Apps** | YouTube, traductor, tasa, clima, noticias, utilidades, estado y administración |
-| **Descargas** | Cola de archivos y sección de enlaces guardados con lector, captura y descarga |
+| **Descargas** | Cola, enlaces guardados y kit integrado: copias locales, servidor temporal, selección, acciones masivas, comprimidos y unión |
 | **Ajustes** | Idioma, tema, buscador, modo Nauta, Kill switch, ajustes del bot y borrado de datos del dispositivo |
 
 <p align="center">
@@ -52,18 +52,16 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/settings.png" width="200" alt="Ajustes">
 </p>
 
-## Descargas y unir partes
+## Descargas y kit de archivos
 
-<p align="center">
-  <img src="docs/media/es/clip-download.gif" width="260" alt="Iniciar una descarga">
-  <img src="docs/media/es/clip-join.gif" width="260" alt="Unir partes">
-</p>
-<p align="center"><sub>Descarga (<a href="docs/media/es/clip-download.mp4">MP4</a>, acelerado) · Unir partes (<a href="docs/media/es/clip-join.mp4">MP4</a>)</sub></p>
+<p align="center"><img src="docs/media/es/clip-download.gif" width="260" alt="Iniciar una descarga"></p>
+<p align="center"><sub>Descarga de ejemplo (<a href="docs/media/es/clip-download.mp4">MP4</a>, acelerado). El unidor antiguo ahora está integrado en el kit; el vídeo antiguo de unión ya no representa la interfaz actual.</sub></p>
 
-- Los videos y audios largos llegan como segmentos `Película (1-5).mp4`; cada uno se reproduce solo y lleva su número dentro.
-- Los demás archivos llegan como partes `.001`, `.002`…; la última trae la huella SHA-256 del archivo completo.
-- En iPhone y iPad, **Unir partes** las ordena, las junta, comprueba la huella y exporta el archivo a la galería, Archivos u otro chat. Los segmentos MP4, M4A y MP3 se unen en un solo archivo reproducible.
-- Guarda las partes en **Archivos**, no en Fotos: Fotos les cambia el nombre y puede recodificarlas.
+En **Descargas → Kit de archivos** trabaja con copias de Android o iOS: importa, organiza, selecciona por carpeta, previsualiza renombrados masivos y deshaz cambios. Los nombres largos pueden recorrerse. Las copias locales pertenecen a esa instancia y el sistema puede recuperarlas; los originales del teléfono no se cambian automáticamente.
+
+El unidor integrado ordena partes numeradas y comprueba huecos conocidos. Si conoces la huella SHA-256 original, puedes comprobarla; sin el total o la huella no se puede saber siempre si falta la última parte. La unión de partes crudas también puede ejecutarse por bloques en el servidor temporal para reconstruir un RAR. La unión/remux de medios compatibles permanece en el dispositivo. ZIP y 7z están disponibles con los límites de la plataforma; el servidor puede listar RAR compatibles, incluso cifrados y multipartes, y extraer únicamente lo seleccionado cuando el motor y los recursos lo permiten. Los archivos sólidos pueden requerir procesar datos anteriores. Consulta [pasos, privacidad y límites](docs/FILE_KIT.md).
+
+El servidor de trabajo **no es almacenamiento permanente ni está incluido en el respaldo del estado**. Exporta y verifica las copias importantes; guardar piezas en Archivos, y no en Fotos, ayuda a conservar sus nombres. Las pruebas automatizadas con Chromium y WebKit no sustituyen una prueba en teléfonos físicos.
 
 ## Uso del chat
 
@@ -100,6 +98,14 @@ El despliegue actual en GitHub Actions es **temporal**: usarlo como servidor per
 ## Manual del propietario
 
 La [guía integral en PDF](docs/Manual_Michiflin.pdf) explica el uso, el código, los límites y la migración. Para regenerarla desde el código fuente se necesitan las fuentes DejaVu instaladas y `pip install -r docs/requirements-manual.txt`; después, ejecuta `python tools/build_manual.py`. Las capturas incluidas en esa guía usan datos sintéticos y están identificadas como reales o simuladas.
+
+## Colaboraciones, sugerencias y apoyo de hospedaje
+
+Michiflin es un proyecto independiente. Son bienvenidas propuestas, pruebas, informes de accesibilidad, mejoras de documentación, revisión del código y ayuda para encontrar un hospedaje adecuado. Usa los [Issues del repositorio](https://github.com/YosvanyAlain/michiflin-ai/issues) para ideas que no sean sensibles: explica objetivo, plataforma, pasos y resultado esperado, e identifica los ejemplos simulados. **No publiques invitaciones, direcciones de cuentas, tokens, contraseñas, archivos de usuarios, claves privadas ni respaldos de estado.** Para fallos de seguridad utiliza la notificación privada de GitHub si está habilitada o un canal privado ya establecido; no difundas detalles de explotación antes de coordinar.
+
+Una oferta de hospedaje debe detallar sistema operativo, recursos y tráfico, disponibilidad, costes, copias, privacidad, aislamiento y administración. El traslado requiere una copia verificada y un relevo planificado con una sola instancia; no entregues credenciales antes de una revisión de confianza y seguridad. Las colaboraciones y ofertas necesitan el acuerdo expreso del autor y están sujetas a [LICENSE](LICENSE).
+
+No se publica una cuenta, enlace de pago o dirección de criptomonedas oficial. Si deseas hacer una donación, acuerda primero con el autor un método verificado; no envíes dinero a direcciones no comprobadas.
 
 ## Licencia
 

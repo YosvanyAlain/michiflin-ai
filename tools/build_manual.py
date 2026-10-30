@@ -203,7 +203,7 @@ class Manual(BaseDocTemplate):
             canvas.setFont("Body", 9)
             canvas.setFillColor(colors.HexColor("#bfd5d0"))
             canvas.drawString(59, 255, "Guía técnica y práctica en español")
-            canvas.drawString(59, 237, "29 de octubre de 2026 · versión de referencia")
+            canvas.drawString(59, 237, "30 de octubre de 2026 · edición 5.5")
             canvas.setFont("Body", 8)
             canvas.drawString(59, 77, "El ZIP de código y este PDF son entregas separadas.")
         else:
@@ -262,6 +262,18 @@ def screenshot_51() -> Table:
     return result
 
 
+def screenshot_kit_55() -> Table:
+    paths = (ROOT / "docs/manual-media/kit-5-5-simulado.png", ROOT / "docs/manual-media/rar-selectivo-5-5-simulado.png")
+    images = [Image(str(path), width=4.2 * cm, height=9.09 * cm) for path in paths]
+    result = Table([images, [p("Kit integrado · archivos de ejemplo", "CaptionM"),
+                              p("RAR selectivo · prueba simulada", "CaptionM")]],
+                   colWidths=[BODY_W / 2, BODY_W / 2], hAlign="CENTER")
+    result.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                ("ALIGN", (0, 0), (-1, -1), "CENTER")]))
+    result.spaceAfter = 12
+    return result
+
+
 # Every top-level Python component is named and explained in Spanish below.
 MODULES = {
     "__init__.py": "Identidad y versión del paquete Python. Es la puerta de entrada compartida de los módulos.",
@@ -290,7 +302,7 @@ MODULES = {
     "filekit_rar_worker.py": "Lectura nativa de RAR por bloques dentro del entorno restringido.",
     "filekit_transfer.py": "Importación explícita por adjuntos y copia de trabajos verificados sin borrar los originales.",
     "files.py": "Examina enlaces directos, detecta tamaño y formato, descarga con Range y protege reanudaciones.",
-    "identity_guard.py": "Verificación opcional de contactos y huella pública del dueño para un corte de identidad nuevo.",
+    "identity_guard.py": "Verifica chat, clave y permisos; recuperación por correo solo si se activa, con riesgo de suplantación y registro de claves retiradas.",
     "images.py": "Selecciona proveedores y modelos de imagen, valida respuestas y genera un archivo compacto.",
     "links.py": "Representa enlaces con comandos cortos para navegar desde el chat.",
     "live_web.py": "Coordina el navegador remoto efímero y su canal de tiempo real en chats cifrados individuales.",
@@ -346,7 +358,7 @@ def module_inventory() -> list[list[str]]:
 def build_story() -> list:
     story: list = [Spacer(1, 1), PageBreak(), chapter("Cómo aprovechar esta guía")]
     story += [p("Este manual es un mapa para usar el bot y también para comprenderlo, repararlo y trasladarlo. No necesitas memorizarlo: empieza por la operación diaria; usa la referencia de archivos cuando vayas a cambiar código."),
-              note("Dos entregas distintas", "El ZIP contiene el código fuente real, sus pruebas y archivos de configuración de ejemplo. Este PDF explica qué hace cada parte y cómo reproducirla. Las capturas y vídeos ornamentales de docs/media no forman parte del ZIP de correo; el PDF se entrega aparte."),
+              note("Dos entregas distintas", "El ZIP de fuente contiene archivos rastreados, pruebas, documentación y un manifiesto SHA-256. No contiene cuentas, secretos, invitaciones ni estado privado. Este PDF explica el uso y la operación; ninguna copia de código sustituye al respaldo cifrado de la cuenta."),
               p("El sistema integra Delta Chat, una miniapp WebXDC, un servicio Python y proveedores externos. El proyecto no controla la disponibilidad ni el precio de terceros. La propia aplicación puede cambiar; consulta los textos visibles y el código de la versión que estés usando."),
               sub("Leyenda honesta"),
               bullet("Comprobado: una prueba concreta terminó correctamente en el entorno indicado."),
@@ -384,7 +396,7 @@ def build_story() -> list:
               p("El agente unificado ofrece dos modos: sin cuota de modelos y con IA/API. El primero usa herramientas y fuentes sin activar imágenes por sí solo; el segundo puede elegir un modelo o usar selección automática y realizar hasta cuatro pasos. Los adjuntos compatibles van directamente al modelo elegido con el contexto reciente. Verifica el resultado y el coste real del proveedor."),
               p("La conversación automática anterior conserva una entrada separada de historial. Los catálogos de texto e imagen se abren por proveedor; los modelos de texto también se agrupan por categoría. La disponibilidad real puede cambiar."),
               sub("Identidad nueva y verificación"),
-              p("Para una identidad realmente nueva hay que crear otra cuenta y otras claves; cambiar solo el relay o una época no basta. La protección compara la huella pública principal del dueño obtenida por un canal independiente, exige chat cifrado y rechaza mensajes no firmados o no cifrados. El corte solo acepta una cuenta ya verificada, conserva primero una copia cifrada y comprobada de los datos presentes, separa los vínculos antiguos y sella la nueva identidad contra retrocesos silenciosos. Los trabajos viejos quedan guardados, pero no se reanudan con identificadores antiguos. La miniapp local no migra automáticamente. La exportación independiente del historial conserva mensajes y adjuntos disponibles, pero no recrea la cuenta ni sus claves; consulta docs/RECOVER_OWNER_HISTORY.md. Los acuses de lectura reales dependen de los clientes y la red, y no prueban que una tarea haya terminado. Nunca guardes una clave privada ni una frase semilla en el ajuste de huella."),
+              p("Para una identidad realmente nueva hay que crear otra cuenta y otras claves; cambiar solo el relay o una época no basta. El modo estricto compara la huella pública principal del dueño obtenida por un canal independiente, exige chat cifrado y rechaza mensajes no autorizados. La recuperación por correo es una excepción opcional: acepta cambios de clave de direcciones autorizadas y, por ello, una suplantación de correo puede obtener sus permisos. El corte solo acepta una cuenta ya verificada, conserva primero una copia cifrada y comprobada de los datos presentes, separa los vínculos antiguos y sella la nueva identidad contra retrocesos silenciosos. Los trabajos viejos quedan guardados, pero no se reanudan con identificadores antiguos. La miniapp local no migra automáticamente. La exportación independiente del historial conserva mensajes y adjuntos disponibles, pero no recrea la cuenta ni sus claves; consulta docs/RECOVER_OWNER_HISTORY.md. Los acuses de lectura reales dependen de los clientes y la red, y no prueban que una tarea haya terminado. Nunca guardes una clave privada ni una frase semilla en el ajuste de huella."),
               sub("Traducción, clima y elTOQUE"),
               p("El traductor no usa cuota de modelos de IA, acepta hasta 4500 caracteres y envía el texto a Google, al LibreTranslate configurado o a Apertium beta. No envíes secretos: los proveedores pueden guardar datos y aplicar límites. Apertium ofrece traducciones orientativas, puede marcar palabras desconocidas con * y no admite todos los pares; si la detección es dudosa, elige el idioma de origen. Clima usa Open-Meteo. Las tasas usan la API autorizada de elTOQUE: una consulta compartida actualiza aproximadamente cada cinco minutos mientras el bot funciona. El banner muestra la antigüedad real; si falla, se muestran únicamente datos guardados con aviso. El historial usa ventanas reales, indica huecos y permite copiar el enlace oficial. Los códigos originales se conservan; ECU se presenta EUR por comparación con el sitio, sin alias documentado en la API. BTC y USDT (TRC20) se expresan por dólar equivalente; TRX por unidad. Las conversiones y el escenario están activados por el operador y son cálculos propios, no cotizaciones ni pronósticos de elTOQUE. La autorización para derivados no está confirmada; revisa las condiciones del proveedor o desactívalos."),
               screenshot_51(),
@@ -450,7 +462,7 @@ def build_story() -> list:
               p("Las páginas, archivos y respuestas de modelos se consideran datos, no instrucciones de administración. El navegador y algunas tareas se ejecutan en procesos aislados, con permisos y red restringidos cuando el sistema lo soporta. Ningún sandbox debe tratarse como una garantía absoluta: mantén dependencias al día y revisa su configuración."),
               PageBreak(), chapter("06 · Reconstruir el proyecto desde el ZIP"),
               note("Trabaja primero en una copia", "No ejecutes una segunda instancia con la cuenta productiva. Para aprender o probar, usa una cuenta sintética y carpetas nuevas. No importes la copia privada en una máquina que no controles."),
-              p("El ZIP enviado por Delta Chat se genera a partir de archivos rastreados de un commit e incluye un listado SHA256SUMS.txt. No incluye .git, cuentas, estados, claves ni historiales. Si faltan archivos multimedia de documentación no afecta al código del bot."),
+              p("El ZIP de código se genera a partir de archivos rastreados de un commit e incluye SHA256SUMS.txt. No incluye .git, cuentas, estados, claves ni historiales. Si se verifica desde la carpeta Michiflin-AI, el manifiesto comprueba los archivos de esa carpeta."),
               sub("Paso 1 · Extraer y verificar"),
               code("unzip Michiflin_codigo_fuente.zip -d proyecto\ncd proyecto/Michiflin-AI\nsha256sum -c SHA256SUMS.txt"),
               p("La verificación compara cada archivo con el manifiesto incluido. Protege frente a corrupción accidental, pero si un atacante modificara también el manifiesto necesitarías una huella obtenida por otro canal de confianza."),
@@ -559,15 +571,9 @@ def build_story() -> list:
               ], [106, 212, BODY_W - 318]),
               PageBreak(), chapter("10 · Hospedaje y migración futura"),
               p("Hospedaje significa la máquina y los servicios que mantienen el bot ejecutándose: CPU, memoria, disco, red, sistema operativo y proceso. GitHub Actions arranca máquinas temporales para jobs; no es un disco persistente entre ellos. Usarlo de forma continua puede entrar en conflicto con límites o políticas de la plataforma."),
-              sub("Opciones y decisión"),
-              table(["Opción", "Ventaja", "Límite real"], [
-                  ["Servidor con disco persistente", "JOB_DIR puede sobrevivir a reinicios del proceso.", "Exige una máquina propia o contratada, mantenimiento y copias; no elimina fallos del disco."],
-                  ["MEGA gratis", "Anuncia 20 GB de almacenamiento.", "Necesita cuenta; límites de descarga variables y riesgo de borrado por inactividad. No garantiza una restauración grande a tiempo."],
-                  ["Google Drive gratis", "Hasta 15 GB por cuenta.", "Compartidos con correo y fotos; 12 GiB de cola ocupan casi todo. Una cuenta llena puede afectar Gmail."],
-                  ["Oracle Always Free", "Documenta 20 GB de objetos en cuentas gratuitas elegibles.", "Registro normalmente requiere tarjeta; hay límites y riesgo al terminar el periodo de prueba si se supera el cupo."],
-              ], [120, 172, BODY_W - 292]),
-              p("Estos datos eran los publicados al preparar el manual, el 29 de octubre de 2026; planes, disponibilidad territorial, términos y tarifas pueden cambiar. Ningún servicio se ha contratado ni configurado solo por estar en esta tabla. Un almacén externo además necesita integración, cifrado, comprobación y una prueba real de recuperación antes de poder prometer persistencia."),
-              note("Capacidad no equivale a continuidad", "La cola máxima de 12 GiB ocupa aproximadamente 12,88 GB decimales, antes de otros archivos. Dos copias completas necesitarían unos 25,77 GB, más que los 20 GB anunciados por MEGA. Mantener versiones seguras, transferir cambios y restaurar después de una caída requiere un diseño y una prueba adicionales.", True),
+              sub("Evaluar un hospedaje"),
+              p("Una propuesta de hospedaje debe explicar el sistema operativo, recursos y límites de red, disponibilidad, coste, responsabilidades, aislamiento y política de copias. Verifica las condiciones vigentes con el proveedor antes de contratar. No se ha contratado ni configurado un nuevo servidor por describirlo aquí."),
+              note("Capacidad no equivale a continuidad", "La cola, el estado cifrado y la miniapp son datos diferentes. Antes de migrar, mide lo que realmente existe, preserva los originales y verifica cada copia; un cambio de servidor puede perder los parciales que no se hayan trasladado expresamente.", True),
               sub("Plan de traslado sin perder la identidad"),
               bullet("1. Prepara el destino: Linux, dependencias, espacio para 12 GiB de cola más sistema y copias, red, seguridad y costes revisados."),
               bullet("2. Activa mantenimiento, observa la cola y espera a que las operaciones en curso se detengan o se reconcilien. Recuerda que los envíos ya iniciados pueden terminar."),
@@ -598,7 +604,41 @@ def build_story() -> list:
               bullet("Que cada proveedor de IA sea gratuito, acepte login o mantenga sus modelos disponibles."),
               sub("Cómo interpretar SHA-256"),
               p("Una huella identifica bytes: si la fuente confiable y el archivo recibido tienen la misma huella, es muy improbable una corrupción accidental. Una huella calculada solo después de descargar no prueba por sí misma la autoría, la licencia ni que el servidor remoto fuera honesto."),
-              PageBreak(), chapter("12 · Glosario y fuentes"),
+              PageBreak(), chapter("12 · Tutorial práctico y trucos"),
+              sub("Primeros diez minutos"),
+              bullet("1. Abre la conversación autorizada en Delta Chat. Comprueba que sea el contacto correcto y que el mensaje esté cifrado; no compartas su enlace o código de invitación."),
+              bullet("2. Abre la miniapp más reciente. La introducción y los nombres cambian con el idioma; conserva la instancia anterior porque sus datos locales son independientes."),
+              bullet("3. En Inicio escribe una pregunta sencilla o pega una página pública. Si quieres una respuesta sin cuota de modelos, selecciona ese modo del Agente; en IA/API revisa proveedor, límites y posible coste."),
+              bullet("4. Visita Apps para traducción, clima y tasas. Los datos proceden de servicios externos: consulta la antigüedad y recuerda que las conversiones son cálculos propios, no pronósticos de elTOQUE."),
+              bullet("5. En Descargas observa la cola. Ajusta la calidad y tamaño de parte a tu buzón antes de iniciar; si un envío es incierto, comprueba el chat antes de repetir."),
+              sub("Organiza y comprueba un archivo"),
+              bullet("1. En Descargas, abre Kit de archivos y elige el dispositivo o servidor temporal. Importa una copia de prueba y deja intacto el original del teléfono."),
+              bullet("2. Selecciona uno o varios archivos de la carpeta. Para un renombrado por lotes, revisa la vista previa, extensiones y colisiones; confirma solo lo deseado. Deshacer revierte operaciones compatibles de la sesión."),
+              bullet("3. Si tienes partes numeradas, selecciona la serie, revisa orden y huecos conocidos, e introduce la huella original si la conoces. Sin total ni huella no se puede garantizar que exista la última parte."),
+              bullet("4. Para un RAR grande o cifrado compatible, copia las partes al espacio temporal, abre el archivo en el servidor, suministra la contraseña cuando corresponda, lista el contenido y marca solo las entradas que quieras extraer."),
+              bullet("5. Espera el resultado y verifica o exporta la copia. El espacio remoto puede desaparecer al cambiar el corredor y no está en el respaldo habitual. El procesamiento de archivos sólidos puede requerir leer entradas anteriores."),
+              note("Contraseñas de archivos", "La contraseña y la selección remota usan sobres cifrados, pero el procesamiento tiene lugar en el servidor aislado. No envíes contraseñas en mensajes, capturas o informes; listar nombres visibles no confirma que la contraseña de los datos sea correcta.", True),
+              screenshot_kit_55(),
+              sub("Consejos que evitan pérdidas"),
+              bullet("No confundas guardar una copia en el kit con guardar el original en Fotos o Archivos. Exporta el resultado y comprueba su tamaño o huella antes de borrar nada."),
+              bullet("La unión cruda grande puede hacerse por bloques en el servidor; el remux de medios compatibles permanece local. Un archivo multimedia roto puede requerir herramientas adicionales."),
+              bullet("Mantenimiento suspende trabajos de manera cooperativa y avisa a usuarios autorizados; una llamada o entrega ya iniciada puede terminar. El progreso puede conservarse solo si sus archivos siguen disponibles."),
+              bullet("La recuperación por correo facilita el acceso tras reinstalar, pero disminuye la garantía de identidad. Si se suplanta una dirección autorizada, el atacante podría ocuparla. Desactívala si ese riesgo no es aceptable."),
+              bullet("Actualiza el bot por cambios revisados, no por editar secretos al azar. Si no se reconoce una operación o un proveedor responde con límites, detente y consulta su documentación."),
+              PageBreak(), chapter("13 · Recreación paso a paso"),
+              p("Este orden describe cómo reconstruir y comprender el sistema a partir del código disponible; no pretende certificar la cronología histórica de cada cambio."),
+              bullet("1. Define requisitos y fronteras: chat privado, permisos, cuotas por buzón, sistema operativo de destino y capacidades que dependen de terceros."),
+              bullet("2. Prepara una cuenta desechable y Python. Conecta los eventos de deltachat2/deltabot-cli en bot.py y app.py; conserva la identidad productiva fuera del ensayo."),
+              bullet("3. Implementa configuración, aislamiento de remitentes y estado en config.py, access.py, admin.py, identity_guard.py y state.py. Comprueba permisos tanto al recibir como antes de enviar o ejecutar efectos."),
+              bullet("4. Crea la interfaz HTML/CSS/JavaScript en webxdc/, empaquétala desde miniapp.py y vincula cada instancia al chat y a la sesión. Añade textos paralelos en español e inglés."),
+              bullet("5. Registra operaciones limitadas del puente y mensajes de respuesta; usa identificadores y puntos de control para evitar repeticiones inseguras. Las garantías dependen del transporte."),
+              bullet("6. Añade descarga, validación, división, huellas y cola con files.py y queue.py. Prueba pausa, cancelación, cambios en el origen y envío incierto sin sobrescribir originales."),
+              bullet("7. Integra el kit: archivo local de la instancia, árbol, operaciones reversibles, unión, ZIP/7z y trabajador RAR selectivo aislado. Comprueba rutas, enlaces, límites y permisos; conserva las licencias incluidas."),
+              bullet("8. Conecta búsqueda, lector, traducción, tasas y modelos remotos. Trata los resultados externos como datos no confiables; verifica licencias, términos, tarifas y confidencialidad."),
+              bullet("9. Añade respaldos cifrados, procedimientos de recuperación y pruebas de restauración aisladas. El respaldo de estado no incluye todos los adjuntos ni los parciales de la cola."),
+              bullet("10. Ejecuta las pruebas locales y en CI, revisa seguridad y capturas, inspecciona el diff y solo después coordina una publicación y un relevo con una sola instancia."),
+              note("Fuentes del proyecto", "Usa la copia exacta de código y sus pruebas como referencia. El manual describe el diseño, no autoriza redistribución ni garantiza que dependencias o proveedores conserven sus comportamientos.", True),
+              PageBreak(), chapter("14 · Glosario y fuentes"),
               table(["Término", "Significado práctico"], [
                   ["WebXDC", "Miniapp empaquetada dentro de un mensaje de Delta Chat; cada instancia tiene almacenamiento propio."],
                   ["Runner / corredor", "Máquina que ejecuta un job de GitHub Actions; la alojada por GitHub es temporal."],
@@ -614,11 +654,8 @@ def build_story() -> list:
               p("Documentación del proyecto: README.md, README.es.md y docs/. Las condiciones y capacidades de terceros cambian; consulta siempre las fuentes oficiales antes de contratar, migrar o distribuir contenido."),
               bullet("Delta Chat y WebXDC: https://delta.chat/en/help y https://webxdc.org/docs/"),
               bullet("GitHub runners: https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners"),
-              bullet("MEGA: https://mega.io/storage y https://help.mega.io/plans-storage/space-storage/transfer-quota"),
-              bullet("MEGA inactividad: https://help.mega.io/accounts/create-account/account-expiry · Limitaciones del cliente: https://rclone.org/mega/"),
-              bullet("Google: https://support.google.com/googleone/answer/9312312 y https://support.google.com/drive/answer/6374270"),
-              bullet("Oracle Free: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm"),
-              bullet("Cloudflare R2: https://developers.cloudflare.com/r2/pricing/ · Deezer: https://support.deezer.com/hc/en-gb/articles/360011538897-Deezer-FAQs-For-Developers"),
+              bullet("elTOQUE: https://eltoque.com/api-tasas-de-eltoque-terminos-y-condiciones-de-uso"),
+              bullet("UnRAR: https://www.rarlab.com/rar_add.htm · 7-Zip: https://www.7-zip.org/"),
               note("Tu principio de seguridad", "Conserva código y datos por separado, usa una sola instancia productiva, verifica cada copia y cada destinatario, y no compartas contraseñas, claves, cookies ni frases semilla por chat."),
               Spacer(1, 8), p("FIN DE LA GUÍA · Consulta el ZIP para los archivos completos y el informe de la versión para los resultados y pendientes concretos.", "SmallM")]
     return story
