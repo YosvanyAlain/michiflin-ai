@@ -153,6 +153,31 @@ class FileKitUiTests(unittest.TestCase):
                     self.assertNotIn(digest, sent)
                     self.assertEqual(errors, [])
 
+    def test_fast_rar_reply_keeps_selector_open_on_existing_app(self):
+        # A very fast backend used to open the new selector before the old
+        # sheet's 220 ms close timer, which then erased the new sheet.
+        listing = {"version": "synthetic", "entries": [{"type": "file", "path": "b.txt", "size": 1}], "solid": False}
+        with tempfile.TemporaryDirectory(prefix="filekit-ui-rar-fast-") as temporary, \
+             mock.patch.object(config, "JOB_ROOT", Path(temporary) / "jobs"), \
+             mock.patch.object(config, "MIN_FREE_DISK_BYTES", 0), \
+             mock.patch.object(filekit_rar_native, "available", return_value=True), \
+             mock.patch.object(filekit_rar_native, "inspect", return_value=listing):
+            space = filekit.Workspace("owner@example.org")
+            space.put("", [{"path": "rapido.rar", "source": io.BytesIO(b"synthetic")}])
+            with browser_fixture("es", {"width": 390, "height": 844}, real_filekit=True) as (page, errors):
+                page.locator('.tab[data-tab="downloads"]:visible').click()
+                page.locator('[role=tab][data-key=kit]').click()
+                page.locator('[data-testid=filekit] [role=tab][data-key=remote]').click()
+                page.wait_for_selector('[data-kit-path="/rapido.rar"]')
+                page.locator('[data-kit-path="/rapido.rar"] input').check()
+                page.locator('[data-kit-action=archive-extract]').click()
+                page.locator('[data-kit-action=run-archive]').click()
+                page.wait_for_selector('[data-rar-member="b.txt"]', timeout=30000)
+                page.wait_for_timeout(300)  # prove the preceding close timer did not remove it
+                page.locator('[data-rar-member="b.txt"]').check()
+                self.assertFalse(page.locator('[data-kit-action=rar-extract-selected]').is_disabled())
+                self.assertEqual(errors, [])
+
     @unittest.skipUnless(os.environ.get("MICHIFLIN_SANDBOX_TESTS") == "1" and filekit_rar_native.available(), "native RAR sandbox required")
     def test_remote_rar_selection_and_encrypted_bridge(self):
         engines = ["chromium"] + (["webkit"] if os.environ.get("MICHIFLIN_WEBKIT_TESTS") == "1" else [])
