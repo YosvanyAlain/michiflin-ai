@@ -29,6 +29,10 @@ _cache: OrderedDict[str, str] = OrderedDict()
 _cache_lock = threading.Lock()
 
 
+class BindingCheckpointError(RuntimeError):
+    """A permitted key change could not be durably saved; retry the message."""
+
+
 def normalize_fingerprint(value: str) -> str:
     """Accept a fingerprint with optional whitespace, never arbitrary prose."""
     value = re.sub(r"\s+", "", str(value or "")).upper()
@@ -180,7 +184,7 @@ def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) ->
             if os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1":
                 import state_backup
                 state_backup.save(rotate=False)
-        except Exception:
+        except Exception as exc:
             if previous is None:
                 bindings.pop(address, None)
             else:
@@ -189,7 +193,7 @@ def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) ->
                 state.save()
             except Exception:
                 pass
-            return False
+            raise BindingCheckpointError("key change could not be saved; retry later") from exc
         return True
 
 
@@ -236,6 +240,8 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
             actual_fp = contact_fingerprint(rpc, account, int(members[0]))
             return bool(expected_fp and actual_fp and hmac.compare_digest(expected_fp, actual_fp))
         return True  # guests still require a separate explicit address grant
+    except BindingCheckpointError:
+        raise  # the durable inbox must retain this message for a later retry
     except Exception:
         return False
 

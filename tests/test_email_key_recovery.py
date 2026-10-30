@@ -184,9 +184,25 @@ def test_required_encrypted_checkpoint_failure_does_not_admit_new_key(enabled, m
     monkeypatch.setenv("STATE_BACKUP_REQUIRED", "1")
     checkpoint = mock.Mock(side_effect=RuntimeError("synthetic checkpoint failure"))
     monkeypatch.setattr(state_backup, "save", checkpoint)
-    assert not accepted(rpc, 22, OWNER, 16)
+    with pytest.raises(identity_guard.BindingCheckpointError):
+        accepted(rpc, 22, OWNER, 16)
     assert OWNER not in state.data["email_key_bindings"]
     checkpoint.assert_called_once_with(rotate=False)
+
+
+def test_failed_checkpoint_leaves_incoming_message_unseen_for_retry(enabled, monkeypatch):
+    import state_backup
+    rpc = enabled
+    monkeypatch.setenv("STATE_BACKUP_REQUIRED", "1")
+    monkeypatch.setattr(state_backup, "save", mock.Mock(side_effect=RuntimeError("synthetic failure")))
+    done = mock.Mock()
+    monkeypatch.setattr(app, "_done", done)
+    incoming = msg(22, 16, ident=456)
+    app._taken.discard(incoming.id)
+    app._accept(SimpleNamespace(rpc=rpc), 1, incoming)
+    done.assert_not_called()
+    assert incoming.id not in app._taken
+    assert OWNER not in state.data["email_key_bindings"]
 
 
 def test_backup_admin_can_manage_controls_but_maintenance_still_stops_guest_work(enabled, monkeypatch):
