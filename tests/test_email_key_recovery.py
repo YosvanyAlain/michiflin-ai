@@ -52,6 +52,13 @@ class SyntheticRpc:
     def get_chatlist_entries(self, _account, flags, _query, _contact):
         return list(self.members) if flags == 0 else []
 
+    def get_contacts(self, _account, _flags, query):
+        return [SimpleNamespace(id=ident, address=contact.address) for ident, contact in self.contacts.items()
+                if contact.address == query]
+
+    def get_chat_id_by_contact_id(self, _account, contact_id):
+        return next((chat_id for chat_id, members in self.members.items() if members == [contact_id]), 0)
+
     def get_message_ids(self, _account, chat_id, _info_only, _daymarker):
         return self.chat_messages.get(chat_id, [])
 
@@ -218,8 +225,26 @@ def test_backup_admin_can_manage_controls_but_maintenance_still_stops_guest_work
             pass
 
 
+def test_candidate_inspection_does_not_mutate_or_authorize_delivery(enabled, monkeypatch):
+    rpc = enabled
+    state.data.pop("email_key_bindings", None)
+    save = mock.Mock()
+    monkeypatch.setattr(state, "save", save)
+    msg = SimpleNamespace(id=32, chat_id=22, from_id=16, show_padlock=True)
+    assert identity_guard.authorized_chat(rpc, 1, 22, OWNER, contact_id=16, message=msg, _inspect_recovery=True)
+    assert "email_key_bindings" not in state.data
+    save.assert_not_called()
+    assert not identity_guard.authorized_chat(rpc, 1, 22, OWNER, contact_id=16)
+    assert not identity_guard.authorized_chat(rpc, 1, 22, OWNER, contact_id=16, _inspect_recovery=True)
+
+
 def test_bootstrap_uses_newest_encrypted_incoming_metadata_without_reading_text(enabled, monkeypatch):
     rpc = enabled
+    # Inspect the newer contact before the older one, even when chat 22 is
+    # absent from the ordinary chat list. No key may bind during the scan.
+    rpc.contacts = {16: rpc.contacts[16], 15: rpc.contacts[15], 17: rpc.contacts[17]}
+    saves = []
+    monkeypatch.setattr(state, "save", lambda: saves.append(copy.deepcopy(state.data["email_key_bindings"])))
     class MetadataOnly:
         def __init__(self, ident, chat_id, contact, timestamp):
             self.id, self.chat_id, self.from_id = ident, chat_id, contact
@@ -229,6 +254,8 @@ def test_bootstrap_uses_newest_encrypted_incoming_metadata_without_reading_text(
             raise AssertionError("bootstrap must not inspect message text")
     rpc.messages = {31: MetadataOnly(31, 21, 15, 100), 32: MetadataOnly(32, 22, 16, 200)}
     rpc.chat_messages = {21: [31], 22: [32]}
+    # The replacement chat is deliberately omitted from the normal chat list.
+    monkeypatch.setattr(rpc, "get_chatlist_entries", lambda *_args: [21])
     monkeypatch.setattr(admin, "_set_blocked_contact", lambda *_args: True)
     monkeypatch.setattr(chat, "recipient_guard", lambda *_args, **_kwargs: nullcontext())
     monkeypatch.setattr(chat, "recipient_allowed", lambda *_args: True)
@@ -241,6 +268,7 @@ def test_bootstrap_uses_newest_encrypted_incoming_metadata_without_reading_text(
     finally:
         chat.set_sender(previous_sender)
     assert identity_guard.current_email_chat(OWNER) == 22
+    assert len(saves) == 1 and saves[0][OWNER]["chat"] == 22
     welcome.assert_called_once_with(22, "es")
     assert not accepted(rpc, 21, OWNER, 15)
 

@@ -135,7 +135,7 @@ def current_email_chat(address: str) -> int:
             return 0
 
 
-def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) -> bool:
+def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool, *, inspect_only: bool = False) -> bool:
     """Bind an allowed email to its latest encrypted key; retire older keys.
 
     This deliberately trusts an address rather than proving who owns it. It is
@@ -148,7 +148,9 @@ def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) ->
     if not digest or int(chat_id) <= 9:
         return False
     with state.lock:
-        bindings = state.data.setdefault("email_key_bindings", {})
+        bindings = state.data.get("email_key_bindings")
+        if bindings is None:
+            bindings = {} if inspect_only else state.data.setdefault("email_key_bindings", {})
         if not isinstance(bindings, dict):
             return False
         previous = copy.deepcopy(bindings.get(address))
@@ -176,6 +178,10 @@ def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) ->
             retired = list(dict.fromkeys([*retired, active]))
         if len(retired) > 256:
             return False
+        # Candidate inspection must not bind or retire anything before the
+        # newest message is selected. The caller must perform a real check later.
+        if inspect_only:
+            return True
         bindings[address] = {"key": digest, "chat": int(chat_id), "retired": retired}
         try:
             state.save()
@@ -199,13 +205,16 @@ def _email_binding(address: str, chat_id: int, fingerprint: str, learn: bool) ->
 
 def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
                     *, contact_id: int | None = None, message: Any = None,
-                    allow_rotation: bool = False) -> bool:
+                    allow_rotation: bool = False, _inspect_recovery: bool = False) -> bool:
     """Verify a chat, defaulting to a pinned owner and directly verified contacts.
 
     Explicit email-key recovery is weaker and applies only to an address with a
     current access grant. Single-chat and end-to-end encryption requirements
     still apply. Old keys cannot be reused after a new one has been bound.
+    Private inspection identifies candidates; it never authorizes a delivery.
     """
+    if _inspect_recovery and not (config.EMAIL_KEY_RECOVERY and message is not None):
+        return False
     if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
         return True
     try:
@@ -230,7 +239,10 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
                 learn = bool(message is not None or allow_rotation)
                 if info.is_contact_request is not False and not learn:
                     return False
-                return _email_binding(expected, int(chat_id), contact_fingerprint(rpc, account, int(members[0])), learn)
+                return _email_binding(expected, int(chat_id), contact_fingerprint(rpc, account, int(members[0])), learn,
+                                      inspect_only=_inspect_recovery)
+        if _inspect_recovery:
+            return False
         if not config.BOT_VERIFIED_CONTACTS_ONLY:
             return True
         if info.is_contact_request is not False or contact.is_verified is not True or contact.verifier_id != 1:

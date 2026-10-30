@@ -521,7 +521,20 @@ def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
         entries: list[int] = []
         for flags in (0, 1):
             entries.extend(int(x) for x in bot.rpc.get_chatlist_entries(accid, flags, None, None) if int(x) > 9)
-        for chat_id in list(dict.fromkeys(entries))[:500]:
+        # A contact request or hidden chat may not appear in the normal list.
+        # Look up only the explicitly configured administrator addresses.
+        priority: list[int] = []
+        for address in addresses:
+            try:
+                for contact in bot.rpc.get_contacts(accid, 0, address):
+                    if str(contact.address or "").strip().casefold() != address:
+                        continue
+                    target = int(bot.rpc.get_chat_id_by_contact_id(accid, int(contact.id)) or 0)
+                    if target > 9:
+                        priority.append(target)
+            except Exception:
+                continue
+        for chat_id in list(dict.fromkeys(priority + entries))[:500]:
             try:
                 info = bot.rpc.get_basic_chat_info(accid, chat_id)
                 kind = getattr(info.chat_type, "value", info.chat_type)
@@ -550,6 +563,11 @@ def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
                 for msg_id in reversed(bot.rpc.get_message_ids(accid, chat_id, False, False)[-40:]):
                     msg = bot.rpc.get_message(accid, int(msg_id))
                     if int(msg.from_id) != contact_id or msg.show_padlock is not True or getattr(msg, "is_info", False):
+                        continue
+                    # Inspect without learning or retiring a key: only after
+                    # all candidate chats are compared may the newest bind.
+                    if not identity_guard.authorized_chat(bot.rpc, accid, chat_id, address,
+                                                          contact_id=contact_id, message=msg, _inspect_recovery=True):
                         continue
                     timestamp = int(getattr(msg, "received_timestamp", 0) or 0)
                     old = candidates.get(address)
