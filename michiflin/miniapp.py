@@ -44,8 +44,14 @@ APP_FILES = (
 )
 CHUNK = 90_000
 _pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app")
-# Emergency control must not wait behind long-running app operations.
-_control_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control")
+# Administrative controls cannot be starved by ordinary owner or guest work.
+_control_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-admin")
+_owner_work_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-owner")
+_guest_control_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-pause")
+_dispatch_lock = threading.Lock()
+_dispatch_pending: dict[str, tuple[str, str]] = {}  # ticket -> (lane, person)
+_LANE_LIMITS = {"normal": 64, "owner": 16, "owner_work": 32, "pause": 32}
+_PERSON_LIMITS = {"normal": 8, "owner": 16, "owner_work": 32, "pause": 2}
 _instance_locks: dict[int, threading.Lock] = {}
 # Welcome, recovery and proactive upgrade must decide and hand off together.
 _upgrade_lock = threading.Lock()
@@ -97,7 +103,7 @@ def _apps() -> dict[str, dict[str, Any]]:
 
 
 def _verified_binding(entry: dict[str, Any]) -> bool:
-    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True
     try:
         return identity_guard.authorized_entry(chat.rpc(), chat.account(), entry)
@@ -105,7 +111,8 @@ def _verified_binding(entry: dict[str, Any]) -> bool:
         return False
 
 
-def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None) -> int:
+def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None,
+             bilingual_welcome: bool = False) -> int:
     recipient = address or chat.sender()
     if not _verified_binding({"chat": chat_id, "addr": recipient}):
         return 0
@@ -129,7 +136,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
     if advisory:
         text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
-    if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY:
+    if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         def interrupted_or_changed() -> bool:
             return bool((interrupted is not None and interrupted()) or not admin.is_allowed(recipient)
                         or not _verified_binding({"chat": chat_id, "addr": recipient}))
@@ -142,7 +149,8 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             recipient = address or chat.sender()
             _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(), "locale": locale,
                                     "build": app_build(), "epoch": config.BOT_EPOCH,
-                                    "access_session": access.session_stamp(recipient)}
+                                    "access_session": access.session_stamp(recipient),
+                                    "welcome_secondary_pending": bool(bilingual_welcome)}
             # Every WebXDC instance owns its local storage. Dropping an old binding can
             # lead the history pruner to delete its bot-side message and strand projects.
             # Keep even older instances until the user explicitly deletes them.
@@ -165,9 +173,12 @@ def pause() -> None:
 
 
 def busy() -> int:
-    """App operations still running."""
+    """Count work still running, including workers whose reply already timed out."""
     with _answers_lock:
-        return sum(1 for item in _answers.values() if item.get("state") == "running")
+        answers = sum(1 for item in _answers.values() if item.get("state") == "running")
+    with _dispatch_lock:
+        pending = len(_dispatch_pending)
+    return max(answers, pending)
 
 
 _pointed: dict[int, float] = {}
@@ -213,21 +224,52 @@ def point_to_app(chat_id: int, locale: str) -> None:
     chat.send(chat_id, text, quote=msg_id or None)
 
 
+def _secondary_welcome(chat_id: int) -> None:
+    """Send the other language as text, never as a second app instance."""
+    with state.lock:
+        candidates = [(int(key), dict(entry)) for key, entry in _apps().items()
+                      if str(key).isdigit() and isinstance(entry, dict) and entry.get("chat") == chat_id
+                      and entry.get("welcome_secondary_pending") is True and access.bound_allowed(entry)]
+    if not candidates:
+        return
+    msg_id, entry = max(candidates, key=lambda pair: pair[0])
+    address = str(entry.get("addr") or "")
+    if str(entry.get("locale")) == "en":
+        text = "👋 ¡Hola! Abre la miniapp del mensaje anterior con «Iniciar». Todo el bot funciona dentro; no necesitas escribir /app."
+    else:
+        text = "👋 Hello! Open the mini app in the previous message with “Start”. The whole bot works inside; you don't need to type /app."
+    def changed() -> bool:
+        return not (access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry))
+    sent = chat.send(chat_id, text, quote=msg_id, interrupted=changed)
+    if sent:
+        with state.lock:
+            current = _apps().get(str(msg_id))
+            if isinstance(current, dict):
+                current["welcome_secondary_pending"] = False
+                state.save()
+
+
 def welcome(chat_id: int, locale: str) -> None:
-    """First contact after the secure join: deliver the app once."""
+    """First contact: one app, with a separate welcome in the other language."""
     with _upgrade_lock:
         entries = _bound_apps(chat_id)
         current_build = app_build()
         now = time.time()
         for entry in entries:
             if entry.get("build") == current_build:
+                if config.INVITE_AUTO_ACCESS:
+                    _secondary_welcome(chat_id)
                 return
             try:
                 if now - float(entry.get("sent", 0)) < 600:
                     return
             except (TypeError, ValueError):
                 pass
-        send_app(chat_id, locale)
+        if config.INVITE_AUTO_ACCESS:
+            if send_app(chat_id, locale, bilingual_welcome=True):
+                _secondary_welcome(chat_id)
+        else:
+            send_app(chat_id, locale)
 
 
 def _instance(msg_id: int) -> dict[str, Any] | None:
@@ -270,7 +312,12 @@ ANSWER_CACHE = 2400.0   # seconds an answer stays ready for a resend
 ANSWER_ITEM_BYTES = 3_000_000
 ANSWER_TOTAL_BYTES = 24_000_000  # bounded RAM; never write responses or keys to the state backup
 SEEN_AGE = 172800
-SEEN_LIMIT = 10_000
+SEEN_LIMIT = 100_000
+SEEN_PER_PERSON = 10_000  # over 48 hours; never evict a live replay-protection entry
+SEEN_ADMIN_RESERVE = 10_000
+_seen_counts: dict[str, int] = {}
+_seen_ref: Any = None
+_seen_size = -1
 UPGRADE_GAP = 1800.0    # suppress duplicate sends of the same build, not later builds
 _answers: dict[str, dict[str, Any]] = {}
 _answers_lock = threading.Lock()
@@ -282,13 +329,35 @@ def _seen() -> dict[str, list[float]]:
     return state.data.setdefault("app_seen", {})
 
 
+def _seen_owner(instance_id: int) -> str:
+    entry = _apps().get(str(instance_id))
+    return str(entry.get("addr") or "").strip().lower() if isinstance(entry, dict) else ""
+
+
+def _count_seen(seen: dict[str, list[float]]) -> dict[str, int]:
+    global _seen_ref, _seen_size
+    if _seen_ref is not seen or _seen_size != len(seen):
+        _seen_counts.clear()
+        for item in seen.values():
+            try:
+                owner = _seen_owner(int(item[2])) if len(item) > 2 else ""
+            except (TypeError, ValueError):
+                owner = ""
+            if owner:
+                _seen_counts[owner] = _seen_counts.get(owner, 0) + 1
+        _seen_ref, _seen_size = seen, len(seen)
+    return _seen_counts
+
+
 def _prune_seen() -> None:
+    global _seen_ref
     now = time.time()
     with state.lock:
         seen = _seen()
         for key, item in list(seen.items()):
             if now - float(item[0]) > SEEN_AGE:
                 seen.pop(key, None)
+        _seen_ref = None
     with _answers_lock:
         for key in [key for key, item in _answers.items() if now - item["ts"] > ANSWER_CACHE]:
             _answers.pop(key, None)
@@ -314,18 +383,31 @@ def _prune_seen() -> None:
 
 def _admit(rid: str, retry: int, instance_id: int = 0) -> str:
     """Do not return cached results to a different WebXDC instance, even on ID collision."""
+    global _seen_ref, _seen_size
     with state.lock:
         seen = _seen()
         known = seen.get(rid)
         if known is None:
-            if len(seen) >= SEEN_LIMIT:
+            owner = _seen_owner(instance_id)
+            reserve = SEEN_ADMIN_RESERVE if config.INVITE_AUTO_ACCESS and admin.is_admin(owner) else 0
+            counts = _count_seen(seen)
+            person_full = bool(config.INVITE_AUTO_ACCESS and owner and not admin.is_admin(owner)
+                               and counts.get(owner, 0) >= SEEN_PER_PERSON)
+            if len(seen) >= SEEN_LIMIT + reserve or person_full:
                 now = time.time()
                 for key, item in list(seen.items()):
                     if now - float(item[0]) > SEEN_AGE:
                         seen.pop(key, None)
-                if len(seen) >= SEEN_LIMIT:
-                    return "full"  # fail closed instead of forgetting a recent paid request
+                _seen_ref = None
+                counts = _count_seen(seen)
+                person_full = bool(config.INVITE_AUTO_ACCESS and owner and not admin.is_admin(owner)
+                                   and counts.get(owner, 0) >= SEEN_PER_PERSON)
+                if len(seen) >= SEEN_LIMIT + reserve or person_full:
+                    return "full"  # never forget a recent potentially paid request
             seen[rid] = [time.time(), retry, instance_id]
+            if owner:
+                counts[owner] = counts.get(owner, 0) + 1
+            _seen_size = len(seen)
             fresh = True
         else:
             fresh = False
@@ -333,6 +415,7 @@ def _admit(rid: str, retry: int, instance_id: int = 0) -> str:
                 return "replay"
             if len(known) < 3:
                 known.append(instance_id)  # upgrade a legacy seen entry on its first retry
+                _seen_ref = None
             if retry <= int(known[1]):
                 return "replay"
             known[1] = retry
@@ -465,6 +548,40 @@ def _needs_session(op: str, args: dict[str, Any]) -> bool:
     return True
 
 
+def _dispatch_acquire(address: str, operation: str) -> tuple[str, str]:
+    is_admin = admin.is_admin(address)
+    if is_admin and operation in {"kill_switch", "owner_only", "maintenance_notice", "admin"}:
+        lane = "owner"
+    elif is_admin and config.INVITE_AUTO_ACCESS:
+        lane = "owner_work"
+    else:
+        lane = "pause" if operation == "kill_switch" else "normal"
+    with _dispatch_lock:
+        total = sum(1 for kind, _person in _dispatch_pending.values() if kind == lane)
+        personal = sum(1 for kind, person in _dispatch_pending.values() if kind == lane and person == address)
+        if total >= _LANE_LIMITS[lane] or personal >= _PERSON_LIMITS[lane]:
+            return "", lane
+        ticket = secrets.token_hex(16)
+        _dispatch_pending[ticket] = (lane, address)
+        return ticket, lane
+
+
+def _dispatch_release(ticket: str) -> None:
+    if ticket:
+        with _dispatch_lock:
+            _dispatch_pending.pop(ticket, None)
+
+
+def _dispatch_handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
+    try:
+        handle(instance_id, entry, request)
+    finally:
+        # If the operation timed out but its underlying worker continues, that
+        # worker owns this ticket until it really finishes.
+        if not request.get("_dispatch_worker_started"):
+            _dispatch_release(str(request.get("_dispatch_ticket") or ""))
+
+
 def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
     rid = str(request.get("id", ""))[:40]
     if not rid:
@@ -496,10 +613,24 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             _answers[rid] = {"state": "running", "ts": time.time(), "body": None, "acked": 0.0}
         verdict = "new"
     if verdict == "new":
-        with state.lock:
-            admitted = dict(request, _kill_generation=state.kill_generation(address),
-                            _kill_at_admission=state.get_kill_switch(address))
-        (_control_pool if op in {"kill_switch", "owner_only", "maintenance_notice", "admin"} else _pool).submit(handle, instance_id, entry, admitted)
+        ticket, lane = _dispatch_acquire(address, op)
+        if not ticket:
+            if authorized:
+                respond(instance_id, rid, None, tr(locale,
+                    "El servidor está atendiendo otras solicitudes. Espera un momento y vuelve a intentarlo.",
+                    "The server is handling other requests. Please wait a moment and try again."))
+            return
+        try:
+            with state.lock:
+                admitted = dict(request, _kill_generation=state.kill_generation(address),
+                                _kill_at_admission=state.get_kill_switch(address),
+                                _dispatch_ticket=ticket, _dispatch_lane=lane, _dispatch_worker_started=False)
+            pool = {"owner": _control_pool, "owner_work": _owner_work_pool,
+                    "pause": _guest_control_pool, "normal": _pool}[lane]
+            pool.submit(_dispatch_handle, instance_id, entry, admitted)
+        except Exception:
+            _dispatch_release(ticket)
+            raise
     elif verdict == "running":
         _ack(instance_id, rid, force=True, entry=entry)
     elif verdict == "cached":
@@ -524,7 +655,7 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 def _status_allowed(instance_id: int) -> bool:
     """Recheck epoch, access grant and verified contact at the actual handoff."""
-    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
+    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True  # preserve existing deployments until a deliberate cutover
     try:
         entry = _instance(instance_id)
@@ -537,7 +668,7 @@ def _status_allowed(instance_id: int) -> bool:
 
 
 def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
-    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY:
+    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         return chat.send_update(instance_id, payload, notify, interrupted=lambda: not _status_allowed(instance_id))
     return chat.send_update(instance_id, payload, notify) if notify else chat.send_update(instance_id, payload)
 
@@ -545,7 +676,7 @@ def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None =
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
     if entry is not None and (not access.bound_allowed(entry) or not _verified_binding(entry)):
         return
-    if (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY) and entry is None:
+    if (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS) and entry is None:
         current = _instance(instance_id)
         if current is None or not _verified_binding(current):
             return
@@ -563,7 +694,9 @@ AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 2100}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
-_control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-control-op")
+_control_workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-admin-op")
+_owner_work_workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-owner-op")
+_guest_control_workers = ThreadPoolExecutor(max_workers=2, thread_name_prefix="app-pause-op")
 _ai_gates: dict[str, threading.Lock] = {}
 
 
@@ -676,7 +809,15 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             chat.stop_capture()
 
     started = time.monotonic()
-    future = (_control_workers if op in {"kill_switch", "owner_only", "maintenance_notice"} or owner_control else _workers).submit(run)
+    lane = str(request.get("_dispatch_lane") or (
+        "owner" if op in {"kill_switch", "owner_only", "maintenance_notice"} or owner_control else "normal"))
+    pool = {"owner": _control_workers, "owner_work": _owner_work_workers,
+            "pause": _guest_control_workers, "normal": _workers}[lane]
+    future = pool.submit(run)
+    ticket = str(request.get("_dispatch_ticket") or "")
+    if ticket:
+        request["_dispatch_worker_started"] = True
+        future.add_done_callback(lambda _future: _dispatch_release(ticket))
     timer = threading.Timer(ACK_AFTER, _ack, args=(instance_id, rid), kwargs={"entry": entry})
     timer.daemon = True
     timer.start()
@@ -1834,11 +1975,11 @@ def op_owner_only(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         raise AppError(tr(locale, "Solo los administradores autorizados pueden cambiar el acceso.", "Only authorized administrators can change access."))
     if "enabled" in args:
         enabled, minutes = args.get("enabled"), args.get("minutes", 60)
-        if type(enabled) is not bool or type(minutes) is not int or minutes not in access.DURATIONS:
+        if type(enabled) is not bool or not access.valid_duration(minutes):
             raise AppError(tr(locale, "Modo o duración inválidos.", "Invalid mode or duration."))
         if not access.set_owner_only(enabled, minutes, str(args.get("nonce") or "")):
-            raise AppError(tr(locale, "No se puede compartir durante mantenimiento o la sesión cambió. Actualiza Administración.",
-                              "Sharing is unavailable during maintenance or the session changed. Refresh Administration."))
+            raise AppError(tr(locale, "No pude confirmar el cambio o su respaldo. Actualiza Administración y comprueba el estado antes de reiniciar.",
+                              "The change or its backup could not be confirmed. Refresh Administration and check the status before restarting."))
         queue.wake()
     return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "maintenance_notice": maintenance.get(), "message": ""}
 
@@ -1866,9 +2007,13 @@ def _notify_maintenance(notice: dict[str, Any]) -> None:
         # but no app yet. Never revive historic grants or create a new contact.
         if chat.ready():
             mode = access.snapshot()
-            with state.lock:
-                addresses = (config.owner_admin_addresses() | set(mode["guests"]) if mode["controlled"] else
-                             config.owner_admin_addresses() | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
+            if config.INVITE_AUTO_ACCESS:
+                from . import community
+                addresses = config.owner_admin_addresses() | set(community.addresses())
+            else:
+                with state.lock:
+                    addresses = (config.owner_admin_addresses() | set(mode["guests"]) if mode["controlled"] else
+                                 config.owner_admin_addresses() | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
             for address in addresses - {item[0] for item in chats.values()}:
                 if not address or not admin.is_allowed(address):
                     continue
@@ -1951,9 +2096,17 @@ def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                 raise AppError(tr(locale, "Solo los administradores autorizados pueden autorizar a un invitado.", "Only authorized administrators can approve a guest."))
             done = admin.grant_one(address, args.get("minutes", 60), str(args.get("nonce") or ""))
         else:
-            done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
+            try:
+                done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
+            except Exception as exc:
+                from . import community
+                if not isinstance(exc, community.CheckpointError):
+                    raise
+                raise AppError(tr(locale, "El cambio local no pudo respaldarse. Repite la operación antes de reiniciar.",
+                                  "The local change could not be backed up. Retry the operation before restarting.")) from None
         queue.wake()
-        message = tr(locale, "Hecho.", "Done.") if done else tr(locale,
+        message = tr(locale, "Desbloqueado. Debe completar de nuevo la invitación privada.",
+                     "Unblocked. They must complete the private invitation again.") if done and action == "allow" and config.INVITE_AUTO_ACCESS else tr(locale, "Hecho.", "Done.") if done else tr(locale,
             "No se pudo cambiar: revisa la dirección, el modo privado y la conexión de Delta Chat.",
             "Could not change access: check the address, private mode and Delta Chat connection.")
     elif action == "alerts":

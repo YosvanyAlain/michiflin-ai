@@ -90,6 +90,9 @@ def carryover(path: Path, storage: cutover.ReleaseStorage, owner: str) -> str:
 def main() -> int:
     try:
         if os.getenv("OWNER_ONLY") != "1":
+            if os.getenv("INVITE_AUTO_ACCESS") == "1":
+                print("Profile carryover skipped while verified invitations are enabled.")
+                return 0
             raise ValueError("owner-only mode required")
         path = Path(os.environ["CONFIG_DIR"])
         outcome = carryover(path, cutover.ReleaseStorage(), os.environ.get("OWNER_ADDRESS", ""))

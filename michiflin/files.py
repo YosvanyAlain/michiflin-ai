@@ -7,6 +7,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import tempfile
 import time
 from dataclasses import dataclass, asdict
@@ -388,7 +389,7 @@ def _load_resume_metadata(target: Path, url: str) -> dict[str, str] | None:
 
 def download(url: str, target: Path, size: int, resumable: bool, progress: Callable[[int], None] | None = None,
              stop: Callable[[], bool] | None = None, max_bytes: int = 0,
-             integrity: Callable[[str], None] | None = None) -> int:
+             integrity: Callable[[str], None] | None = None, min_free_bytes: int = 0) -> int:
     """Download with guarded HTTP Range resumption; return the final byte count.
 
     Strong ETags are saved before writing and used with If-Range. Legacy or
@@ -485,6 +486,11 @@ def download(url: str, target: Path, size: int, resumable: bool, progress: Calla
                             raise ValueError("source_changed")
                         if max_bytes and done + len(chunk) > max_bytes:
                             raise ValueError("too_large")
+                        # Content-Length may be unknown or dishonest. Keep the
+                        # partial for a later Range retry rather than filling
+                        # the host and endangering the account database.
+                        if min_free_bytes and shutil.disk_usage(target.parent).free - len(chunk) < min_free_bytes:
+                            raise ValueError("disk_full")
                         handle.write(chunk)
                         done += len(chunk)
                         received += len(chunk)

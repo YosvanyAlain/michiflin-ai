@@ -357,10 +357,14 @@ def activate(path: Path, storage: Any, expected_owner: str) -> dict[str, Any] | 
 def main() -> None:
     path = Path(os.environ["CONFIG_DIR"])
     owner = os.environ.get("OWNER_ADDRESS", "")
-    if os.environ.get("OWNER_ONLY") != "1":
-        raise CutoverError("production owner-only mode is required")
-    storage = ReleaseStorage()
     mode = sys.argv[1] if len(sys.argv) > 1 else "activate"
+    private = os.environ.get("OWNER_ONLY") == "1"
+    invitations = os.environ.get("INVITE_AUTO_ACCESS") == "1"
+    if mode == "cutover" and not private:
+        raise CutoverError("identity cutover requires owner-only mode")
+    if not private and (mode != "activate" or not invitations):
+        raise CutoverError("activation requires private mode or explicit verified invitations")
+    storage = ReleaseStorage()
     if mode == "cutover":
         revision = os.environ.get("RUNNING_SHA", "")
         if revision != os.environ.get("IDENTITY_CUTOVER_REVISION", ""):
@@ -383,6 +387,8 @@ def main() -> None:
     elif mode != "activate":
         raise CutoverError("unknown operation")
     marker = activate(path, storage, owner)
+    if not private and not marker:
+        raise CutoverError("community activation requires an already sealed verified identity")
     if marker:
         environment = Path(os.environ["GITHUB_ENV"])
         with environment.open("a", encoding="utf-8") as stream:

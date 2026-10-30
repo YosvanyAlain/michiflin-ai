@@ -50,8 +50,9 @@ function quotaNote() {
   const draw = () => {
     if (!cache.quota) return fill(box);
     const left = (kind) => { const value = quotaLeft(kind); return value === null ? "∞" : String(value); };
+    const unlimited = ["ask", "image", "code"].every((kind) => quotaLeft(kind) === null);
     fill(box, h("p", { class: `note ${cache.quota.low ? "warn" : ""}` }, icon(cache.quota.low ? "bolt" : "user"), h("span", { class: "grow" },
-      t("quota_note", { ask: left("ask"), image: left("image"), code: left("code"), time: fmtTime(cache.quota.reset) }),
+      unlimited ? t("quota_capacity_note") : t("quota_note", { ask: left("ask"), image: left("image"), code: left("code"), time: fmtTime(cache.quota.reset) }),
       cache.quota.low ? " " + t("quota_low_note") : "")));
   };
   bus.on("quota", draw);
@@ -2501,17 +2502,20 @@ function logSection(box, data) {
 
 function ownerAccessSection(box, data) {
   if (typeof data.owner_only !== "boolean") return null;  // compatible with an older backend
-  let minutes = "60";
-  const durations = select(minutes, [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
-    ["1440", t("owner_24h")], ["0", t("owner_manual")]], (value) => { minutes = value; });
+  let minutes = data.invite_auto_access ? "-1" : "60";
+  const options = [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
+    ["1440", t("owner_24h")], ["0", t("owner_manual")]];
+  if (data.invite_auto_access) options.push(["-1", t("owner_invite_manual")]);
+  const durations = select(minutes, options, (value) => { minutes = value; });
   const change = async (enabled) => {
-    if (!(await confirmBox(t("owner_control"), t(enabled ? "owner_close_q" : "owner_open_q"), t("confirm")))) return;
+    const question = enabled ? "owner_close_q" : data.invite_auto_access ? "owner_invite_open_q" : "owner_open_q";
+    if (!(await confirmBox(t("owner_control"), t(question), t("confirm")))) return;
     button.disabled = true;
     try {
       const updated = await bridge.call("owner_only", { enabled, minutes: Number(minutes), nonce: data.control_nonce || "" });
       memo.set("admin{}", updated);
       if (box.isConnected) drawAdmin(box, updated);
-      toast(t(enabled ? "owner_on" : "owner_off"), "ok");
+      toast(t(enabled ? "owner_on" : data.invite_auto_access ? "owner_invite_off" : "owner_off"), "ok");
     } catch (error) {
       // A lost reply may still mean the mode changed: hide stale controls until refreshed.
       if (box.isConnected && !error.cancelled) fill(box, failure(error.message, () => adminOp(box, {})));
@@ -2520,10 +2524,10 @@ function ownerAccessSection(box, data) {
   const button = h("button", { class: `btn ${data.owner_only ? "primary" : "ghost"} wide`, disabled: data.maintenance && data.owner_only,
     onclick: () => change(!data.owner_only) }, icon(data.owner_only ? "user" : "shield"), t(data.owner_only ? "owner_open" : "owner_close"));
   const card = h("div", { class: "card stack owner-access" },
-    h("b", {}, t(data.maintenance ? "owner_maintenance_title" : (data.owner_only ? "owner_on" : "owner_off"))),
-    h("p", { class: "muted small" }, t(data.maintenance ? "owner_maintenance" : "owner_hint")),
+    h("b", {}, t(data.maintenance ? "owner_maintenance_title" : (data.owner_only ? "owner_on" : data.invite_auto_access ? "owner_invite_off" : "owner_off"))),
+    h("p", { class: "muted small" }, t(data.maintenance ? "owner_maintenance" : data.invite_auto_access ? "owner_invite_hint" : "owner_hint")),
     !data.owner_only ? h("p", { class: "note" }, icon("clock"), data.owner_only_expires
-      ? t("owner_until", { when: new Date(data.owner_only_expires * 1000).toLocaleString() }) : t("owner_until_restart")) : null,
+      ? t("owner_until", { when: new Date(data.owner_only_expires * 1000).toLocaleString() }) : t(data.invite_persistent_open ? "owner_invite_until_closed" : "owner_until_restart")) : null,
     data.owner_only && !data.maintenance ? h("label", { class: "stack small" }, t("owner_duration"), durations) : null,
     button);
   clearTimeout(box._ownerAccessTimer);
@@ -2550,7 +2554,7 @@ function ownerAccessSection(box, data) {
 }
 
 function singleGuestSection(box, data) {
-  if (data.owner_only !== true || data.maintenance || !data.control_nonce) return null;
+  if (data.invite_auto_access || data.owner_only !== true || data.maintenance || !data.control_nonce) return null;
   const address = field({ type: "email", placeholder: t("admin_address"), "aria-label": t("admin_address") });
   let minutes = "60";
   const duration = select(minutes, [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
@@ -2620,24 +2624,24 @@ function drawAdmin(box, data) {
     data.perf ? hostSection(data.perf) : null,
     data.perf ? benchSection(box, data.perf) : null,
     section(t(data.private_mode ? "admin_owner" : "admin_users"),
-      data.private_mode ? h("p", { class: "note" }, icon("shield"), t("admin_private_note")) : null,
-      data.email_key_recovery ? h("p", { class: "note warn", role: "status" }, icon("alert"), t("admin_email_recovery_warning")) : null,
+      data.private_mode ? h("p", { class: "note" }, icon("shield"), t(data.invite_auto_access ? "admin_invite_private_note" : "admin_private_note")) : null,
+      data.email_key_recovery ? h("p", { class: "note warn", role: "status" }, icon("alert"), t(data.invite_auto_access ? "admin_invite_recovery_warning" : "admin_email_recovery_warning")) : null,
       h("div", { class: "card list" },
         data.users.filter((user) => !data.private_mode || user.active).map((user) => person({ address: user.address, sub: user.admin ? "" : user.last ? t("admin_last", { when: fmtTime(user.last) }) : "" },
           data.private_mode && !user.active ? h("span", { class: "badge" }, t("admin_inactive"))
             : user.admin ? h("span", { class: "badge" }, t("admin_role"))
               : data.private_mode ? null : iconButton("close", t("admin_remove"), () => adminOp(box, { do: "remove", address: user.address }, t("admin_remove_q", { address: user.address })), "tiny"))),
-        data.private_mode ? null : h("div", { class: "row add-row" }, address, h("button", { class: "btn primary small", onclick: () => address.value.trim() && adminOp(box, { do: "allow", address: address.value.trim() }, t("admin_grant_q", { address: address.value.trim() })) }, icon("plus"), t("admin_allow"))))),
+        data.private_mode || data.invite_auto_access ? null : h("div", { class: "row add-row" }, address, h("button", { class: "btn primary small", onclick: () => address.value.trim() && adminOp(box, { do: "allow", address: address.value.trim() }, t("admin_grant_q", { address: address.value.trim() })) }, icon("plus"), t("admin_allow"))))),
     section(t("admin_attempts"), data.attempts.length ? h("div", { class: "card list" }, data.attempts.map((item) =>
       person({ address: item.address, sub: `${t("admin_tries", { n: item.count })} · ${fmtTime(item.last)}` },
-        data.private_mode ? (data.owner_only && !data.maintenance && data.control_nonce
+        data.invite_auto_access ? null : data.private_mode ? (data.owner_only && !data.maintenance && data.control_nonce
           ? iconButton("check", t("admin_quick_guest_button"), () => adminOp(box,
             { do: "allow_one", address: item.address, minutes: 60, nonce: data.control_nonce }, t("admin_quick_guest_q", { address: item.address, duration: t("owner_1h") })), "tiny")
           : h("button", { class: "btn small ghost", disabled: true, title: t("admin_private_no_grant"), "aria-label": t("admin_private_no_grant") }, icon("shield"), t("admin_allow")))
           : iconButton("check", t("admin_allow"), () => adminOp(box, { do: "allow", address: item.address }, t("admin_grant_q", { address: item.address })), "tiny"),
         iconButton("ban", t("admin_block"), () => adminOp(box, { do: "block", address: item.address }), "tiny")))) : h("p", { class: "empty small" }, t("admin_no_attempts"))),
     !data.private_mode && data.blocked.length ? section(t("admin_blocked"), h("div", { class: "card list" }, data.blocked.map((item) =>
-      person({ address: item }, data.private_mode ? null : h("button", { class: "btn small ghost", onclick: () => adminOp(box, { do: "allow", address: item }, t("admin_grant_q", { address: item })) }, t("admin_unblock")))))) : null,
+      person({ address: item }, data.private_mode ? null : h("button", { class: "btn small ghost", onclick: () => adminOp(box, { do: "allow", address: item }, t(data.invite_auto_access ? "admin_invite_unblock_q" : "admin_grant_q", { address: item })) }, t("admin_unblock")))))) : null,
     section(t("admin_controls"), h("div", { class: "card list" },
       h("label", { class: "setting" }, h("span", { class: "grow" }, t("admin_alerts")),
         h("input", { type: "checkbox", class: "switch", checked: data.alerts, onchange: (event) => adminOp(box, { do: "alerts", value: event.target.checked }) })),

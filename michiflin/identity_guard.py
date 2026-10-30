@@ -215,7 +215,7 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
     """
     if _inspect_recovery and not (config.EMAIL_KEY_RECOVERY and message is not None):
         return False
-    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True
     try:
         info = rpc.get_basic_chat_info(account, chat_id)
@@ -233,6 +233,13 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
         if message is not None and (int(message.chat_id) != int(chat_id) or int(message.from_id) != int(members[0])
                                     or message.show_padlock is not True):
             return False
+        if config.INVITE_AUTO_ACCESS and not config.is_owner_admin(expected):
+            if _inspect_recovery:
+                return False
+            from . import community
+            fingerprint = contact_fingerprint(rpc, account, int(members[0]))
+            return bool(info.is_contact_request is False and contact.is_verified is True and contact.verifier_id == 1
+                        and community.matches(expected, chat_id, fingerprint))
         if config.EMAIL_KEY_RECOVERY:
             from . import admin
             if admin.is_allowed(expected):
@@ -244,7 +251,7 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
         if _inspect_recovery:
             return False
         if not config.BOT_VERIFIED_CONTACTS_ONLY:
-            return True
+            return not config.INVITE_AUTO_ACCESS
         if info.is_contact_request is not False or contact.is_verified is not True or contact.verifier_id != 1:
             return False
         if expected == config.OWNER_ADDRESS.strip().casefold():
@@ -260,7 +267,7 @@ def authorized_chat(rpc: Any, account: int, chat_id: int, address: str,
 
 def authorized_entry(rpc: Any, account: int, entry: dict[str, Any]) -> bool:
     """Apply the same chat/key check to a bound WebXDC instance."""
-    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY):
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True
     try:
         return authorized_chat(rpc, account, int(entry["chat"]), str(entry["addr"]))

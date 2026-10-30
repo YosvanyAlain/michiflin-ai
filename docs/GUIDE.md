@@ -17,8 +17,8 @@ This guide walks through the mini app and the chat features. For setup and confi
 
 ## Getting started
 
-1. Open the private chat with the bot in Delta Chat. Production starts owner-only; the owner may explicitly authorize temporary guests. Old allow-list entries do not grant access.
-2. The bot sends the mini app as soon as the chat is set up, with a short welcome explaining that the app is the whole bot; tap **Start** to open it. The first time, a brief introduction shows the tabs and how answers arrive (you can watch it again from **How it works**). If you lose the app, send `/app` for a fresh copy. Pin the chat or keep the app message at hand.
+1. Open the bot's private invitation in Delta Chat and complete the encrypted SecureJoin if the operator has enabled automatic invitation access. Old allow-list entries do not grant access. Do not publish or forward the invitation without the owner's permission.
+2. The bot sends one mini app and welcomes you in Spanish and English; tap **Start** to open it. The first time, a brief introduction shows the tabs and how answers arrive (you can watch it again from **How it works**). You need not type `/app` to join. If you later lose the app, `/app` can request a fresh copy. Pin the chat or keep the app message at hand.
 3. Use the app for everything. Every action is sent to the bot as a small message inside the same chat, and the answer comes back to the app, usually within a few seconds to a couple of minutes.
 
 You can close the app at any time: pending work completes and shows up when you return. The indicator at the top shows requests in progress, and a request with no answer after a few minutes is marked so you can retry it.
@@ -146,7 +146,7 @@ In Downloads choose the download queue or **Saved links**. Paste a link and choo
 - **Other files** arrive as `.001`, `.002`… parts. The last part carries the SHA-256 fingerprint of the whole file. With the `packing` setting they can be 7z or zip volumes instead.
 - **Mini apps** (`.xdc` files) arrive ready to open in the chat, keeping their name.
 - The tab shows progress for every job, and its icon carries a badge with the number of downloads still in progress. You can **pause**, **resume**, **cancel**, **retry**, or **resend** a single missing part.
-- **Private queue:** production initially allows only the owner. An explicitly authorized temporary guest can submit new jobs; historical jobs from earlier authorizations remain stored but are not resumed or sent.
+- **Shared queue:** authorized invitees can submit their own jobs. Preparation and delivery take turns by person and job; capacity, free-disk and provider limits still apply. Jobs tied to an earlier grant remain stored but are not silently sent under a new one.
 - Delivery can be throttled: parts per batch, delay between parts, a night window (for example `2200-0600`) and a daily cap in MB.
 - Finished jobs are kept for a while (`retention`) so missing parts can be resent.
 
@@ -192,9 +192,9 @@ Media segments play on their own, but joining gives one file: MP4, M4A and MP3 s
 
 **Status** shows uptime, time until the planned restart, free disk, the queue, the state of each service (search, browser, media) and AI quotas. The server restarts by itself every few hours; downloads may continue afterward, while uncertain deliveries pause for review.
 
-**Administration** is available to the owner and any explicitly configured backup administrator. It shows recent foreign contact attempts, bounded session warnings and errors, performance and server controls. In private mode only those configured administrators are active; historical access records remain stored but are hidden. In private or controlled sessions, only attempts from the last 24 hours are shown, without message text. The owner can explicitly approve one named guest and open a temporary controlled session in one confirmed action, or open a session first and then approve individuals. Neither action revives previous grants. Unknown senders receive no reply; the owner may receive an alert. Diagnostics are redacted on a best-effort basis and must be reviewed before sharing; clearing the session buffer does not erase server logs. See [session access control](ACCESS_CONTROL.md).
+**Administration** is available to the owner and any explicitly configured backup administrator. It shows recent contact attempts, bounded session warnings and errors, performance and server controls. In invitation mode, completed verified joins are admitted automatically as ordinary users; the administrator can close or reopen access and revoke or block a grant. Closing does not delete historical data. In individual mode, opening and approving each address remain separate options. Unknown senders do not gain access from historical records. Diagnostics are redacted on a best-effort basis and must be reviewed before sharing; clearing the session buffer does not erase server logs. See [access control](ACCESS_CONTROL.md).
 
-An optional email-key recovery policy can accept a replacement key for an already permitted address, but it is susceptible to sender impersonation. Encryption in transit does not verify who owns the address. Previously bound chats, queued targets and app-local data are preserved rather than automatically migrated; see [access control](ACCESS_CONTROL.md).
+An optional email-key recovery policy can accept a replacement key for an already permitted address, but it is susceptible to sender impersonation. In invitation mode this weaker recovery is limited to administrators; ordinary guests need a new verified invitation. Previously bound chats, queued targets and app-local data are preserved rather than automatically migrated; see [access control](ACCESS_CONTROL.md).
 
 It also includes:
 
@@ -229,7 +229,7 @@ The bot works through the mini app by default. Setting **Chat use** to *App and 
 
 ## Privacy
 
-The production bot starts with owner-only access; the owner can authorize specific temporary guests. AI chats and images may remain on your device and providers receive the requests. Account state and encrypted backups can contain metadata, notes, queued links and small attachment copies; temporary job parts can remain for retries. Treat backups and logs as sensitive.
+The safe default is owner-only; the operator can instead enable automatic access through a private verified invitation. Anyone who receives that invitation may share it further. AI chats and images may remain on your device and providers receive the requests. Account state and encrypted backups can contain metadata, notes, queued links and small attachment copies; temporary job parts can remain for retries. Treat invitations, backups and logs as sensitive.
 
 <p align="center">
   <img src="media/en/desktop-home.png" width="640" alt="Mini app on desktop">

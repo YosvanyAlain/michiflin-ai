@@ -32,7 +32,9 @@ jobs:
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
       EMAIL_KEY_RECOVERY: ${{ vars.EMAIL_KEY_RECOVERY || '0' }}
-      OWNER_ONLY: "1"
+      # Both are explicit variables; the safe default remains owner-only.
+      OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}
+      INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
@@ -52,7 +54,7 @@ jobs:
       # Off for the existing account; a new identity must pin the owner's verified public key.
       BOT_VERIFIED_CONTACTS_ONLY: ${{ vars.BOT_VERIFIED_CONTACTS_ONLY || '0' }}
       OWNER_PGP_FINGERPRINT: ${{ secrets.OWNER_PGP_FINGERPRINT }}
-      MAINTENANCE_MODE: "0"
+      MAINTENANCE_MODE: ${{ vars.MAINTENANCE_MODE || '0' }}
       MAILBOX_PROFILES_JSON: ${{ secrets.MAILBOX_PROFILES_JSON }}
       OWNER_NOTICE: ${{ secrets.OWNER_NOTICE }}
       ALLOWED_SENDERS: ${{ secrets.ALLOWED_SENDERS }}

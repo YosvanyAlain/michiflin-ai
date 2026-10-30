@@ -143,8 +143,8 @@ def dispatch(chat_id: int, args: dict[str, Any], locale: str) -> dict[str, Any]:
                 with filekit.open_source(blob) as source:
                     job, error = queue.enqueue_local(chat_id, source, entry["path"].rsplit("/", 1)[-1],
                                                      entry["size"], entry["mime"], locale, part)
-            except ValueError:
-                raise filekit.FileKitError("source_changed") from None
+            except ValueError as exc:
+                raise filekit.FileKitError("disk_full" if str(exc) == "disk_full" else "source_changed") from None
             if not job:
                 if error:
                     raise DeliveryRefused(error)

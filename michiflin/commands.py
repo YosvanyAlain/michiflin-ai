@@ -786,17 +786,23 @@ def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> Non
     mode = access.snapshot()
     if not words:
         status = "1" if mode["owner_only"] else "0"
-        chat.text(chat_id, tr(locale, f"OWNER_ONLY={status}. El cambio dura esta sesión. "
+        persistence_es = "El cierre se guarda." if config.INVITE_AUTO_ACCESS else "El cambio dura esta sesión."
+        persistence_en = "Closure is saved." if config.INVITE_AUTO_ACCESS else "Changes last this session."
+        chat.text(chat_id, tr(locale, f"OWNER_ONLY={status}. {persistence_es} "
                               "Para cerrar: /solo_dueno 1. Para abrir: /solo_dueno 0.",
-                              f"OWNER_ONLY={status}. Changes last this session. "
+                              f"OWNER_ONLY={status}. {persistence_en} "
                               "To close: /owner_only 1. To open: /owner_only 0."))
         return
     value = words[0].lower()
     if value in YES:
         _owner_challenges.pop(chat_id, None)
-        access.set_owner_only(True)
+        saved = access.set_owner_only(True)
         queue.wake()
-        chat.text(chat_id, tr(locale, "🔒 OWNER_ONLY=1. Solo entran el dueño y su administrador de respaldo, si está configurado.", "🔒 OWNER_ONLY=1. Only the owner and configured backup administrator may enter."))
+        if not saved:
+            chat.text(chat_id, tr(locale, "⚠️ Acceso cerrado en esta sesión, pero no pude verificar el respaldo del cierre. Inténtalo de nuevo.",
+                                  "⚠️ Access is closed in this session, but the closure backup could not be verified. Please retry."))
+        else:
+            chat.text(chat_id, tr(locale, "🔒 OWNER_ONLY=1. Solo entran el dueño y su administrador de respaldo, si está configurado.", "🔒 OWNER_ONLY=1. Only the owner and configured backup administrator may enter."))
         return
     if value not in NO or mode["maintenance"]:
         chat.text(chat_id, tr(locale, "Modo inválido o mantenimiento activo.", "Invalid mode or maintenance is active."))
@@ -808,26 +814,34 @@ def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> Non
             chat.text(chat_id, tr(locale, "La confirmación caducó; solicita otra.", "Confirmation expired; request another."))
             return
         queue.wake()
-        duration = tr(locale, "hasta reiniciar" if pending[2] == 0 else f"{pending[2]} min",
-                      "until restart" if pending[2] == 0 else f"{pending[2]} min")
-        chat.text(chat_id, tr(locale, f"🔓 OWNER_ONLY=0 ({duration}). Nadie obtiene acceso automáticamente. Autoriza cada dirección con /admin_permitir correo.",
-                              f"🔓 OWNER_ONLY=0 ({duration}). Nobody gains access automatically. Authorize each address with /admin_allow address."))
+        duration = tr(locale, "hasta cerrar" if pending[2] == -1 else "hasta reiniciar" if pending[2] == 0 else f"{pending[2]} min",
+                      "until closed" if pending[2] == -1 else "until restart" if pending[2] == 0 else f"{pending[2]} min")
+        if config.INVITE_AUTO_ACCESS:
+            chat.text(chat_id, tr(locale, f"🔓 OWNER_ONLY=0 ({duration}). Quienes completen la invitación privada entran automáticamente; los accesos históricos no se reactivan.",
+                                  f"🔓 OWNER_ONLY=0 ({duration}). People who complete the private invitation enter automatically; historic grants stay closed."))
+        else:
+            chat.text(chat_id, tr(locale, f"🔓 OWNER_ONLY=0 ({duration}). Nadie obtiene acceso automáticamente. Autoriza cada dirección con /admin_permitir correo.",
+                                  f"🔓 OWNER_ONLY=0 ({duration}). Nobody gains access automatically. Authorize each address with /admin_allow address."))
         return
-    if len(words) > 1 and not words[1].isdigit():
+    if len(words) > 1 and not words[1].isdigit() and not (config.INVITE_AUTO_ACCESS and words[1] == "-1"):
         chat.text(chat_id, tr(locale, "Código incorrecto o caducado.", "Wrong or expired code."))
         return
     minutes = int(words[1]) if len(words) > 1 else 60
-    if minutes not in access.DURATIONS:
-        chat.text(chat_id, tr(locale, "Duraciones: 15, 60, 240, 1440 minutos o 0 hasta reiniciar.",
-                              "Durations: 15, 60, 240, 1440 minutes or 0 until restart."))
+    if not access.valid_duration(minutes):
+        chat.text(chat_id, tr(locale, "Duraciones: 15, 60, 240, 1440 minutos o 0 hasta reiniciar" + ("; -1 hasta cerrar." if config.INVITE_AUTO_ACCESS else "."),
+                              "Durations: 15, 60, 240, 1440 minutes or 0 until restart" + ("; -1 until closed." if config.INVITE_AUTO_ACCESS else ".")))
         return
     code = secrets.token_hex(3)
     _owner_challenges[chat_id] = (code, time.time() + 300, minutes, mode["nonce"])
     command = C(locale, "owner_only")
-    duration_es = f"{minutes} min" if minutes else "hasta reiniciar"
-    duration_en = f"{minutes} min" if minutes else "until restart"
-    chat.text(chat_id, tr(locale, f"Para confirmar ({duration_es}), responde: {command} 0 {code}\nSolo entrarán las direcciones que autorices; los accesos antiguos siguen cerrados.",
-                          f"To confirm ({duration_en}), reply: {command} 0 {code}\nOnly addresses you approve can enter; old grants remain closed."))
+    duration_es = "hasta cerrar" if minutes == -1 else f"{minutes} min" if minutes else "hasta reiniciar"
+    duration_en = "until closed" if minutes == -1 else f"{minutes} min" if minutes else "until restart"
+    explanation_es = ("Entrarán quienes completen la invitación privada; los accesos históricos siguen cerrados." if config.INVITE_AUTO_ACCESS
+                      else "Solo entrarán las direcciones que autorices; los accesos antiguos siguen cerrados.")
+    explanation_en = ("People who complete the private invitation can enter; historic grants stay closed." if config.INVITE_AUTO_ACCESS
+                      else "Only addresses you approve can enter; old grants remain closed.")
+    chat.text(chat_id, tr(locale, f"Para confirmar ({duration_es}), responde: {command} 0 {code}\n{explanation_es}",
+                          f"To confirm ({duration_en}), reply: {command} 0 {code}\n{explanation_en}"))
 
 
 @command("admin", owner=True)
@@ -839,9 +853,18 @@ def cmd_admin(chat_id: int, args: list[str], rest: str, locale: str) -> None:
         if not address:
             chat.text(chat_id, tr(locale, f"Uso: {C(locale, 'admin', action)} correo@dominio", f"Usage: {C(locale, 'admin', action)} name@domain"))
             return
-        done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
+        try:
+            done = admin.grant(address) if action == "allow" else admin.revoke(address, block=action == "block")
+        except Exception as exc:
+            from . import community
+            if not isinstance(exc, community.CheckpointError):
+                raise
+            chat.text(chat_id, tr(locale, "⚠️ No pude verificar el respaldo del cambio. El bloqueo local continúa; repite el cambio antes de reiniciar.",
+                                  "⚠️ The change backup could not be verified. The local denial remains; retry the change before restarting."))
+            return
         replies = {
-            "allow": (f"✅ {address} puede usar el bot.", f"✅ {address} can use the bot."),
+            "allow": ((f"✅ {address} desbloqueado; debe completar de nuevo la invitación privada." if config.INVITE_AUTO_ACCESS else f"✅ {address} puede usar el bot."),
+                      (f"✅ {address} unblocked; they must complete the private invitation again." if config.INVITE_AUTO_ACCESS else f"✅ {address} can use the bot.")),
             "remove": (f"✅ {address} ya no tiene acceso.", f"✅ {address} no longer has access."),
             "block": (f"⛔ {address} bloqueado.", f"⛔ {address} blocked."),
         }
