@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from michiflin import access, admin, chat, community, config, filekit, filekit_archive, identity_guard, miniapp, queue, state
+from michiflin import access, admin, app, chat, community, config, filekit, filekit_archive, identity_guard, miniapp, queue, state
 
 OWNER = "owner@example.invalid"
 BACKUP = "backup@example.invalid"
@@ -195,7 +195,7 @@ def test_maintenance_and_explicit_ban_override_invitation(monkeypatch):
     assert community.admit_from_securejoin(rpc, 1, 15) and admin.is_allowed(ALICE)
 
 
-def test_two_welcomes_one_app_and_restart_does_not_duplicate(monkeypatch):
+def test_unknown_language_gets_one_bilingual_app_and_restart_does_not_duplicate(monkeypatch):
     assert community.admit_from_securejoin(Rpc(), 1, 15)
     chat.set_sender(ALICE)
     monkeypatch.setattr(miniapp, "_verified_binding", lambda _entry: True)
@@ -206,15 +206,66 @@ def test_two_welcomes_one_app_and_restart_does_not_duplicate(monkeypatch):
         sends.append((chat_id, text, kwargs))
         return 100 + len(sends)
     monkeypatch.setattr(chat, "send", send)
-    miniapp.welcome(21, "es")
-    assert len(sends) == 2
-    assert "¡Hola!" in sends[0][1] and "Hello!" in sends[1][1]
-    assert sends[0][2]["viewtype"] == "Webxdc" and "file" not in sends[1][2]
-    miniapp.welcome(21, "es")
+    miniapp.welcome(21, "")
+    assert len(sends) == 1
+    assert "¡Hola!" in sends[0][1] and "Hi!" in sends[0][1]
+    assert "Descarga" in sends[0][1] and "Download" in sends[0][1] and "/app" not in sends[0][1]
+    assert sends[0][2]["viewtype"] == "Webxdc"
+    # A legacy pending secondary welcome must never be sent after the upgrade.
+    state.data["apps"]["101"]["welcome_secondary_pending"] = True
+    miniapp.welcome(21, "")
     access.reset()
     access.restore_policy()
-    miniapp.welcome(21, "es")
-    assert len(sends) == 2 and len(state.data["apps"]) == 1
+    miniapp.welcome(21, "en")
+    assert len(sends) == 1 and len(state.data["apps"]) == 1
+
+
+@pytest.mark.parametrize("language,expected,other", [("es", "¡Hola!", "Hi!"), ("en", "Hi!", "¡Hola!")])
+def test_known_language_gets_one_localized_welcome(monkeypatch, language, expected, other):
+    assert community.admit_from_securejoin(Rpc(), 1, 15)
+    chat.set_sender(ALICE)
+    monkeypatch.setattr(miniapp, "_verified_binding", lambda _entry: True)
+    monkeypatch.setattr(miniapp, "app_build", lambda: "synthetic-build")
+    monkeypatch.setattr(miniapp, "build", lambda: "/synthetic/app.xdc")
+    sent = []
+    monkeypatch.setattr(chat, "send", lambda _chat, text, **kwargs: sent.append((text, kwargs)) or 101)
+    miniapp.welcome(21, language)
+    assert len(sent) == 1 and expected in sent[0][0] and other not in sent[0][0]
+    assert sent[0][1]["viewtype"] == "Webxdc" and "/app" not in sent[0][0]
+
+
+def test_unknown_welcome_includes_both_maintenance_notices_in_one_message(monkeypatch):
+    assert community.admit_from_securejoin(Rpc(), 1, 15)
+    chat.set_sender(ALICE)
+    monkeypatch.setattr(miniapp, "_verified_binding", lambda _entry: True)
+    monkeypatch.setattr(miniapp, "app_build", lambda: "synthetic-build")
+    monkeypatch.setattr(miniapp, "build", lambda: "/synthetic/app.xdc")
+    monkeypatch.setattr(miniapp.maintenance, "text", lambda language: {"es": "Pausa de prueba", "en": "Test pause"}[language])
+    sent = []
+    monkeypatch.setattr(chat, "send", lambda _chat, text, **kwargs: sent.append((text, kwargs)) or 101)
+    miniapp.welcome(21, "")
+    assert len(sent) == 1 and "Pausa de prueba" in sent[0][0] and "Test pause" in sent[0][0]
+
+
+def test_new_guest_language_is_not_guessed_from_the_owners_setting(monkeypatch):
+    assert community.admit_from_securejoin(Rpc(), 1, 15)
+    chat.set_sender(ALICE)
+    monkeypatch.setattr(app, "_last_locale", {})
+    state.data["settings"]["language"] = "es"  # shared setting is not the new guest's device language
+    assert app._welcome_locale(21) == ""
+    state.data["prefs"][ALICE] = {"language": "en"}
+    assert app._welcome_locale(21) == "en"
+    state.data["prefs"][ALICE]["language"] = "auto"
+    app._last_locale[21] = "es"
+    assert app._welcome_locale(21) == "es"
+    app._last_locale.clear()
+    assert app._welcome_locale(21) == ""
+    state.data["apps"]["101"] = {"chat": 21, "addr": ALICE, "epoch": config.BOT_EPOCH,
+                                "access_session": access.session_stamp(ALICE),
+                                "locale": "en", "active": 100, "language_observed": True}
+    assert app._welcome_locale(21) == "en"
+    state.data["apps"]["101"]["language_observed"] = False
+    assert app._welcome_locale(21) == ""  # the initial fallback alone is not evidence
 
 
 def test_dispatch_per_person_limits_and_reserved_control_capacity():

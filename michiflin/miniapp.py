@@ -122,19 +122,18 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
                   "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
                   "this new instance has separate storage.")
     else:
-        text = tr(locale, "👋 ¡Hola! Soy Michiflin AI.\n\n"
-                          "Todo el bot vive en esta mini app: toca «Iniciar» (o el icono de la app) para abrirla. Dentro tienes la IA, la búsqueda, "
-                          "las páginas web, las descargas y los ajustes.\n\n"
-                          "No hace falta escribir en este chat: la app habla sola con el bot por correo. "
-                          "Las respuestas tardan unos segundos en llegar.",
-                  "👋 Hi! I'm Michiflin AI.\n\n"
-                  "The whole bot lives in this mini app: tap “Start” (or the app icon) to open it. Inside you'll find the AI, search, "
-                  "web pages, downloads and settings.\n\n"
-                  "There is no need to type in this chat: the app talks to the bot by email on its own. "
-                  "Answers take a few seconds to arrive.")
-    advisory = maintenance.text(locale)
-    if advisory:
-        text += "\n\n🛠️ " + advisory
+        spanish = ("👋 ¡Hola! Soy Michiflin AI. Descarga esta miniapp y ábrela con «Iniciar» o su icono. "
+                   "Dentro encontrarás IA, web, descargas y ajustes; las respuestas llegan por correo.")
+        english = ("👋 Hi! I'm Michiflin AI. Download this mini app, then open it with “Start” or its icon. "
+                   "Inside you'll find AI, web, downloads and settings; replies arrive by email.")
+        text = spanish + "\n\n" + english if bilingual_welcome else tr(locale, spanish, english)
+    # An unknown-language first welcome still needs to carry the maintenance
+    # notice for both audiences, without creating another chat message.
+    languages = ("es", "en") if bilingual_welcome and not updated else (locale,)
+    for language in languages:
+        advisory = maintenance.text(language)
+        if advisory:
+            text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
     if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         def interrupted_or_changed() -> bool:
@@ -149,8 +148,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             recipient = address or chat.sender()
             _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(), "locale": locale,
                                     "build": app_build(), "epoch": config.BOT_EPOCH,
-                                    "access_session": access.session_stamp(recipient),
-                                    "welcome_secondary_pending": bool(bilingual_welcome)}
+                                    "access_session": access.session_stamp(recipient)}
             # Every WebXDC instance owns its local storage. Dropping an old binding can
             # lead the history pruner to delete its bot-side message and strand projects.
             # Keep even older instances until the user explicitly deletes them.
@@ -224,52 +222,26 @@ def point_to_app(chat_id: int, locale: str) -> None:
     chat.send(chat_id, text, quote=msg_id or None)
 
 
-def _secondary_welcome(chat_id: int) -> None:
-    """Send the other language as text, never as a second app instance."""
-    with state.lock:
-        candidates = [(int(key), dict(entry)) for key, entry in _apps().items()
-                      if str(key).isdigit() and isinstance(entry, dict) and entry.get("chat") == chat_id
-                      and entry.get("welcome_secondary_pending") is True and access.bound_allowed(entry)]
-    if not candidates:
-        return
-    msg_id, entry = max(candidates, key=lambda pair: pair[0])
-    address = str(entry.get("addr") or "")
-    if str(entry.get("locale")) == "en":
-        text = "👋 ¡Hola! Abre la miniapp del mensaje anterior con «Iniciar». Todo el bot funciona dentro; no necesitas escribir /app."
-    else:
-        text = "👋 Hello! Open the mini app in the previous message with “Start”. The whole bot works inside; you don't need to type /app."
-    def changed() -> bool:
-        return not (access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry))
-    sent = chat.send(chat_id, text, quote=msg_id, interrupted=changed)
-    if sent:
-        with state.lock:
-            current = _apps().get(str(msg_id))
-            if isinstance(current, dict):
-                current["welcome_secondary_pending"] = False
-                state.save()
-
-
 def welcome(chat_id: int, locale: str) -> None:
-    """First contact: one app, with a separate welcome in the other language."""
+    """First contact: one app message; use both languages only if unknown."""
     with _upgrade_lock:
         entries = _bound_apps(chat_id)
         current_build = app_build()
         now = time.time()
         for entry in entries:
             if entry.get("build") == current_build:
-                if config.INVITE_AUTO_ACCESS:
-                    _secondary_welcome(chat_id)
+                # Old records may have a pending second-language flag from the
+                # previous release. Keep the record but never send that message.
                 return
             try:
                 if now - float(entry.get("sent", 0)) < 600:
                     return
             except (TypeError, ValueError):
                 pass
-        if config.INVITE_AUTO_ACCESS:
-            if send_app(chat_id, locale, bilingual_welcome=True):
-                _secondary_welcome(chat_id)
-        else:
+        if locale in {"es", "en"}:
             send_app(chat_id, locale)
+        else:
+            send_app(chat_id, "es", bilingual_welcome=True)
 
 
 def _instance(msg_id: int) -> dict[str, Any] | None:
@@ -302,6 +274,20 @@ def _bound_apps(chat_id: int) -> list[dict[str, Any]]:
                 continue
             entries.append(dict(entry))
     return entries
+
+
+def observed_locale(chat_id: int) -> str:
+    """Return a language actually sent by an authorized app, not a guessed default."""
+    observed: list[tuple[float, str]] = []
+    for entry in _bound_apps(chat_id):
+        language = entry.get("locale")
+        try:
+            active = float(entry.get("active") or 0)
+        except (TypeError, ValueError):
+            continue
+        if entry.get("language_observed") is True and active > 0 and language in {"es", "en"}:
+            observed.append((active, str(language)))
+    return max(observed, default=(0.0, ""))[1]
 
 
 SAFE_REPLAY = {"hello", "models", "health", "repair"}  # no provider calls or billable side effects
@@ -523,6 +509,7 @@ def on_status_update(msg_id: int) -> None:
                             and admin.is_allowed(address) and config.service_access_allowed(address)):
                         with state.lock:
                             entry["locale"] = language
+                            entry["language_observed"] = True
                     _route(msg_id, dict(entry), payload)
         state.save()
 

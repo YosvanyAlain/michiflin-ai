@@ -72,6 +72,24 @@ def _locale(text: str, chat_id: int) -> str:
     return found or _last_locale.get(chat_id, "es")
 
 
+def _welcome_locale(chat_id: int) -> str:
+    """Known chat/app language, or empty when a new recipient has not revealed it.
+
+    A global administrator preference is not a new guest's system language.
+    The app reports its own language only after the recipient opens and uses it.
+    """
+    person = state.acting_as()
+    with state.lock:
+        prefs = state.data["prefs"].get(person) if person else state.data["settings"]
+        configured = prefs.get("language") if isinstance(prefs, dict) else None
+    if configured in {"es", "en"}:
+        return str(configured)
+    recent = _last_locale.get(chat_id, "")
+    if recent in {"es", "en"}:
+        return recent
+    return miniapp.observed_locale(chat_id)
+
+
 def _process(msg: Any, text: str, locale: str, address: str) -> None:
     chat_id = msg.chat_id
     lock = _chat_locks.setdefault(chat_id, threading.Lock())
@@ -485,7 +503,7 @@ def _welcome(bot: Any, accid: int, contact_id: int) -> bool:
         lock = _chat_locks.setdefault(chat_id, threading.Lock())
         with lock, chat.recipient_guard(chat_id, address, contact_id):
             chat.set_sender(address)
-            miniapp.welcome(chat_id, _locale("", chat_id))
+            miniapp.welcome(chat_id, _welcome_locale(chat_id))
         return True
     except Exception as exc:
         # The email address and invitation must never appear in logs.
@@ -530,7 +548,7 @@ def _bootstrap_invitees(bot: Any, accid: int) -> None:
             lock = _chat_locks.setdefault(chat_id, threading.Lock())
             with lock, chat.recipient_guard(chat_id, address, int(members[0])):
                 chat.set_sender(address)
-                miniapp.welcome(chat_id, _locale("", chat_id))
+                miniapp.welcome(chat_id, _welcome_locale(chat_id))
         except Exception as exc:
             log.warning("invitee welcome deferred (%s)", type(exc).__name__)
 
@@ -555,7 +573,7 @@ def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
         with lock, chat.recipient_guard(chat_id, config.OWNER_ADDRESS, int(members[0])):
             chat.set_sender(config.OWNER_ADDRESS)
             if chat.recipient_allowed(chat_id) and not miniapp.latest_instance(chat_id):
-                miniapp.welcome(chat_id, _locale("", chat_id))
+                miniapp.welcome(chat_id, _welcome_locale(chat_id))
     except Exception as exc:
         log.warning("verified-owner startup deferred (%s)", type(exc).__name__)
 
@@ -649,7 +667,7 @@ def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
             with lock, chat.recipient_guard(chat_id, address, contact_id):
                 chat.set_sender(address)
                 if chat.recipient_allowed(chat_id):
-                    miniapp.welcome(chat_id, _locale("", chat_id))
+                    miniapp.welcome(chat_id, _welcome_locale(chat_id))
     except Exception as exc:
         log.warning("email recovery startup deferred (%s)", type(exc).__name__)
 
