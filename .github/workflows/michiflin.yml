@@ -393,7 +393,8 @@ jobs:
         if: ${{ env.LOCAL_GGUF_TEST_REQUESTED == '1' && steps.gguf_start.outcome != 'success' }}
         run: |
           bash tools/local_gguf_session.sh stop || true
-          echo "::warning::Local AI was not verified; the existing model-free agent remains available."
+          echo "LOCAL_GGUF_TEST_UNAVAILABLE=1" >> "$GITHUB_ENV"
+          echo "::warning::Local AI was not verified; explicit extractive research remains available."
 
       - name: Private session
         shell: bash
