@@ -19,7 +19,10 @@ cleanup() {
   # The directory's marker binds deletion to files made by this job; never
   # touch the workspace, state, backups or any pre-existing model directory.
   if sudo test -f "$WORK/.test-run-${GITHUB_RUN_ID:-unknown}"; then
-    sudo systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
+    if sudo systemctl is-active --quiet "$UNIT.service"; then
+      if ! sudo systemctl stop "$UNIT.service"; then echo 'SAFE_GGUF_STOP_FAILED'; return 1; fi
+    fi
+    if sudo systemctl is-active --quiet "$UNIT.service"; then echo 'SAFE_GGUF_STILL_ACTIVE'; return 1; fi
     sudo rm -rf -- "$WORK"
     sudo userdel "$USER_NAME" >/dev/null 2>&1 || true
   fi
