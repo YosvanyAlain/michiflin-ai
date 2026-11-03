@@ -101,6 +101,11 @@ jobs:
       STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
       STATE_BACKUP_REQUIRED: "1"
       STATE_BACKUP_STORAGE: releases
+      # Preserve existing recovery assets and all currently available blobs.
+      STATE_BACKUP_RETAIN_ALL: "1"
+      STATE_BACKUP_INCLUDE_BLOBS: "1"
+      # Clear only this handover pause, once, after the bot has initialized.
+      MICHIFLIN_GITHUB_RESUME_ONCE: "1"
       STATE_BACKUP_PASSPHRASE: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
       CHATMAIL_RELAY: nine.testrun.org
       RUNNING_SHA: ${{ github.sha }}
@@ -129,6 +134,11 @@ jobs:
           sudo apt-get install --yes --no-install-recommends build-essential ffmpeg p7zip-full socat iproute2 util-linux gnupg
           pip install -r requirements.txt
           pip install -U --pre "yt-dlp[default]"
+          # Cuba keeps UTC-4 through 2027; the runner image may ship older tzdata.
+          python -m pip install "tzdata==2026.6"
+          ZONEINFO="$(python -c 'from pathlib import Path; import tzdata; print(Path(tzdata.__file__).parent / "zoneinfo")')"
+          echo "PYTHONTZPATH=$ZONEINFO" >> "$GITHUB_ENV"
+          PYTHONTZPATH="$ZONEINFO" python -c "from datetime import datetime; from zoneinfo import ZoneInfo; assert int(datetime(2026,11,3,tzinfo=ZoneInfo('America/Havana')).utcoffset().total_seconds()) == -14400"
           echo "PW_VERSION=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_ENV"
 
       - name: Build the isolated selective RAR reader

@@ -159,7 +159,8 @@ def archive(source: Path) -> bytes:
 
 def _skip_bulky(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
     """Leave out sent/received attachment copies and temporary files; keys and databases stay."""
-    if member.isfile() and "-blobs/" in member.name and member.size > MAX_BLOB_BYTES:
+    if (os.getenv("STATE_BACKUP_INCLUDE_BLOBS", "0") != "1" and member.isfile()
+            and "-blobs/" in member.name and member.size > MAX_BLOB_BYTES):
         return None
     if member.name.endswith(".tmp"):
         return None
@@ -610,6 +611,9 @@ def save(*, rotate: bool = True) -> None:
         print("[backup] disabled: backup secrets are missing")
         return
     storage = os.getenv("STATE_BACKUP_STORAGE", "releases").strip()
+    # Operator-selected handover protection: do not rotate any older snapshots.
+    if os.getenv("STATE_BACKUP_RETAIN_ALL", "0") == "1":
+        rotate = False
     with _save_lock():
         if storage == "legacy-git":
             _save_legacy()

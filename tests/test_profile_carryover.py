@@ -16,7 +16,7 @@ https://github.com/YosvanyAlain/michiflin-ai"""
     merged = carry.merge_description(current, old, {"old-bot@example.invalid"})
     assert "Old useful description" in merged and "New useful description" in merged
     assert "old-bot@example.invalid" not in merged and "i.delta.chat" not in merged
-    assert merged.count(carry.profile.REPOSITORY_URL) == 1 and "/app" in merged
+    assert merged.count(carry.profile.REPOSITORY_URL) == 1 and carry.profile.START_HINT in merged
     assert carry.merge_description(merged, old, {"old-bot@example.invalid"}) == merged
 
 

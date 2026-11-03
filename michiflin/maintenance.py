@@ -37,6 +37,17 @@ def get() -> dict[str, Any]:
             "expires": float(value.get("expires") or 0)}
 
 
+def silent() -> bool:
+    """A quiet pause stays quiet even when it ends or the bot restarts."""
+    with state.lock:
+        notice = state.data.get("maintenance_notice")
+        return isinstance(notice, dict) and notice.get("silent") is True
+
+
+def silent_active() -> bool:
+    return silent() and state.maintenance_active()
+
+
 def set_notice(active: bool, es: str, en: str, minutes: int | None = None) -> dict[str, Any]:
     if (type(active) is not bool or not isinstance(es, str) or not isinstance(en, str)
             or (minutes is not None and (type(minutes) is not int or not 0 <= minutes <= MAX_MINUTES))):
@@ -112,6 +123,9 @@ def text(locale: str) -> str:
 
 
 def sync_profile() -> bool:
+    # A silent handover does not announce itself in the public profile.
+    if silent():
+        return False
     # A fast on/off must not leave the older public suffix installed last.
     with _profile_lock:
         return _sync_profile()

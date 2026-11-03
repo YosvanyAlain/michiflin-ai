@@ -62,6 +62,7 @@ jobs:
           python -m unittest discover -s tests -p test_new_features.py -v
           python -m unittest discover -s tests -p test_ai_music.py -v
           python -m unittest tests.test_backup_maintenance -v
+          python -m unittest tests.test_github_handover -v
           python -m unittest tests.test_social_accounts -v
           python -m unittest tests.test_personal_maintenance -v
           python -m unittest tests.test_operational_maintenance -v

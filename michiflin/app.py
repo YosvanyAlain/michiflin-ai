@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, identity_guard, links, live_web, miniapp, names, perf, profile, progress, queue, rates_monitor, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -533,7 +533,7 @@ def _submit_welcome(bot: Any, accid: int, contact_id: int) -> None:
 
 def _bootstrap_invitees(bot: Any, accid: int) -> None:
     """Finish a welcome after a crash, without adopting any historic allow-list."""
-    if not config.INVITE_AUTO_ACCESS:
+    if maintenance.silent() or not config.INVITE_AUTO_ACCESS:
         return
     from . import community
     for address in community.addresses():
@@ -555,7 +555,7 @@ def _bootstrap_invitees(bot: Any, accid: int) -> None:
 
 def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
     """Offer the new miniapp in the already verified owner chat, once bound."""
-    if config.EMAIL_KEY_RECOVERY or not (config.BOT_EPOCH_STRICT and config.BOT_VERIFIED_CONTACTS_ONLY and config.OWNER_ONLY):
+    if maintenance.silent() or config.EMAIL_KEY_RECOVERY or not (config.BOT_EPOCH_STRICT and config.BOT_VERIFIED_CONTACTS_ONLY and config.OWNER_ONLY):
         return
     try:
         marker = json.loads((config.CONFIG_DIR / ".verified-identity-v1.json").read_text(encoding="utf-8"))
@@ -585,7 +585,7 @@ def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
     replacement key. This is deliberately vulnerable to address impersonation;
     no wider address list or historical guest grant is activated here.
     """
-    if not config.EMAIL_KEY_RECOVERY:
+    if maintenance.silent() or not config.EMAIL_KEY_RECOVERY:
         return
     try:
         addresses = {address.casefold() for address in config.owner_admin_addresses() if admin.is_allowed(address)}
@@ -839,7 +839,8 @@ def on_start(bot: Any, args: Any) -> None:
     # Restore the owner's operational pause after a restart; access gates remain separate.
     from . import maintenance
     notice_state = state.data.get("maintenance_notice") or {}
-    if (maintenance.get()["active"] or notice_state.get("profile_suffix")) and not maintenance.sync_profile():
+    if (not maintenance.silent() and (maintenance.get()["active"] or notice_state.get("profile_suffix"))
+            and not maintenance.sync_profile()):
         log.warning("maintenance notice profile could not be updated")
     if not access.preserve_history():
         shutil.rmtree(config.TEMP_ROOT, ignore_errors=True)
@@ -864,9 +865,27 @@ def on_start(bot: Any, args: Any) -> None:
     threading.Thread(target=_catch_up, args=(bot, accid), name="catch-up", daemon=True).start()
     threading.Thread(target=_watch_updates, name="update-watch", daemon=True).start()
     threading.Thread(target=_housekeeping, name="housekeeping", daemon=True).start()
-    threading.Thread(target=miniapp.deliver_owner_notice, name="owner-notice", daemon=True).start()
+    if not maintenance.silent():
+        threading.Thread(target=miniapp.deliver_owner_notice, name="owner-notice", daemon=True).start()
     threading.Thread(target=miniapp.sweep_forever, name="app-sweep", daemon=True).start()
     log.info("Michiflin AI ready: %s providers", len(ai.providers()))
+    _resume_github_handover()
+
+
+def _resume_github_handover() -> None:
+    """End the verified handover pause once, without unsolicited announcements.
+
+    The persisted marker is written first: an interrupted transition fails
+    closed instead of disabling a later maintenance chosen by the owner.
+    """
+    flag = "github_handover_resumed_v1"
+    if (os.getenv("MICHIFLIN_GITHUB_RESUME_ONCE") != "1" or state.flag(flag)
+            or not maintenance.silent_active() or not chat.ready()):
+        return
+    notice = maintenance.get()
+    state.set_flag(flag, True)
+    maintenance.set_notice(False, notice["es"], notice["en"], minutes=0)
+    log.info("GitHub handover initialized; quiet maintenance ended")
 
 
 class _Redact(logging.Filter):
