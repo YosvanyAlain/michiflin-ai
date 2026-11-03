@@ -1,19 +1,46 @@
-name: Diagnostic artifact visibility test
-on:
-  workflow_dispatch:
+name: Safe diagnostic fallback proof
+on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  artifact-test:
+  diagnostic:
     runs-on: ubuntu-latest
     timeout-minutes: 4
+    env:
+      LOCAL_GGUF_TEST_REQUESTED: '1'
     steps:
-      - name: Create harmless diagnostic
-        run: echo SAFE_ARTIFACT_PROBE > "$RUNNER_TEMP/safe-probe.txt"
-      - uses: actions/upload-artifact@v4
+      - name: Prepare isolated local AI test
+        id: gguf_prepare
+        if: env.LOCAL_GGUF_TEST_REQUESTED == '1'
+        continue-on-error: true
+        timeout-minutes: 11
+        run: |
+          # Keep only fixed safety markers and numeric curl error codes in the
+          # optional diagnostic artifact; never upload arbitrary process output.
+          set +e
+          set -o pipefail
+          bash -c 'echo SAFE_GGUF_PREFLIGHT memory_kib=123 disk_kib=456 cgroup=max; echo SAFE_GGUF_PREP_LOW_RESOURCES; echo fake-private-payload; echo "curl: (22) The requested URL returned error: 403"; exit 1' 2>&1 | tee "$RUNNER_TEMP/gguf-prepare-raw.log"
+          result=(${PIPESTATUS[@]})
+          {
+            grep -E '^SAFE_GGUF_(PREP_[A-Z_]+|ENGINE_DOWNLOAD|MODEL_DOWNLOAD|SERVER_[A-Z_]+)$|^SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)$' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            grep -oE '^curl: \([0-9]+\)|returned error: [0-9]+' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            echo "SAFE_GGUF_DIAGNOSTIC_EXIT=${result[0]}"
+          } > "$RUNNER_TEMP/gguf-prepare-status.log"
+          rm -f "$RUNNER_TEMP/gguf-prepare-raw.log"
+          if [ "${result[0]}" -ne 0 ] || [ "${result[1]}" -ne 0 ]; then exit 1; fi
+
+      - name: Save local AI startup diagnostics
+        if: ${{ env.LOCAL_GGUF_TEST_REQUESTED == '1' && steps.gguf_prepare.outcome == 'failure' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
         with:
-          name: harmless-gguf-diagnostic
-          path: ${{ runner.temp }}/safe-probe.txt
+          name: local-gguf-startup-diagnostic
+          path: ${{ runner.temp }}/gguf-*-status.log
           retention-days: 1
-      - name: Keep test session open
+          if-no-files-found: ignore
+
+      - name: Safe fallback
+        if: steps.gguf_prepare.outcome == 'failure'
+        run: echo SAFE_FALLBACK_TRIGGERED
+      - name: Keep test open
         run: sleep 90
