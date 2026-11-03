@@ -44,5 +44,5 @@ jobs:
           export LOCAL_GGUF_ENABLED=1 LOCAL_GGUF_ACTIONS_TEST=1
           export LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock
           export LOCAL_GGUF_KEY_FILE="$RUNNER_TEMP/michiflin-local-gguf-key"
-          python tools/gguf_fair_integration_probe.py
+          PYTHONPATH="$GITHUB_WORKSPACE" python tools/gguf_fair_integration_probe.py
           sudo systemctl show michiflin-local-gguf.service -p MemoryCurrent | sed 's/^/SAFE_MODEL_AFTER_TEST /'
