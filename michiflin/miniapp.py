@@ -872,8 +872,8 @@ def _local_ai_disclosure(instance_id: int) -> None:
     try:
         sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {
             "kind": "info",
-            "es": "Prueba: el agente puede usar IA local. La etiqueta anterior «sin IA» de esta app está desactualizada.",
-            "en": "Test: the agent may use local AI. The old 'no AI' label in this app is out of date.",
+            "es": "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas.",
+            "en": "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. Searches use external sources.",
         }})
     finally:
         if not sent:
@@ -1326,14 +1326,16 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     history = args.get("history") if isinstance(args.get("history"), list) else []
     if space == "agent":
         from . import local_ai
-        result = run_captured(lambda: agent.handle(chat_id, text, locale, history), locale)
-        if local_ai.configured():
-            # Existing apps remain the exact same build, so their static old
-            # 'no AI' label cannot be changed in place. Correct it in-band.
-            notice = tr(locale,
-                "ℹ️ Prueba: este modo puede usar IA local; la etiqueta «sin IA» de esta app está desactualizada.",
-                "ℹ️ Test: this mode may use local AI; the app's 'no AI' label is out of date.")
-            result["text"] = notice + "\n\n" + result["text"]
+        handled: list[local_ai.Result | None] = []
+        result = run_captured(lambda: handled.append(agent.handle(chat_id, text, locale, history)), locale)
+        generated = handled[0] if handled else None
+        if isinstance(generated, local_ai.Result) and generated.status == "ok" and generated.method == "model":
+            # Only the trusted route result authorizes this attribution. The
+            # installed app already renders `sig` discreetly in its bubble foot.
+            footer = "\n\n" + local_ai.model_footer(locale)
+            if result["text"].endswith(footer):
+                result["text"] = result["text"][:-len(footer)].rstrip()
+                result["sig"] = tr(locale, "IA local", "Local AI")
         return result
     if space == "smart_agent" and not attachment:
         agent_model = _clean(args.get("agent_model"))[:180]

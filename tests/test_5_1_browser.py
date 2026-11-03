@@ -3,6 +3,9 @@ from __future__ import annotations
 
 
 import pytest
+from unittest import mock
+
+from michiflin import chat, local_ai, miniapp, state
 
 from tests.test_webxdc_browser import browser_fixture, screenshot_if_requested
 
@@ -280,3 +283,50 @@ def test_bilingual_rates_help_and_real_receipts_explanation(language, width):
         assert ('recibos de lectura' if language == 'es' else 'read receipts') in page.locator('details.help').first.inner_text()
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
         assert errors == []
+
+
+@pytest.mark.parametrize("engine", ["chromium", "webkit"])
+@pytest.mark.parametrize("language,question,answer,signature", [
+    ("es", "¿Cómo te llamas?", "Me llamo Michiflin.", "IA local"),
+    ("en", "What is your name?", "My name is Michiflin.", "Local AI"),
+])
+def test_existing_app_displays_local_answer_in_original_bubble_footer(monkeypatch, language, question, answer, signature, engine):
+    # The Python handler is real but the local model is a synthetic result; the
+    # app files and Delta bridge are the exact existing ones, with no live bot.
+    monkeypatch.setenv("LOCAL_GGUF_ENABLED", "1")
+    monkeypatch.setenv("LOCAL_GGUF_ACTIONS_TEST", "1")
+    sender = "browser-fixture@example.test"
+    local_ai.forget(791, sender)
+    try:
+        with mock.patch.object(chat, "sender", return_value=sender), \
+             mock.patch.object(state, "get_kill_switch", return_value=False), \
+             mock.patch.object(local_ai, "complete", return_value=local_ai.Result("ok", answer)):
+            result = miniapp.op_ask(791, {"space": "agent", "text": question}, language)
+        assert result["text"] == answer and result["sig"] == signature
+        with browser_fixture(language, {"width": 375, "height": 812}, engine=engine) as (page, errors):
+            page.evaluate("""value => {
+              window.__fixtureAskResult = value;
+              store.set('chat.agent', [{role:'user', text:'HISTORIAL SIMULADO', ts:1},
+                {role:'assistant', text:'Conservado', ts:1}]);
+              Object.defineProperty(navigator, 'clipboard', {configurable:true,
+                value:{writeText:async text => {window.__copied = text}}});
+            }""", result)
+            page.locator('.tab[data-tab="ai"]:visible').click()
+            page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
+            page.locator("#view textarea").fill(question)
+            page.locator("#view .composer button.primary").click()
+            bubble = page.locator(".bubble.bot").last
+            bubble.locator(".rich").get_by_text(answer, exact=True).wait_for(state="visible")
+            assert bubble.locator(".rich").inner_text() == answer
+            assert bubble.locator(".bubble-foot small.muted").inner_text() == signature
+            assert bubble.locator(".bubble-foot").bounding_box()["y"] > bubble.locator(".rich").bounding_box()["y"]
+            assert bubble.locator(".bubble-foot small").evaluate("e => parseFloat(getComputedStyle(e).fontSize)") < \
+                bubble.locator(".rich").evaluate("e => parseFloat(getComputedStyle(e).fontSize)")
+            bubble.locator(".bubble-foot button").click()
+            page.wait_for_function("window.__copied !== undefined")
+            assert page.evaluate("window.__copied") == answer  # copy excludes attribution
+            assert page.evaluate("store.get('chat.agent')[0].text") == "HISTORIAL SIMULADO"
+            assert errors == []
+            screenshot_if_requested(page, f"{language}-{engine}-local-footer-synthetic")
+    finally:
+        local_ai.forget(791, sender)

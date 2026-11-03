@@ -48,7 +48,8 @@ CODE = re.compile(r"```|\b(python|javascript|typescript|java|kotlin|c\+\+|c#|gol
 # Route only recognizably factual questions automatically; explicit “search”
 # remains available when this conservative heuristic does not recognize one.
 _CURRENT_QUESTION = re.compile(r"^(?:qu[eé]|qui[eé]n(?:es)?|cu[aá]l(?:es)?|cu[aá]ndo|d[oó]nde|cu[aá]nt[oa]s?|what|who|which|when|where|how\s+(?:much|many))\b", re.I)
-_PERSONAL_CONTEXT = re.compile(r"\b(?:yo|mi|mis|me|m[ií]o|m[ií]a|my|mine|myself|i)\b", re.I)
+_PERSONAL_CONTEXT = re.compile(
+    r"\b(?:yo|mi|mis|me|m[ií]o|m[ií]a|my|mine|myself|i|t[uú]|tus|tuy[oa]s?|you|your|yours)\b", re.I)
 REASON = re.compile(r"\b(explica|explicame|expl[ií]came|por qu[eé]|analiza|compara|eval[uú]a|demuestra|resuelve|razona|calcula|plan|estrategia|ventajas|desventajas|explain|why|analy[sz]e|compare|prove|solve|reason|pros and cons)\b", re.I)
 TRANSLATE = re.compile(r"^(?:traduce(?:me)?|traducir|tradúceme|translate)\s+(?:(?:al?|en|to|into)\s+)?(ingl[eé]s|espa[nñ]ol|franc[eé]s|portugu[eé]s|"
                        r"italiano|alem[aá]n|ruso|chino|japon[eé]s|english|spanish|french|portuguese|italian|german|russian|chinese|japanese)\s*:?\s+(.+)$|"
@@ -232,13 +233,17 @@ def send_image(chat_id: int, prompt: str, locale: str) -> None:
     chat.send(chat_id, f"🎨 {compact(images.clean_prompt(prompt), 160)}\n— {result.source}", file=target, filename=target.name, viewtype="Image")
 
 
-def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> None:
-    """Route through free tools or an opt-in loopback model; never spend provider AI quota."""
+def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> local_ai.Result | None:
+    """Route through free tools or an opt-in loopback model; never spend provider AI quota.
+
+    Return the local result, when used, so the existing miniapp can label its
+    output without guessing from text. Ordinary chat callers can ignore it.
+    """
     with ai.isolated():
-        _handle(chat_id, text, locale, history)
+        return _handle(chat_id, text, locale, history)
 
 
-def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> None:
+def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> local_ai.Result | None:
     address = (chat.sender() or "").strip().lower()
     if address and state.get_kill_switch(address):
         chat.text(chat_id, tr(locale, "🛑 Kill switch activo. Usa /kill_switch no para reanudar.",
@@ -310,7 +315,7 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             chat.text(chat_id, tr(locale, "🔎 Para ampliar los extractos web, pregunta por un aspecto concreto y volveré a buscar fuentes.",
                                   "🔎 To expand the web excerpts, ask about a specific aspect and I will search for sources again."))
         elif local_privacy and has_reply:
-            local_reply(chat_id, stripped, locale, history, research=False)
+            return local_reply(chat_id, stripped, locale, history, research=False)
         elif FOLLOW_MORE.match(stripped):
             chat.text(chat_id, more(chat_id, locale))
         else:
@@ -383,12 +388,14 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
     match = SEARCH.match(stripped)
     if match:
         if local_privacy:
-            local_reply(chat_id, stripped, locale, history, research=True)
+            return local_reply(chat_id, stripped, locale, history, research=True)
         else:
             chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
         return
     match = DEFINITION.match(stripped)
-    if match and not CURRENT.search(stripped):
+    if match and not CURRENT.search(stripped) and not (local_privacy and _PERSONAL_CONTEXT.search(match.group(2))):
+        # Addressed/personal questions are conversation, not encyclopedia
+        # definitions: do not silently send them to an external lookup.
         wiki_result = tools.wiki_summary(match.group(2), locale)
         if wiki_result and answer._about(wiki_result[0], stripped):
             title, extract, page_url = wiki_result
@@ -402,12 +409,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         research = (bool(CURRENT.search(stripped)) and bool(_CURRENT_QUESTION.match(stripped))
                     and not CODE.search(stripped) and not _PERSONAL_CONTEXT.search(stripped)
                     and not local_ai.test_unavailable())
-        local_reply(chat_id, stripped, locale, history, research=research)
+        return local_reply(chat_id, stripped, locale, history, research=research)
     else:
         chat.text(chat_id, reply(chat_id, stripped, locale))
 
 
-def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool) -> None:
+def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool) -> local_ai.Result:
     """A bounded local answer; source lookups use only the user's current question."""
     progress.phase("🔎 Buscando fuentes…" if research else "⏳ Preparando consulta de IA local…",
                    "🔎 Searching sources…" if research else "⏳ Preparing local AI request…")
@@ -425,6 +432,7 @@ def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None,
         remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text
         local_ai.remember(chat_id, sender, text, remembered)
     chat.text(chat_id, local_ai.display(result, locale))
+    return result
 
 
 def re_cuba(text: str) -> bool:
