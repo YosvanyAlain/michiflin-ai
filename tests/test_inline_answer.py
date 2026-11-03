@@ -420,3 +420,22 @@ def test_reservation_stays_bound_if_the_same_answer_expires():
     _, version = pages.reserve(k, history(first["text"]))
     moment[0] = 6
     assert "ya no está disponible" in pages.take(k, history(first["text"]), "es", expected=version)["text"]
+
+
+def test_continuation_keeps_long_question_constraints_and_more_recent_answer():
+    person, scope, chat_id = "detailed@example.test", "verified-app", 882
+    local_ai.forget(chat_id, person)
+    question = "TEMA-INICIAL " + "detalle " * 200 + " REQUISITO-DEL-FINAL"
+    first = "PRIMER-INICIO " + "pasos " * 300 + " PRIMER-FINAL"
+    local_ai.remember(chat_id, person, question, first, scope)
+    anchor = local_ai.anchor(chat_id, person, scope)
+    assert len(anchor[0]) <= 600 and "TEMA-INICIAL" in anchor[0] and "REQUISITO-DEL-FINAL" in anchor[0]
+    initial_context = local_ai._history(local_ai.history(chat_id, person, scope), anchor)
+    assert len(initial_context[1]["content"]) > 1000 and "PRIMER-FINAL" in initial_context[1]["content"]
+    for number in range(4):
+        local_ai.remember(chat_id, person, "continúa", "INICIO " + "detalle " * 200 + f" ULTIMO-{number}", scope)
+    messages = local_ai._history(local_ai.history(chat_id, person, scope), local_ai.anchor(chat_id, person, scope))
+    assert "REQUISITO-DEL-FINAL" in messages[0]["content"]
+    assert "ULTIMO-3" in messages[-1]["content"] and len(messages[-1]["content"]) >= 1000
+    assert sum(len(item["content"]) for item in messages) <= 2400
+    local_ai.forget(chat_id, person)
