@@ -88,12 +88,12 @@ def _public_socket(host: str, port: int, timeout: float) -> socket.socket:
 
 class _PublicHTTP(http.client.HTTPConnection):
     def connect(self) -> None:
-        self.sock = _public_socket(self.host, self.port, 15.0)
+        self.sock = _public_socket(self.host, self.port, float(self.timeout or 15.0))
 
 
 class _PublicHTTPS(http.client.HTTPSConnection):
     def connect(self) -> None:
-        sock = _public_socket(self.host, self.port, 15.0)
+        sock = _public_socket(self.host, self.port, float(self.timeout or 15.0))
         try:
             self.sock = ssl.create_default_context().wrap_socket(sock, server_hostname=self.host)
         except BaseException:
@@ -101,19 +101,23 @@ class _PublicHTTPS(http.client.HTTPSConnection):
             raise
 
 
-def _read(url: str) -> str:
+def _read(url: str, *, total_timeout: float | None = None) -> str:
     from bs4 import BeautifulSoup
 
     # No cookies, credentials, proxy environment or browser session are used.
+    deadline = time.monotonic() + max(1.0, min(60.0, float(total_timeout))) if total_timeout is not None else None
     current = url
     for _ in range(5):
+        remaining = 15.0 if deadline is None else min(15.0, deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("page_timeout")
         if not _url(current):
             raise ValueError("bad_url")
         parsed = urlsplit(current)
         host = parsed.hostname or ""
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         conn_type = _PublicHTTPS if parsed.scheme == "https" else _PublicHTTP
-        connection = conn_type(host, port, timeout=15)
+        connection = conn_type(host, port, timeout=remaining)
         try:
             target = (parsed.path or "/") + ("?" + parsed.query if parsed.query else "")
             connection.request("GET", target, headers={"User-Agent": "Michiflin-research/1.0", "Accept": "text/html,text/plain"})
