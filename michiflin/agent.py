@@ -44,6 +44,11 @@ SEARCH = re.compile(r"^(busca|buscar|b[uú]scame|investiga|search|look up|google
 DEFINITION = re.compile(r"^(qu[eé] es|qu[eé] son|qui[eé]n es|qui[eé]n fue|qui[eé]nes son|qu[eé] significa|definici[oó]n de|what is|what are|who is|who was|define)\s+(.{2,80}?)\??$", re.I)
 CURRENT = re.compile(r"\b(hoy|ahora|actual|actualmente|[uú]ltim[oa]s?|reciente|esta semana|este mes|este a[nñ]o|202[5-9]|precio|cotizaci[oó]n|resultado|marcador|qui[eé]n gan[oó]|cu[aá]ndo (es|ser[aá]|juega)|today|now|current|latest|recent|price|score|who won|this week)\b", re.I)
 CODE = re.compile(r"```|\b(python|javascript|typescript|java|kotlin|c\+\+|c#|golang|rust|php|sql|bash|regex|html|css|react|node|django|flask|api|json|error|traceback|exception|bug|compil|funci[oó]n|function|script|c[oó]digo|code|programa|algoritmo|git)\b", re.I)
+# A mere mention of “today” can be personal chat, not permission to search.
+# Route only recognizably factual questions automatically; explicit “search”
+# remains available when this conservative heuristic does not recognize one.
+_CURRENT_QUESTION = re.compile(r"^(?:qu[eé]|qui[eé]n(?:es)?|cu[aá]l(?:es)?|cu[aá]ndo|d[oó]nde|cu[aá]nt[oa]s?|what|who|which|when|where|how\s+(?:much|many))\b", re.I)
+_PERSONAL_CONTEXT = re.compile(r"\b(?:yo|mi|mis|me|m[ií]o|m[ií]a|my|mine|myself|i)\b", re.I)
 REASON = re.compile(r"\b(explica|explicame|expl[ií]came|por qu[eé]|analiza|compara|eval[uú]a|demuestra|resuelve|razona|calcula|plan|estrategia|ventajas|desventajas|explain|why|analy[sz]e|compare|prove|solve|reason|pros and cons)\b", re.I)
 TRANSLATE = re.compile(r"^(?:traduce(?:me)?|traducir|tradúceme|translate)\s+(?:(?:al?|en|to|into)\s+)?(ingl[eé]s|espa[nñ]ol|franc[eé]s|portugu[eé]s|"
                        r"italiano|alem[aá]n|ruso|chino|japon[eé]s|english|spanish|french|portuguese|italian|german|russian|chinese|japanese)\s*:?\s+(.+)$|"
@@ -392,7 +397,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             chat.text(chat_id, f"📚 {title}\n\n{extract}\n\n{links.command('v', page_url)} · {names.cmd(locale, 'more')}")
             return
     if local_privacy:
-        local_reply(chat_id, stripped, locale, history, research=bool(CURRENT.search(stripped)) and not CODE.search(stripped))
+        # In a failed Actions test, only the explicit search command above may
+        # send free text to a search engine; ordinary chat and code fail closed.
+        research = (bool(CURRENT.search(stripped)) and bool(_CURRENT_QUESTION.match(stripped))
+                    and not CODE.search(stripped) and not _PERSONAL_CONTEXT.search(stripped)
+                    and not local_ai.test_unavailable())
+        local_reply(chat_id, stripped, locale, history, research=research)
     else:
         chat.text(chat_id, reply(chat_id, stripped, locale))
 
