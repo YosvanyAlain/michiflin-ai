@@ -1,8 +1,8 @@
 """Plain-message agent: detects intent and answers with the cheapest adequate tool.
 
 Order: local replies → URLs → images → calculator/weather/rates/news → encyclopedia →
-web search for current facts → AI with a role-matched model. Search results are used
-before AI where possible so free AI quotas last longer.
+optional loopback GGUF for chat/code and bounded web research. Without that explicitly
+enabled engine, the existing model-free web answer remains the fallback.
 """
 from __future__ import annotations
 
@@ -14,16 +14,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from . import ai, answer, chat, config, documents, extras, images, links, names, pager, progress, state, tools, web
+from . import ai, answer, chat, config, documents, extras, images, links, local_ai, names, pager, progress, state, tools, web
 from .util import compact, first_url, local_today, tr
 
 GREETINGS = re.compile(r"^(hola+|buenas( tardes| noches| d[ií]as)?|buenos d[ií]as|hey|hi|hello|ey|saludos|qu[eé] tal|klk)[\s!.,😀-🙏]*$", re.I)
 CAPABILITIES = re.compile(
     r"^(?:(?:hola|oye|dime|cu[eé]ntame|por favor|please|hi|hey|tell me)[,\s]+)*"
-    r"(?:qu[eé] (?:puedes|sabes|puedo) hacer|qu[eé] haces|para qu[eé] sirves|c[oó]mo funcionas|qui[eé]n eres|"
+    r"(?:qu[eé] (?:puedes|sabes|puedo|puede) hacer|qu[eé] eres capaz de hacer|qu[eé] haces|para qu[eé] sirves|c[oó]mo funcionas|qui[eé]n eres|"
     r"qu[eé] (?:funciones|herramientas|capacidades) tienes|ayuda|help|what can (?:you|i) do|what do you do|"
     r"who are you|how do you work|what you can do|what are your (?:features|capabilities))"
-    r"(?:\s+(?:aqu[ií]|en este modo|por favor|please|here))?[\s?!.¿¡]*$", re.I)
+    r"(?:\s+(?:aqu[ií]|en este modo|michiflin|este agente|por favor|please|here))?[\s?!.¿¡]*$", re.I)
 FOLLOW_MORE = re.compile(r"^(?:m[aá]s|m[aá]s detalles|ampl[ií]a(?:lo)?|cu[eé]ntame m[aá]s|contin[uú]a|"
                          r"more|more details|tell me more|continue)[\s?!.]*$", re.I)
 FOLLOW_SUMMARY = re.compile(r"^(?:res[uú]melo|res[uú]mela|resume|resumen|summari[sz]e it|summary)[\s?!.]*$", re.I)
@@ -83,6 +83,7 @@ def memory(chat_id: int) -> Memory:
 def forget(chat_id: int) -> None:
     with _lock:
         _memory.pop(chat_id, None)
+    local_ai.forget(chat_id, chat.sender() or "")
 
 
 def system_prompt(locale: str) -> str:
@@ -227,7 +228,7 @@ def send_image(chat_id: int, prompt: str, locale: str) -> None:
 
 
 def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> None:
-    """Route one plain-text message through free tools only; models and their keys are never touched."""
+    """Route through free tools or an opt-in loopback model; never spend provider AI quota."""
     with ai.isolated():
         _handle(chat_id, text, locale, history)
 
@@ -254,6 +255,22 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
                               "👋 Hi! Ask me anything or paste a link. I search, read the sources and bring you the essentials."))
         return
     if CAPABILITIES.match(stripped):
+        if local_ai.ready():
+            chat.text(chat_id, tr(
+                locale,
+                "Soy el agente de Michiflin AI. En este modo puedo conversar y ayudarte a redactar o programar "
+                "con IA local, sin enviar el chat a un proveedor de IA ni gastar sus cuotas. También busco "
+                "fuentes públicas cuando preguntas por información actual, resumo páginas, traduzco, "
+                "calculo y consulto clima, noticias y tasas. La búsqueda sí envía tu consulta al buscador "
+                "y puede fallar o tener límites; mis respuestas pueden contener errores. No ejecuto código, "
+                "inicio sesiones ni realizo acciones privadas por mi cuenta. Para proyectos usa Programador.",
+                "I am the Michiflin AI agent. In this mode I can converse and help draft or code using local AI, "
+                "without sending the chat to an AI provider or spending its quota. I can also search public "
+                "sources for current information, summarize pages, translate, calculate and check weather, "
+                "news and exchange rates. Search does send your query to the search provider and may fail or "
+                "have limits; my answers can be wrong. I do not execute code, log in or perform private "
+                "actions on my own. Use Coder for projects."))
+            return
         chat.text(chat_id, tr(
             locale,
             "Soy el agente de Michiflin AI. Trabajo solo con herramientas gratuitas, sin ningún modelo de IA ni sus cuotas:\n"
@@ -271,11 +288,19 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             "Say ‘more’ to expand a search. For writing or reasoning with a model, switch to With AI; "
             "use Coder for projects. I do not log in or perform private actions on my own."))
         return
-    if FOLLOW_MORE.match(stripped):
-        chat.text(chat_id, more(chat_id, locale))
-        return
-    if FOLLOW_SUMMARY.match(stripped):
-        chat.text(chat_id, summary(chat_id, locale))
+    if FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped):
+        sender = (chat.sender() or "").strip().lower()
+        prior_turns = local_ai.history(chat_id, sender) if local_ai.configured() else (history or [])
+        has_reply = any(isinstance(turn, list) and len(turn) == 2 and turn[0] == "assistant" for turn in (prior_turns or []))
+        if local_ai.configured() and has_reply and local_ai.last_reply_was_web(prior_turns):
+            chat.text(chat_id, tr(locale, "🔎 Para ampliar los extractos web, pregunta por un aspecto concreto y volveré a buscar fuentes.",
+                                  "🔎 To expand the web excerpts, ask about a specific aspect and I will search for sources again."))
+        elif local_ai.configured() and has_reply:
+            local_reply(chat_id, stripped, locale, history, research=False)
+        elif FOLLOW_MORE.match(stripped):
+            chat.text(chat_id, more(chat_id, locale))
+        else:
+            chat.text(chat_id, summary(chat_id, locale))
         return
     follow_city = FOLLOW_CITY.match(stripped)
     if follow_city and item.last_kind == "weather":
@@ -343,7 +368,10 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     match = SEARCH.match(stripped)
     if match:
-        chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
+        if local_ai.configured():
+            local_reply(chat_id, stripped, locale, history, research=True)
+        else:
+            chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
         return
     match = DEFINITION.match(stripped)
     if match and not CURRENT.search(stripped):
@@ -354,7 +382,26 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             item.last_query, item.last_kind, item.last_results = stripped, "wiki", []
             chat.text(chat_id, f"📚 {title}\n\n{extract}\n\n{links.command('v', page_url)} · {names.cmd(locale, 'more')}")
             return
-    chat.text(chat_id, reply(chat_id, stripped, locale))
+    if local_ai.configured():
+        local_reply(chat_id, stripped, locale, history, research=bool(CURRENT.search(stripped)) and not CODE.search(stripped))
+    else:
+        chat.text(chat_id, reply(chat_id, stripped, locale))
+
+
+def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool) -> None:
+    """A bounded local answer; source lookups use only the user's current question."""
+    progress.phase("🔎 Buscando fuentes…" if research else "💬 Pensando localmente…",
+                   "🔎 Searching sources…" if research else "💬 Thinking locally…")
+    sender = (chat.sender() or "").strip().lower()
+    # Only process-owned, per-sender history enters the local model. Client
+    # history may contain arbitrary old page text and cannot be authenticated.
+    supplied = local_ai.history(chat_id, sender)
+    result = local_ai.complete(text, locale, supplied, research=research)
+    if result.status == "ok":
+        # Do not store untrusted web text in the model's conversational history.
+        remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text
+        local_ai.remember(chat_id, sender, text, remembered)
+    chat.text(chat_id, local_ai.display(result, locale))
 
 
 def re_cuba(text: str) -> bool:

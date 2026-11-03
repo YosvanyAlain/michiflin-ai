@@ -1,29 +1,31 @@
-name: Technical maintenance
-
-on:
-  schedule:
-    - cron: "20 3 * * *"
-  workflow_dispatch:
-
+name: Web extraction safety (isolated test)
+on: workflow_dispatch
 permissions:
   contents: read
-  actions: write
-
-concurrency:
-  group: michiflin-technical-maintenance
-  cancel-in-progress: false
-
 jobs:
-  old-action-logs:
+  tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    env:
+      CONFIG_DIR: /tmp/michiflin-extractive/config
+      JOB_DIR: /tmp/michiflin-extractive/jobs
+      PREVIEW_DIR: /tmp/michiflin-extractive/tmp
+      FREE_GATEWAYS: '0'
+      AI_HORDE: '0'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          python-version: '3.12'
+      - name: Install project test dependencies
+        run: pip install -r requirements.txt pytest ruff
+      - name: Isolated agent and security tests
+        run: |
+          python -m pytest -q tests/test_local_gguf.py tests/test_youtube_challenge_safe.py tests/test_5_1_features.py tests/test_new_features.py
+          python -m unittest discover -s tests -p test_logic.py -v
+          python tests/test_webxdc.py
+          ruff check michiflin/agent.py michiflin/local_ai.py michiflin/smart_agent.py michiflin/tools.py michiflin/media.py tests/test_local_gguf.py tests/test_youtube_challenge_safe.py --select F,E9
+      - name: Real synthetic web search without model ingestion
+        run: python tools/extractive_probe.py
