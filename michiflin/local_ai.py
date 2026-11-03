@@ -387,6 +387,11 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         _turns.release(ticket)
 
 
+def model_footer(locale: str) -> str:
+    """Plain-chat attribution; WebXDC can move this into its existing footer."""
+    return tr(locale, "— IA local, sin proveedor externo", "— Local AI, no external provider")
+
+
 def display(result: Result, locale: str) -> str:
     if result.status == "ok":
         text = result.text
@@ -399,7 +404,7 @@ def display(result: Result, locale: str) -> str:
                        "\n\n[Local output limit reached; ask to continue.]")
         if result.method == "web":
             return text + "\n\n" + tr(locale, WEB_MARKER_ES, WEB_MARKER_EN)
-        return text + tr(locale, "\n\n— IA local, sin proveedor externo", "\n\n— Local AI, no external provider")
+        return text + "\n\n" + model_footer(locale)
     if result.status == "duplicate":
         return tr(locale, "⏳ Ya tienes una consulta de IA local en curso o esperando. Termínala antes de enviar otra.",
                   "⏳ You already have a local AI request running or waiting. Finish it before sending another.")

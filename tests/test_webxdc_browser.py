@@ -100,7 +100,7 @@ BRIDGE = r"""
         b64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=" };
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
-      case "ask": return { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
+      case "ask": return window.__fixtureAskResult || { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
       case "queue": return { jobs: [] };
       case "action": return { title: "Smoke test", text: "smoke test result" };
       default: return {};

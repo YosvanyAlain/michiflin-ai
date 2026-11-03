@@ -57,14 +57,21 @@ acciones privadas**. La búsqueda explícita o de información actual consulta u
 buscador con la pregunta actual y muestra extractos y enlaces. El reconocimiento
 automático de preguntas actuales es conservador; ante la duda escribe «busca …».
 No pasa páginas
-externas al modelo; las fuentes aún pueden equivocarse o ser engañosas. No envíes
-contraseñas a consultas web: el filtrado preventivo no es infalible.
+externas al modelo; las fuentes aún pueden equivocarse o ser engañosas. En este
+modo, un filtro heurístico intenta evitar que preguntas con pronombres personales
+se traten como definiciones para Wikipedia; no garantiza confidencialidad. El
+enrutador también puede abrir enlaces: no incluyas contraseñas ni tokens en consultas
+web o URL.
 
 Las miniapps existentes se conservan **sin cambiar sus archivos ni su build** y
 no se distribuye otra automáticamente. Sus textos antiguos pueden seguir diciendo
-«sin IA»: al interactuar reciben un aviso y cada respuesta del agente indica que
-el modo puede usar IA local. Esto corrige la interpretación, pero no modifica la
-etiqueta estática antigua. Cuando la prueba se desactiva, no aparece ese aviso.
+«sin IA»: al interactuar reciben un aviso informativo en la lista de avisos. Las
+respuestas realmente generadas por el modelo llevan una firma discreta «IA local»
+en el pie de la burbuja, no un aviso grande delante del texto. La firma ocupa el
+lugar de la hora en esas respuestas en esta versión de la app. Las búsquedas
+conservan su propio marcador y los errores no se etiquetan como IA. El chat normal
+mantiene su atribución textual. Este ajuste no reescribe el historial ni modifica
+las etiquetas estáticas antiguas; al desactivar la prueba no se emite ese aviso.
 
 ## Modelo y mediciones
 

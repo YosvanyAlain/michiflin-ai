@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from michiflin import agent, ai, chat, local_ai, state, tools
+from michiflin import agent, ai, chat, local_ai, miniapp, state, tools
 
 
 @pytest.fixture
@@ -324,3 +324,136 @@ def test_personal_and_drafting_mentions_of_today_stay_local(server):
         assert "modelo local" in capture("Redacta un mensaje para mi abuelo hoy.").lower()
         assert "modelo local" in capture("¿Qué puedo hacer hoy para mejorar mi ánimo?").lower()
     assert sum(method == "POST" for method, _, _ in requests) == 3
+
+
+@pytest.mark.parametrize("language,question,answer,signature", [
+    ("es", "¿Cómo te llamas?", "Me llamo Michiflin.", "IA local"),
+    ("en", "What is your name?", "My name is Michiflin.", "Local AI"),
+])
+def test_installed_app_gets_clean_model_answer_with_discrete_signature(server, language, question, answer, signature):
+    requests, response = server
+    response["text"] = answer
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False), \
+         mock.patch.object(ai, "complete", side_effect=AssertionError("external AI provider used")), \
+         mock.patch.object(ai, "complete_exact", side_effect=AssertionError("external AI provider used")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("unexpected search")), \
+         mock.patch.object(tools, "wiki_summary", side_effect=AssertionError("unexpected lookup")):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": question}, language)
+    assert reply["text"] == answer
+    assert reply["sig"] == signature
+    assert reply["actions"] == [] and reply["files"] == []
+    assert len([x for x in requests if x[0] == "POST"]) == 1
+
+
+def test_installed_app_preserves_truncation_and_identical_model_text(server):
+    _, response = server
+    # Only the footer appended by our display function is moved. A matching
+    # phrase within the model's own answer, plus the limit warning, remain.
+    response["text"] = "Texto original.\n\n" + local_ai.model_footer("es")
+    response["finish_reason"] = "length"
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": "Escribe un cuento"}, "es")
+    assert response["text"] in reply["text"]
+    assert "Respuesta cortada por el límite local" in reply["text"]
+    assert reply["sig"] == "IA local"
+
+
+def test_installed_app_long_reply_keeps_all_text_when_footer_is_split(server):
+    _, response = server
+    response["text"] = "X" * 6000
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": "Escribe un cuento"}, "es")
+    assert reply["text"] == response["text"]
+    assert reply["sig"] == "IA local"
+
+
+def test_installed_app_local_followup_uses_discrete_signature(server):
+    requests, _ = server
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False):
+        first = miniapp.op_ask(501, {"space": "agent", "text": "Escribe un poema"}, "es")
+        follow = miniapp.op_ask(501, {"space": "agent", "text": "continúa"}, "es")
+    assert first["sig"] == follow["sig"] == "IA local"
+    assert "sin proveedor externo" not in follow["text"]
+    assert len([x for x in requests if x[0] == "POST"]) == 2
+
+
+def test_installed_app_web_extract_keeps_sources_and_no_model_label(server):
+    requests, _ = server
+    hit = tools.Result("Biblioteca Sol", "https://public.example.test/horario", "test")
+    page = "La Biblioteca Sol informa que su horario del lunes termina a las 17:00, según su página oficial."
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False), \
+         mock.patch.object(tools, "search", return_value=[hit]) as search, \
+         mock.patch.object(local_ai.smart_agent, "_read", return_value=page):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": "Busca el horario actual de la biblioteca"}, "es")
+    assert search.call_count == 1
+    assert not any(method == "POST" for method, _, _ in requests)
+    assert "17:00" in reply["text"] and "[S1]" in reply["text"] and hit.url in reply["text"]
+    assert reply["text"].endswith(local_ai.WEB_MARKER_ES)
+    assert not reply.get("sig") and not reply["text"].startswith("Prueba:")
+
+
+@pytest.mark.parametrize("status", ["unavailable", "duplicate", "busy", "wait_timeout", "no_sources"])
+def test_installed_app_error_is_unchanged_and_not_marked_as_model(monkeypatch, status):
+    monkeypatch.setenv("LOCAL_GGUF_ENABLED", "1")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    generated = local_ai.Result(status)
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False), \
+         mock.patch.object(local_ai, "complete", return_value=generated):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": "Escribe un cuento"}, "es")
+    assert reply["text"] == local_ai.display(generated, "es")
+    assert not reply.get("sig") and not reply["text"].startswith("Prueba:")
+
+
+def test_installed_app_greeting_is_plain_and_not_marked_as_model(server):
+    requests, _ = server
+    with mock.patch.object(chat, "sender", return_value="alice@example.test"), \
+         mock.patch.object(state, "get_kill_switch", return_value=False):
+        reply = miniapp.op_ask(501, {"space": "agent", "text": "Hola"}, "es")
+    assert "Hola" in reply["text"] and not reply["text"].startswith("Prueba:")
+    assert not reply.get("sig")
+    assert not any(method == "POST" for method, _, _ in requests)
+
+
+@pytest.mark.parametrize("question", ["What is your name?", "What is my secret phrase?", "¿Qué es mi contraseña?"])
+def test_personal_definition_questions_do_not_leak_to_wikipedia_or_search(server, question):
+    requests, _ = server
+    with mock.patch.object(tools, "wiki_summary", side_effect=AssertionError("private definition sent to Wikipedia")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("private conversation sent to search")):
+        reply = capture(question)
+    assert "modelo local" in reply.lower()
+    assert sum(method == "POST" for method, _, _ in requests) == 1
+
+
+def test_current_question_addressed_to_agent_stays_in_local_conversation(server):
+    requests, _ = server
+    with mock.patch.object(tools, "wiki_summary", side_effect=AssertionError("unexpected lookup")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("addressed conversation sent to search")):
+        reply = capture("What is your name today?")
+    assert "modelo local" in reply.lower()
+    assert sum(method == "POST" for method, _, _ in requests) == 1
+
+
+def test_factual_definition_still_uses_wikipedia_when_local_enabled(server):
+    requests, _ = server
+    with mock.patch.object(tools, "wiki_summary", return_value=(
+        "Fotosíntesis", "La fotosíntesis es un proceso de las plantas.", "https://example.test/fotosintesis")) as wiki:
+        reply = capture("¿Qué es la fotosíntesis?")
+    assert "Fotosíntesis" in reply and "plantas" in reply
+    wiki.assert_called_once()
+    assert not any(method == "POST" for method, _, _ in requests)
+
+
+def test_personal_definition_fails_closed_when_actions_model_unavailable(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("LOCAL_GGUF_ENABLED", "0")
+    monkeypatch.setenv("LOCAL_GGUF_TEST_UNAVAILABLE", "1")
+    with mock.patch.object(tools, "wiki_summary", side_effect=AssertionError("private definition sent to Wikipedia")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("private conversation sent to search")):
+        reply = capture("What is my secret phrase?")
+    assert "no está disponible" in reply

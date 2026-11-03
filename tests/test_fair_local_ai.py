@@ -113,17 +113,35 @@ def test_release_requires_the_actual_ticket():
     gate.release(ticket)
 
 
-def test_old_miniapp_gets_in_band_disclosure_without_changing_build(monkeypatch):
-    from michiflin import miniapp
+@pytest.mark.parametrize("enabled", ["0", "1"])
+def test_existing_app_has_no_prefix_and_does_not_infer_source_from_text(monkeypatch, enabled):
+    from michiflin import chat, local_ai, miniapp
+    monkeypatch.setenv("LOCAL_GGUF_ENABLED", enabled)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    # Even if a tool's output contains the same footer, it is not a trusted
+    # model result and must remain intact and unattributed.
+    plain = "respuesta de una herramienta\n\n" + local_ai.model_footer("es")
+    def tool_reply(chat_id, *_args):
+        chat.text(chat_id, plain)
+        return None
+    with mock.patch.object(miniapp.agent, "handle", side_effect=tool_reply):
+        result = miniapp.op_ask(11, {"space": "agent", "text": "hola"}, "es")
+    assert result["text"] == plain
+    assert not result.get("sig")
+    assert not result["text"].startswith("Prueba:")
+
+
+def test_missing_recognized_footer_is_left_untouched_without_false_signature(monkeypatch):
+    from michiflin import chat, local_ai, miniapp
     monkeypatch.setenv("LOCAL_GGUF_ENABLED", "1")
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
-    with mock.patch.object(miniapp, "run_captured", return_value={"text": "respuesta", "actions": [], "files": []}):
+    def changed_reply(chat_id, *_args):
+        chat.text(chat_id, "Texto intacto, sin el pie esperado")
+        return local_ai.Result("ok", "Texto intacto")
+    with mock.patch.object(miniapp.agent, "handle", side_effect=changed_reply):
         result = miniapp.op_ask(11, {"space": "agent", "text": "hola"}, "es")
-    assert "IA local" in result["text"] and "desactualizada" in result["text"]
-    assert result["text"].endswith("respuesta")
-    monkeypatch.setenv("LOCAL_GGUF_ENABLED", "0")
-    with mock.patch.object(miniapp, "run_captured", return_value={"text": "respuesta", "actions": [], "files": []}):
-        assert miniapp.op_ask(11, {"space": "agent", "text": "hola"}, "es")["text"] == "respuesta"
+    assert result["text"] == "Texto intacto, sin el pie esperado"
+    assert not result.get("sig")
 
 
 def test_only_interacting_app_gets_one_non_notifying_disclosure(monkeypatch):
