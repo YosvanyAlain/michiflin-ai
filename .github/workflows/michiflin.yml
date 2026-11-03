@@ -104,6 +104,10 @@ jobs:
       # Preserve existing recovery assets and all currently available blobs.
       STATE_BACKUP_RETAIN_ALL: "1"
       STATE_BACKUP_INCLUDE_BLOBS: "1"
+      # This deployment restores only the earlier, independently verified GitHub state.
+      STATE_BACKUP_NAMESPACE: github-native-v1
+      MICHIFLIN_NATIVE_READY_REQUIRED: "1"
+      MICHIFLIN_NATIVE_FENCE_REQUIRED: "1"
       # Clear only this handover pause, once, after the bot has initialized.
       MICHIFLIN_GITHUB_RESUME_ONCE: "1"
       STATE_BACKUP_PASSPHRASE: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
@@ -179,8 +183,18 @@ jobs:
             sleep 2
           done
 
+      - name: Protect the retained legacy backup namespace
+        env:
+          MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
+        run: python tools/github_native_guard.py guard
+
       - name: Restore state
         run: python state_backup.py restore
+
+      - name: Arm the non-destructive replay fence
+        env:
+          MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
+        run: python tools/github_native_guard.py arm
 
       - name: Import the separately verified identity
         if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.IDENTITY_CUTOVER_REVISION != '' && env.IDENTITY_CUTOVER_REVISION == github.sha }}

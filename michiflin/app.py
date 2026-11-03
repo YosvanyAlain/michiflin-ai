@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -244,6 +244,17 @@ def _accept(bot: Any, accid: int, msg: Any) -> None:
         if msg_id in _taken or _draining.is_set():
             return
         _taken.add(msg_id)
+    try:
+        if handover.hold_message(msg):
+            # Keep the message unread and recoverable; do not send an MDN or a
+            # response to an interaction that the other deployment may have served.
+            handover.remember("messages", str(msg_id), {"message_id": msg_id})
+            return
+    except (handover.FenceNotReady, OSError, TypeError, ValueError) as exc:
+        log.warning("handover intake deferred: %s", exc.__class__.__name__)
+        with _intake_lock:
+            _taken.discard(msg_id)
+        return
     try:
         job = _screen(bot, accid, msg)
     except Exception as exc:

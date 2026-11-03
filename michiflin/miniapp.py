@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -494,8 +494,19 @@ def on_status_update(msg_id: int) -> None:
         if not updates:
             return
         for update in updates:
-            entry["serial"] = max(int(entry.get("serial", 0)), int(update.get("serial", 0)))
+            serial = int(update.get("serial", 0))
             payload = update.get("payload")
+            try:
+                if handover.hold_update(payload, BOOT_SESSION):
+                    handover.remember("updates", f"{msg_id}:{serial}",
+                                      {"instance_id": msg_id, "serial": serial,
+                                       "request_id": str(payload.get("id") or "")[:40]})
+                    entry["serial"] = max(int(entry.get("serial", 0)), serial)
+                    continue
+            except (handover.FenceNotReady, OSError, TypeError, ValueError) as exc:
+                log.warning("handover update deferred: %s", exc.__class__.__name__)
+                return  # unread update can be retried after the marker is ready
+            entry["serial"] = max(int(entry.get("serial", 0)), serial)
             if isinstance(payload, dict):
                 if payload.get("t") == "req_chunk":
                     address = str(entry.get("addr", "")).strip().lower()

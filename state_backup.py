@@ -55,9 +55,23 @@ RELEASE_MARKER = "Managed encrypted Michiflin state snapshots v1"
 ASSET_PREFIX = "michiflin-state-"
 PENDING_PREFIX = "michiflin-pending-"
 ASSET_PATTERN = re.compile(r"^michiflin-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
+GITHUB_NATIVE_NAMESPACE = "github-native-v1"
+GITHUB_NATIVE_ASSET_PREFIX = "michiflin-github-state-"
+GITHUB_NATIVE_PENDING_PREFIX = "michiflin-github-pending-"
+GITHUB_NATIVE_ASSET_PATTERN = re.compile(r"^michiflin-github-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
 KEEP_RECENT = 12
 KEEP_DAILY = 7
 KEEP_WEEKLY = 4
+
+
+def _backup_names() -> tuple[str, str, re.Pattern[str]]:
+    """A strict namespace: native GitHub must never fall back to imported snapshots."""
+    namespace = os.getenv("STATE_BACKUP_NAMESPACE", "").strip()
+    if namespace in {"", "default"}:
+        return ASSET_PREFIX, PENDING_PREFIX, ASSET_PATTERN
+    if namespace == GITHUB_NATIVE_NAMESPACE:
+        return GITHUB_NATIVE_ASSET_PREFIX, GITHUB_NATIVE_PENDING_PREFIX, GITHUB_NATIVE_ASSET_PATTERN
+    raise ValueError("unknown backup namespace; previous snapshots were kept")
 
 
 def configuration() -> tuple[str, str, str] | None:
@@ -265,6 +279,8 @@ def _save_legacy() -> None:
 
 def _restore_legacy() -> None:
     """Restore state only when no local state exists yet."""
+    # Reject typos even before inspecting credentials; do not silently use a different namespace.
+    _backup_names()
     settings = configuration()
     required = os.getenv("STATE_BACKUP_REQUIRED", "0").strip() == "1"
     if not settings:
@@ -404,9 +420,10 @@ def _created(item: dict) -> datetime | None:
         return None
 
 
-def _managed(item: dict, prefix: str = ASSET_PREFIX) -> bool:
+def _managed(item: dict, prefix: str | None = None) -> bool:
+    current, _pending, pattern = _backup_names()
     name = item.get("name")
-    return (isinstance(name, str) and name.startswith(prefix) and ASSET_PATTERN.fullmatch(name) is not None
+    return (isinstance(name, str) and name.startswith(prefix if prefix is not None else current) and pattern.fullmatch(name) is not None
             and isinstance(item.get("id"), int) and item["id"] > 0
             and item.get("state") == "uploaded" and _created(item) is not None)
 
@@ -519,7 +536,7 @@ def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphra
     for item in items:
         when = _created(item)
         old_snapshot = _managed(item) and item["id"] not in keep
-        old_pending = _managed(item, PENDING_PREFIX) and when is not None and when < now - timedelta(days=2)
+        old_pending = _managed(item, _backup_names()[1]) and when is not None and when < now - timedelta(days=2)
         if not (old_snapshot or old_pending):
             continue
         if removed >= 200:
@@ -542,7 +559,8 @@ def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True
     release = _ensure_release(token, repo)
     rid = release["id"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(8) + ".bin"
-    pending_name, final_name = PENDING_PREFIX + stamp, ASSET_PREFIX + stamp
+    state_prefix, pending_prefix, _pattern = _backup_names()
+    pending_name, final_name = pending_prefix + stamp, state_prefix + stamp
     # Construct the upload URL ourselves; never send credentials to a URL from a response.
     upload = f"https://uploads.github.com/repos/{repo}/releases/{rid}/assets"
     response = requests.post(upload, headers={**headers(token), "Content-Type": "application/octet-stream"},
@@ -570,6 +588,29 @@ def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True
         except (requests.RequestException, ValueError, tarfile.TarError, sqlite3.Error, OSError, RuntimeError) as exc:
             # A maintenance failure must never invalidate an already verified backup.
             print(f"[backup] rotation deferred ({exc.__class__.__name__}); old copies were kept where possible")
+
+
+def _native_origin_valid(value: object) -> bool:
+    return (isinstance(value, dict) and value.get("version") == 1 and value.get("source_asset_id") == 699441108
+            and re.fullmatch(r"[0-9a-f]{64}", str(value.get("source_sha256") or "")) is not None)
+
+
+def _verify_native_origin(plaintext: bytes) -> None:
+    """An isolated namespace must also carry the explicitly selected provenance."""
+    with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as tar:
+        try:
+            member = tar.getmember("michiflin/.github-native-origin-v1.json")
+        except KeyError:
+            raise ValueError("native GitHub origin marker is missing") from None
+        if not member.isfile() or member.size > 4096:
+            raise ValueError("native GitHub origin marker is invalid")
+        stream = tar.extractfile(member)
+        try:
+            value = json.load(stream) if stream is not None else None
+        except (TypeError, ValueError, UnicodeError):
+            raise ValueError("native GitHub origin marker is invalid") from None
+        if not _native_origin_valid(value):
+            raise ValueError("native GitHub origin marker is invalid")
 
 
 def _install_restored(plaintext: bytes, target: Path) -> None:
@@ -633,10 +674,19 @@ def restore() -> None:
         return
     target = config_dir()
     if target.exists():
+        if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+            try:
+                origin = json.loads((target / ".github-native-origin-v1.json").read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                raise RuntimeError("existing state lacks verified GitHub-native provenance") from None
+            if not _native_origin_valid(origin):
+                raise RuntimeError("existing state lacks verified GitHub-native provenance")
         print("[backup] local state already exists; it will not be overwritten")
         return
     storage = os.getenv("STATE_BACKUP_STORAGE", "releases").strip()
     if storage == "legacy-git":
+        if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+            raise RuntimeError("native GitHub backups cannot restore legacy Git or imported states")
         _restore_legacy()
         return
     if storage != "releases":
@@ -644,6 +694,11 @@ def restore() -> None:
     token, repo, passphrase = settings
     ready = _get_ref(token, repo, READY_TAG)
     release = _release(token, repo)
+    if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE and os.getenv("MICHIFLIN_NATIVE_READY_REQUIRED", "0").strip() == "1":
+        native = _get_ref(token, repo, "michiflin-github-native-ready-v1")
+        anchor = _get_ref(token, repo, RELEASE_TAG)
+        if not native or not anchor or native != anchor:
+            raise RuntimeError("native GitHub backup is not sealed; refusing all fallback")
     if ready:
         anchor = _get_ref(token, repo, RELEASE_TAG)
         if not anchor or anchor != ready or release is None:
@@ -657,6 +712,8 @@ def restore() -> None:
             try:
                 plaintext = decrypt_backup(blob, passphrase)
                 _verify_plaintext(plaintext)
+                if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+                    _verify_native_origin(plaintext)
             except (ValueError, tarfile.TarError, sqlite3.Error, OSError):
                 print("[backup] an invalid encrypted snapshot was skipped")
                 continue
@@ -665,7 +722,7 @@ def restore() -> None:
             return
         if snapshots or ready:
             raise RuntimeError("no verified release snapshot could be restored; old copies were kept")
-    if ready:
+    if ready or os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
         raise RuntimeError("verified release backup is missing; refusing stale Git fallback")
     # Bootstrap only: once the ready marker exists, the old Git snapshot cannot
     # silently overwrite newer work if release assets are missing.
