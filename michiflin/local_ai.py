@@ -31,6 +31,7 @@ _research_slots = threading.BoundedSemaphore(2)
 _memory_lock = threading.Lock()
 _memory: dict[tuple[int, str], tuple[float, deque[tuple[str, str]]]] = {}
 _MAX_RESPONSE_BYTES = 1_000_000
+_MAX_GENERATED_CHARS = 100_000  # hard safety guard, not the normal token budget
 _DEFAULT_PORT = 18971
 _PRIVATE_QUERY = re.compile(
     r"(?i)(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\bbearer\s+\S+|"
@@ -129,7 +130,12 @@ def remember(chat_id: int, address: str, question: str, response: str) -> None:
         found = _memory.get(key)
         turns = found[1] if found else deque(maxlen=6)
         turns.append(("user", question[:600]))
-        turns.append(("assistant", response[:600]))
+        # Keep both the start and the latest end of a long answer within the
+        # existing 600-character budget. A follow-up such as "continue" then
+        # has a chance to see where generation stopped, without saving a full
+        # transcript or trusting history supplied by a WebXDC client.
+        excerpt = response if len(response) <= 600 else response[:245] + "\n[…]\n" + response[-350:]
+        turns.append(("assistant", excerpt))
         _memory[key] = (now, turns)
         while len(_memory) > 100:
             oldest = min(_memory, key=lambda item: _memory[item][0])
@@ -363,7 +369,12 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
         messages.extend(_history(history))
         messages.append({"role": "user", "content": question[:3000]})
-        request = {"messages": messages, "temperature": 0.3, "max_tokens": 384, "stream": False,
+        # A single bounded inference, not an automatic continuation loop. Give
+        # a longer answer when the model is free; if someone is already waiting,
+        # retain the former shorter budget to reduce queue starvation. New
+        # arrivals cannot preempt an inference that has already started.
+        budget = 384 if _turns.waiting() else 768
+        request = {"messages": messages, "temperature": 0.3, "max_tokens": budget, "stream": False,
                    "chat_template_kwargs": {"enable_thinking": False}}
         try:
             response = _http("/v1/chat/completions", request, 125)
@@ -374,11 +385,13 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             content = message.get("content", "") if isinstance(message, dict) else ""
             if not isinstance(content, str):
                 raise ValueError("local_server_content")
-            text = strip_thinking(content).strip()[:6000]
-            text = _SOURCE_MARK.sub("[?]", text)
+            text = _SOURCE_MARK.sub("[?]", strip_thinking(content).strip())
             if not text:
                 raise ValueError("empty_local_response")
-            return Result("ok", text, (), first.get("finish_reason") == "length")
+            # An output can exceed the independent character guard even when
+            # the server reports a normal stop. Never hide that local cut.
+            cut = len(text) > _MAX_GENERATED_CHARS or str(first.get("finish_reason") or "").lower() in {"length", "max_tokens", "max_output_tokens"}
+            return Result("ok", text[:_MAX_GENERATED_CHARS], (), cut)
         except state.WorkPaused:
             raise
         except (OSError, ValueError, TypeError, UnicodeError, http.client.HTTPException, IndexError):

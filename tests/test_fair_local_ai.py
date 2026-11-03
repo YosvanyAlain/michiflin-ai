@@ -34,7 +34,9 @@ def test_one_turn_per_person_fifo_and_no_priority():
     bob = threading.Thread(target=task, args=("bob",))
     carol = threading.Thread(target=task, args=("carol",))
     bob.start(); assert waiting["bob"].wait(2)
+    assert gate.waiting() == 1
     carol.start(); assert waiting["carol"].wait(2)
+    assert gate.waiting() == 2
     gate.release(first)
     alice = threading.Thread(target=task, args=("alice",))
     alice.start()

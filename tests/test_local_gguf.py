@@ -105,7 +105,7 @@ def test_chat_and_code_use_only_loopback_and_no_search(server):
     posts = [item for item in requests if item[0] == "POST"]
     assert len(posts) == 1 and posts[0][1] == "/v1/chat/completions"
     body = posts[0][2]
-    assert body["max_tokens"] == 384 and body["chat_template_kwargs"]["enable_thinking"] is False
+    assert body["max_tokens"] == 768 and body["chat_template_kwargs"]["enable_thinking"] is False
     assert all("Contexto privado" not in message["content"] for message in body["messages"])
     assert body["messages"][-1]["content"].startswith("Escribe una función")
 

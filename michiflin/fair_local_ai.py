@@ -62,6 +62,11 @@ class FairTurns:
                     self._people.discard(person)
                     self._cv.notify_all()
 
+    def waiting(self) -> int:
+        """A synchronized snapshot of queued people, excluding the active turn."""
+        with self._cv:
+            return len(self._pending)
+
     def release(self, ticket: object) -> None:
         with self._cv:
             if self._active is None or self._active[0] is not ticket:
