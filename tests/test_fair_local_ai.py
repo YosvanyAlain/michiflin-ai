@@ -194,3 +194,18 @@ def test_action_test_workflow_is_fail_closed_and_preserves_handover():
         assert protection in script
     session = workflow[offsets[5]:offsets[6]]
     assert "python state_backup.py save" in session and "local_gguf_session.sh stop" in session
+
+
+def test_failed_startup_artifact_contains_only_safe_diagnostics():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / ".github/workflows/michiflin.yml").read_text()
+    for mode in ("prepare", "start"):
+        assert f'gguf-{mode}-raw.log' in workflow
+        assert f'gguf-{mode}-status.log' in workflow
+    assert "SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)" in workflow
+    artifact = workflow[workflow.index("- name: Save local AI startup diagnostics"):workflow.index("- name: Local AI test ready")]
+    assert "gguf-*-status.log" in artifact and "raw.log" not in artifact
+    assert "retention-days: 1" in artifact and "continue-on-error: true" in artifact
+    script = (root / "tools/local_gguf_session.sh").read_text()
+    assert script.count("--retry 2") == 2
