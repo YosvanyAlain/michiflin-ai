@@ -90,9 +90,11 @@ def test_key_isolation_and_cache_pressure_never_evict_another_person():
     bob = key(pages, address="bob@example.test")
     first, paged = pages.start(alice, {"text": body()}, "es")
     assert paged and pages.status(key(pages, address="alice@EXAMPLE.test"), history(first["text"])) == "ready"
-    assert pages.status(bob, history(first["text"])) == "none"
-    assert pages.status(key(pages, instance=92, address="Alice@example.test"), history(first["text"])) == "none"
-    assert pages.status(key(pages, address="Alice@example.test", scope="different-grant"), history(first["text"])) == "none"
+    # Forged/stale receipts may trigger only a generic unavailable notice,
+    # never reveal another person's or instance's page.
+    assert pages.status(bob, history(first["text"])) != "ready"
+    assert pages.status(key(pages, instance=92, address="Alice@example.test"), history(first["text"])) != "ready"
+    assert pages.status(key(pages, address="Alice@example.test", scope="different-grant"), history(first["text"])) != "ready"
     original = {"text": body(), "sig": "test"}
     fallback, was_paged = pages.start(bob, original, "en")
     assert fallback is original and not was_paged  # send complete answer; do not evict Alice
@@ -108,7 +110,7 @@ def test_expired_pending_pages_report_loss_and_do_not_skip_ahead():
     moment[0] += 31
     assert pages.status(k, history(first["text"])) == "expired"
     assert "ya no está disponible" in pages.take(k, history(first["text"]), "es")["text"]
-    assert pages.status(key(pages, address="other@example.test"), history(first["text"])) == "none"
+    assert pages.status(key(pages, address="other@example.test"), history(first["text"])) != "ready"
     pages.start(k, {"text": "New topic"}, "es")
     assert pages.status(k, []) == "none"
 
@@ -377,7 +379,7 @@ def test_person_forget_removes_only_their_pages_and_tombstones():
     first_a, _ = pages.start(alice, {"text": body()}, "es")
     first_b, _ = pages.start(bob, {"text": body()}, "es")
     pages.forget("ALICE@example.test")
-    assert pages.status(alice, history(first_a["text"])) == "none"
+    assert pages.status(alice, history(first_a["text"])) == "unavailable"
     assert pages.status(bob, history(first_b["text"])) == "ready"
 
 
@@ -439,3 +441,40 @@ def test_continuation_keeps_long_question_constraints_and_more_recent_answer():
     assert "ULTIMO-3" in messages[-1]["content"] and len(messages[-1]["content"]) >= 1000
     assert sum(len(item["content"]) for item in messages) <= 2400
     local_ai.forget(chat_id, person)
+
+
+@pytest.mark.parametrize("locale", ["es", "en"])
+def test_restart_or_expired_tombstone_reports_missing_generated_pages(locale):
+    original = answer_inline.InlinePages()
+    k = key(original)
+    first, paged = original.start(k, {"text": body()}, locale)
+    assert paged
+    restarted = answer_inline.InlinePages()
+    status, version = restarted.reserve(k, history(first["text"]))
+    assert status == "unavailable" and version is not None
+    warning = restarted.take(k, history(first["text"]), locale, expected=version)
+    assert ("ya no está disponible" if locale == "es" else "no longer available") in warning["text"]
+    assert restarted.status(k, history("a finished response")) == "none"
+
+
+def test_unavailable_reservation_cannot_touch_a_new_answer():
+    pages = answer_inline.InlinePages()
+    k = key(pages)
+    old, _ = pages.start(k, {"text": body()}, "es")
+    pages = answer_inline.InlinePages()  # process restart
+    _, reservation = pages.reserve(k, history(old["text"]))
+    newer, _ = pages.start(k, {"text": "NUEVO TEMA\n\n" + body()}, "es")
+    assert pages.take(k, history(old["text"]), "es", expected=reservation) is None
+    assert pages.status(k, history(newer["text"])) == "ready"
+
+
+def test_handler_warns_after_restart_instead_of_fabricating_missing_text(integration, monkeypatch):
+    entry, _pages, replies, generated, sent = integration
+    miniapp.handle(91, entry, {"id": "before-restart", "op": "ask", "lang": "es", "args": {"space": "agent", "text": "huerta"}})
+    first = replies[-1][0]["text"]
+    assert len(generated) == 1
+    monkeypatch.setattr(miniapp, "_inline_pages", answer_inline.InlinePages())
+    miniapp.handle(91, entry, {"id": "after-restart", "op": "ask", "lang": "es", "args": {
+        "space": "agent", "text": "continúa", "history": history(first)}})
+    assert "ya no está disponible" in replies[-1][0]["text"]
+    assert len(generated) == 1 and not sent

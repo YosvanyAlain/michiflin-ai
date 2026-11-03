@@ -14,6 +14,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from . import summary_inline
 from .util import tr
 
 # The installed app includes at most 6,000 JavaScript UTF-16 units per prior
@@ -29,12 +30,28 @@ _CONTINUE = re.compile(
     r"(?:(?:contin[uú][ae]|continuar|sigue|seguir|prosigue)"
     r"(?:\s+(?:con\s+)?(?:la respuesta|la explicaci[oó]n|el c[oó]digo|lo anterior|la siguiente parte|el siguiente punto))?"
     r"|m[aá]s|m[aá]s detalles|cu[eé]ntame m[aá]s"
+    r"|(?:ampl[ií]a(?:lo|la)?|ampliar|desarrolla(?:lo|la)?)(?:\s+(?:la respuesta|la explicaci[oó]n|lo anterior|con m[aá]s detalles))?"
     r"|(?:continue|go on)(?:\s+(?:with\s+)?(?:the answer|the explanation|the code|the next part))?"
+    r"|(?:expand|elaborate)(?:\s+(?:on\s+)?(?:it|that|the answer|the explanation))?"
     r"|more|more details|tell me more)"
     r"(?:[,\s]+(?:por favor|please))?[\s?!.¿¡]*$", re.I,
 )
 _FENCE = re.compile(r"```([\w-]*)\n?", re.ASCII)  # matches the installed app's rich() parser
 _SENTENCE = re.compile(r"[.!?。！？](?:\s+|$)")
+# These exact visible notices are also a client-side receipt after a process
+# restart. They carry no private text and require no persistent server state.
+_SUMMARY_ES = "Este resumen puede omitir detalles. Escribe «continúa» para leer la respuesta original desde el principio."
+_SUMMARY_EN = "This summary can omit details. Type ‘continue’ to read the original answer from the beginning."
+_SUMMARY_CUT_ES = "La generación se cortó; escribe «continúa» para leer desde el principio lo que sí se generó."
+_SUMMARY_CUT_EN = "Generation was cut short; type ‘continue’ to read the generated text from the beginning."
+_PENDING_NOTICES = (
+    "Hay más de esta respuesta. Escribe «continúa» para seguir.",
+    "El modelo alcanzó su límite; queda texto generado. Escribe «continúa» para verlo.",
+    "There is more to this answer. Type ‘continue’ to keep reading.",
+    "The model reached its limit; generated text remains. Type ‘continue’ to read it.",
+    _SUMMARY_ES, _SUMMARY_CUT_ES, _SUMMARY_EN, _SUMMARY_CUT_EN,
+)
+_MISSING_PAGE = object()
 
 
 def is_continue(value: Any) -> bool:
@@ -44,7 +61,7 @@ def is_continue(value: Any) -> bool:
 def is_explicit_continue(value: Any) -> bool:
     if not is_continue(value):
         return False
-    return bool(re.search(r"(?:contin[uú][ae]|continuar|sigue|seguir|prosigue|continue|go on)", value, re.I))
+    return bool(re.search(r"(?:contin[uú][ae]|continuar|sigue|seguir|prosigue|ampl[ií]a|ampliar|desarrolla|continue|go on|expand|elaborate)", value, re.I))
 
 
 def _units(text: str) -> int:
@@ -123,6 +140,17 @@ def _last_assistant(history: Any) -> str:
     return ""
 
 
+def _pending_receipt(history: Any) -> bool:
+    last = _last_assistant(history)
+    return any(last.endswith("\n\n" + notice) for notice in _PENDING_NOTICES)
+
+
+def _unavailable(locale: str) -> dict[str, Any]:
+    return {"text": tr(locale,
+        "La parte pendiente ya no está disponible. Recuérdame el tema o copia el último fragmento para seguir.",
+        "The remaining part is no longer available. Remind me of the topic or paste the last part to continue.")}
+
+
 @dataclass
 class _PageState:
     text: str
@@ -184,8 +212,8 @@ class InlinePages:
                 if key[1] == person:
                     self._expired.pop(key, None)
 
-    def start(self, key: tuple[int, str, str], answer: Any, locale: str) -> tuple[Any, bool]:
-        """Begin a new response, or return it unchanged if storage is unsafe."""
+    def start(self, key: tuple[int, str, str], answer: Any, locale: str, question: str = "") -> tuple[Any, bool]:
+        """Summarize safe prose or page exactly; preserve the full generated text."""
         with self._lock:
             now = self.clock()
             self._prune(now)
@@ -197,11 +225,23 @@ class InlinePages:
             if (not isinstance(text, str) or not text or text.lstrip().startswith(("⚠️", "❌", "🛑"))
                     or _units(text) <= CONTENT_UNITS or len(text) > MAX_STORED_CHARS):
                 return answer, False
-            first, end = _page(text, 0, locale, bool(answer.get("truncated")))
-            if end >= len(text):
-                return answer, False
             used = sum(len(item.text) + len(item.last) for item in self._items.values())
-            if len(self._items) >= self.maximum or used + len(text) + len(first) > self.total:
+            if len(self._items) >= self.maximum or used + len(text) + 5000 > self.total:
+                return answer, False
+            # A deterministic extractive summary costs no extra inference. If
+            # the text contains code, sources, tables, commands, or cannot be
+            # summarized safely, the previous exact paginator remains in use.
+            try:
+                extracted = summary_inline.extract(text, question if isinstance(question, str) else "")
+            except Exception:
+                extracted = None  # never lose the generated response on a summary failure
+            if extracted:
+                label = tr(locale, "Resumen de la respuesta (fragmentos):", "Answer summary (excerpts):")
+                note = tr(locale, _SUMMARY_CUT_ES, _SUMMARY_CUT_EN) if answer.get("truncated") else tr(locale, _SUMMARY_ES, _SUMMARY_EN)
+                first, end = label + "\n\n" + extracted + "\n\n" + note, 0
+            else:
+                first, end = _page(text, 0, locale, bool(answer.get("truncated")))
+            if end >= len(text) or _units(first) >= 6000 or used + len(text) + len(first) > self.total:
                 return answer, False
             self._items[key] = _PageState(text, end, first, str(answer.get("sig") or ""),
                                           bool(answer.get("truncated")), now, object())
@@ -226,6 +266,11 @@ class InlinePages:
                     self._expired.pop(key, None)  # complete answer was seen
                     return "none", None
                 return "expired", expired[3]
+            # RAM pages cannot survive a normal handover or an expired tombstone.
+            # If the unchanged app still shows our pending-page notice, report
+            # the loss instead of silently presenting newly generated text as it.
+            if _pending_receipt(history):
+                return "unavailable", _MISSING_PAGE
             return "none", None
 
     def status(self, key: tuple[int, str, str], history: Any) -> str:
@@ -240,10 +285,9 @@ class InlinePages:
             item = self._items.get(key)
             if item is None:
                 expired = self._expired.get(key)
-                if expired and (expected is None or expired[3] is expected):
-                    return {"text": tr(locale,
-                        "La parte pendiente ya no está disponible. Recuérdame el tema o copia el último fragmento para seguir.",
-                        "The remaining part is no longer available. Remind me of the topic or paste the last part to continue.")}
+                if ((expired and (expected is None or expired[3] is expected))
+                        or (expected is _MISSING_PAGE and _pending_receipt(history))):
+                    return _unavailable(locale)
                 return None
             if expected is not None and item.version is not expected:
                 return None  # a newer answer replaced this request's page

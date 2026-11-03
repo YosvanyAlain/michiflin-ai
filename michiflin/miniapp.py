@@ -891,7 +891,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
                     answer["quota"] = usage.quota_view(address)
                 elif _same_inline_identity(instance_id, admitted_entry):
                     key = _inline_pages.key(instance_id, address, _inline_scope(admitted_entry, args))
-                    answer, paged = _inline_pages.start(key, answer, locale)
+                    answer, paged = _inline_pages.start(key, answer, locale, args.get("text") or "")
                     if paged and isinstance(answer, dict) and "actions" in answer:
                         answer["actions"] = actions_in(str(answer.get("text") or ""), locale)
         reply(answer)
