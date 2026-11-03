@@ -1,0 +1,54 @@
+name: Inline local model probe
+
+on:
+  push:
+    branches:
+      - inline-probe-1793728701
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONFIG_DIR: /tmp/inline-probe/config
+      JOB_DIR: /tmp/inline-probe/jobs
+      PREVIEW_DIR: /tmp/inline-probe/tmp
+      FREE_GATEWAYS: "0"
+      AI_HORDE: "0"
+      LOCAL_GGUF_ENABLED: "1"
+      LOCAL_GGUF_ACTIONS_TEST: "1"
+      LOCAL_GGUF_SOCKET_PATH: /run/michiflin-local-gguf/llama.sock
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies without accounts
+        run: python -m pip install -r requirements.txt
+      - name: Prepare pinned local model without identity
+        timeout-minutes: 11
+        run: bash tools/local_gguf_session.sh prepare
+      - name: Start isolated local model
+        timeout-minutes: 4
+        run: |
+          bash tools/local_gguf_session.sh start
+          echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
+      - name: Test fair queue and contextual continuation
+        timeout-minutes: 6
+        run: |
+          python tools/inline_gguf_probe.py
+          if sudo -u nobody test -S /run/michiflin-local-gguf/llama.sock; then
+            echo 'Unexpected socket access for nobody' >&2; exit 1
+          fi
+          echo 'SAFE_UNAUTHORIZED_SOCKET_BLOCKED'
+      - name: Stop and remove isolated synthetic model
+        if: always()
+        run: |
+          bash tools/local_gguf_session.sh stop
+          if sudo test -e /opt/michiflin-local-gguf-test; then exit 1; fi
+          echo 'SAFE_PROBE_CLEANED'
