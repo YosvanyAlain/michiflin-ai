@@ -290,9 +290,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     if FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped):
         sender = (chat.sender() or "").strip().lower()
-        prior_turns = history if history is not None else local_ai.history(chat_id, sender)
+        prior_turns = local_ai.history(chat_id, sender) if local_ai.configured() else (history or [])
         has_reply = any(isinstance(turn, list) and len(turn) == 2 and turn[0] == "assistant" for turn in (prior_turns or []))
-        if local_ai.configured() and has_reply:
+        if local_ai.configured() and has_reply and local_ai.last_reply_was_web(prior_turns):
+            chat.text(chat_id, tr(locale, "🔎 Para ampliar los extractos web, pregunta por un aspecto concreto y volveré a buscar fuentes.",
+                                  "🔎 To expand the web excerpts, ask about a specific aspect and I will search for sources again."))
+        elif local_ai.configured() and has_reply:
             local_reply(chat_id, stripped, locale, history, research=False)
         elif FOLLOW_MORE.match(stripped):
             chat.text(chat_id, more(chat_id, locale))
@@ -390,10 +393,14 @@ def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None,
     progress.phase("🔎 Buscando fuentes…" if research else "💬 Pensando localmente…",
                    "🔎 Searching sources…" if research else "💬 Thinking locally…")
     sender = (chat.sender() or "").strip().lower()
-    supplied = history if history is not None else local_ai.history(chat_id, sender)
+    # Only process-owned, per-sender history enters the local model. Client
+    # history may contain arbitrary old page text and cannot be authenticated.
+    supplied = local_ai.history(chat_id, sender)
     result = local_ai.complete(text, locale, supplied, research=research)
-    if result.status == "ok" and history is None:
-        local_ai.remember(chat_id, sender, text, result.text)
+    if result.status == "ok":
+        # Do not store untrusted web text in the model's conversational history.
+        remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text
+        local_ai.remember(chat_id, sender, text, remembered)
     chat.text(chat_id, local_ai.display(result, locale))
 
 
