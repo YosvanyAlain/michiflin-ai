@@ -36,6 +36,7 @@ prepare() {
   available_kib=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
   disk_kib=$(df -Pk /opt | awk 'NR==2 {print $4}')
   memory_limit=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+  printf 'SAFE_GGUF_PREFLIGHT memory_kib=%s disk_kib=%s cgroup=%s\n' "$available_kib" "$disk_kib" "$memory_limit"
   [[ "$available_kib" -ge 8000000 && "$disk_kib" -ge 4500000 ]] || { echo 'SAFE_GGUF_PREP_LOW_RESOURCES'; return 1; }
   if [[ "$memory_limit" =~ ^[0-9]+$ ]] && (( memory_limit < 10000000000 )); then echo 'SAFE_GGUF_PREP_LOW_CGROUP'; return 1; fi
   command -v systemd-run >/dev/null && command -v curl >/dev/null || return 1
@@ -43,24 +44,34 @@ prepare() {
     sudo apt-get update -qq
     sudo apt-get install --yes --no-install-recommends acl >/dev/null
   fi
-  if id "$USER_NAME" >/dev/null 2>&1 || sudo test -e "$WORK"; then
+  if id "$USER_NAME" >/dev/null 2>&1 || sudo test -e "$WORK" || \
+     [[ "$(sudo systemctl show "$UNIT.service" --property=LoadState --value 2>/dev/null || true)" == 'loaded' ]]; then
     echo 'SAFE_GGUF_PREP_NAME_CONFLICT'; return 1
   fi
   sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$USER_NAME"
-  sudo install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$WORK"
-  sudo -u "$USER_NAME" touch "$WORK/.test-run-${GITHUB_RUN_ID:?}"
+  if ! sudo install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$WORK"; then
+    sudo userdel "$USER_NAME" >/dev/null 2>&1 || true
+    echo 'SAFE_GGUF_PREP_DIRECTORY_FAILED'; return 1
+  fi
+  if ! sudo -u "$USER_NAME" touch "$WORK/.test-run-${GITHUB_RUN_ID:?}"; then
+    sudo rmdir "$WORK" >/dev/null 2>&1 || true
+    sudo userdel "$USER_NAME" >/dev/null 2>&1 || true
+    echo 'SAFE_GGUF_PREP_MARKER_FAILED'; return 1
+  fi
   # Download and unpack as a separate UID with an empty environment. This
   # preparation runs before any bot state is restored on the runner.
   sudo -u "$USER_NAME" env -i HOME="$WORK" PATH='/usr/bin:/bin' \
     WORK="$WORK" ENGINE_URL="$ENGINE_URL" ENGINE_SHA="$ENGINE_SHA" MODEL_URL="$MODEL_URL" MODEL_SHA="$MODEL_SHA" \
     bash -c '
       set -euo pipefail; umask 077; cd "$WORK"
-      curl --fail --location --silent --show-error --connect-timeout 25 --max-time 150 "$ENGINE_URL" -o engine.tar.gz
+      echo SAFE_GGUF_ENGINE_DOWNLOAD
+      curl --fail --location --silent --show-error --retry 2 --retry-max-time 150 --connect-timeout 25 --max-time 150 "$ENGINE_URL" -o engine.tar.gz
       printf "%s  engine.tar.gz\n" "$ENGINE_SHA" | sha256sum --check --status
       tar -xzf engine.tar.gz
       test -x llama-b11960/llama-server
       rm -f engine.tar.gz
-      curl --fail --location --silent --show-error --connect-timeout 25 --max-time 420 "$MODEL_URL" -o model.partial
+      echo SAFE_GGUF_MODEL_DOWNLOAD
+      curl --fail --location --silent --show-error --retry 2 --retry-max-time 420 --connect-timeout 25 --max-time 420 "$MODEL_URL" -o model.partial
       test "$(wc -c < model.partial)" -eq 2497281312
       printf "%s  model.partial\n" "$MODEL_SHA" | sha256sum --check --status
       mv model.partial model.gguf
