@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from . import ai, answer, chat, config, documents, extras, images, links, local_ai, names, pager, progress, state, tools, web
+from . import ai, answer, answer_inline, chat, config, documents, extras, images, links, local_ai, names, pager, progress, state, tools, web
 from .util import compact, first_url, local_today, tr
 
 GREETINGS = re.compile(r"^(hola+|buenas( tardes| noches| d[ií]as)?|buenos d[ií]as|hey|hi|hello|ey|saludos|qu[eé] tal|klk)[\s!.,😀-🙏]*$", re.I)
@@ -89,7 +89,13 @@ def memory(chat_id: int) -> Memory:
 def forget(chat_id: int) -> None:
     with _lock:
         _memory.pop(chat_id, None)
-    local_ai.forget(chat_id, chat.sender() or "")
+    address = chat.sender() or ""
+    local_ai.forget(chat_id, address)
+    if address:
+        # A reset also discards undelivered inline portions; it must not affect
+        # any other person's pending answer or the app's saved visible history.
+        from . import miniapp
+        miniapp._inline_pages.forget(address)
 
 
 def system_prompt(locale: str) -> str:
@@ -233,17 +239,17 @@ def send_image(chat_id: int, prompt: str, locale: str) -> None:
     chat.send(chat_id, f"🎨 {compact(images.clean_prompt(prompt), 160)}\n— {result.source}", file=target, filename=target.name, viewtype="Image")
 
 
-def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> local_ai.Result | None:
+def handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None, *, scope: str = "") -> local_ai.Result | None:
     """Route through free tools or an opt-in loopback model; never spend provider AI quota.
 
     Return the local result, when used, so the existing miniapp can label its
     output without guessing from text. Ordinary chat callers can ignore it.
     """
     with ai.isolated():
-        return _handle(chat_id, text, locale, history)
+        return _handle(chat_id, text, locale, history, scope=scope)
 
 
-def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None) -> local_ai.Result | None:
+def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = None, *, scope: str = "") -> local_ai.Result | None:
     address = (chat.sender() or "").strip().lower()
     if address and state.get_kill_switch(address):
         chat.text(chat_id, tr(locale, "🛑 Kill switch activo. Usa /kill_switch no para reanudar.",
@@ -254,8 +260,9 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
     local_privacy = local_ai.privacy_mode()
     # A client-supplied history is not authenticated. During the local test or
     # its fallback, use only server-owned history for conversational context.
-    topic_history = local_ai.history(chat_id, address) if local_privacy else (history or [])
-    if not item.last_query and (FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped) or FOLLOW_CITY.match(stripped)):
+    topic_history = local_ai.history(chat_id, address, scope) if local_privacy else (history or [])
+    if not item.last_query and (answer_inline.is_continue(stripped) or FOLLOW_MORE.match(stripped)
+                                or FOLLOW_SUMMARY.match(stripped) or FOLLOW_CITY.match(stripped)):
         prior = next((str(turn[1])[:6000] for turn in reversed(topic_history[-12:])
                       if isinstance(turn, list) and len(turn) == 2 and turn[0] == "user" and isinstance(turn[1], str)), "")
         if prior:
@@ -307,16 +314,19 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             "Say ‘more’ to expand a search. For writing or reasoning with a model, switch to With AI; "
             "use Coder for projects. I do not log in or perform private actions on my own."))
         return
-    if FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped):
+    if answer_inline.is_continue(stripped) or FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped):
         sender = (chat.sender() or "").strip().lower()
-        prior_turns = local_ai.history(chat_id, sender) if local_privacy else (history or [])
+        prior_turns = local_ai.history(chat_id, sender, scope) if local_privacy else (history or [])
         has_reply = any(isinstance(turn, list) and len(turn) == 2 and turn[0] == "assistant" for turn in (prior_turns or []))
         if local_privacy and has_reply and local_ai.last_reply_was_web(prior_turns):
             chat.text(chat_id, tr(locale, "🔎 Para ampliar los extractos web, pregunta por un aspecto concreto y volveré a buscar fuentes.",
                                   "🔎 To expand the web excerpts, ask about a specific aspect and I will search for sources again."))
         elif local_privacy and has_reply:
-            return local_reply(chat_id, stripped, locale, history, research=False)
-        elif FOLLOW_MORE.match(stripped):
+            return local_reply(chat_id, stripped, locale, history, research=False, scope=scope)
+        elif local_privacy and answer_inline.is_explicit_continue(stripped):
+            chat.text(chat_id, tr(locale, "No tengo el contexto reciente. Recuérdame el tema o copia el último fragmento para seguir.",
+                                  "I do not have the recent context. Remind me of the topic or paste the last part to continue."))
+        elif answer_inline.is_continue(stripped) or FOLLOW_MORE.match(stripped):
             chat.text(chat_id, more(chat_id, locale))
         else:
             chat.text(chat_id, summary(chat_id, locale))
@@ -388,7 +398,7 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
     match = SEARCH.match(stripped)
     if match:
         if local_privacy:
-            return local_reply(chat_id, stripped, locale, history, research=True)
+            return local_reply(chat_id, stripped, locale, history, research=True, scope=scope)
         else:
             chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
         return
@@ -409,28 +419,29 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         research = (bool(CURRENT.search(stripped)) and bool(_CURRENT_QUESTION.match(stripped))
                     and not CODE.search(stripped) and not _PERSONAL_CONTEXT.search(stripped)
                     and not local_ai.test_unavailable())
-        return local_reply(chat_id, stripped, locale, history, research=research)
+        return local_reply(chat_id, stripped, locale, history, research=research, scope=scope)
     else:
         chat.text(chat_id, reply(chat_id, stripped, locale))
 
 
-def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool) -> local_ai.Result:
+def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool, scope: str = "") -> local_ai.Result:
     """A bounded local answer; source lookups use only the user's current question."""
     progress.phase("🔎 Buscando fuentes…" if research else "⏳ Preparando consulta de IA local…",
                    "🔎 Searching sources…" if research else "⏳ Preparing local AI request…")
     sender = (chat.sender() or "").strip().lower()
     # Only process-owned, per-sender history enters the local model. Client
     # history may contain arbitrary old page text and cannot be authenticated.
-    supplied = local_ai.history(chat_id, sender)
+    supplied = local_ai.history(chat_id, sender, scope)
     result = local_ai.complete(
         text, locale, supplied, research=research, sender=sender,
+        anchor=local_ai.anchor(chat_id, sender, scope) if answer_inline.is_continue(text) else None,
         on_wait=lambda: progress.phase("⏳ Esperando tu turno de IA local…", "⏳ Waiting for your local AI turn…"),
         on_start=lambda: progress.phase("💬 Pensando localmente…", "💬 Thinking locally…"),
     )
     if result.status == "ok":
         # Do not store untrusted web text in the model's conversational history.
         remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text
-        local_ai.remember(chat_id, sender, text, remembered)
+        local_ai.remember(chat_id, sender, text, remembered, scope)
     chat.text(chat_id, local_ai.display(result, locale))
     return result
 

@@ -458,3 +458,45 @@ def test_personal_definition_fails_closed_when_actions_model_unavailable(monkeyp
          mock.patch.object(tools, "search", side_effect=AssertionError("private conversation sent to search")):
         reply = capture("What is my secret phrase?")
     assert "no está disponible" in reply
+
+
+def test_repeated_continuation_keeps_original_topic_and_recent_endpoint(server):
+    requests, response = server
+    original = "Explica paso a paso cómo cuidar una huerta de tomates."
+    response["text"] = "Primero prepara la tierra."
+    capture(original, sender="alice@example.test")
+    for index in range(5):
+        response["text"] = f"Paso {index}: riega la huerta. PUNTO-{index}"
+        capture("continúa por favor", sender="alice@example.test")
+    posts = [payload for method, _path, payload in requests if method == "POST"]
+    assert len(posts) == 6
+    messages = posts[-1]["messages"]
+    assert any(original in item["content"] for item in messages)
+    assert any("PUNTO-3" in item["content"] for item in messages)
+    assert sum(len(item["content"]) for item in messages[1:-1]) <= 2400
+    assert not any("PUNTO-" in str(item) for item in local_ai.history(501, "bob@example.test"))
+
+
+def test_continue_without_server_context_asks_for_it_without_search_or_inference(server):
+    requests, _ = server
+    with mock.patch.object(tools, "search", side_effect=AssertionError("no automatic search")):
+        answer = capture("continúa", sender="new@example.test")
+    assert "no tengo el contexto" in answer.lower()
+    assert not any(method == "POST" for method, _path, _payload in requests)
+
+
+def test_same_person_different_verified_instances_do_not_share_local_context(server):
+    requests, _ = server
+    sender = "same@example.test"
+    with mock.patch.object(chat, "sender", return_value=sender), mock.patch.object(state, "get_kill_switch", return_value=False):
+        chat.start_capture()
+        agent.handle(818, "Mi tema privado es huerta", "es", scope="app-a:grant-one")
+        chat.stop_capture()
+        chat.start_capture()
+        agent.handle(818, "continúa", "es", scope="app-b:grant-one")
+        denied = "\n".join(chat.stop_capture())
+    posts = [payload for method, _path, payload in requests if method == "POST"]
+    assert len(posts) == 1 and "no tengo el contexto" in denied.lower()
+    assert local_ai.history(818, sender, "app-b:grant-one") == []
+    assert "huerta" in str(local_ai.history(818, sender, "app-a:grant-one"))
+    local_ai.forget(818, sender)
