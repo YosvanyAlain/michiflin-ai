@@ -150,6 +150,17 @@ def anchor(chat_id: int, address: str, scope: str = "") -> tuple[str, str] | Non
         return found.topic, found.first
 
 
+def _excerpt(text: str, limit: int, head: int) -> str:
+    """Keep the topic and especially the latest endpoint in a bounded excerpt."""
+    if len(text) <= limit:
+        return text
+    marker = "\n[…]\n"
+    if limit <= len(marker) + 1:
+        return text[-limit:] if limit > 0 else ""
+    front = min(head, limit - len(marker) - 1)
+    return text[:front] + marker + text[-(limit - len(marker) - front):]
+
+
 def remember(chat_id: int, address: str, question: str, response: str, scope: str = "") -> None:
     key = (int(chat_id), (address or "").strip().lower(), str(scope or "")[:200])
     if not key[1]:
@@ -161,10 +172,10 @@ def remember(chat_id: int, address: str, question: str, response: str, scope: st
                 _memory.pop(other, None)
         found = _memory.get(key)
         turns = found.turns if found else deque(maxlen=6)
-        query = question[:600]
-        # Keep both the beginning and the stopping point of long answers. The
-        # bounded original topic is retained through several "continue" turns.
-        excerpt = response if len(response) <= 600 else response[:245] + "\n[…]\n" + response[-350:]
+        query = _excerpt(question, 600, 395)
+        # Keep more of a typical local answer, including its final stopping
+        # point. The original topic remains pinned through continuation turns.
+        excerpt = _excerpt(response, 1400, 400)
         if found and answer_inline.is_continue(question):
             topic, first = found.topic, found.first
         else:
@@ -279,25 +290,31 @@ def _history(history: list[Any] | None, anchor: tuple[str, str] | None = None) -
             continue
         if turn[0] == "assistant" and any(marker in turn[1] for marker in _WEB_MARKERS):
             continue  # previous untrusted source excerpts never enter the model
-        text = turn[1].strip()[:600]
+        text = turn[1].strip()
         if text:
             valid.append((turn[0], text))
 
     prefix: list[dict[str, str]] = []
     remaining = 1600
+    continuing = False
     if anchor and anchor[0] and anchor[1] and not any(marker in anchor[1] for marker in _WEB_MARKERS):
-        origin, first = anchor[0].strip()[:600], anchor[1].strip()[:600]
-        if origin and first:
-            prefix = [{"role": "user", "content": origin}, {"role": "assistant", "content": first}]
-            # Drop the matching anchor pair from recent turns when it is still
-            # present. Otherwise keep only the latest two complete exchanges.
+        origin, original_first = _excerpt(anchor[0].strip(), 600, 395), anchor[1].strip()
+        if origin and original_first:
+            # Drop the matching anchor pair when it is still present; otherwise
+            # keep only the latest two exchanges. On the first continuation we
+            # can retain most of the original answer; later give the latest
+            # stopping point priority while keeping the original topic pinned.
             match = next((index for index in range(len(valid) - 1)
-                          if valid[index] == ("user", origin) and valid[index + 1] == ("assistant", first)), -1)
+                          if valid[index] == ("user", origin) and valid[index + 1] == ("assistant", original_first)), -1)
             valid = valid[match + 2:] if match >= 0 else valid[-4:]
-            remaining = max(0, 2400 - len(origin) - len(first))
+            first = _excerpt(original_first, 600 if valid else 1400, 245 if valid else 400)
+            prefix = [{"role": "user", "content": origin}, {"role": "assistant", "content": first}]
+            remaining, continuing = max(0, 2400 - len(origin) - len(first)), True
     accepted: list[dict[str, str]] = []
     for role, text in reversed(valid):
-        text = text[:min(600, remaining)]
+        cap = 1200 if continuing and role == "assistant" else 600
+        head = 350 if cap > 600 else (245 if role == "assistant" else 395)
+        text = _excerpt(text, min(cap, remaining), head)
         if text:
             accepted.insert(0, {"role": role, "content": text})
             remaining -= len(text)
