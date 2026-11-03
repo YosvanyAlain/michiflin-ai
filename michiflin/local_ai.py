@@ -369,13 +369,15 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
         messages.extend(_history(history))
         messages.append({"role": "user", "content": question[:3000]})
-        # A single bounded inference, not an automatic continuation loop. Give
-        # a longer answer when the model is free; if someone is already waiting,
-        # retain the former shorter budget to reduce queue starvation. New
-        # arrivals cannot preempt an inference that has already started.
-        budget = 384 if _turns.waiting() else 768
+        # Keep one inference per turn. When idle, allow a modestly longer
+        # answer than the old 384-token limit; if others are already queued,
+        # shorten the turn. The pinned llama.cpp stops at a newline after the
+        # requested generation time and reports finish_reason=length. Since a
+        # one-line answer may have no newline, token and RPC limits still apply.
+        queued = bool(_turns.waiting())
+        budget, milliseconds = (192, 15_000) if queued else (512, 55_000)
         request = {"messages": messages, "temperature": 0.3, "max_tokens": budget, "stream": False,
-                   "chat_template_kwargs": {"enable_thinking": False}}
+                   "t_max_predict_ms": milliseconds, "chat_template_kwargs": {"enable_thinking": False}}
         try:
             response = _http("/v1/chat/completions", request, 125)
             state.check_work_allowed()

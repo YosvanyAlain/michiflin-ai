@@ -10,6 +10,7 @@ waiting = {name: threading.Event() for name in ("bob", "carol")}
 first_request = threading.Event()
 results = {}
 budgets = {}
+limits = {}
 started = {}
 finished = {}
 lock = threading.Lock()
@@ -26,6 +27,7 @@ def observing_http(path, payload, timeout):
         name = threading.current_thread().name
         with lock:
             budgets[name] = payload.get("max_tokens")
+            limits[name] = payload.get("t_max_predict_ms")
             started[name] = time.monotonic()
         if name == "alice":
             first_request.set()
@@ -53,18 +55,20 @@ assert duplicate.status == "duplicate", "sender_not_limited"
 for thread in threads.values():
     thread.join(180)
     assert not thread.is_alive(), "turn_timeout"
-assert order == ["alice", "bob", "carol"], "not_fifo"
+print("SAFE_REAL_LONG_PRELIM", json.dumps({"order": order, "duplicate": duplicate.status, "budgets": budgets, "time_limits_ms": limits, "statuses": {name: results[name].status for name in prompts}, "answer_lengths": {name: len(results[name].text) for name in prompts}, "first_cut": results["alice"].truncated, "elapsed_seconds": round(time.monotonic() - begin, 1)}, sort_keys=True), flush=True)
+assert order == ["alice", "bob", "carol"], "not_fifo_or_wait_timeout"
 assert all(results[name].status == "ok" and results[name].text.strip() for name in prompts), "model_unavailable_or_wait_timeout"
-assert budgets == {"alice": 768, "bob": 384, "carol": 768}, "unexpected_turn_budget"
+assert budgets == {"alice": 512, "bob": 192, "carol": 512}, "unexpected_turn_budget"
 first = results["alice"]
-assert answer_html.is_long(first.text), "model_did_not_generate_a_long_answer"
+assert len(first.text) >= 700, "model_output_too_short_to_measure"
+assert limits == {"alice": 55000, "bob": 15000, "carol": 55000}, "unexpected_time_budget"
 document = answer_html.render(first.text, "es", signature="IA local", truncated=first.truncated)
 assert document.startswith("<!doctype html>") and "default-src 'none'" in document
 assert "<script" not in document.lower() and len(document.encode("utf-8")) < answer_html.MAX_DOCUMENT_BYTES
 elapsed = time.monotonic() - begin
 print("SAFE_REAL_LONG_HTML", json.dumps({
     "order": order, "duplicate": duplicate.status, "statuses": {name: results[name].status for name in prompts},
-    "budgets": budgets, "first_answer_chars": len(first.text), "first_cut": first.truncated,
+    "budgets": budgets, "time_limits_ms": limits, "first_answer_chars": len(first.text), "first_cut": first.truncated,
     "html_bytes": len(document.encode("utf-8")), "first_seconds": round(finished["alice"] - started["alice"], 1),
     "last_start_seconds": round(started["carol"] - begin, 1), "elapsed_seconds": round(elapsed, 1),
     "identity_used": False, "bot_started": False, "external_ai": False,
