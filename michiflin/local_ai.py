@@ -2,8 +2,8 @@
 
 Inference is strictly local: an explicitly enabled llama.cpp-compatible server
 on loopback. Never routes through the provider registry or spends API quotas.
-A GitHub Actions job is deliberately ineligible for serving the live bot.
-External pages are untrusted data, not instructions or permitted tool calls.
+A GitHub Actions run is eligible only for an explicitly opted-in test. External
+pages are untrusted data, not instructions or permitted tool calls.
 """
 from __future__ import annotations
 
@@ -11,19 +11,23 @@ import http.client
 import json
 import os
 import re
+import socket
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from . import answer, config, smart_agent, state, tools
+from .fair_local_ai import FairTurns
 from .util import strip_thinking, tr
 
-# One generation per process. Do not enqueue unlimited inference work or rely on
-# the model to make authorization, network or execution decisions.
-_slot = threading.BoundedSemaphore(1)
+# One generation, FIFO across distinct senders, with at most four waiters.
+# Separate research slots keep page fetches from holding an inference turn.
+_turns = FairTurns(max_waiters=4, timeout=90.0)
+_research_slots = threading.BoundedSemaphore(2)
 _memory_lock = threading.Lock()
 _memory: dict[tuple[int, str], tuple[float, deque[tuple[str, str]]]] = {}
 _MAX_RESPONSE_BYTES = 1_000_000
@@ -63,11 +67,31 @@ class Result:
     method: str = "model"
 
 
+def _flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def configured() -> bool:
-    """Explicit opt-in, but never activate the live service on Actions."""
-    enabled = os.environ.get("LOCAL_GGUF_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
-    in_actions = os.environ.get("GITHUB_ACTIONS", "").strip().lower() in {"1", "true", "yes", "on"}
-    return enabled and not in_actions
+    """Opt-in everywhere; Actions additionally needs an explicit test opt-in."""
+    return _flag("LOCAL_GGUF_ENABLED") and (not _flag("GITHUB_ACTIONS") or _flag("LOCAL_GGUF_ACTIONS_TEST"))
+
+
+def _auth_header() -> str:
+    """Read the local per-session key without exposing it in process arguments."""
+    name = os.environ.get("LOCAL_GGUF_KEY_FILE", "").strip()
+    if not name:
+        if _flag("GITHUB_ACTIONS"):
+            raise ValueError("local_server_key_required")
+        return ""
+    try:
+        with Path(name).open("rb") as handle:
+            data = handle.read(257)
+        key = data.decode("ascii").strip()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("local_server_key_unavailable") from exc
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", key):
+        raise ValueError("local_server_key_invalid")
+    return "Bearer " + key
 
 
 def history(chat_id: int, address: str) -> list[list[str]]:
@@ -117,12 +141,44 @@ def _port() -> int:
     return port if 1024 <= port <= 65535 else _DEFAULT_PORT
 
 
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP over a filesystem Unix socket; no TCP or proxy configuration."""
+    def __init__(self, path: str, timeout: float) -> None:
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = path
+
+    def connect(self) -> None:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(self.timeout)
+            sock.connect(self.socket_path)
+        except BaseException:
+            sock.close()
+            raise
+        self.sock = sock
+
+
+def _connection(timeout: float) -> http.client.HTTPConnection:
+    path = os.environ.get("LOCAL_GGUF_SOCKET_PATH", "").strip()
+    if _flag("GITHUB_ACTIONS") and path != "/run/michiflin-local-gguf/llama.sock":
+        raise ValueError("local_server_socket_required")
+    if path:
+        if not path.startswith("/") or len(path.encode("utf-8")) > 100 or "\0" in path:
+            raise ValueError("local_server_socket_invalid")
+        return _UnixHTTPConnection(path, timeout)
+    return http.client.HTTPConnection("127.0.0.1", _port(), timeout=timeout)
+
+
 def _http(path: str, payload: dict[str, Any] | None, timeout: float) -> dict[str, Any]:
-    # Literal loopback only, no URL config, proxy, cookies, auth or redirects.
-    conn = http.client.HTTPConnection("127.0.0.1", _port(), timeout=timeout)
+    # Literal loopback or an explicitly named local Unix socket only; no proxy,
+    # cookies or redirects. Actions additionally requires a per-session key.
+    conn = _connection(timeout)
     try:
         body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json", "Accept": "application/json", "Connection": "close"}
+        authorization = _auth_header()
+        if authorization:
+            headers["Authorization"] = authorization
         conn.request("GET" if payload is None else "POST", path, body=body, headers=headers)
         response = conn.getresponse()
         data = response.read(_MAX_RESPONSE_BYTES + 1)
@@ -258,7 +314,9 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
     return ("ok" if sources else "no_sources"), tuple(sources)
 
 
-def complete(question: str, locale: str, history: list[Any] | None = None, *, research: bool = False) -> Result:
+def complete(question: str, locale: str, history: list[Any] | None = None, *, research: bool = False,
+             sender: str = "", on_wait: Callable[[], None] | None = None,
+             on_start: Callable[[], None] | None = None) -> Result:
     if not configured():
         return Result("disabled")
     question = (question or "").strip()
@@ -266,20 +324,32 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         return Result("empty")
     if len(question) > 3000:
         return Result("long_input")
-    # Fast fail on load instead of building an unbounded request queue.
-    if not _slot.acquire(blocking=False):
-        return Result("busy")
-    try:
-        state.check_work_allowed()
-        if not research and not ready():
-            return Result("unavailable")
-        sources: tuple[Source, ...] = ()
-        if research:
+    state.check_work_allowed()
+    if research:
+        # No model ingestion: web requests are bounded independently and never
+        # block all inference turns just because a remote website is slow.
+        if not _research_slots.acquire(blocking=False):
+            return Result("web_busy")
+        try:
             status, sources = _research(question, locale)
             if status != "ok":
                 return Result(status)
             state.check_work_allowed()
             return _extractive(question, sources, locale)
+        finally:
+            _research_slots.release()
+    if not ready():
+        return Result("unavailable")
+    status, ticket = _turns.acquire(sender, check=state.check_work_allowed, on_wait=on_wait)
+    if status != "ok" or ticket is None:
+        return Result(status)
+    try:
+        state.check_work_allowed()
+        if on_start is not None:
+            on_start()
+        # Service can have failed while the request was waiting.
+        if not ready():
+            return Result("unavailable")
         messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
         messages.extend(_history(history))
         messages.append({"role": "user", "content": question[:3000]})
@@ -295,17 +365,16 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             if not isinstance(content, str):
                 raise ValueError("local_server_content")
             text = strip_thinking(content).strip()[:6000]
-            valid = {f"[{source.label}]" for source in sources}
-            text = _SOURCE_MARK.sub(lambda m: m.group() if m.group() in valid else "[?]", text)
+            text = _SOURCE_MARK.sub("[?]", text)
             if not text:
                 raise ValueError("empty_local_response")
-            return Result("ok", text, sources, first.get("finish_reason") == "length")
+            return Result("ok", text, (), first.get("finish_reason") == "length")
         except state.WorkPaused:
             raise
         except (OSError, ValueError, TypeError, UnicodeError, http.client.HTTPException, IndexError):
             return Result("unavailable")
     finally:
-        _slot.release()
+        _turns.release(ticket)
 
 
 def display(result: Result, locale: str) -> str:
@@ -321,9 +390,15 @@ def display(result: Result, locale: str) -> str:
         if result.method == "web":
             return text + "\n\n" + tr(locale, WEB_MARKER_ES, WEB_MARKER_EN)
         return text + tr(locale, "\n\n— IA local, sin proveedor externo", "\n\n— Local AI, no external provider")
-    if result.status == "busy":
-        return tr(locale, "⏳ La IA local está atendiendo otra consulta. Prueba de nuevo en un momento.",
-                  "⏳ Local AI is answering another request. Please try again shortly.")
+    if result.status == "duplicate":
+        return tr(locale, "⏳ Ya tienes una consulta de IA local en curso o esperando. Termínala antes de enviar otra.",
+                  "⏳ You already have a local AI request running or waiting. Finish it before sending another.")
+    if result.status in {"busy", "wait_timeout"}:
+        return tr(locale, "⏳ La cola equitativa de IA local está llena o agotó la espera. Prueba de nuevo en un momento.",
+                  "⏳ The fair local AI queue is full or the wait expired. Please try again shortly.")
+    if result.status == "web_busy":
+        return tr(locale, "⏳ Hay varias búsquedas en curso. Prueba de nuevo en un momento.",
+                  "⏳ Several searches are in progress. Please try again shortly.")
     if result.status == "private_query":
         return tr(locale, "🔒 La consulta parece contener datos privados; no la envié al buscador. Reformúlala sin esos datos.",
                   "🔒 The query appears to contain private data; I did not send it to search. Rephrase without those details.")

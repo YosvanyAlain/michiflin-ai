@@ -850,7 +850,35 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         if op in WORK_OPS:
             usage.note(address, requests=1)
     if op == "hello" and access.bound_allowed(entry) and admin.is_allowed(address):
+        _local_ai_disclosure(instance_id)
         _maybe_upgrade(instance_id, entry, locale)
+
+
+_local_ai_disclosed: dict[int, bool] = {}
+
+
+def _local_ai_disclosure(instance_id: int) -> None:
+    """Inform only an app that just interacted; never send or replace an app."""
+    from . import local_ai
+    if not local_ai.configured() or maintenance.silent_active():
+        return
+    with _answers_lock:
+        if instance_id in _local_ai_disclosed:
+            return
+        if len(_local_ai_disclosed) >= 4096:
+            _local_ai_disclosed.pop(next(iter(_local_ai_disclosed)))
+        _local_ai_disclosed[instance_id] = True
+    sent = False
+    try:
+        sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {
+            "kind": "info",
+            "es": "Prueba: el agente puede usar IA local. La etiqueta anterior «sin IA» de esta app está desactualizada.",
+            "en": "Test: the agent may use local AI. The old 'no AI' label in this app is out of date.",
+        }})
+    finally:
+        if not sent:
+            with _answers_lock:
+                _local_ai_disclosed.pop(instance_id, None)
 
 
 def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None:
@@ -1297,7 +1325,16 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         text, media_parts = _attachment(attachment, text, selected_agent_model or ("auto" if space == "smart_agent" else space), locale)
     history = args.get("history") if isinstance(args.get("history"), list) else []
     if space == "agent":
-        return run_captured(lambda: agent.handle(chat_id, text, locale, history), locale)
+        from . import local_ai
+        result = run_captured(lambda: agent.handle(chat_id, text, locale, history), locale)
+        if local_ai.configured():
+            # Existing apps remain the exact same build, so their static old
+            # 'no AI' label cannot be changed in place. Correct it in-band.
+            notice = tr(locale,
+                "ℹ️ Prueba: este modo puede usar IA local; la etiqueta «sin IA» de esta app está desactualizada.",
+                "ℹ️ Test: this mode may use local AI; the app's 'no AI' label is out of date.")
+            result["text"] = notice + "\n\n" + result["text"]
+        return result
     if space == "smart_agent" and not attachment:
         agent_model = _clean(args.get("agent_model"))[:180]
         if agent_model and ai.model_by_key(agent_model) is None:
