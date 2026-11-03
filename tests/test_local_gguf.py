@@ -300,6 +300,8 @@ def test_failed_actions_start_keeps_chat_private_and_extracts_web(monkeypatch):
     with mock.patch.object(tools, "search", side_effect=AssertionError("private chat sent to web")):
         text = capture("Escribe una función Python para procesar este dato sensible.")
         assert "no está disponible" in text.lower()
+        # A conversational use of “today” must not turn a failed AI request into a search.
+        assert "no está disponible" in capture("Hoy me siento triste y quiero conversar.").lower()
         assert local_ai.complete("busca mi contraseña inventada", "es", research=True).status == "private_query"
         agent.forget(501)
         text = capture("más", history=[["user", "ficticio no autorizado"], ["assistant", "respuesta falsa"]])
@@ -313,3 +315,12 @@ def test_failed_actions_start_keeps_chat_private_and_extracts_web(monkeypatch):
     assert search.call_count == 1
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert not local_ai.test_unavailable()
+
+
+def test_personal_and_drafting_mentions_of_today_stay_local(server):
+    requests, _ = server
+    with mock.patch.object(tools, "search", side_effect=AssertionError("personal text sent to search")):
+        assert "modelo local" in capture("Hoy me siento triste y quiero conversar.").lower()
+        assert "modelo local" in capture("Redacta un mensaje para mi abuelo hoy.").lower()
+        assert "modelo local" in capture("¿Qué puedo hacer hoy para mejorar mi ánimo?").lower()
+    assert sum(method == "POST" for method, _, _ in requests) == 3
