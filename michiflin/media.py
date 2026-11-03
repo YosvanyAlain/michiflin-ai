@@ -352,7 +352,7 @@ def describe_error(code: str, locale: str) -> str:
     from .util import tr
 
     messages = {
-        "bot_check": ("el sitio pidió verificación; complétala personalmente en un navegador que el proveedor acepte", "the site requested verification; complete it yourself in a browser the provider accepts"),
+        "bot_check": ("el sitio pidió verificación. Complétala personalmente en un navegador aceptado; hacerlo en otro dispositivo no siempre autoriza al servidor", "the site requested verification. Complete it yourself in an accepted browser; doing so on another device does not always authorize the server"),
         "private": ("el contenido es privado o requiere iniciar sesión", "the content is private or requires login"),
         "unavailable": ("el contenido no está disponible", "the content is unavailable"),
         "geo": ("el contenido está bloqueado por región", "the content is region-blocked"),
