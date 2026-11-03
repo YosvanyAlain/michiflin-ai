@@ -26,6 +26,7 @@ from .util import tr
 MAX_ROUNDS = 6  # includes the final answer
 MAX_SECONDS = 150  # checked between calls; an in-flight network call has its own timeout
 MAX_SOURCES = 8
+MAX_ANSWER_CHARS = 100_000  # hard guard; normal model token limits are much smaller
 WORD = re.compile(r"[^\W_]+", re.UNICODE)
 URL = re.compile(r"https?://[^\s<>\"']+", re.I)
 
@@ -170,7 +171,11 @@ def _parse(text: str) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     if set(value) == {"answer"} and isinstance(value["answer"], str) and value["answer"].strip():
-        return {"answer": value["answer"].strip()[:9000]}
+        text = value["answer"].strip()
+        result: dict[str, Any] = {"answer": text[:MAX_ANSWER_CHARS]}
+        if len(text) > MAX_ANSWER_CHARS:
+            result["truncated"] = True
+        return result
     if set(value) == {"tool", "input"} and isinstance(value["tool"], str) and isinstance(value["input"], str):
         return {"tool": value["tool"].lower(), "input": value["input"].strip()[:1200]}
     return None
@@ -211,7 +216,7 @@ def run(text: str, locale: str, history: list[Any] | None = None, model_key: str
     messages.append({"role": "user", "content": text})
     allowed = {url for match in URL.findall(text) if (url := _url(match))}
     sources: dict[str, str] = {}
-    started, signature = time.monotonic(), ""
+    started, signature, truncated = time.monotonic(), "", False
     for index in range(MAX_ROUNDS):
         state.check_work_allowed()
         if time.monotonic() - started >= MAX_SECONDS:
@@ -234,15 +239,15 @@ def run(text: str, locale: str, history: list[Any] | None = None, model_key: str
             continue  # never execute a potentially partial tool action
         if action and "answer" in action:
             answer = action["answer"]
-            if result.truncated:
-                answer += tr(locale, "\n\n[La respuesta se cortó; pide que continúe.]",
-                             "\n\n[The answer was cut off; ask it to continue.]")
+            truncated = bool(result.truncated or action.get("truncated"))
             break
         if not action:
             # A model that ignores the wire protocol may still give a useful plain answer.
             # Do not execute any part of it as a tool call.
             if index == 0 and not result.text.lstrip().startswith(("{", "```")):
-                answer = result.text.strip()[:9000]
+                raw_answer = result.text.strip()
+                answer = raw_answer[:MAX_ANSWER_CHARS]
+                truncated = len(raw_answer) > MAX_ANSWER_CHARS
                 break
             messages += [{"role": "assistant", "content": result.text[:2000]},
                          {"role": "user", "content": "Invalid action. Return exactly one JSON action or answer."}]
@@ -295,9 +300,15 @@ def run(text: str, locale: str, history: list[Any] | None = None, model_key: str
     if not locals().get("answer"):
         answer = tr(locale, "No pude completar la tarea dentro del límite de pasos. Revisa las fuentes o pide una parte concreta.",
                     "I could not complete the task within the step limit. Check the sources or ask for a narrower task.")
+    if truncated:
+        answer += tr(locale, "\n\n[La respuesta se cortó; pide que continúe.]",
+                     "\n\n[The answer was cut off; ask it to continue.]")
     valid_labels = set(sources.values())
     answer = re.sub(r"\[S\d+\]", lambda match: match.group() if match.group()[1:-1] in valid_labels else "[?]", answer)
     if sources:
         heading = tr(locale, "Enlaces identificados (pueden ser resultados de búsqueda)", "Identified links (may be search results)")
         answer += "\n\n" + heading + ":\n" + "\n".join(f"[{label}] {url}" for url, label in list(sources.items())[:MAX_SOURCES])
-    return {"text": answer, "sig": signature, "sources": len(sources)}
+    result = {"text": answer, "sig": signature, "sources": len(sources)}
+    if truncated:
+        result["truncated"] = True
+    return result

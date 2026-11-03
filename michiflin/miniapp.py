@@ -15,6 +15,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -29,7 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_html, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -56,6 +57,8 @@ _instance_locks: dict[int, threading.Lock] = {}
 # Welcome, recovery and proactive upgrade must decide and hand off together.
 _upgrade_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
+# Process-only context for short previews; scoped to the app and recipient.
+_html_history = answer_html.PreviewHistory()
 Op = Callable[[int, dict[str, Any], str], Any]
 OPS: dict[str, Op] = {}
 
@@ -723,7 +726,104 @@ def maintenance_message(locale: str) -> str:
         "\nAuthorized queues will continue afterwards. A request already sent to a provider may have completed or incurred charges; check before retrying.")
 
 
+def _html_scope(entry: dict[str, Any], args: dict[str, Any]) -> str:
+    """Do not reuse a cached answer across grant, deployment epoch or space."""
+    parts = [str(entry.get("epoch") or "")[:200], str(entry.get("access_session") or "")[:200],
+             str(args.get("space") or "agent")[:180]]
+    return hashlib.sha256(json.dumps(parts, ensure_ascii=True).encode("ascii")).hexdigest()
+
+
+def _long_answer(instance_id: int, admitted: dict[str, Any], args: dict[str, Any], locale: str,
+                 answer: Any, generation: int) -> Any:
+    """Hand off one inert HTML document only after an ask has finished in time.
+
+    A local RPC acknowledgement is not a delivery receipt. If it cannot be
+    confirmed, keep the whole answer inline and never automatically retry.
+    """
+    if not isinstance(answer, dict) or answer.get("files") or answer.get("error"):
+        return answer
+    text = answer.get("text")
+    if not answer_html.is_long(text) or text.lstrip().startswith(("⚠️", "❌", "🛑")):
+        return answer
+    address = str(admitted.get("addr") or "").strip().casefold()
+    try:
+        chat_id = int(admitted["chat"])
+    except (KeyError, TypeError, ValueError):
+        return answer
+    if not address:
+        return answer
+
+    def interrupted() -> bool:
+        # Called both before creation and again by chat.send under its RPC
+        # lock, so revocation, a new grant, epoch/build changes and pauses
+        # cannot silently hand this file to a different or stale recipient.
+        try:
+            from . import live_web
+            current = live_web._authorized(instance_id)
+            return bool(state.work_interrupted(address, generation) or not current or current[1] != address
+                        or int(current[0].get("chat") or 0) != chat_id
+                        or current[0].get("epoch") != admitted.get("epoch")
+                        or current[0].get("access_session") != admitted.get("access_session"))
+        except Exception:
+            return True
+
+    def inline_failure() -> dict[str, Any]:
+        failed = dict(answer)
+        failed["text"] = text + tr(locale,
+            "\n\nNo pude confirmar el envío del HTML. La respuesta está aquí; revisa el chat antes de repetir.",
+            "\n\nI could not confirm the HTML was sent. The answer is here; check the chat before retrying.")
+        return failed
+
+    if interrupted():
+        return inline_failure()
+    try:
+        document = answer_html.render(text, locale, signature=str(answer.get("sig") or ""),
+                                      truncated=bool(answer.get("truncated")))
+        short = answer_html.preview(text, locale, truncated=bool(answer.get("truncated")))
+    except (ValueError, UnicodeError):
+        return inline_failure()
+    name = "respuesta-michiflin.html" if locale != "en" else "michiflin-answer.html"
+    path: Path | None = None
+    previous = chat.sender()
+    try:
+        config.TEMP_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        config.TEMP_ROOT.chmod(0o700)
+        fd, temporary = tempfile.mkstemp(prefix="private-answer-", suffix=".html", dir=config.TEMP_ROOT)
+        path = Path(temporary)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(document)
+        chat.set_sender(address)
+        with state.guard_work(address, generation):
+            sent = chat.send(chat_id, tr(locale, "Respuesta de Michiflin · HTML", "Michiflin answer · HTML"),
+                             file=path, filename=name, viewtype="File", interrupted=interrupted)
+    except state.WorkPaused:
+        raise
+    except (OSError, ValueError, TypeError):
+        return inline_failure()
+    finally:
+        chat.set_sender(previous)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                log.warning("private HTML temporary file cleanup failed")
+    if not isinstance(sent, int) or sent <= 0:
+        return inline_failure()
+    result = dict(answer)
+    result["text"] = short
+    if "actions" in result:
+        result["actions"] = actions_in(short, locale)
+    # Do not populate the old app's `files` indicator, which says the file has
+    # already arrived. RPC acceptance only means it was queued locally.
+    try:
+        _html_history.remember(instance_id, address, _html_scope(admitted, args), short, text)
+    except (ValueError, TypeError):
+        pass  # a follow-up may use the preview; the file itself remains intact
+    return result
+
+
 def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
+    admitted_entry = dict(entry)  # retain the original grant and epoch across worker delays
     rid = str(request.get("id", ""))[:40]
     locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
     op = str(request.get("op", ""))
@@ -784,6 +884,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         if not maintenance_safe and state.maintenance_interrupted(generation):
             raise AppError(maintenance_message(locale))
         chat.set_sender(address)
+        actual_args = args
         if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
             from . import live_web
             identity = live_web._identity(instance_id)
@@ -794,15 +895,22 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             if requested and not secure:
                 raise AppError(tr(locale, "Las APIs personales requieren la app actual en un chat individual cifrado.",
                                   "Personal APIs require the current app in an encrypted one-to-one chat."))
+            if (op == "ask" and secure and int(identity[0].get("chat") or 0) == chat_id
+                    and identity[0].get("epoch") == admitted_entry.get("epoch")
+                    and identity[0].get("access_session") == admitted_entry.get("access_session")):
+                # Only an authenticated recipient can recover the recent full
+                # answer behind one of this same instance's visible previews.
+                actual_args = dict(args)
+                actual_args["history"] = _html_history.expand(instance_id, address, _html_scope(admitted_entry, args), args.get("history"))
         gate = _ai_gate(address) if op in AI_OPS else None
         if gate is not None and not gate.acquire(blocking=False):
             raise AppError(tr(locale, "Espera a que termine tu consulta anterior.", "Wait until your previous request finishes."))
         try:
             if kill_safe:
-                answer = function(chat_id, args, locale)
+                answer = function(chat_id, actual_args, locale)
             else:
                 with state.guard_work(address, generation):
-                    answer = function(chat_id, args, locale)
+                    answer = function(chat_id, actual_args, locale)
             if op in AI_OPS and isinstance(answer, dict):
                 answer["quota"] = usage.quota_view(address)
             return answer
@@ -826,7 +934,13 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     timer.start()
     outcome = "ok"
     try:
-        reply(future.result(timeout=OP_LIMITS.get(op, 120)))
+        answer = future.result(timeout=OP_LIMITS.get(op, 120))
+        if op == "ask":
+            # Never attach from the background worker: if it completes after a
+            # timeout there must be no surprising late message in the chat.
+            with state.guard_work(address, generation):
+                answer = _long_answer(instance_id, admitted_entry, args, locale, answer, generation)
+        reply(answer)
     except FutureTimeout:
         outcome = "timeout"
         reply(None, tr(locale, "La respuesta tardó demasiado; la operación podría seguir en curso. Revisa Descargas antes de repetir.",
@@ -1336,6 +1450,8 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             if result["text"].endswith(footer):
                 result["text"] = result["text"][:-len(footer)].rstrip()
                 result["sig"] = tr(locale, "IA local", "Local AI")
+            if generated.truncated:
+                result["truncated"] = True
         return result
     if space == "smart_agent" and not attachment:
         agent_model = _clean(args.get("agent_model"))[:180]
