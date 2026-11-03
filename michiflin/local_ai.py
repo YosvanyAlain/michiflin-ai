@@ -237,7 +237,7 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         else:
             content = question[:3000]
         messages.append({"role": "user", "content": content})
-        request = {"messages": messages, "temperature": 0.3, "max_tokens": 256, "stream": False,
+        request = {"messages": messages, "temperature": 0.3, "max_tokens": 384, "stream": False,
                    "chat_template_kwargs": {"enable_thinking": False}}
         try:
             response = _http("/v1/chat/completions", request, 125)
@@ -249,8 +249,11 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             if not isinstance(content, str):
                 raise ValueError("local_server_content")
             text = strip_thinking(content).strip()[:6000]
-            # Never return an unverified URL manufactured by the model.
-            text = _MODEL_URL.sub(tr(locale, "[enlace no verificado]", "[unverified link]"), text)
+            # For web-grounded answers, only the application can append the
+            # fetched URLs. Do not corrupt ordinary code examples that happen
+            # to contain a literal URL when no research was requested.
+            if sources:
+                text = _MODEL_URL.sub(tr(locale, "[enlace no verificado]", "[unverified link]"), text)
             valid = {f"[{source.label}]" for source in sources}
             text = _SOURCE_MARK.sub(lambda m: m.group() if m.group() in valid else "[?]", text)
             if not text:

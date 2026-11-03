@@ -98,7 +98,7 @@ def test_chat_and_code_use_only_loopback_and_no_search(server):
     posts = [item for item in requests if item[0] == "POST"]
     assert len(posts) == 1 and posts[0][1] == "/v1/chat/completions"
     body = posts[0][2]
-    assert body["max_tokens"] == 256 and body["chat_template_kwargs"]["enable_thinking"] is False
+    assert body["max_tokens"] == 384 and body["chat_template_kwargs"]["enable_thinking"] is False
     assert body["messages"][1]["content"] == "Contexto privado"
     assert body["messages"][-1]["content"].startswith("Escribe una función")
 
@@ -234,3 +234,17 @@ def test_long_input_is_rejected_without_truncating_or_searching(server):
     requests, _ = server
     result = local_ai.complete("x" * 3001, "es")
     assert result.status == "long_input" and requests == []
+
+
+def test_ordinary_code_with_url_is_not_corrupted(server):
+    _requests, response = server
+    response["text"] = "```python\nurl = 'http://127.0.0.1:5000'\n```"
+    result = local_ai.complete("Muéstrame un ejemplo local", "es")
+    assert result.status == "ok" and "http://127.0.0.1:5000" in result.text
+
+
+def test_public_reader_rejects_loopback_without_connecting():
+    with mock.patch.object(local_ai.smart_agent.socket, "socket") as connect:
+        with pytest.raises(ValueError, match="private_url"):
+            local_ai.smart_agent._public_socket("127.0.0.1", 80, 1.0)
+    connect.assert_not_called()
