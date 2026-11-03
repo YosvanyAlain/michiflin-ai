@@ -1,29 +1,61 @@
-name: Technical maintenance
-
+name: Local GGUF production capacity diagnostic
 on:
-  schedule:
-    - cron: "20 3 * * *"
   workflow_dispatch:
-
 permissions:
   contents: read
-  actions: write
-
-concurrency:
-  group: michiflin-technical-maintenance
-  cancel-in-progress: false
-
 jobs:
-  old-action-logs:
+  diagnostic:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          python-version: '3.12'
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Resource baseline (no bot or identity)
+        run: |
+          echo "SAFE_CAP_BASE_MEMORY_KIB=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
+          echo "SAFE_CAP_BASE_DISK_KIB=$(df -Pk /opt | awk 'NR==2 {print $4}')"
+          echo "SAFE_CAP_BASE_CGROUP=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
+          echo "SAFE_CAP_BASE_ARCH=$(uname -m) ACTIONS=${GITHUB_ACTIONS:-}"
+      - name: Same dependencies as the bot
+        run: |
+          echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg p7zip-full socat iproute2 util-linux gnupg
+          pip install -r requirements.txt
+          pip install -U --pre "yt-dlp[default]"
+          python -m pip install "tzdata==2026.6"
+          echo "PW_VERSION=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_ENV"
+      - name: Build isolated selective RAR reader
+        run: python tools/build_unrar_native.py --output "$RUNNER_TEMP/michiflin-unrar/libunrar.so" || true
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PW_VERSION }}
+      - name: Install browser like production
+        run: python -m playwright install --with-deps --only-shell chromium
+      - name: Measure and prepare without identity
+        run: |
+          echo "SAFE_CAP_READY_MEMORY_KIB=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"
+          echo "SAFE_CAP_READY_DISK_KIB=$(df -Pk /opt | awk 'NR==2 {print $4}')"
+          echo "SAFE_CAP_READY_CGROUP=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
+          for p in /opt/hostedtoolcache /usr/share/dotnet /usr/local/lib/android /usr/local/.ghcup /usr/local/share/boost /usr/share/swift /usr/local/share/chromium /opt/google/chrome; do
+            if test -d "$p"; then sudo du -xsk "$p" 2>/dev/null | sed 's/^/SAFE_CAP_DIR_KIB /'; fi
+          done
+          set +e
+          bash tools/local_gguf_session.sh prepare
+          result=$?
+          echo "SAFE_DIAG_PREP_EXIT=$result"
+          if test "$result" = 0; then
+            bash tools/local_gguf_session.sh start
+            echo "SAFE_DIAG_START_EXIT=$?"
+          fi
+          bash tools/local_gguf_session.sh stop
