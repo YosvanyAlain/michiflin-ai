@@ -31,7 +31,7 @@ sudo systemd-run --quiet --unit="$UNIT" --property="User=$SERVICE_USER" \
  --property=StandardOutput=null --property=StandardError=null \
  /usr/bin/python3 /opt/michiflin-isolation-probe/probe.py "$GITHUB_WORKSPACE/.synthetic-canary"
 for i in $(seq 1 15); do
- if curl -fsS --noproxy '*' --max-time 3 http://127.0.0.1:18971/ > "$RUNNER_TEMP/probe-result.json"; then break; fi
+ if curl -fsS --noproxy '*' --max-time 6 http://127.0.0.1:18971/ > "$RUNNER_TEMP/probe-result.json"; then break; fi
  sleep 1
 done
 python3 - <<'PY'
