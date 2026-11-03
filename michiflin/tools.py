@@ -137,7 +137,11 @@ def _youtube_search(query: str, limit: int, locale: str) -> list[Result]:
         try:
             with media.yt_dlp.YoutubeDL(options) as client:
                 info = client.extract_info(f"ytsearch{limit}:{query}", download=False) or {}
-        except Exception:
+        except Exception as exc:
+            # A challenge is not a network failure. Never change route or IP to
+            # try to bypass it; a public search index may still list links later.
+            if media.error_code(exc) == "bot_check":
+                return []
             continue
         found = []
         for item in info.get("entries") or []:
