@@ -14,8 +14,8 @@ from typing import Any, Callable
 
 from .util import tr
 
-LONG_CHARS = 1400
-LONG_LINES = 24
+LONG_CHARS = 1200
+LONG_LINES = 20
 MAX_TEXT_CHARS = 30_000
 MAX_DOCUMENT_BYTES = 180_000
 HISTORY_TEXT_CHARS = 6000  # The installed miniapp already sends at most this much.
