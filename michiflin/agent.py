@@ -241,10 +241,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     stripped = text.strip().strip("\"“”‘’«»").lstrip("¿¡").strip()
     item = memory(chat_id)
-    # Restore a limited local conversational topic after a restart. History is
-    # supplied by this same app instance and never interpreted as instructions.
+    local_privacy = local_ai.privacy_mode()
+    # A client-supplied history is not authenticated. During the local test or
+    # its fallback, use only server-owned history for conversational context.
+    topic_history = local_ai.history(chat_id, address) if local_privacy else (history or [])
     if not item.last_query and (FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped) or FOLLOW_CITY.match(stripped)):
-        prior = next((str(turn[1])[:6000] for turn in reversed((history or [])[-12:])
+        prior = next((str(turn[1])[:6000] for turn in reversed(topic_history[-12:])
                       if isinstance(turn, list) and len(turn) == 2 and turn[0] == "user" and isinstance(turn[1], str)), "")
         if prior:
             previous_weather = WEATHER.search(prior.strip(" ¿¡?"))
@@ -255,6 +257,13 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
                               "👋 Hi! Ask me anything or paste a link. I search, read the sources and bring you the essentials."))
         return
     if CAPABILITIES.match(stripped):
+        if local_ai.test_unavailable():
+            chat.text(chat_id, tr(locale,
+                "⚠️ La prueba de IA local no está disponible en esta sesión. No enviaré conversaciones o código automáticamente "
+                "a un buscador ni a un proveedor de IA. Puedes pedir ‘busca ...’ para consultar fuentes públicas.",
+                "⚠️ The local AI test is unavailable in this session. I will not automatically send conversations or code "
+                "to a search engine or AI provider. You can ask ‘search ...’ for public sources."))
+            return
         if local_ai.ready():
             chat.text(chat_id, tr(
                 locale,
@@ -290,12 +299,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     if FOLLOW_MORE.match(stripped) or FOLLOW_SUMMARY.match(stripped):
         sender = (chat.sender() or "").strip().lower()
-        prior_turns = local_ai.history(chat_id, sender) if local_ai.configured() else (history or [])
+        prior_turns = local_ai.history(chat_id, sender) if local_privacy else (history or [])
         has_reply = any(isinstance(turn, list) and len(turn) == 2 and turn[0] == "assistant" for turn in (prior_turns or []))
-        if local_ai.configured() and has_reply and local_ai.last_reply_was_web(prior_turns):
+        if local_privacy and has_reply and local_ai.last_reply_was_web(prior_turns):
             chat.text(chat_id, tr(locale, "🔎 Para ampliar los extractos web, pregunta por un aspecto concreto y volveré a buscar fuentes.",
                                   "🔎 To expand the web excerpts, ask about a specific aspect and I will search for sources again."))
-        elif local_ai.configured() and has_reply:
+        elif local_privacy and has_reply:
             local_reply(chat_id, stripped, locale, history, research=False)
         elif FOLLOW_MORE.match(stripped):
             chat.text(chat_id, more(chat_id, locale))
@@ -368,7 +377,7 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     match = SEARCH.match(stripped)
     if match:
-        if local_ai.configured():
+        if local_privacy:
             local_reply(chat_id, stripped, locale, history, research=True)
         else:
             chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
@@ -382,7 +391,7 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             item.last_query, item.last_kind, item.last_results = stripped, "wiki", []
             chat.text(chat_id, f"📚 {title}\n\n{extract}\n\n{links.command('v', page_url)} · {names.cmd(locale, 'more')}")
             return
-    if local_ai.configured():
+    if local_privacy:
         local_reply(chat_id, stripped, locale, history, research=bool(CURRENT.search(stripped)) and not CODE.search(stripped))
     else:
         chat.text(chat_id, reply(chat_id, stripped, locale))
