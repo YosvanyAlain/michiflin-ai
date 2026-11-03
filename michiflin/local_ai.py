@@ -76,6 +76,16 @@ def configured() -> bool:
     return _flag("LOCAL_GGUF_ENABLED") and (not _flag("GITHUB_ACTIONS") or _flag("LOCAL_GGUF_ACTIONS_TEST"))
 
 
+def test_unavailable() -> bool:
+    """This Actions session asked for local AI but could not verify startup."""
+    return _flag("GITHUB_ACTIONS") and _flag("LOCAL_GGUF_TEST_UNAVAILABLE") and not configured()
+
+
+def privacy_mode() -> bool:
+    """Keep explicit research separate from private chat even during fallback."""
+    return configured() or test_unavailable()
+
+
 def _auth_header() -> str:
     """Read the local per-session key without exposing it in process arguments."""
     name = os.environ.get("LOCAL_GGUF_KEY_FILE", "").strip()
@@ -317,8 +327,8 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
 def complete(question: str, locale: str, history: list[Any] | None = None, *, research: bool = False,
              sender: str = "", on_wait: Callable[[], None] | None = None,
              on_start: Callable[[], None] | None = None) -> Result:
-    if not configured():
-        return Result("disabled")
+    if not configured() and not (research and test_unavailable()):
+        return Result("unavailable" if test_unavailable() else "disabled")
     question = (question or "").strip()
     if not question:
         return Result("empty")

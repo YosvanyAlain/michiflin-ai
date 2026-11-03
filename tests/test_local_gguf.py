@@ -290,3 +290,26 @@ def test_public_reader_rejects_loopback_without_connecting():
         with pytest.raises(ValueError, match="private_url"):
             local_ai.smart_agent._public_socket("127.0.0.1", 80, 1.0)
     connect.assert_not_called()
+
+
+def test_failed_actions_start_keeps_chat_private_and_extracts_web(monkeypatch):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("LOCAL_GGUF_TEST_UNAVAILABLE", "1")
+    monkeypatch.setenv("LOCAL_GGUF_ENABLED", "0")
+    assert not local_ai.configured() and local_ai.test_unavailable() and local_ai.privacy_mode()
+    with mock.patch.object(tools, "search", side_effect=AssertionError("private chat sent to web")):
+        text = capture("Escribe una función Python para procesar este dato sensible.")
+        assert "no está disponible" in text.lower()
+        assert local_ai.complete("busca mi contraseña inventada", "es", research=True).status == "private_query"
+        agent.forget(501)
+        text = capture("más", history=[["user", "ficticio no autorizado"], ["assistant", "respuesta falsa"]])
+        assert "no hay una consulta anterior" in text.lower()
+    hit = tools.Result("Biblioteca Sol", "https://public.example.test/horario", "test")
+    page = "La Biblioteca Sol informa que su horario del lunes termina a las 17:00, según su página oficial."
+    with mock.patch.object(tools, "search", return_value=[hit]) as search, \
+         mock.patch.object(local_ai.smart_agent, "_read", return_value=page):
+        text = capture("busca horario de Biblioteca Sol")
+    assert "Extractos de fuentes web" in text and "17:00" in text
+    assert search.call_count == 1
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    assert not local_ai.test_unavailable()
