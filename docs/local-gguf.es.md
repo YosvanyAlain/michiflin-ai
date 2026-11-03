@@ -15,15 +15,17 @@ otras instancias del bot.
   **no ejecuta código ni acciones privadas** desde este modo.
 - Para una búsqueda explícita o una pregunta actual, consulta el buscador gratuito
   con **la pregunta actual**, no con el historial. Lee hasta dos páginas públicas y
-  añade los enlaces que realmente consultó. El buscador y las páginas pueden fallar,
-  aplicar límites o filtrar resultados; el texto externo puede intentar manipular la
-  respuesta. No se garantiza exactitud ni protección absoluta frente a inyecciones.
+  muestra extractos textuales y añade los enlaces consultados. Los textos web no
+  se envían al modelo. El buscador y las páginas pueden fallar, aplicar límites,
+  filtrar resultados o contener información falsa; los extractos no garantizan
+  exactitud ni neutralizan todos los riesgos de un sitio malicioso.
 - Se intenta bloquear búsquedas que contengan datos privados evidentes, pero la
   detección no es infalible. No envíes contraseñas ni tokens en consultas web.
-- Historial breve en memoria, separado por chat y remitente; al reiniciar se pierde.
-  La miniapp puede enviar su propio historial de la conversación. No se registra
-  el contenido desde el adaptador, pero el servidor y el sistema anfitrión deben
-  configurarse para proteger sus registros y el acceso local.
+- Historial breve en memoria del proceso, separado por chat y remitente; al
+  reiniciar se pierde. El modelo solo recibe ese historial generado por el servidor;
+  no recibe el historial no autenticado de la miniapp ni extractos web anteriores.
+  No se registra el contenido desde el adaptador, pero el servidor y el sistema
+  anfitrión deben configurarse para proteger sus registros y el acceso local.
 - Una inferencia a la vez, sin cola ilimitada; si está ocupado, responde que se
   intente de nuevo. No es capacidad para miles de solicitudes simultáneas.
 
@@ -43,7 +45,10 @@ ocupó aproximadamente 4,7 GB de memoria residente y generó unos 13,5 tokens/s;
 el rendimiento real depende de la máquina y de la longitud de las preguntas.
 Esos resultados no prueban capacidad de producción ni funcionamiento simultáneo
 con el bot y las descargas. Un modelo de 1,7B fue más rápido pero falló una resta
-verbal sencilla en esa misma prueba.
+verbal sencilla en esa misma prueba. En una prueba inicial el modelo obedeció
+una instrucción maliciosa dentro de una fuente web; por eso la nueva ruta entrega
+extractos sin pasar el texto de las páginas al modelo. Las fuentes aún pueden
+contener afirmaciones falsas y deben revisarse.
 
 ## Activación en un servidor compatible
 
