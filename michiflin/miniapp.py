@@ -205,7 +205,8 @@ def point_to_app(chat_id: int, locale: str) -> None:
         msg_id = latest_instance(chat_id)
         if not msg_id:
             current_build = app_build()
-            if not any(entry.get("build") == current_build for entry in _bound_apps(chat_id)):
+            entries = _bound_apps(chat_id)
+            if not ((maintenance.silent() and entries) or any(entry.get("build") == current_build for entry in entries)):
                 send_app(chat_id, locale)
                 return
     if time.time() - _pointed.get(chat_id, 0) < 180:
@@ -215,17 +216,21 @@ def point_to_app(chat_id: int, locale: str) -> None:
         text = tr(locale, "Michiflin funciona dentro de la mini app de este chat: ábrela con «Iniciar» y pide ahí lo que necesites.",
                   "Michiflin works inside the mini app in this chat: open it with “Start” and ask for what you need there.")
     else:
-        # An RPC failure is not proof the previous message disappeared. Offer a
-        # deliberate recovery command instead of automatically creating a duplicate.
-        text = tr(locale, "No pude localizar la mini app. Abre la que ya tienes; si no la ves, escribe /app para pedir otra.",
-                  "I couldn't locate the mini app. Open the one you already have; if you can't find it, type /app to request another.")
+        # An RPC failure is not proof the previous message disappeared.
+        # Keep the existing instance instead of automatically creating another.
+        text = tr(locale, "No pude localizar la mini app ahora. La que ya tienes no se ha eliminado; vuelve a abrirla.",
+                  "I could not locate the mini app now. Your existing instance was not deleted; try opening it again.")
     chat.send(chat_id, text, quote=msg_id or None)
 
 
 def welcome(chat_id: int, locale: str) -> None:
     """First contact: one app message; use both languages only if unknown."""
+    if maintenance.silent_active():
+        return
     with _upgrade_lock:
         entries = _bound_apps(chat_id)
+        if maintenance.silent() and entries:
+            return  # preserve the recipient's existing instance
         current_build = app_build()
         now = time.time()
         for entry in entries:
@@ -839,6 +844,8 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None:
     """Offer one new instance per build, without deleting any previous instance."""
+    if maintenance.silent():
+        return  # quiet handover never creates a second app automatically
     current_build = app_build()
     if entry.get("build") == current_build:
         return
@@ -915,6 +922,8 @@ def proactive_upgrades() -> None:
     proven. Only bot-sent, current-authorized individual encrypted chats are
     eligible; an old binding must never reactivate a revoked contact.
     """
+    if maintenance.silent():
+        return  # no unsolicited app upgrades during or after the quiet handover
     from . import live_web
 
     with state.lock:
@@ -952,7 +961,7 @@ def sweep_forever() -> None:
             if first or now - last_upgrade >= 120:
                 proactive_upgrades()
                 notice = maintenance.get()
-                if notice["revision"]:
+                if notice["revision"] and not maintenance.silent():
                     threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-retry", daemon=True).start()
                     threading.Thread(target=maintenance.sync_profile, name="maintenance-profile", daemon=True).start()
                 last_upgrade = now
@@ -972,6 +981,8 @@ def sweep_forever() -> None:
 
 def push(chat_id: int, kind: str, data: Any, notify: str = "") -> bool:
     """Queue a push for the newest app; True means accepted locally, not delivered."""
+    if maintenance.silent_active():
+        return False
     with state.lock:
         found = [(int(key), entry) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
                  and _instance(int(key)) is not None and access.bound_allowed(entry)]
@@ -986,6 +997,8 @@ def push(chat_id: int, kind: str, data: Any, notify: str = "") -> bool:
 
 def _on_job(job: dict[str, Any], values: dict[str, Any]) -> None:
     """Push queue changes on status transitions, delivered parts and the halfway mark only (each push is an e-mail)."""
+    if maintenance.silent_active():
+        return
     total = int(job.get("size") or job.get("size_est") or 0)
     half = 1 if job["status"] == "downloading" and total and int(job.get("progress") or 0) * 2 >= total else 0
     mark = (f"{job['status']}:{int(bool(job.get('hold')))}:{job.get('sent', 0)}:{len(job.get('todo') or [])}", half)
@@ -1976,7 +1989,7 @@ _maintenance_notify_lock = threading.Lock()
 
 def _notify_maintenance(notice: dict[str, Any]) -> None:
     """Retry failed local queueing, but never notify a revoked or stale grant."""
-    if not notice.get("revision") or not _maintenance_notify_lock.acquire(blocking=False):
+    if maintenance.silent() or not notice.get("revision") or not _maintenance_notify_lock.acquire(blocking=False):
         return
     try:
         with state.lock:

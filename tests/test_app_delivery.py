@@ -121,7 +121,7 @@ def test_two_welcome_texts_after_a_transient_lookup_failure_are_deduplicated(app
     apps = [text for text, kwargs in sent if kwargs.get("viewtype") == "Webxdc"]
     assert len(apps) == 1 and "Hi!" in apps[0]
     assert "201" in state.data["apps"]
-    assert any("/app" in text for text, kwargs in sent if not kwargs.get("viewtype"))
+    assert any("no se ha eliminado" in text for text, kwargs in sent if not kwargs.get("viewtype"))
 
 
 def test_repeated_welcome_does_not_resend_a_known_current_app(app_state, monkeypatch):

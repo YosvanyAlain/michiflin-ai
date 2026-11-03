@@ -7,13 +7,14 @@ from typing import Any, Iterator
 
 REPOSITORY_URL = "https://github.com/YosvanyAlain/michiflin-ai"
 DEFAULT_DESCRIPTION = "Private email assistant for web, downloads and AI."
-START_HINT = "Envía /app para abrir la miniapp · Send /app to open the mini app."
+OLD_START_HINT = "Envía /app para abrir la miniapp · Send /app to open the mini app."
+START_HINT = "Abre la miniapp recibida en este chat · Open the mini app already received in this chat."
 
 
 def profile_status(current: str | None) -> str:
-    """Keep existing text, and append the repository and start instructions when missing."""
-    status = (current or "").strip() or DEFAULT_DESCRIPTION
-    if "/app" not in status.casefold():
+    """Keep custom text and point to the existing app without requesting a new one."""
+    status = (current or "").replace(OLD_START_HINT, "").strip() or DEFAULT_DESCRIPTION
+    if START_HINT not in status:
         status += "\n" + START_HINT
     if REPOSITORY_URL.casefold() not in status.casefold():
         status += "\n" + REPOSITORY_URL

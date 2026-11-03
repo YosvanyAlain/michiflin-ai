@@ -466,7 +466,7 @@ class ProfileTests(unittest.TestCase):
         account, key, value = rpc.set_config.call_args.args
         self.assertEqual((account, key), (42, "selfstatus"))
         self.assertTrue(value.startswith("Existing private assistant description."))
-        self.assertIn("/app", value)
+        self.assertIn(profile.START_HINT, value)
         self.assertIn(profile.REPOSITORY_URL, value)
         rpc.get_config.return_value = value
         rpc.set_config.reset_mock()
@@ -478,7 +478,7 @@ class ProfileTests(unittest.TestCase):
 
         result = profile.profile_status(None)
         self.assertIn(profile.DEFAULT_DESCRIPTION, result)
-        self.assertIn("/app", result)
+        self.assertIn(profile.START_HINT, result)
         self.assertIn(profile.REPOSITORY_URL, result)
         self.assertEqual(profile.profile_status(result), result)
 
@@ -504,7 +504,7 @@ class ProfileTests(unittest.TestCase):
             with profile._account_rpc(accounts_dir) as rpc:
                 stored = rpc.get_config(rpc.get_all_account_ids()[0], "selfstatus")
                 self.assertTrue(stored.startswith("Existing description"))
-                self.assertIn("/app", stored)
+                self.assertIn(profile.START_HINT, stored)
                 self.assertIn(profile.REPOSITORY_URL, stored)
                 self.assertEqual(profile.profile_status(stored), stored)
 
