@@ -15,7 +15,10 @@ solo habilita la función después de verificar la salud y la autenticación. El
 indicador explícito `LOCAL_GGUF_ACTIONS_TEST=1` es obligatorio dentro de Actions.
 El dueño puede poner la variable de repositorio `LOCAL_GGUF_TEST_REQUESTED=0`
 para no prepararlo en el siguiente relevo. Una prueba fallida mantiene el bot y
-el agente anterior; no cambia a un proveedor de IA ni arranca otra identidad.
+la búsqueda extractiva; no cambia a un proveedor de IA ni arranca otra identidad.
+Durante ese fallo, las consultas normales de chat o código no se envían en
+silencio a un buscador: se informa que la IA local no está disponible. Para
+buscar, la persona puede solicitarlo explícitamente sin incluir datos privados.
 
 El modelo y el motor se descargan de fuentes públicas en **cada runner efímero**:
 el archivo GGUF pesa 2.497.281.312 bytes. Ambos se verifican por SHA-256 y se
