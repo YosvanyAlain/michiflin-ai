@@ -240,10 +240,10 @@ def test_local_model_flags_server_and_character_cuts_without_losing_normal_long_
     monkeypatch.setattr(local_ai, "_http", http)
     result = local_ai.complete("question", "en", sender="limit-test@example.test")
     assert result.status == "ok" and result.text == data["text"].strip() and not result.truncated
-    assert payloads[-1][1]["max_tokens"] == 768 and payloads[-1][2] == 125
+    assert payloads[-1][1]["max_tokens"] == 512 and payloads[-1][1]["t_max_predict_ms"] == 55_000 and payloads[-1][2] == 125
     monkeypatch.setattr(local_ai._turns, "waiting", lambda: 2)
     assert local_ai.complete("question", "en", sender="limit-test@example.test").status == "ok"
-    assert payloads[-1][1]["max_tokens"] == 384  # an existing queue gets shorter turns
+    assert payloads[-1][1]["max_tokens"] == 192 and payloads[-1][1]["t_max_predict_ms"] == 15_000  # shorter with a queue
     data.update(text="x" * (local_ai._MAX_GENERATED_CHARS + 3), finish="stop")
     result = local_ai.complete("question", "es", sender="limit-test@example.test")
     assert len(result.text) == local_ai._MAX_GENERATED_CHARS and result.truncated
@@ -384,4 +384,4 @@ def test_model_budget_reduces_with_real_waiters_and_preserves_fifo(monkeypatch):
         assert not thread.is_alive()
     assert list(budgets) == ["alice", "bob", "carol"]
     assert set(results) == {"alice", "bob", "carol"} and all(value == "ok" for value in results.values())
-    assert budgets == {"alice": 768, "bob": 384, "carol": 768}
+    assert budgets == {"alice": 512, "bob": 192, "carol": 512}
