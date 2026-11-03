@@ -1,29 +1,96 @@
-name: Technical maintenance
-
-on:
-  schedule:
-    - cron: "20 3 * * *"
-  workflow_dispatch:
-
+name: HTML and local model integration, isolated test
+on: workflow_dispatch
 permissions:
   contents: read
-  actions: write
-
-concurrency:
-  group: michiflin-technical-maintenance
-  cancel-in-progress: false
-
 jobs:
-  old-action-logs:
+  fair-model-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      CONFIG_DIR: /tmp/michiflin-fair-integration/config
+      JOB_DIR: /tmp/michiflin-fair-integration/jobs
+      PREVIEW_DIR: /tmp/michiflin-fair-integration/tmp
+      FREE_GATEWAYS: '0'
+      AI_HORDE: '0'
+      LOCAL_GGUF_TEST_REQUESTED: '1'
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pytest ruff
+      - name: Test fairness and safety offline
+        run: |
+          python -m pytest -q tests/test_long_answer_html.py tests/test_fair_local_ai.py tests/test_local_gguf.py tests/test_youtube_challenge_safe.py tests/test_5_1_features.py tests/test_new_features.py
+          ruff check michiflin/local_ai.py michiflin/fair_local_ai.py michiflin/agent.py michiflin/miniapp.py tools/local_gguf_health.py tests/test_long_answer_html.py tests/test_fair_local_ai.py tests/test_local_gguf.py --select F,E9
+      - name: Prepare isolated local AI test
+        id: gguf_prepare
+        if: env.LOCAL_GGUF_TEST_REQUESTED == '1'
+        continue-on-error: true
+        timeout-minutes: 11
+        run: |
+          # Keep only fixed safety markers and numeric curl error codes in the
+          # optional diagnostic artifact; never upload arbitrary process output.
+          set +e
+          set -o pipefail
+          bash tools/local_gguf_session.sh prepare 2>&1 | tee "$RUNNER_TEMP/gguf-prepare-raw.log"
+          result=(${PIPESTATUS[@]})
+          {
+            grep -E '^SAFE_GGUF_(PREP_[A-Z_]+|ENGINE_DOWNLOAD|MODEL_DOWNLOAD|SERVER_[A-Z_]+)$|^SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)$' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            grep -oE '^curl: \([0-9]+\)|returned error: [0-9]+' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            echo "SAFE_GGUF_DIAGNOSTIC_EXIT=${result[0]}"
+          } > "$RUNNER_TEMP/gguf-prepare-status.log"
+          rm -f "$RUNNER_TEMP/gguf-prepare-raw.log"
+          if [ "${result[0]}" -ne 0 ] || [ "${result[1]}" -ne 0 ]; then exit 1; fi
+
+      - name: Start isolated local AI test
+        id: gguf_start
+        if: steps.gguf_prepare.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 4
+        run: |
+          # Keep only fixed safety markers and numeric curl error codes in the
+          # optional diagnostic artifact; never upload arbitrary process output.
+          set +e
+          set -o pipefail
+          bash tools/local_gguf_session.sh start 2>&1 | tee "$RUNNER_TEMP/gguf-start-raw.log"
+          result=(${PIPESTATUS[@]})
+          {
+            grep -E '^SAFE_GGUF_(PREP_[A-Z_]+|ENGINE_DOWNLOAD|MODEL_DOWNLOAD|SERVER_[A-Z_]+)$|^SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)$' "$RUNNER_TEMP/gguf-start-raw.log" || true
+            grep -oE '^curl: \([0-9]+\)|returned error: [0-9]+' "$RUNNER_TEMP/gguf-start-raw.log" || true
+            echo "SAFE_GGUF_DIAGNOSTIC_EXIT=${result[0]}"
+          } > "$RUNNER_TEMP/gguf-start-status.log"
+          rm -f "$RUNNER_TEMP/gguf-start-raw.log"
+          if [ "${result[0]}" -ne 0 ] || [ "${result[1]}" -ne 0 ]; then exit 1; fi
+
+      - name: Verify isolated startup succeeded
+        run: |
+          test "${{ steps.gguf_prepare.outcome }}" = success
+          test "${{ steps.gguf_start.outcome }}" = success
+      - name: Test three synthetic people
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          if sudo -u nobody curl -fsS --unix-socket /run/michiflin-local-gguf/llama.sock --max-time 2 http://localhost/health >/dev/null 2>&1; then
+            echo SAFE_UNAUTHORIZED_SOCKET_ALLOWED; exit 1
+          else
+            echo SAFE_UNAUTHORIZED_SOCKET_BLOCKED
+          fi
+          sudo systemctl show michiflin-local-gguf.service -p MemoryMax -p MemoryCurrent -p CPUQuotaPerSecUSec -p TasksMax -p PrivateNetwork -p RestrictAddressFamilies -p ProtectHome -p NoNewPrivileges | sed 's/^/SAFE_MODEL_LIMIT /'
+          export LOCAL_GGUF_ENABLED=1 LOCAL_GGUF_ACTIONS_TEST=1
+          export LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock
+          export LOCAL_GGUF_KEY_FILE="$RUNNER_TEMP/michiflin-local-gguf-key"
+          PYTHONPATH="$GITHUB_WORKSPACE" python tools/gguf_long_probe.py
+          sudo systemctl show michiflin-local-gguf.service -p MemoryCurrent | sed 's/^/SAFE_MODEL_AFTER_TEST /'
+      - name: Verify cleanup
+        if: ${{ always() }}
+        run: |
+          set -e
+          bash tools/local_gguf_session.sh stop
+          ! sudo test -e /opt/michiflin-local-gguf-test
+          ! sudo systemctl is-active --quiet michiflin-local-gguf.service
+          test ! -e "$RUNNER_TEMP/michiflin-local-gguf-key"
+          echo SAFE_GGUF_CLEANUP_VERIFIED
