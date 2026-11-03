@@ -169,7 +169,20 @@ jobs:
         if: env.LOCAL_GGUF_TEST_REQUESTED == '1'
         continue-on-error: true
         timeout-minutes: 11
-        run: bash tools/local_gguf_session.sh prepare
+        run: |
+          # Keep only fixed safety markers and numeric curl error codes in the
+          # optional diagnostic artifact; never upload arbitrary process output.
+          set +e
+          set -o pipefail
+          bash tools/local_gguf_session.sh prepare 2>&1 | tee "$RUNNER_TEMP/gguf-prepare-raw.log"
+          result=(${PIPESTATUS[@]})
+          {
+            grep -E '^SAFE_GGUF_(PREP_[A-Z_]+|ENGINE_DOWNLOAD|MODEL_DOWNLOAD|SERVER_[A-Z_]+)$|^SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)$' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            grep -oE '^curl: \([0-9]+\)|returned error: [0-9]+' "$RUNNER_TEMP/gguf-prepare-raw.log" || true
+            echo "SAFE_GGUF_DIAGNOSTIC_EXIT=${result[0]}"
+          } > "$RUNNER_TEMP/gguf-prepare-status.log"
+          rm -f "$RUNNER_TEMP/gguf-prepare-raw.log"
+          if [ "${result[0]}" -ne 0 ] || [ "${result[1]}" -ne 0 ]; then exit 1; fi
 
       - name: Media egress
         continue-on-error: true
@@ -340,7 +353,32 @@ jobs:
         if: steps.gguf_prepare.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 4
-        run: bash tools/local_gguf_session.sh start
+        run: |
+          # Keep only fixed safety markers and numeric curl error codes in the
+          # optional diagnostic artifact; never upload arbitrary process output.
+          set +e
+          set -o pipefail
+          bash tools/local_gguf_session.sh start 2>&1 | tee "$RUNNER_TEMP/gguf-start-raw.log"
+          result=(${PIPESTATUS[@]})
+          {
+            grep -E '^SAFE_GGUF_(PREP_[A-Z_]+|ENGINE_DOWNLOAD|MODEL_DOWNLOAD|SERVER_[A-Z_]+)$|^SAFE_GGUF_PREFLIGHT memory_kib=[0-9]+ disk_kib=[0-9]+ cgroup=(max|[0-9]+)$' "$RUNNER_TEMP/gguf-start-raw.log" || true
+            grep -oE '^curl: \([0-9]+\)|returned error: [0-9]+' "$RUNNER_TEMP/gguf-start-raw.log" || true
+            echo "SAFE_GGUF_DIAGNOSTIC_EXIT=${result[0]}"
+          } > "$RUNNER_TEMP/gguf-start-status.log"
+          rm -f "$RUNNER_TEMP/gguf-start-raw.log"
+          if [ "${result[0]}" -ne 0 ] || [ "${result[1]}" -ne 0 ]; then exit 1; fi
+
+      # Only safe startup diagnostics (no prompts, identity or bot state) are
+      # published if startup failed; they remain available while the bot runs.
+      - name: Save local AI startup diagnostics
+        if: ${{ env.LOCAL_GGUF_TEST_REQUESTED == '1' && (steps.gguf_prepare.outcome == 'failure' || steps.gguf_start.outcome == 'failure') }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-gguf-startup-diagnostic
+          path: ${{ runner.temp }}/gguf-*-status.log
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Local AI test ready
         if: steps.gguf_start.outcome == 'success'
