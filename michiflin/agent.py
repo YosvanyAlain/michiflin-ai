@@ -390,13 +390,17 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
 
 def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None, *, research: bool) -> None:
     """A bounded local answer; source lookups use only the user's current question."""
-    progress.phase("🔎 Buscando fuentes…" if research else "💬 Pensando localmente…",
-                   "🔎 Searching sources…" if research else "💬 Thinking locally…")
+    progress.phase("🔎 Buscando fuentes…" if research else "⏳ Preparando consulta de IA local…",
+                   "🔎 Searching sources…" if research else "⏳ Preparing local AI request…")
     sender = (chat.sender() or "").strip().lower()
     # Only process-owned, per-sender history enters the local model. Client
     # history may contain arbitrary old page text and cannot be authenticated.
     supplied = local_ai.history(chat_id, sender)
-    result = local_ai.complete(text, locale, supplied, research=research)
+    result = local_ai.complete(
+        text, locale, supplied, research=research, sender=sender,
+        on_wait=lambda: progress.phase("⏳ Esperando tu turno de IA local…", "⏳ Waiting for your local AI turn…"),
+        on_start=lambda: progress.phase("💬 Pensando localmente…", "💬 Thinking locally…"),
+    )
     if result.status == "ok":
         # Do not store untrusted web text in the model's conversational history.
         remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text

@@ -28,6 +28,9 @@ jobs:
       CONFIG_DIR: ${{ github.workspace }}/.michiflin-state
       BOT_TIMEZONE: America/Havana
       SESSION_DURATION_SECONDS: "19200"
+      # User-authorized, temporary test. Set repository variable to 0 to opt out
+      # at the next session. The server uses no provider AI key or account.
+      LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '1' }}
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
@@ -160,6 +163,13 @@ jobs:
 
       - name: Install browser
         run: python -m playwright install --with-deps --only-shell chromium
+
+      - name: Prepare isolated local AI test
+        id: gguf_prepare
+        if: env.LOCAL_GGUF_TEST_REQUESTED == '1'
+        continue-on-error: true
+        timeout-minutes: 11
+        run: bash tools/local_gguf_session.sh prepare
 
       - name: Media egress
         continue-on-error: true
@@ -325,6 +335,28 @@ jobs:
           EXPECTED_DELIVERY_ADDRESS: ${{ secrets.OWNER_DOCUMENT_RECIPIENT }}
         run: python .github/scripts/deliver_owner_documents.py
 
+      - name: Start isolated local AI test
+        id: gguf_start
+        if: steps.gguf_prepare.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 4
+        run: bash tools/local_gguf_session.sh start
+
+      - name: Local AI test ready
+        if: steps.gguf_start.outcome == 'success'
+        run: |
+          echo "LOCAL_GGUF_ENABLED=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_ACTIONS_TEST=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
+          echo "Local test available, one inference at a time."
+
+      - name: Local AI unavailable; retain normal bot
+        if: ${{ env.LOCAL_GGUF_TEST_REQUESTED == '1' && steps.gguf_start.outcome != 'success' }}
+        run: |
+          bash tools/local_gguf_session.sh stop || true
+          echo "::warning::Local AI was not verified; the existing model-free agent remains available."
+
       - name: Private session
         shell: bash
         run: |
@@ -340,6 +372,11 @@ jobs:
           finish() {
             kill "$BACKUP_PID" 2>/dev/null || true
             wait "$BACKUP_PID" 2>/dev/null || true
+            # The bot has stopped; free local inference resources before backup
+            # and before the ordinary next-session handover.
+            if [ "${LOCAL_GGUF_ENABLED:-0}" = "1" ]; then
+              bash tools/local_gguf_session.sh stop || echo "::warning::Local AI cleanup failed."
+            fi
             if ! python state_backup.py save; then
               echo "Final encrypted backup failed; automatic handover is stopped."
               return 1
@@ -357,6 +394,11 @@ jobs:
           if [ "$BOT_EXIT" -ne 0 ] && [ "$BOT_EXIT" -ne 124 ]; then
             exit "$BOT_EXIT"
           fi
+
+      - name: Clean temporary local AI test
+        if: ${{ always() && env.LOCAL_GGUF_TEST_REQUESTED == '1' }}
+        continue-on-error: true
+        run: bash tools/local_gguf_session.sh stop
 
       - name: Next session
         if: "!cancelled() && (env.BOT_RESTART == '1' || (env.SESSION_SECONDS_RUN != '' && env.SESSION_SECONDS_RUN > 1800))"

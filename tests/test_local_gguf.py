@@ -73,6 +73,9 @@ def test_disabled_by_default_and_on_actions(monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     assert not local_ai.configured()
     assert local_ai.complete("Hola", "es").status == "disabled"
+    monkeypatch.setenv("LOCAL_GGUF_ACTIONS_TEST", "1")
+    assert local_ai.configured()
+    assert not local_ai.ready()  # Actions requires a per-session auth key
 
 
 @pytest.mark.parametrize("query", ["¿Qué puede hacer?", "que puede hacer michiflin", "¿Qué eres capaz de hacer?", "¿Qué puedes hacer?"])
@@ -204,7 +207,7 @@ def test_research_never_opens_invalid_or_unsafe_addresses(server):
     assert not any(method == "POST" for method, _, _ in requests)
 
 
-def test_single_slot_returns_busy_without_queue(server):
+def test_same_sender_cannot_monopolize_the_local_queue(server):
     entered, finish = threading.Event(), threading.Event()
     actual = local_ai._http
     def slow(path, payload, timeout):
@@ -214,13 +217,13 @@ def test_single_slot_returns_busy_without_queue(server):
         return actual(path, payload, timeout)
     with mock.patch.object(local_ai, "_http", side_effect=slow):
         done = []
-        thread = threading.Thread(target=lambda: done.append(local_ai.complete("Cuéntame algo", "es")))
+        thread = threading.Thread(target=lambda: done.append(local_ai.complete("Cuéntame algo", "es", sender="alice@example.test")))
         thread.start()
         assert entered.wait(3)
-        busy = local_ai.complete("Otra pregunta", "es")
+        busy = local_ai.complete("Otra pregunta", "es", sender="ALICE@example.test")
         finish.set()
         thread.join(5)
-    assert busy.status == "busy" and done[0].status == "ok"
+    assert busy.status == "duplicate" and done[0].status == "ok"
 
 
 def test_memory_is_scoped_by_chat_and_sender_and_forget():
