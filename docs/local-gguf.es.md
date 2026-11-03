@@ -54,7 +54,9 @@ absoluta. La cuenta, el estado y las copias no se montan en el servidor de IA.
 Las herramientas conocidas atienden primero cálculo, clima y otras funciones.
 La IA local puede conversar, redactar y proponer código; **no ejecuta código ni
 acciones privadas**. La búsqueda explícita o de información actual consulta un
-buscador con la pregunta actual y muestra extractos y enlaces. No pasa páginas
+buscador con la pregunta actual y muestra extractos y enlaces. El reconocimiento
+automático de preguntas actuales es conservador; ante la duda escribe «busca …».
+No pasa páginas
 externas al modelo; las fuentes aún pueden equivocarse o ser engañosas. No envíes
 contraseñas a consultas web: el filtrado preventivo no es infalible.
 
