@@ -111,6 +111,9 @@ def test_chat_and_code_use_only_loopback_and_no_search(server):
 
 
 def test_loopback_host_is_not_configurable(monkeypatch):
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    monkeypatch.delenv("LOCAL_GGUF_SOCKET_PATH", raising=False)
+    monkeypatch.delenv("LOCAL_GGUF_KEY_FILE", raising=False)
     monkeypatch.setenv("LOCAL_GGUF_PORT", "http://evil.example")
     conn = mock.Mock()
     conn.getresponse.return_value.status = 200
