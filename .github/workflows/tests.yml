@@ -67,7 +67,7 @@ jobs:
           python -m unittest tests.test_personal_maintenance -v
           python -m unittest tests.test_operational_maintenance -v
           python -m unittest tests.test_owner_delivery -v
-          python -m pytest -q tests/test_native_github_return.py tests/test_5_1_features.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py tests/test_email_key_recovery.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py
+          python -m pytest -q tests/test_local_gguf.py tests/test_youtube_challenge_safe.py tests/test_native_github_return.py tests/test_5_1_features.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py tests/test_email_key_recovery.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py
           MICHIFLIN_SANDBOX_TESTS=1 python -m unittest tests.test_web_session tests.test_proxy_gateway -v
 
       - name: Translation resilience
