@@ -19,7 +19,7 @@ from .util import tr
 # The installed app includes at most 6,000 JavaScript UTF-16 units per prior
 # turn. Leave space for code fences and the notice, including astral emoji.
 CONTENT_UNITS = 4800
-MAX_STORED_CHARS = 100_000
+MAX_STORED_CHARS = 120_000
 MAX_TOTAL_CHARS = 1_000_000
 MAX_ENTRIES = 100
 TTL = 1800.0
@@ -131,6 +131,7 @@ class _PageState:
     signature: str
     truncated: bool
     at: float
+    version: object
 
 
 class InlinePages:
@@ -147,7 +148,7 @@ class InlinePages:
         self._items: OrderedDict[tuple[int, str, str], _PageState] = OrderedDict()
         # Small, text-free tombstones prevent silently continuing beyond unseen
         # text when the remaining pages have expired during the same session.
-        self._expired: OrderedDict[tuple[int, str, str], tuple[float, str, bool]] = OrderedDict()
+        self._expired: OrderedDict[tuple[int, str, str], tuple[float, str, bool, object]] = OrderedDict()
         self._lock = threading.Lock()
 
     @staticmethod
@@ -158,8 +159,8 @@ class InlinePages:
         for key, item in list(self._items.items()):
             if now - item.at > self.ttl:
                 self._items.pop(key)
-                self._expired[key] = (now, _digest(item.last), item.offset == len(item.text))
-        for key, (at, _hash, _finished) in list(self._expired.items()):
+                self._expired[key] = (now, _digest(item.last), item.offset == len(item.text), item.version)
+        for key, (at, _hash, _finished, _version) in list(self._expired.items()):
             if now - at > self.ttl:
                 self._expired.pop(key, None)
         while len(self._expired) > self.maximum * 2:
@@ -203,13 +204,13 @@ class InlinePages:
             if len(self._items) >= self.maximum or used + len(text) + len(first) > self.total:
                 return answer, False
             self._items[key] = _PageState(text, end, first, str(answer.get("sig") or ""),
-                                          bool(answer.get("truncated")), now)
+                                          bool(answer.get("truncated")), now, object())
             result = dict(answer)
             result["text"] = first
             return result, True
 
-    def status(self, key: tuple[int, str, str], history: Any) -> str:
-        """Return ready, expired or none; this never consumes a pending page."""
+    def reserve(self, key: tuple[int, str, str], history: Any) -> tuple[str, object | None]:
+        """Peek without consuming and bind the request to this exact answer."""
         with self._lock:
             self._prune(self.clock())
             last = _last_assistant(history)
@@ -217,28 +218,35 @@ class InlinePages:
             if item:
                 if item.offset == len(item.text) and last == item.last:
                     self._items.pop(key, None)  # the final page was seen
-                    return "none"
-                return "ready"
+                    return "none", None
+                return "ready", item.version
             expired = self._expired.get(key)
             if expired:
                 if expired[2] and last and _digest(last) == expired[1]:
                     self._expired.pop(key, None)  # complete answer was seen
-                    return "none"
-                return "expired"
-            return "none"
+                    return "none", None
+                return "expired", expired[3]
+            return "none", None
 
-    def take(self, key: tuple[int, str, str], history: Any, locale: str) -> dict[str, Any] | None:
+    def status(self, key: tuple[int, str, str], history: Any) -> str:
+        return self.reserve(key, history)[0]
+
+    def take(self, key: tuple[int, str, str], history: Any, locale: str, *,
+             expected: object | None = None) -> dict[str, Any] | None:
         """Return one page, repeat an unacknowledged page, or a truthful expiry."""
         with self._lock:
             now = self.clock()
             self._prune(now)
             item = self._items.get(key)
             if item is None:
-                if key in self._expired:
+                expired = self._expired.get(key)
+                if expired and (expected is None or expired[3] is expected):
                     return {"text": tr(locale,
                         "La parte pendiente ya no está disponible. Recuérdame el tema o copia el último fragmento para seguir.",
                         "The remaining part is no longer available. Remind me of the topic or paste the last part to continue.")}
                 return None
+            if expected is not None and item.version is not expected:
+                return None  # a newer answer replaced this request's page
             if _last_assistant(history) == item.last and item.offset < len(item.text):
                 item.last, item.offset = _page(item.text, item.offset, locale, item.truncated)
             item.at = now

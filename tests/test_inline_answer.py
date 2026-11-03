@@ -399,3 +399,24 @@ def test_continuation_with_attachment_is_a_new_request_not_a_cached_page(integra
         "space": "auto", "text": "continúa", "history": history(first),
         "file": {"name": "fragmento.txt", "b64": "eA=="}}})
     assert len(generated) == 2 and replies[-1][0]["text"] == "Nueva respuesta." and not sent
+
+
+def test_pending_request_cannot_consume_a_newer_replacement_answer():
+    pages = answer_inline.InlinePages()
+    k = key(pages)
+    first, _ = pages.start(k, {"text": body()}, "es")
+    state_name, version = pages.reserve(k, history(first["text"]))
+    assert state_name == "ready" and version is not None
+    newer, _ = pages.start(k, {"text": "NUEVO TEMA \n\n" + body()}, "es")
+    assert pages.take(k, history(first["text"]), "es", expected=version) is None
+    assert pages.status(k, history(newer["text"])) == "ready"
+
+
+def test_reservation_stays_bound_if_the_same_answer_expires():
+    moment = [0.0]
+    pages = answer_inline.InlinePages(ttl=5, clock=lambda: moment[0])
+    k = key(pages)
+    first, _ = pages.start(k, {"text": body()}, "es")
+    _, version = pages.reserve(k, history(first["text"]))
+    moment[0] = 6
+    assert "ya no está disponible" in pages.take(k, history(first["text"]), "es", expected=version)["text"]

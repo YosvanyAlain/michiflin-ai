@@ -751,8 +751,8 @@ def _same_inline_identity(instance_id: int, admitted: dict[str, Any]) -> bool:
 
 
 class _InlineContinuation:
-    def __init__(self, key: tuple[int, str, str]) -> None:
-        self.key = key
+    def __init__(self, key: tuple[int, str, str], version: object) -> None:
+        self.key, self.version = key, version
 
 
 def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
@@ -840,11 +840,12 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         if gate is not None and not gate.acquire(blocking=False):
             raise AppError(tr(locale, "Espera a que termine tu consulta anterior.", "Wait until your previous request finishes."))
         try:
-            if (inline_key and not args.get("file") and answer_inline.is_continue(args.get("text"))
-                    and _inline_pages.status(inline_key, args.get("history")) != "none"):
-                # Do not consume a page here: this worker can outlive its
-                # deadline. The foreground will recheck authorization first.
-                return _InlineContinuation(inline_key)
+            if inline_key and not args.get("file") and answer_inline.is_continue(args.get("text")):
+                page_status, version = _inline_pages.reserve(inline_key, args.get("history"))
+                if page_status != "none" and version is not None:
+                    # Do not consume a page here: this worker can outlive its
+                    # deadline. Foreground rechecks authorization and version.
+                    return _InlineContinuation(inline_key, version)
             if kill_safe:
                 answer = function(chat_id, actual_args, locale)
             else:
@@ -882,7 +883,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
                     if not _same_inline_identity(instance_id, admitted_entry):
                         raise AppError(tr(locale, "No pude verificar el acceso a esta respuesta.",
                                           "I could not verify access to this answer."))
-                    answer = _inline_pages.take(answer.key, args.get("history"), locale)
+                    answer = _inline_pages.take(answer.key, args.get("history"), locale, expected=answer.version)
                     if answer is None:
                         answer = {"text": tr(locale, "Esta parte ya fue atendida; revisa la respuesta anterior.",
                                               "This part was already handled; check the previous answer.")}
