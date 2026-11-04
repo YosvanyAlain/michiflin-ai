@@ -1,4 +1,4 @@
-name: Private recovery check without restore
+name: Seal clean recovery instructions
 
 on:
   workflow_dispatch:
@@ -6,9 +6,9 @@ on:
 permissions: {}
 
 jobs:
-  check:
+  plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -18,10 +18,10 @@ jobs:
           python-version: '3.12'
       - name: Install verification libraries
         run: python -m pip install --quiet 'requests==2.33.0' 'cryptography==46.0.3'
-      - name: Check without restoring or revealing private material
+      - name: Check clean copies and seal instructions without restoring
         env:
           STATE_GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
           STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
-          OLD_PASSWORD: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
           CLEAN_PASSWORD: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
-        run: python tools/audit_candidate_memory_only.py
+          CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
+        run: python tools/seal_clean_recovery_plan.py
