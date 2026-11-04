@@ -558,6 +558,10 @@ def compress(data: bytes, max_side: int = 1280, quality: int = 82) -> bytes:
         from PIL import Image
 
         with Image.open(io.BytesIO(data)) as image:
+            # Avoid decompressing an adversarial image into hundreds of MB on
+            # the same runner that hosts the local model.
+            if image.width <= 0 or image.height <= 0 or image.width * image.height > 16_000_000:
+                return b""
             image = image.convert("RGB")
             image.thumbnail((max_side, max_side))
             output = io.BytesIO()
