@@ -34,14 +34,60 @@ class ReleaseRetentionTests(unittest.TestCase):
         self.assertLessEqual(len(kept), backup.KEEP_RECENT + backup.KEEP_DAILY + backup.KEEP_WEEKLY)
         self.assertTrue({x["id"] for x in items[:backup.KEEP_RECENT]}.issubset(kept))
         self.assertNotIn(999, kept)
-        self.assertGreaterEqual(len({backup._created(x).date() for x in items if x["id"] in kept}), 7)
-        self.assertGreaterEqual(len({backup._created(x).isocalendar()[:2] for x in items if x["id"] in kept}), 4)
+        self.assertEqual((backup.KEEP_RECENT, backup.KEEP_DAILY, backup.KEEP_WEEKLY), (6, 5, 3))
+        self.assertLessEqual(len(kept), 14)
+        self.assertGreaterEqual(len({backup._created(x).date() for x in items if x["id"] in kept}), backup.KEEP_DAILY)
+        self.assertGreaterEqual(len({backup._created(x).isocalendar()[:2] for x in items if x["id"] in kept}), backup.KEEP_WEEKLY)
+
+    def test_clean_seed_remains_inside_the_fourteen_copy_limit(self):
+        now = datetime(2026, 11, 4, 12, tzinfo=timezone.utc)
+        with mock.patch.dict(os.environ, {"STATE_BACKUP_NAMESPACE": backup.CLEAN_OWNER_NAMESPACE}):
+            items = [{"id": i + 1,
+                      "name": backup.CLEAN_OWNER_ASSET_PREFIX + (now - timedelta(hours=i * 2)).strftime("%Y%m%dT%H%M%SZ") + f"-{i + 1:016x}.bin",
+                      "state": "uploaded", "created_at": (now - timedelta(hours=i * 2)).isoformat()}
+                     for i in range(60 * 12)]
+            kept = backup.retention_ids(items)
+        self.assertIn(items[-1]["id"], kept)
+        self.assertLessEqual(len(kept), 14)
+        self.assertTrue({x["id"] for x in items[:6]}.issubset(kept))
+        dates = {backup._created(x).date() for x in items if x["id"] in kept}
+        weeks = {backup._created(x).isocalendar()[:2] for x in items if x["id"] in kept}
+        self.assertGreaterEqual(len(dates), 5)
+        self.assertGreaterEqual(len(weeks), 3)
 
     def test_prune_requires_two_independently_verified_copies(self):
         now = datetime.now(timezone.utc)
         items = [asset(i + 1, now - timedelta(days=i)) for i in range(30)]
         with mock.patch.object(backup, "_assets", return_value=items), \
              mock.patch.object(backup, "_download_asset", return_value=b"corrupt"), \
+             mock.patch.object(backup.requests, "delete") as delete:
+            backup._prune("token", "o/r", 7, items[0]["id"], "pass")
+        delete.assert_not_called()
+
+    def test_clean_rotation_requires_prior_copy_from_current_epoch(self):
+        now = datetime.now(timezone.utc)
+        with mock.patch.dict(os.environ, {"STATE_BACKUP_NAMESPACE": backup.CLEAN_OWNER_NAMESPACE}):
+            items = [{"id": i + 1,
+                      "name": backup.CLEAN_OWNER_ASSET_PREFIX + (now - timedelta(days=i)).strftime("%Y%m%dT%H%M%SZ") + f"-{i + 1:016x}.bin",
+                      "state": "uploaded", "created_at": (now - timedelta(days=i)).isoformat()}
+                     for i in range(20)]
+            with mock.patch.object(backup, "_assets", return_value=items), \
+                 mock.patch.object(backup, "_download_asset", return_value=b"encrypted"), \
+                 mock.patch.object(backup, "decrypt_backup", return_value=b"different-epoch"), \
+                 mock.patch.object(backup, "_verify_plaintext"), \
+                 mock.patch.object(backup, "_verify_clean_origin", side_effect=ValueError("wrong epoch")), \
+                 mock.patch.object(backup.requests, "delete") as delete:
+                backup._prune("token", "o/r", 7, items[0]["id"], "pass")
+            delete.assert_not_called()
+
+    def test_prune_cannot_delete_a_verified_copy_if_metadata_order_changes(self):
+        now = datetime.now(timezone.utc)
+        items = [asset(i + 1, now - timedelta(days=i)) for i in range(20)]
+        with mock.patch.object(backup, "_assets", return_value=items), \
+             mock.patch.object(backup, "_download_asset", return_value=b"encrypted"), \
+             mock.patch.object(backup, "decrypt_backup", return_value=b"plain"), \
+             mock.patch.object(backup, "_verify_plaintext"), \
+             mock.patch.object(backup, "retention_ids", return_value={items[0]["id"]}), \
              mock.patch.object(backup.requests, "delete") as delete:
             backup._prune("token", "o/r", 7, items[0]["id"], "pass")
         delete.assert_not_called()
