@@ -1399,13 +1399,14 @@ def op_models(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("ask")
 def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    text = _clean(args.get("text"))[:6000]
+    raw_text = _clean(args.get("text"))
+    text = raw_text[:6000]
     space = str(args.get("space") or "agent")
     attachment = args.get("file") if isinstance(args.get("file"), dict) and space != "agent" else None
     if not text and not attachment:
         raise AppError(tr(locale, "Escribe algo primero.", "Write something first."))
     from . import collab_agent
-    if space != "agent" and collab_agent.local_only(text):
+    if space != "agent" and collab_agent.local_only(raw_text):
         raise AppError(tr(locale, "Pediste solo local, pero esta opción usa modelos externos; elige Agente local.",
                           "You requested local only, but this option uses external models; choose the local Agent."))
     media_parts: list[tuple[str, bytes]] = []
@@ -1648,11 +1649,11 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     # If local startup failed, Automatic fails closed instead of leaking a
     # project to an API. The dedicated key also fails closed if unavailable.
     use_local = model == local_coder.MODEL_KEY or (not model and local_ai.privacy_mode())
-    if not use_local and collab_agent.local_only(text):
+    if not use_local and collab_agent.local_only(raw_text):
         raise AppError(tr(locale, "Pediste solo local, pero esta selección usa una API; usa Automático con IA local.",
                           "You requested local only, but this selection uses an API; use Automatic with local AI."))
     scope = str(args.get("_collab_scope") or "")[:64]
-    use_collab = bool(use_local and not model and not collab_agent.local_only(text) and collab_agent.authorized(scope))
+    use_collab = bool(use_local and not model and not collab_agent.local_only(raw_text) and collab_agent.authorized(scope))
     if use_local:
         if len(raw_text) > 6000:
             raise AppError(tr(locale, "La petición es demasiado larga para la IA local; no se recortó ni se modificó el proyecto.",
@@ -1729,11 +1730,12 @@ def _clock(moment: float) -> str:
 
 @op("image")
 def op_image(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    prompt = _clean(args.get("prompt"))[:1500]
+    raw_prompt = _clean(args.get("prompt"))
+    prompt = raw_prompt[:1500]
     if not prompt:
         raise AppError(tr(locale, "Describe la imagen.", "Describe the image."))
     from . import collab_agent
-    if collab_agent.local_only(prompt):
+    if collab_agent.local_only(raw_prompt):
         raise AppError(tr(locale, "Pediste solo local y no hay un generador local de imágenes; no envié la petición.",
                           "You requested local only and there is no local image generator; the request was not sent."))
     model = _clean(args.get("model"))[:180]

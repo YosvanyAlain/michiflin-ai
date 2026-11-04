@@ -599,3 +599,16 @@ def test_image_quota_refusal_stops_review(monkeypatch):
     monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result([{"path": "a.py", "text": "pass"}]))
     c.run_project("Crea un icono para esta app y revisa", [], "es", scope="123")
     review.assert_not_called()
+
+
+def test_opt_out_is_checked_before_request_truncation(monkeypatch):
+    state.act_as("guest@example.test"); state.set_personal_ai_secure(False)
+    monkeypatch.setattr(ai, "complete", lambda *a, **k: pytest.fail("external text call"))
+    monkeypatch.setattr(coder, "run", lambda *a, **k: pytest.fail("external coder call"))
+    monkeypatch.setattr(images, "generate", lambda *a, **k: pytest.fail("external image call"))
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_ask(1, {"text": "x" * 6001 + " sin usar API", "space": "auto"}, "es")
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_code(1, {"text": "x" * 6001 + " sin usar API", "model": "external:model"}, "es")
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_image(1, {"prompt": "x" * 1501 + " sin usar API"}, "es")
