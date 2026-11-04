@@ -1071,7 +1071,9 @@ function spaceMeta(space) {
 }
 
 function bubble(space, item, list) {
-  if (item.role === "user") return h("div", { class: "bubble me" }, item.file ? attachmentLine(item.file) : null, item.text ? h("div", { class: "bubble-text" }, item.text) : null);
+  if (item.role === "user") return h("div", { class: "bubble me" }, item.file ? attachmentLine(item.file) : null,
+    item.text ? h("div", { class: "bubble-text" }, item.text) : null,
+    item.text ? h("div", { class: "bubble-foot" }, iconButton("copy", t("copy"), () => copyText(item.text), "tiny")) : null);
   if (item.pending) {
     return h("div", { class: "bubble bot pending" }, h("span", { class: "dots" }, h("i"), h("i"), h("i")),
       h("small", { class: "muted" }, t("thinking"), " ", since(item.ts)),

@@ -1509,8 +1509,8 @@ class NavigationAndReactionTests(Base):
         from michiflin import mail_profiles
 
         settings = {"part_mb": 20, "batch": 0, "delay": 15, "daily_cap_mb": 0}
-        self.assertEqual(mail_profiles.effective_settings("person@nauta.cu", settings)["part_mb"], 10)
-        self.assertEqual(mail_profiles.part_limit_bytes("person@nauta.cu"), 10 * config.MIB)
+        self.assertEqual(mail_profiles.effective_settings(("synthetic-" + "0" * 24 + "@" + "nauta.cu"), settings)["part_mb"], 10)
+        self.assertEqual(mail_profiles.part_limit_bytes(("synthetic-" + "0" * 24 + "@" + "nauta.cu")), 10 * config.MIB)
         self.assertEqual(mail_profiles.effective_settings("person@notnauta.cu.evil", settings)["part_mb"], 20)
 
     def test_provider_size_rejection_downshifts_only_before_any_part_is_delivered(self) -> None:

@@ -980,7 +980,7 @@ const I18N = {
     usage_private_hint: "Solo se muestra el uso del dueño. Los registros históricos ajenos se conservan.",
     admin_role: "Administrador",
     admin_last: "Última vez: {when}",
-    admin_address: "correo@ejemplo.com",
+    admin_address: "contact@example.invalid",
     admin_allow: "Autorizar",
     admin_remove: "Quitar acceso",
     admin_remove_q: "¿Quitar el acceso a {address}?",

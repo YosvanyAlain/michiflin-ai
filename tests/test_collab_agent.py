@@ -65,27 +65,27 @@ def test_explicit_local_only_overrides_paid_collaboration(phrase):
 
 def test_project_budget_persists_attempts_and_does_not_reset_on_empty_retries():
     b = c.ProjectBudget.begin("123", [], "create project")
-    assert [b.reserve() for _ in range(5)] == [True, True, True, True, False]
+    assert [b.reserve() for _ in range(17)] == [True] * 16 + [False]
     assert c.ProjectBudget.begin("123", [], "retry").remaining() == 0
     assert c.ProjectBudget.begin("123", [{"path": "hello.py", "text": "print(1)"}], "edit").remaining() == 0
     assert c.ProjectBudget.begin("123", [], "create another").remaining() == 0
     assert c.ProjectBudget.begin("456", [], "another app instance").remaining() == 0
     new = c.ProjectBudget.begin("456", [], "nuevo proyecto: otra tarea")
-    assert new.remaining() == 4 and new.reserve()
+    assert new.remaining() == 16 and new.reserve()
     assert not b.reserve()  # old in-flight work cannot spend the new project
-    assert c.ProjectBudget.begin("123", [], "nuevo proyecto: otra tarea").remaining() == 3
+    assert c.ProjectBudget.begin("123", [], "nuevo proyecto: otra tarea").remaining() == 15
 
 
 def test_owner_may_authorize_four_more_once_per_explicit_request():
     b = c.ProjectBudget.begin("123", [], "create project")
-    assert all(b.reserve() for _ in range(4))
+    assert all(b.reserve() for _ in range(16))
     text = "Autorizo cuatro consultas externas más para revisar esto"
     b = c.ProjectBudget.begin("123", [], text)
     assert b.remaining() == 4
     assert c.ProjectBudget.begin("123", [], text).remaining() == 4
     assert all(b.reserve() for _ in range(4))
     assert c.ProjectBudget.begin("123", [], text).remaining() == 0
-    assert c.ProjectBudget.begin("123", [], "nuevo proyecto: comienza otro").remaining() == 4
+    assert c.ProjectBudget.begin("123", [], "nuevo proyecto: comienza otro").remaining() == 16
 
 
 def test_fail_closed_when_ledger_cannot_be_saved(monkeypatch):
@@ -109,7 +109,7 @@ def test_sensitive_payload_blocks_external_before_network(task, files, monkeypat
     monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result(f))
     got = c.run_project(task, files, "es", scope="123")
     assert "posibles secretos" in got["summary"] and "sin API" in got["sig"]
-    assert c.ProjectBudget.begin("123", files, task).remaining() == 4
+    assert c.ProjectBudget.begin("123", files, task).remaining() == 16
 
 
 def test_inconclusive_plan_and_local_failure_never_call_apis(monkeypatch):
@@ -136,7 +136,7 @@ def test_model_plan_is_structured_and_cannot_choose_a_url(monkeypatch):
     assert not c._plan("Python", [], "es").valid
 
 
-def test_two_models_review_and_real_local_implementation_with_four_call_budget(monkeypatch):
+def test_two_models_review_and_real_local_implementation_with_sixteen_call_budget(monkeypatch):
     available = [model("alpha"), model("beta"), model("gamma")]
     monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(2, True, False, "none", True))
     monkeypatch.setattr(c, "_models", lambda: available)
@@ -159,7 +159,7 @@ def test_two_models_review_and_real_local_implementation_with_four_call_budget(m
     assert all(0 < kwargs["max_tokens"] <= 2048 for _, _, kwargs in called)
     assert len(implemented) == 2 and implemented[0] and implemented[1]
     assert got["project_complete"] and "revisión externa" in got["summary"]
-    assert c.ProjectBudget.begin("123", [], "same project").remaining() == 1
+    assert c.ProjectBudget.begin("123", [], "same project").remaining() == 13
 
 
 def test_quota_or_captcha_like_failure_stops_not_rotates(monkeypatch):
@@ -171,7 +171,7 @@ def test_quota_or_captcha_like_failure_stops_not_rotates(monkeypatch):
     monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result([{"path": "a.py", "text": "print(1)"}]))
     got = c.run_project("Crea una aplicación", [], "es", scope="123")
     assert call.call_count == 1 and "consultada" not in got["summary"]
-    assert c.ProjectBudget.begin("123", [], "same").remaining() == 3
+    assert c.ProjectBudget.begin("123", [], "same").remaining() == 15
 
 
 def test_bad_external_advice_cannot_become_tool_or_command():
@@ -193,10 +193,11 @@ def test_public_search_only_uses_fixed_topic_and_filters_directives(monkeypatch)
         seen.append(question)
         return local_ai.Result("ok", text, (source,), method="web")
     monkeypatch.setattr(local_ai, "complete", research)
-    refs, sources, status = c._web_reference(c.Plan(1, False, False, "python", True), "Crea algo en Python para Empresa Privada", "es")
+    b = c.ProjectBudget.begin("123", [], "python")
+    refs, sources, status = c._web_reference(c.Plan(1, False, False, "python", True), "Crea algo en Python para Empresa Privada", "es", b)
     assert seen == ["busca Python official documentation"] and sources == [source] and status == "ok"
     assert len(refs) == 1 and "Ignore" not in str(refs)
-    assert c._web_reference(c.Plan(1, False, False, "python", True), "Crea algo en Java", "es") == ([], [], "")
+    assert c._web_reference(c.Plan(1, False, False, "python", True), "Crea algo en Java", "es", b) == ([], [], "")
 
 
 def test_one_exact_image_call_and_binary_fit_without_translator(monkeypatch):
@@ -212,7 +213,7 @@ def test_one_exact_image_call_and_binary_fit_without_translator(monkeypatch):
     assert status == "ok" and label == source.label and item["path"] == "assets/generated-logo.jpg"
     assert len(base64.b64decode(item["b64"])) <= coder.MAX_BINARY
     assert call.call_count == 1 and call.call_args.kwargs == {"model": source.key, "translate": False}
-    assert b.remaining() == 3
+    assert b.remaining() == 15
 
 
 def test_existing_project_kept_if_image_generation_succeeds_but_local_fails(monkeypatch):
@@ -265,7 +266,7 @@ def test_general_chat_collaboration_preserves_local_final_answer(monkeypatch):
     assert len(calls) == 3 and result["text"].startswith("Esta es la respuesta producida localmente.")
     assert "Modelos consultados:" in result["text"] and "colaboración externa" in result["sig"]
     assert "Untrusted reference notes" in inputs[0][-1]["content"]
-    assert c.ProjectBudget.begin("general/123:private", [], text).remaining() == 1
+    assert c.ProjectBudget.begin("general/123:private", [], text).remaining() == 13
 
 
 def test_general_ignores_simple_search_and_local_only():
@@ -290,7 +291,7 @@ def test_general_image_is_one_counted_call_and_only_explicit_request(monkeypatch
     monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **kw: local_ai.Result("ok", "Aquí tienes una propuesta."))
     result = c.run_general(22, "Genera un logo de un gato", "es", scope="123", task_id="img1", history_scope="123:private")
     assert call.call_count == 1 and result["files"] == ["imagen-generada.jpg"]
-    assert c.ProjectBudget.begin("general/123:private", [], "retry").remaining() == 3
+    assert c.ProjectBudget.begin("general/123:private", [], "retry").remaining() == 15
 
 
 def test_coder_icon_uses_webxdc_icon_when_not_overwriting(monkeypatch):
@@ -320,17 +321,17 @@ def test_checkpoint_fail_closed_and_restored_budget_cannot_double_spend(monkeypa
     b = c.ProjectBudget.begin("123", [], "create")
     checkpoint = mock.Mock(return_value=False)
     monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
-    assert not b.reserve() and b.last_error == "checkpoint" and b.counts() == (0, 4)
+    assert not b.reserve() and b.last_error == "checkpoint" and b.counts() == (0, 16)
     checkpoint.return_value = True
     assert b.reserve() and b.reserve() and checkpoint.call_count == 2
-    assert b.counts() == (2, 4)
+    assert b.counts() == (2, 16)
     # Simulate a restored snapshot taken before individual attempted requests.
     snapshot = json.loads(json.dumps(state.data["collab_budgets"]))
     snapshot[b.key]["used"] = 0
     monkeypatch.setitem(state.data, "collab_budgets", snapshot)
     monkeypatch.setattr(c, "_SESSION", "different-process")
     restored = c.ProjectBudget.begin("123", [], "retry same project")
-    assert restored.counts() == (4, 4) and not restored.reserve()
+    assert restored.counts() == (16, 16) and not restored.reserve()
 
 
 def test_durable_checkpoint_uses_native_verified_backup_and_no_rotation():
@@ -346,25 +347,26 @@ def test_durable_checkpoint_uses_native_verified_backup_and_no_rotation():
         checkpoint.assert_not_called()
 
 
-def test_concurrent_reservations_never_exceed_four(monkeypatch):
+def test_concurrent_reservations_never_exceed_sixteen(monkeypatch):
     import threading
     b = c.ProjectBudget.begin("123", [], "create")
     called = []
     def reserve():
         called.append(b.reserve())
-    threads = [threading.Thread(target=reserve) for _ in range(12)]
+    threads = [threading.Thread(target=reserve) for _ in range(32)]
     for thread in threads:
         thread.start()
     for thread in threads:
         thread.join(5)
-    assert len(called) == 12 and sum(called) == 4 and b.counts() == (4, 4)
+    assert len(called) == 32 and sum(called) == 16 and b.counts() == (16, 16)
 
 
 def test_agent_and_coder_share_budget_across_conversations_and_instances():
     project = c.ProjectBudget.begin("123", [{"path": "a.py", "text": "pass"}], "coder")
     assert project.reserve() and project.reserve() and project.reserve()
     general = c.ProjectBudget.begin("general/999:other", [], "consult")
-    assert general.counts() == (3, 4) and general.reserve() and not project.reserve()
+    assert general.counts() == (3, 16)
+    assert all(general.reserve() for _ in range(13)) and not project.reserve()
     assert c.ProjectBudget.begin("987", [], "empty project retry").remaining() == 0
 
 
@@ -425,14 +427,14 @@ def test_manually_selected_coder_model_shares_limit_and_keeps_original(monkeypat
     monkeypatch.setattr(ai, "complete_exact", exact)
     previous = [{"path": "old.py", "text": "print('safe')"}]
     def project(request, files, locale, key, *, project_budget):
-        results = [coder._ask([], key, "", project_budget) for _ in range(5)]
-        assert [r.ok for r in results] == [True, True, True, True, False]
+        results = [coder._ask([], key, "", project_budget) for _ in range(17)]
+        assert [r.ok for r in results] == [True] * 16 + [False]
         return fake_result([{"path": "old.py", "text": "broken"}], confirmed=False)
     monkeypatch.setattr(coder, "_run_project", project)
     result = coder.run("Cambia la función", previous, "es", "explicit:model", scope="123")
-    assert len(calls) == 4 and all(k["max_tokens"] == 4096 for _, k in calls)
+    assert len(calls) == 16 and all(k["max_tokens"] == 4096 for _, k in calls)
     assert result["files"] == previous and result["project_complete"] is False
-    assert "4/4" in result["summary"]
+    assert "16/16" in result["summary"]
     assert c.ProjectBudget.begin("general/123:private", [], "agent").remaining() == 0
 
 
@@ -506,7 +508,7 @@ def test_missing_personal_quota_metadata_fails_closed_before_api(monkeypatch):
     monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
     b = c.ProjectBudget.begin("123", [], "project")
     assert not b.reserve("personal-missing") and b.last_error == "checkpoint"
-    assert b.counts() == (0, 4)
+    assert b.counts() == (0, 16)
     checkpoint.assert_not_called()
 
 
@@ -625,7 +627,9 @@ def test_general_web_topic_is_user_selected_not_model_or_project(query_text, top
                                                     (local_ai.Source("S1", "Synthetic source", "https://example.test", "safe"),)))
     monkeypatch.setattr(local_ai, "complete", search)
     plan = c.Plan(2, False, False, "public", True)
-    excerpts, sources, status = c._web_reference(plan, query_text, "es")
+    b = c.ProjectBudget.begin("123", [], "web")
+    excerpts, sources, status = c._web_reference(plan, query_text, "es", b)
+    assert b.counts() == (1, 16)
     assert status == "ok" and sources[0].url == "https://example.test" and excerpts
     assert search.call_args.args[0] == "busca " + topic
     assert search.call_args.kwargs["research"] is True
@@ -639,7 +643,9 @@ def test_general_web_topic_is_user_selected_not_model_or_project(query_text, top
 def test_general_web_never_sends_private_url_or_overlong_topic(query_text, reason, monkeypatch):
     search = mock.Mock(side_effect=AssertionError("unsafe query sent to web"))
     monkeypatch.setattr(local_ai, "complete", search)
-    assert c._web_reference(c.Plan(2, False, False, "public", True), query_text, "es")[2] == reason
+    b = c.ProjectBudget.begin("123", [], "web")
+    assert c._web_reference(c.Plan(2, False, False, "public", True), query_text, "es", b)[2] == reason
+    assert b.counts() == (0, 16)
     search.assert_not_called()
 
 
@@ -652,3 +658,61 @@ def test_general_web_user_opt_out_and_host_override(monkeypatch):
     monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result(
         "ok", json.dumps({"consultations": 0, "review": False, "image": False, "web": "python"})))
     assert c._plan("Python: no busques en la web; consulta varios modelos", [], "es").web == "none"
+
+
+def test_sixteen_default_and_exact_extra_grants_are_not_replayed():
+    b = c.ProjectBudget.begin("123", [], "project")
+    assert b.counts() == (0, 16)
+    assert all(b.reserve() for _ in range(16)) and not b.reserve()
+    text = "Autorizo 16 consultas externas más para la siguiente revisión"
+    b = c.ProjectBudget.begin("123", [], text)
+    assert b.counts() == (16, 32) and b.remaining() == 16
+    assert c.ProjectBudget.begin("123", [], text).counts() == (16, 32)
+    assert c._extra_grant("No autorizo 16 consultas externas más") == 0
+    assert c._extra_grant("I do not allow sixteen more external requests") == 0
+    assert c._extra_grant("Autorizo cuatro consultas externas más") == 4
+    assert c._extra_grant("I allow eight more calls") == 8
+
+
+def test_migrating_old_budget_increases_default_once_without_erasing_spending(monkeypatch):
+    b = c.ProjectBudget.begin("123", [], "project")
+    # An older installation's ledger with one previously authorized grant.
+    row = state.data["collab_budgets"][b.key]
+    row.update(used=7, limit=8, session=c._SESSION, restore_spent=0)
+    row.pop("policy")
+    migrated = c.ProjectBudget.begin("123", [], "retry")
+    assert migrated.counts() == (7, 20)  # +12 for default; preserve old grant and usage
+    assert c.ProjectBudget.begin("123", [], "retry").counts() == (7, 20)
+    row.update(used=0, limit=4, session="older-process", restore_spent=4)
+    row.pop("policy")
+    recovered = c.ProjectBudget.begin("123", [], "retry")
+    assert recovered.counts() == (4, 16)  # old durable ceiling spent before upgrade
+
+
+def test_web_research_uses_project_budget_and_fails_closed_before_network(monkeypatch):
+    search = mock.Mock(return_value=local_ai.Result("ok", '- «A synthetic Python example appears in this documentation.» [S1]',
+                             (local_ai.Source("S1", "Docs", "https://docs.example.test", "safe"),)))
+    monkeypatch.setattr(local_ai, "complete", search)
+    budget = c.ProjectBudget.begin("123", [], "project")
+    plan = c.Plan(0, False, False, "python", True)
+    assert c._web_reference(plan, "Create a Python app", "en", budget)[2] == "ok"
+    assert budget.counts() == (1, 16) and search.call_count == 1
+    assert all(budget.reserve() for _ in range(15))
+    assert c._web_reference(plan, "Create a Python app", "en", budget)[2] == "budget"
+    assert search.call_count == 1
+    # A fresh project with an unverified checkpoint must also never call web.
+    fresh = c.ProjectBudget.begin("123", [], "nuevo proyecto: fresh")
+    monkeypatch.setattr(c, "_checkpoint_durable", lambda: False)
+    c._CHECKPOINTS.clear()
+    assert c._web_reference(plan, "Create a Python app", "en", fresh)[2] == "checkpoint"
+    assert fresh.counts() == (0, 16) and search.call_count == 1
+
+
+def test_explicit_four_consultants_are_bounded_by_host_and_cannot_invent_providers(monkeypatch):
+    reply = local_ai.Result("ok", json.dumps({"consultations": 0, "review": False, "image": False, "web": "none"}))
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: reply)
+    assert c._plan("Consulta cuatro modelos para comparar estas opciones", [], "es").consultations == 4
+    assert c._plan("Consulta tres modelos para comparar estas opciones", [], "es").consultations == 3
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result("ok", json.dumps(
+        {"consultations": 5, "review": False, "image": False, "web": "none"})))
+    assert not c._plan("Create a project", [], "en").valid

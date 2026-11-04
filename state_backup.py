@@ -59,6 +59,12 @@ GITHUB_NATIVE_NAMESPACE = "github-native-v1"
 GITHUB_NATIVE_ASSET_PREFIX = "michiflin-github-state-"
 GITHUB_NATIVE_PENDING_PREFIX = "michiflin-github-pending-"
 GITHUB_NATIVE_ASSET_PATTERN = re.compile(r"^michiflin-github-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
+CLEAN_OWNER_NAMESPACE = "owner-clean-v1"
+CLEAN_OWNER_READY_TAG = "michiflin-owner-clean-ready-v1"
+CLEAN_OWNER_ORIGIN = ".owner-clean-origin-v1.json"
+CLEAN_OWNER_ASSET_PREFIX = "michiflin-owner-clean-state-"
+CLEAN_OWNER_PENDING_PREFIX = "michiflin-owner-clean-pending-"
+CLEAN_OWNER_ASSET_PATTERN = re.compile(r"^michiflin-owner-clean-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
 KEEP_RECENT = 12
 KEEP_DAILY = 7
 KEEP_WEEKLY = 4
@@ -71,6 +77,8 @@ def _backup_names() -> tuple[str, str, re.Pattern[str]]:
         return ASSET_PREFIX, PENDING_PREFIX, ASSET_PATTERN
     if namespace == GITHUB_NATIVE_NAMESPACE:
         return GITHUB_NATIVE_ASSET_PREFIX, GITHUB_NATIVE_PENDING_PREFIX, GITHUB_NATIVE_ASSET_PATTERN
+    if namespace == CLEAN_OWNER_NAMESPACE:
+        return CLEAN_OWNER_ASSET_PREFIX, CLEAN_OWNER_PENDING_PREFIX, CLEAN_OWNER_ASSET_PATTERN
     raise ValueError("unknown backup namespace; previous snapshots were kept")
 
 
@@ -552,6 +560,9 @@ def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphra
 def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True) -> None:
     _assert_private(token, repo)
     plaintext = archive(config_dir())
+    if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == CLEAN_OWNER_NAMESPACE:
+        # A wrong/old account can never be uploaded into the clean namespace.
+        _verify_clean_origin(plaintext)
     salt = os.urandom(SALT_BYTES)
     encrypted = MAGIC + salt + fernet_from(passphrase, salt).encrypt(plaintext)
     if len(encrypted) > MAX_BACKUP_BYTES:
@@ -613,6 +624,41 @@ def _verify_native_origin(plaintext: bytes) -> None:
             raise ValueError("native GitHub origin marker is invalid")
 
 
+def _clean_origin_valid(value: object) -> bool:
+    epoch = os.getenv("MICHIFLIN_CLEAN_EPOCH", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{48}", epoch):
+        return False
+    if not isinstance(value, dict):
+        return False
+    owner_fp = str(value.get("owner_fingerprint") or "")
+    bot_fp = str(value.get("bot_fingerprint") or "")
+    return (value.get("version") == 1 and value.get("confirmed") is True
+            and value.get("fresh_account") is True and value.get("epoch") == epoch
+            and re.fullmatch(r"[A-F0-9]{40,64}", owner_fp) is not None
+            and re.fullmatch(r"[A-F0-9]{40,64}", bot_fp) is not None and owner_fp != bot_fp
+            and isinstance(value.get("owner_address"), str) and bool(value["owner_address"].strip())
+            and type(value.get("owner_chat")) is int and value["owner_chat"] > 9
+            and not any(key in value for key in ("source_asset_id", "legacy_asset_id", "imported_backup")))
+
+
+def _verify_clean_origin(plaintext: bytes) -> None:
+    """Require a marker bound to the independently confirmed new identity."""
+    with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as tar:
+        try:
+            member = tar.getmember("michiflin/" + CLEAN_OWNER_ORIGIN)
+        except KeyError:
+            raise ValueError("clean owner origin marker is missing") from None
+        if not member.isfile() or member.size > 4096:
+            raise ValueError("clean owner origin marker is invalid")
+        stream = tar.extractfile(member)
+        try:
+            value = json.load(stream) if stream is not None else None
+        except (TypeError, ValueError, UnicodeError):
+            raise ValueError("clean owner origin marker is invalid") from None
+        if not _clean_origin_valid(value):
+            raise ValueError("clean owner origin marker is invalid")
+
+
 def _install_restored(plaintext: bytes, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".restore-", dir=target.parent))
@@ -657,6 +703,8 @@ def save(*, rotate: bool = True) -> None:
         rotate = False
     with _save_lock():
         if storage == "legacy-git":
+            if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == CLEAN_OWNER_NAMESPACE:
+                raise RuntimeError("clean owner state cannot use legacy Git storage")
             _save_legacy()
         elif storage == "releases":
             _save_release(*settings, rotate=rotate)
@@ -673,8 +721,17 @@ def restore() -> None:
         print("[backup] restoration disabled: backup secrets are missing")
         return
     target = config_dir()
+    namespace = os.getenv("STATE_BACKUP_NAMESPACE", "").strip()
+    _backup_names()  # reject unknown namespaces even if a local state exists
     if target.exists():
-        if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+        if namespace == CLEAN_OWNER_NAMESPACE:
+            try:
+                origin = json.loads((target / CLEAN_OWNER_ORIGIN).read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                raise RuntimeError("existing state lacks verified clean-owner provenance") from None
+            if not _clean_origin_valid(origin):
+                raise RuntimeError("existing state lacks verified clean-owner provenance")
+        if namespace == GITHUB_NATIVE_NAMESPACE:
             try:
                 origin = json.loads((target / ".github-native-origin-v1.json").read_text(encoding="utf-8"))
             except (OSError, TypeError, ValueError):
@@ -685,8 +742,8 @@ def restore() -> None:
         return
     storage = os.getenv("STATE_BACKUP_STORAGE", "releases").strip()
     if storage == "legacy-git":
-        if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
-            raise RuntimeError("native GitHub backups cannot restore legacy Git or imported states")
+        if namespace in {GITHUB_NATIVE_NAMESPACE, CLEAN_OWNER_NAMESPACE}:
+            raise RuntimeError("isolated backups cannot restore legacy Git or imported states")
         _restore_legacy()
         return
     if storage != "releases":
@@ -699,6 +756,11 @@ def restore() -> None:
         anchor = _get_ref(token, repo, RELEASE_TAG)
         if not native or not anchor or native != anchor:
             raise RuntimeError("native GitHub backup is not sealed; refusing all fallback")
+    if namespace == CLEAN_OWNER_NAMESPACE:
+        clean = _get_ref(token, repo, CLEAN_OWNER_READY_TAG)
+        anchor = _get_ref(token, repo, RELEASE_TAG)
+        if not clean or not anchor or clean != anchor or release is None:
+            raise RuntimeError("clean owner backup is not sealed; refusing all fallback")
     if ready:
         anchor = _get_ref(token, repo, RELEASE_TAG)
         if not anchor or anchor != ready or release is None:
@@ -712,8 +774,10 @@ def restore() -> None:
             try:
                 plaintext = decrypt_backup(blob, passphrase)
                 _verify_plaintext(plaintext)
-                if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+                if namespace == GITHUB_NATIVE_NAMESPACE:
                     _verify_native_origin(plaintext)
+                elif namespace == CLEAN_OWNER_NAMESPACE:
+                    _verify_clean_origin(plaintext)
             except (ValueError, tarfile.TarError, sqlite3.Error, OSError):
                 print("[backup] an invalid encrypted snapshot was skipped")
                 continue
@@ -722,7 +786,7 @@ def restore() -> None:
             return
         if snapshots or ready:
             raise RuntimeError("no verified release snapshot could be restored; old copies were kept")
-    if ready or os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == GITHUB_NATIVE_NAMESPACE:
+    if ready or namespace in {GITHUB_NATIVE_NAMESPACE, CLEAN_OWNER_NAMESPACE}:
         raise RuntimeError("verified release backup is missing; refusing stale Git fallback")
     # Bootstrap only: once the ready marker exists, the old Git snapshot cannot
     # silently overwrite newer work if release assets are missing.
