@@ -131,7 +131,7 @@ def test_research_uses_only_current_query_and_extracts_actual_sources(server):
     with mock.patch.object(tools, "search", return_value=[hit]) as search, \
          mock.patch.object(local_ai.smart_agent, "_read", return_value=page) as read:
         text = capture("Busca el horario actual de la biblioteca", history=[["user", "Dato privado previo"], ["assistant", "Ok"]])
-    search.assert_called_once_with("Busca el horario actual de la biblioteca", "es", 5, engine="standard")
+    search.assert_called_once_with("el horario actual de la biblioteca", "es", 5, engine="standard")
     read.assert_called_once_with(hit.url, total_timeout=12.0)
     assert not any(method == "POST" for method, _, _ in requests)  # page text never enters the model
     assert "17:00" in text and "[S1]" in text and hit.url in text

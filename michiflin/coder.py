@@ -494,6 +494,9 @@ def run(request: str, files: list[dict[str, Any]], locale: str, model_key: str =
                             "Coder is already working on another project. Try again in a few minutes."))
     try:
         runtime_state.check_work_allowed()
+        from . import local_coder
+        if model_key == local_coder.MODEL_KEY:
+            return local_coder.run(request, files, locale)
         return _run_project(request, files, locale, model_key)
     finally:
         _busy.release()

@@ -1593,9 +1593,10 @@ def op_tiktok_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 @op("code")
 def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     """Coder: free coding models write, run and fix a small project; the app keeps the files and builds the ZIP."""
-    from . import coder
+    from . import coder, local_ai, local_coder
 
-    text = _clean(args.get("text"))[:6000]
+    raw_text = _clean(args.get("text"))
+    text = raw_text[:6000]
     if not text:
         raise AppError(tr(locale, "Describe qué quieres programar.", "Describe what you want to build."))
     incoming = args.get("files") if isinstance(args.get("files"), list) else []
@@ -1607,7 +1608,17 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                           "Invalid project file; it was not changed."))
     files = incoming
     model = _clean(args.get("model"))[:180]
-    if model and ai.model_by_key(model) is None:
+    # In a local-AI session the existing Automatic option uses that same
+    # engine. An explicitly selected provider keeps its previous behavior.
+    # If local startup failed, Automatic fails closed instead of leaking a
+    # project to an API. The dedicated key also fails closed if unavailable.
+    use_local = model == local_coder.MODEL_KEY or (not model and local_ai.privacy_mode())
+    if use_local:
+        if len(raw_text) > 6000:
+            raise AppError(tr(locale, "La petición es demasiado larga para la IA local; no se recortó ni se modificó el proyecto.",
+                              "The request is too long for local AI; it was not truncated and the project was not changed."))
+        model = local_coder.MODEL_KEY
+    if model and not use_local and ai.model_by_key(model) is None:
         raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro o usa Automático.",
                           "That model is no longer available; pick another or use Automatic."))
     address = chat.sender()
@@ -1615,13 +1626,13 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if state.acting_as():
         if not usage.allowed(address, "code"):
             raise AppError(usage.limit_text("code", locale))
-        if not model.startswith("personal-") and usage.reserve_low():
+        if not use_local and not model.startswith("personal-") and usage.reserve_low():
             raise AppError(usage.reserve_text(locale))
     try:
         result = coder.run(text, files, locale, model)
     except coder.CoderError as exc:
         raise AppError(str(exc))
-    if result.get("files") and address:
+    if result.get("files") and address and (not use_local or result.get("project_complete", True)):
         usage.spend(address, "code")
     result["models"] = models_view()
     return result

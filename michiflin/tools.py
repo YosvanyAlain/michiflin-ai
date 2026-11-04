@@ -29,6 +29,9 @@ except ImportError:  # pragma: no cover
 
 UA = {"User-Agent": "MichiflinAI/5 (private Delta Chat assistant)"}
 _cache: dict[str, tuple[float, Any]] = {}
+_search_pause_lock = threading.Lock()
+_search_paused_until = 0.0
+_SEARCH_CHALLENGE = re.compile(r"(?:captcha|ratelimit|rate[ -]?limit|too many requests|(?:http|status|code)?\s*429\b|bot[ -]?check|robot challenge)", re.I)
 
 
 def _cached(key: str, seconds: int, producer: Callable[[], Any]) -> Any:
@@ -70,15 +73,26 @@ def _relevant(url: str, title: str, query: str) -> bool:
 
 
 def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
-    """Keyless web search; single backends fail at random, so a few backend and region pairs are tried within a time budget."""
+    """Keyless search with bounded retries; stop on a rate limit or challenge."""
+    global _search_paused_until
+    with _search_pause_lock:
+        if time.monotonic() < _search_paused_until:
+            return []
     regions = ["us-en", "wt-wt"] if locale == "en" else ["xl-es", "es-es"]
     started = time.time()
-    for region, backend in ((regions[0], "auto"), (regions[0], "bing"), (regions[1], "auto"), (regions[1], "bing"), (regions[0], "duckduckgo")):
+    # Use one provider at a time, not DDGS's randomized multi-provider auto
+    # mode. Never switch providers to get around a rate limit or CAPTCHA.
+    for region, backend in ((regions[0], "bing"), (regions[0], "duckduckgo"), (regions[1], "bing"), (regions[1], "duckduckgo")):
         if time.time() - started > 25:
             break
         try:
             items = DDGS(timeout=10).text(query, region=region, safesearch="moderate", max_results=limit + 2, backend=backend)
-        except Exception:
+        except Exception as exc:
+            detail = type(exc).__name__ + " " + str(exc)
+            if _SEARCH_CHALLENGE.search(detail):
+                with _search_pause_lock:
+                    _search_paused_until = time.monotonic() + 120.0
+                return []
             continue
         found = []
         for item in items or []:
@@ -91,7 +105,7 @@ def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
 
 
 def search(query: str, locale: str, limit: int = 6, engine: str = "standard") -> list[Result]:
-    """Web results. The standard engine is keyless and has no quota; the advanced one spends You.com calls and falls back to standard."""
+    """Web results. Standard is keyless (but may rate-limit); advanced spends You.com calls and can fall back to standard."""
     if DDGS is None or not query.strip():
         return []
     if engine == "advanced":
