@@ -272,6 +272,12 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
                               "🛑 Kill switch is on. Use /kill_switch no to resume."))
         return
     stripped = text.strip().strip("\"“”‘’«»").lstrip("¿¡").strip()
+    # An explicit local-only request must win before URL, weather, rates,
+    # search, translation or other network tools. If the local model is
+    # unavailable, local_reply fails closed rather than trying an online API.
+    from . import collab_agent
+    if collab_agent.local_only(text):
+        return local_reply(chat_id, stripped, locale, history, research=False, scope=scope)
     item = memory(chat_id)
     local_privacy = local_ai.privacy_mode()
     # A client-supplied history is not authenticated. During the local test or

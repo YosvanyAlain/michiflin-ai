@@ -514,3 +514,33 @@ def test_failed_search_does_not_continue_an_older_unrelated_answer(server):
     remembered = local_ai.history(501, "alice@example.test")
     assert local_ai.last_reply_was_web(remembered)
     assert all("Biblioteca Sol" not in turn[1] for turn in remembered[-2:])
+
+
+@pytest.mark.parametrize("question", [
+    "solo local: clima en La Habana",
+    "local only: weather in Havana",
+    "solo local: ¿cuánto son 10 USD en CUP?",
+    "busca Python pero solo local",
+    "solo local: resume https://public.example.test/one",
+])
+def test_explicit_local_only_bypasses_all_automatic_online_tools(server, question):
+    """A privacy opt-out must win before web, weather, rates, URLs or AI APIs."""
+    from michiflin import web
+    with mock.patch.object(tools, "weather_text", side_effect=AssertionError("online weather")), \
+         mock.patch.object(tools, "rate_text", side_effect=AssertionError("online rate")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("online search")), \
+         mock.patch.object(web, "route", side_effect=AssertionError("online URL")), \
+         mock.patch.object(agent, "summarize_url", side_effect=AssertionError("online URL")):
+        result = capture(question)
+    assert "Hola desde el modelo local." in result
+    posts = [x for x in server[0] if x[0] == "POST" and x[1] == "/v1/chat/completions"]
+    assert len(posts) == 1
+
+
+def test_local_only_request_never_falls_back_online_when_local_is_unavailable(monkeypatch):
+    monkeypatch.delenv("LOCAL_GGUF_ENABLED", raising=False)
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with mock.patch.object(tools, "weather_text", side_effect=AssertionError("online weather")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("online search")):
+        result = capture("solo local: clima en La Habana")
+    assert "no está disponible" in result and "no cambié a una API externa" in result

@@ -795,3 +795,32 @@ def test_collaboration_general_and_coder_surface_one_source_and_partial_limit(mo
     assert source.url in project["summary"]
     if limited:
         assert "detuve la búsqueda" in project["summary"]
+
+
+def test_local_agent_checks_opt_out_before_truncating(monkeypatch):
+    # Do not let an opt-out just beyond the UI limit disappear before routing.
+    monkeypatch.setattr(c, "run_general", lambda *a, **k: pytest.fail("external collaboration"))
+    monkeypatch.setattr(miniapp.agent, "handle", lambda *a, **k: pytest.fail("truncated request routed"))
+    with pytest.raises(miniapp.AppError, match="larga|long"):
+        miniapp.op_ask(1, {"text": "x" * 6001 + " solo local", "space": "agent", "_collab_scope": "123", "_collab_task": "task"}, "es")
+
+
+def test_command_shortcuts_do_not_override_local_opt_out(monkeypatch):
+    from michiflin import commands
+    called = mock.Mock(side_effect=AssertionError("online command dispatched"))
+    monkeypatch.setitem(commands.COMMANDS, "weather", called)
+    monkeypatch.setattr(chat, "text", mock.Mock())
+    assert commands.dispatch(7, "/weather solo local clima en La Habana", "es")
+    called.assert_not_called()
+    commands.set_pending(7, "weather")
+    assert commands.dispatch(7, "solo local: La Habana", "es")
+    called.assert_not_called()
+    assert commands.take_pending(7) == ""
+    assert not commands.dispatch(7, "solo local: explícame algo", "es")
+
+
+def test_miniapp_command_shortcut_checks_full_request_before_reading_url(monkeypatch):
+    monkeypatch.setattr(miniapp, "op_read", lambda *a, **k: pytest.fail("online page loaded"))
+    monkeypatch.setattr(miniapp.links, "resolve", lambda *_: "https://public.example.test/x")
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_command(1, {"text": "/v_k3 " + "x" * 2001 + " solo local"}, "es")

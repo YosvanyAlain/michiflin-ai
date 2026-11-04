@@ -53,6 +53,13 @@ class FileKitIntakeTests(unittest.TestCase):
         app.agent.handle_attachment.assert_called_once()
         chat.delete.assert_called_once_with([10])
 
+    def test_local_only_attachment_is_not_sent_or_deleted(self):
+        app._process(self.msg, "solo local: analiza este archivo", "es", self.address)
+        app.agent.handle_attachment.assert_not_called()
+        chat.delete.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), b"contenido")
+        self.assertIn("no", chat.text.call_args.args[1].lower())
+
     def test_invalid_marker_is_not_sent_to_agent_or_deleted(self):
         app._process(self.msg, filekit_transfer.MARKER + "not-a-valid-token", "en", self.address)
         chat.delete.assert_not_called()

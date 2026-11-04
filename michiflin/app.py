@@ -138,6 +138,13 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
                 if text.startswith("/") and commands.dispatch(chat_id, text, locale):
                     return
                 if has_file:
+                    from . import collab_agent
+                    if collab_agent.local_only(text):
+                        # Chat attachment analysis can use an online provider;
+                        # preserve the original instead of sending or deleting it.
+                        chat.text(chat_id, tr(locale, "🔒 Pediste solo local. No envié ni borré el adjunto; usa el Programador local para archivos de texto.",
+                                              "🔒 You requested local only. I did not send or delete the attachment; use the local Coder for text files."))
+                        return
                     drop = True
                     agent.handle_attachment(chat_id, msg, text, locale)
                     return
