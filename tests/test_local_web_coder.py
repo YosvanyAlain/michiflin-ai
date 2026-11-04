@@ -434,3 +434,34 @@ def test_one_accessible_source_is_acknowledged_and_not_rewritten(monkeypatch):
     text = local_ai.display(result, "es")
     assert "una fuente" in text and "no pude contrastarla" in text and "17:00" in text
     assert text.count("[S1]") == 2 and "sin modelo" not in text
+
+
+@pytest.mark.parametrize("blocked", ["Page unavailable (HTTP 429).", "Please verify you are human to continue."])
+def test_page_challenge_stops_without_retry_and_reports_limit(monkeypatch, blocked):
+    hits = [tools.Result("A", "https://one.example.test/a"), tools.Result("B", "https://two.example.test/b")]
+    monkeypatch.setattr(tools, "search", lambda *_a, **_k: hits)
+    opened = []
+    def read(url, **_kwargs):
+        opened.append(url)
+        return blocked
+    monkeypatch.setattr(local_ai.smart_agent, "_read", read)
+    monkeypatch.setattr(local_ai, "configured", lambda: True)
+    result = local_ai.complete("Busca la biblioteca municipal", "es", research=True, synthesize=False)
+    assert result.status == "web_limited" and opened == [hits[0].url]
+    assert "detuve la búsqueda" in local_ai.display(result, "es")
+
+
+def test_partial_sources_are_kept_when_a_page_rate_limits(monkeypatch):
+    hits = [tools.Result("A", "https://one.example.test/a"), tools.Result("B", "https://two.example.test/b"),
+            tools.Result("C", "https://three.example.test/c")]
+    monkeypatch.setattr(tools, "search", lambda *_a, **_k: hits)
+    opened = []
+    def read(url, **_kwargs):
+        opened.append(url)
+        return "La biblioteca municipal abre los lunes a las ocho de la mañana." if url == hits[0].url else "Page unavailable (HTTP 429)."
+    monkeypatch.setattr(local_ai.smart_agent, "_read", read)
+    monkeypatch.setattr(local_ai, "configured", lambda: True)
+    result = local_ai.complete("Busca la biblioteca municipal", "es", research=True, synthesize=False)
+    assert result.status == "ok" and len(result.sources) == 1
+    assert opened == [hits[0].url, hits[1].url]
+    assert "Solo encontré una fuente" in result.text and "detuve la búsqueda" in result.text

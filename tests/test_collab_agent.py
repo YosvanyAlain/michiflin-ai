@@ -716,3 +716,12 @@ def test_explicit_four_consultants_are_bounded_by_host_and_cannot_invent_provide
     monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result("ok", json.dumps(
         {"consultations": 5, "review": False, "image": False, "web": "none"})))
     assert not c._plan("Create a project", [], "en").valid
+
+
+def test_new_project_epoch_invalidates_previous_inflight_budget(monkeypatch):
+    old = c.ProjectBudget.begin("123", [], "proyecto anterior")
+    assert old.reserve()
+    fresh = c.ProjectBudget.begin("123", [], "nuevo proyecto: otra tarea distinta")
+    assert fresh.counts() == (0, 16)
+    assert not old.reserve() and old.counts() == (0, 0)
+    assert fresh.reserve() and fresh.counts() == (1, 16)
