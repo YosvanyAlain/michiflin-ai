@@ -358,3 +358,14 @@ def test_unparsed_output_or_literal_end_cannot_silently_truncate_file(monkeypatc
     monkeypatch.setattr(local_ai, "complete_messages", lambda *_, **__: model_reply(malformed))
     with pytest.raises(coder.CoderError, match="complete, safe actions"):
         coder.run("Create script.py", [], "en", local_coder.MODEL_KEY)
+
+
+def test_explicit_no_run_never_executes_commands(monkeypatch):
+    calls = []
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result(
+        "ok", "<<<FILE simple.py>>>\nprint('ok')\n<<<END>>>\n<<<DONE>>>\nArchivo creado.\n<<<END>>>"))
+    monkeypatch.setattr(coder, "isolation", lambda: True)
+    monkeypatch.setattr(coder, "_run", lambda *a, **k: calls.append(a) or (0, "ok"))
+    with mock.patch.object(coder, "syntax_check", return_value=[]):
+        result = local_coder.run("Crea simple.py; no ejecutes comandos", [], "es")
+    assert result["model_confirmed"] and not calls

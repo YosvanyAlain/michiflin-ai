@@ -539,7 +539,8 @@ def run(request: str, files: list[dict[str, Any]], locale: str, model_key: str =
 def _ask(messages: list[dict[str, Any]], model_key: str, sticky: str, project_budget: Any = None) -> ai.AIResult:
     if project_budget is not None:
         runtime_state.check_work_allowed()
-        if not project_budget.reserve():
+        personal_key = model_key.split(":", 1)[0] if model_key.startswith("personal-") else ""
+        if not project_budget.reserve(personal_key):
             return ai.AIResult(error="collab_" + project_budget.last_error)
         runtime_state.check_work_allowed()
         # 4096 prevents ai._call's automatic retry for a token-limit error.
