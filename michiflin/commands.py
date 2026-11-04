@@ -171,6 +171,18 @@ def take_pending(chat_id: int) -> str:
 
 def dispatch(chat_id: int, text: str, locale: str) -> bool:
     parsed = parse(text)
+    # Commands and pending prompts run before the natural-language agent.
+    # Do not let either path silently override the user's local-only choice.
+    from . import collab_agent
+    if collab_agent.local_only(text):
+        pending = take_pending(chat_id)
+        safe = parsed and parsed[0] in {"kill_switch", "nauta_strict", "estado", "health"}
+        if (parsed or pending) and not safe:
+            chat.text(chat_id, tr(locale, "🔒 Pediste solo local. No ejecuté este comando, que podría usar Internet; usa el Agente local.",
+                                  "🔒 You requested local only. I did not run this command, which could use the Internet; use the local Agent."))
+            return True
+        if not parsed:
+            return False  # ordinary local-only text belongs to the agent
     if parsed is None:
         pending = take_pending(chat_id)
         if pending:

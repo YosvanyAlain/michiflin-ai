@@ -1406,9 +1406,14 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if not text and not attachment:
         raise AppError(tr(locale, "Escribe algo primero.", "Write something first."))
     from . import collab_agent
-    if space != "agent" and collab_agent.local_only(raw_text):
+    local_only = collab_agent.local_only(raw_text)
+    if space != "agent" and local_only:
         raise AppError(tr(locale, "Pediste solo local, pero esta opción usa modelos externos; elige Agente local.",
                           "You requested local only, but this option uses external models; choose the local Agent."))
+    if space == "agent" and local_only and len(raw_text) > len(text):
+        # The opt-out may be beyond the routing limit; never drop it silently.
+        raise AppError(tr(locale, "La petición es demasiado larga; no la recorté ni envié. Divídela en partes.",
+                          "The request is too long; I did not truncate or send it. Split it into parts."))
     media_parts: list[tuple[str, bytes]] = []
     selected_agent_model = ""
     if attachment:
@@ -1887,7 +1892,12 @@ def op_action(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 @op("command")
 def op_command(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     """Run a tap command from a reply; reader links open inside the app."""
-    text = _clean(args.get("text"))[:2000]
+    raw_text = _clean(args.get("text"))
+    from . import collab_agent
+    if collab_agent.local_only(raw_text):
+        raise AppError(tr(locale, "Pediste solo local. No ejecuté este comando, que podría usar Internet; usa el Agente local.",
+                          "You requested local only. I did not run this command, which could use the Internet; use the local Agent."))
+    text = raw_text[:2000]
     parsed = commands.parse(text)
     if parsed and parsed[0] in {"web", "more"} and parsed[1]:
         url = links.resolve(parsed[1][0])
