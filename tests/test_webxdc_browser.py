@@ -377,6 +377,30 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(note.evaluate("e => getComputedStyle(e).overflow"), "visible")
                 self.assertEqual(errors, [])
 
+    def test_copy_own_and_bot_messages_without_importing_history(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.evaluate("""() => {
+                  window.__copied = [];
+                  Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{writeText: text => {
+                    window.__copied.push(text); return Promise.resolve();
+                  }}});
+                }""")
+                page.locator('.tab[data-tab="ai"]:visible').click()
+                page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
+                original = "Mensaje nuevo de prueba: á, ñ, 123.\nSegunda línea."
+                page.locator("#view textarea").fill(original)
+                page.locator("#view .composer button.primary").click()
+                page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
+                label = "Copiar" if language == "es" else "Copy"
+                page.locator(".bubble.me").get_by_role("button", name=label).click()
+                page.wait_for_function("window.__copied.length === 1")
+                self.assertEqual(page.evaluate("window.__copied[0]"), original)
+                page.locator(".bubble.bot:not(.pending)").get_by_role("button", name=label).click()
+                page.wait_for_function("window.__copied.length === 2")
+                self.assertEqual(page.evaluate("window.__copied[1]"), "SIMULATED agent answer [S1]")
+                self.assertEqual(errors, [])
+
     def test_agent_modes_are_honest_and_bilingual(self) -> None:
         for language in ("es", "en"):
             viewport = {"width": 390, "height": 844} if language == "es" else {"width": 1280, "height": 900}

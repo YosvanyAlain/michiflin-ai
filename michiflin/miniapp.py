@@ -947,17 +947,17 @@ def _local_ai_disclosure(instance_id: int) -> None:
     from . import collab_agent
     if collab_agent.notice_for_instance(instance_id):
         spanish = ("Esta app conserva etiquetas anteriores. La colaboración autorizada puede consultar APIs, "
-                   "incluidas las personales con posibles cargos, y compartir archivos: hasta cuatro llamadas por proyecto. "
+                   "incluidas las personales con posibles cargos, y compartir archivos: hasta 16 operaciones externas por proyecto. "
                    "Para una tarea sin APIs escribe «solo local». Para empezar otro proyecto escribe «nuevo proyecto:». "
                    "El límite se comparte entre el agente y Programador; tras una recuperación, lo no usado puede considerarse gastado. "
-                   "Las búsquedas usan fuentes externas.")
+                   "Una investigación web cuenta como una operación y puede abrir varias páginas. Las búsquedas usan fuentes externas.")
         english = ("This app retains older labels. Authorized collaboration may use APIs, including personal ones that may "
-                   "incur charges, and share files: up to four calls per project. Write ‘local only’ for a task without APIs. "
+                   "incur charges, and share files: up to 16 external operations per project. Write ‘local only’ for a task without APIs. "
                    "Start another project with ‘new project:’. The limit is shared by agent and Coder; after recovery, unused calls may be counted as spent. "
-                   "Searches use external sources.")
+                   "One web research operation may open several pages. Searches use external sources.")
     else:
         spanish = "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas."
-        english = "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. Searches use external sources."
+        english = "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. One web research operation may open several pages. Searches use external sources."
     sent = False
     try:
         sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {

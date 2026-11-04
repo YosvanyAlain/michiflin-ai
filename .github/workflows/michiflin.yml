@@ -61,9 +61,11 @@ jobs:
       BOT_VERIFIED_CONTACTS_ONLY: ${{ vars.BOT_VERIFIED_CONTACTS_ONLY || '0' }}
       OWNER_PGP_FINGERPRINT: ${{ secrets.OWNER_PGP_FINGERPRINT }}
       MAINTENANCE_MODE: ${{ vars.MAINTENANCE_MODE || '0' }}
-      MAILBOX_PROFILES_JSON: ${{ secrets.MAILBOX_PROFILES_JSON }}
-      OWNER_NOTICE: ${{ secrets.OWNER_NOTICE }}
-      ALLOWED_SENDERS: ${{ secrets.ALLOWED_SENDERS }}
+      # The fresh identity never inherits a previous contact allow-list,
+      # mailbox profile list or proactive notice.
+      MAILBOX_PROFILES_JSON: ${{ vars.CLEAN_IDENTITY_EPOCH == '' && secrets.MAILBOX_PROFILES_JSON || '' }}
+      OWNER_NOTICE: ${{ vars.CLEAN_IDENTITY_EPOCH == '' && secrets.OWNER_NOTICE || '' }}
+      ALLOWED_SENDERS: ${{ vars.CLEAN_IDENTITY_EPOCH == '' && secrets.ALLOWED_SENDERS || '' }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
@@ -110,13 +112,15 @@ jobs:
       # Preserve existing recovery assets and all currently available blobs.
       STATE_BACKUP_RETAIN_ALL: "1"
       STATE_BACKUP_INCLUDE_BLOBS: "1"
-      # This deployment restores only the earlier, independently verified GitHub state.
-      STATE_BACKUP_NAMESPACE: github-native-v1
-      MICHIFLIN_NATIVE_READY_REQUIRED: "1"
-      MICHIFLIN_NATIVE_FENCE_REQUIRED: "1"
-      # Clear only this handover pause, once, after the bot has initialized.
-      MICHIFLIN_GITHUB_RESUME_ONCE: "1"
-      STATE_BACKUP_PASSPHRASE: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
+      # Normal deployment retains the old native namespace. The new identity
+      # switches only after its distinct clean seed has been verified and sealed.
+      MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
+      STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}
+      MICHIFLIN_NATIVE_READY_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
+      MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
+      # A clean account has no old queues or maintenance notice to resume.
+      MICHIFLIN_GITHUB_RESUME_ONCE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
+      STATE_BACKUP_PASSPHRASE: ${{ secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE'] }}
       CHATMAIL_RELAY: nine.testrun.org
       RUNNING_SHA: ${{ github.sha }}
       UPDATE_CHECK_TOKEN: ${{ github.token }}
@@ -210,6 +214,7 @@ jobs:
           done
 
       - name: Protect the retained legacy backup namespace
+        if: env.STATE_BACKUP_NAMESPACE == 'github-native-v1'
         env:
           MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
         run: python tools/github_native_guard.py guard
@@ -218,20 +223,30 @@ jobs:
         run: python state_backup.py restore
 
       - name: Arm the non-destructive replay fence
+        if: env.STATE_BACKUP_NAMESPACE == 'github-native-v1'
         env:
           MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
         run: python tools/github_native_guard.py arm
 
       - name: Import the separately verified identity
-        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.IDENTITY_CUTOVER_REVISION != '' && env.IDENTITY_CUTOVER_REVISION == github.sha }}
+        if: ${{ env.STATE_BACKUP_NAMESPACE == 'github-native-v1' && github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.IDENTITY_CUTOVER_REVISION != '' && env.IDENTITY_CUTOVER_REVISION == github.sha }}
         run: python tools/cutover_identity_once.py cutover
 
       - name: Enforce identity isolation and prevent downgrade
+        if: env.STATE_BACKUP_NAMESPACE == 'github-native-v1'
         run: python tools/cutover_identity_once.py activate
+
+      - name: Verify the separately paired clean identity
+        if: env.STATE_BACKUP_NAMESPACE == 'owner-clean-v1'
+        run: python tools/clean_owner_identity.py activate
 
       - name: Initialize account
         run: |
           if [ ! -d "$CONFIG_DIR" ]; then
+            if [ "$STATE_BACKUP_NAMESPACE" = "owner-clean-v1" ]; then
+              echo "Verified clean state is missing; refusing to create an orphan account."
+              exit 1
+            fi
             python bot.py --config-dir "$CONFIG_DIR" init "DCACCOUNT:${CHATMAIL_RELAY}"
           fi
 
@@ -241,6 +256,7 @@ jobs:
           python bot.py --config-dir "$CONFIG_DIR" config selfavatar "$GITHUB_WORKSPACE/assets/michiflin-avatar.png"
 
       - name: Preserve the previous profile description once
+        if: env.STATE_BACKUP_NAMESPACE == 'github-native-v1'
         run: |
           if ! python tools/profile_carryover_once.py; then
             echo "::warning::Profile description could not be merged; the active account and old recovery copy remain unchanged."
@@ -262,7 +278,7 @@ jobs:
 
       - name: Apply authorized one-time cleanup
         id: purge
-        if: env.PURGE_NON_OWNER_ONCE == '1'
+        if: env.STATE_BACKUP_NAMESPACE == 'github-native-v1' && env.PURGE_NON_OWNER_ONCE == '1'
         shell: bash
         run: |
           set -e
@@ -279,7 +295,7 @@ jobs:
 
       - name: Preserve recoverable owner history once
         id: owner_history_export
-        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.OWNER_HISTORY_EXPORT_REVISION != '' && env.OWNER_HISTORY_EXPORT_REVISION == github.sha }}
+        if: ${{ env.STATE_BACKUP_NAMESPACE == 'github-native-v1' && github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.OWNER_HISTORY_EXPORT_REVISION != '' && env.OWNER_HISTORY_EXPORT_REVISION == github.sha }}
         run: |
           if python tools/export_owner_history_once.py; then
             echo "verified=true" >> "$GITHUB_OUTPUT"
@@ -334,7 +350,7 @@ jobs:
       # and refuses automatic retries after an interrupted registration.
       - name: Migrate bot relay with recovery safeguards
         id: relay_migration
-        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.RELAY_MIGRATION_REVISION != '' && env.RELAY_MIGRATION_REVISION == github.sha }}
+        if: ${{ env.STATE_BACKUP_NAMESPACE == 'github-native-v1' && github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.RELAY_MIGRATION_REVISION != '' && env.RELAY_MIGRATION_REVISION == github.sha }}
         env:
           MICHIFLIN_RELAY_MIGRATE_ONCE: "1"
         run: python tools/migrate_relay_once.py
@@ -344,7 +360,7 @@ jobs:
         run: echo "New relay, preserved identity, encrypted continuity and recovery verified."
 
       - name: Deliver explicitly requested owner documents
-        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_owner_documents) || (env.OWNER_DOCUMENT_DELIVERY_REVISION != '' && env.OWNER_DOCUMENT_DELIVERY_REVISION == github.sha) }}
+        if: ${{ (github.event_name == 'workflow_dispatch' && inputs.send_owner_documents) || (env.STATE_BACKUP_NAMESPACE == 'github-native-v1' && env.OWNER_DOCUMENT_DELIVERY_REVISION != '' && env.OWNER_DOCUMENT_DELIVERY_REVISION == github.sha) }}
         continue-on-error: true
         env:
           CONFIRM_OWNER_DELIVERY: "1"

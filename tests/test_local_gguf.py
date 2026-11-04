@@ -131,11 +131,11 @@ def test_research_uses_only_current_query_and_extracts_actual_sources(server):
     with mock.patch.object(tools, "search", return_value=[hit]) as search, \
          mock.patch.object(local_ai.smart_agent, "_read", return_value=page) as read:
         text = capture("Busca el horario actual de la biblioteca", history=[["user", "Dato privado previo"], ["assistant", "Ok"]])
-    search.assert_called_once_with("el horario actual de la biblioteca", "es", 5, engine="standard")
-    read.assert_called_once_with(hit.url, total_timeout=12.0)
+    search.assert_called_once_with("el horario actual de la biblioteca", "es", 10, engine="standard")
+    read.assert_called_once_with(hit.url, total_timeout=6.0)
     assert not any(method == "POST" for method, _, _ in requests)  # page text never enters the model
     assert "17:00" in text and "[S1]" in text and hit.url in text
-    assert "Fragmentos textuales" in text and "sin modelo" in text
+    assert "Solo encontré una fuente" in text and "sin modelo" not in text
     assert "Dato privado previo" not in str(search.call_args)
 
 
@@ -187,7 +187,7 @@ def test_web_search_still_works_when_model_is_offline(server):
          mock.patch.object(tools, "search", return_value=[hit]), \
          mock.patch.object(local_ai.smart_agent, "_read", return_value=page):
         text = capture("Busca el horario actual de la biblioteca")
-    assert "17:00" in text and "sin modelo" in text
+    assert "17:00" in text and "sin modelo" not in text and "una fuente" in text
     assert not any(method == "POST" for method, _, _ in requests)
 
 
@@ -312,7 +312,7 @@ def test_failed_actions_start_keeps_chat_private_and_extracts_web(monkeypatch):
     with mock.patch.object(tools, "search", return_value=[hit]) as search, \
          mock.patch.object(local_ai.smart_agent, "_read", return_value=page):
         text = capture("busca horario de Biblioteca Sol")
-    assert "Extractos de fuentes web" in text and "17:00" in text
+    assert "Solo encontré una fuente" in text and "17:00" in text
     assert search.call_count == 1
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     assert not local_ai.test_unavailable()
@@ -394,7 +394,7 @@ def test_installed_app_web_extract_keeps_sources_and_no_model_label(server):
     assert search.call_count == 1
     assert not any(method == "POST" for method, _, _ in requests)
     assert "17:00" in reply["text"] and "[S1]" in reply["text"] and hit.url in reply["text"]
-    assert reply["text"].endswith(local_ai.WEB_MARKER_ES)
+    assert "sin modelo" not in reply["text"] and "una fuente" in reply["text"]
     assert not reply.get("sig") and not reply["text"].startswith("Prueba:")
 
 

@@ -131,6 +131,9 @@ def guard() -> None:
     require(settings, "backup_credentials_missing")
     token, repo, password = settings
     state_backup._assert_private(token, repo)
+    # Once the clean account has been independently seeded, a typo or removed
+    # variable must not reactivate this older account without explicit work.
+    require(not state_backup._get_ref(token, repo, state_backup.CLEAN_OWNER_READY_TAG), "clean_identity_sealed_no_downgrade")
     anchor = state_backup._get_ref(token, repo, state_backup.RELEASE_TAG)
     require(anchor and state_backup._get_ref(token, repo, state_backup.READY_TAG) == anchor
             and state_backup._get_ref(token, repo, "michiflin-fresh-identity-v1") == anchor, "identity_anchor_invalid")
