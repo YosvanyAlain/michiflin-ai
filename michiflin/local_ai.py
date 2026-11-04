@@ -64,6 +64,13 @@ _RANK_FILLER = re.compile(
     r"\b(?:informaci[oó]n|informaci[oó]nes|info|fuentes?|p[aá]ginas?|sitios?|"
     r"resultados?|art[ií]culos?|oficial(?:es)?|actual(?:es|mente)?|"
     r"information|sources?|pages?|sites?|results?|articles?|official|current)\b", re.I)
+_PAGE_CHALLENGE = re.compile(
+    r"(?i)(?:page unavailable \(http 429\)|"
+    r"\b(?:verify|confirm)\s+(?:that\s+)?you\s+are\s+(?:a\s+)?human\b|"
+    r"\b(?:complete|solve)\s+(?:the\s+|a\s+)?captcha\b|"
+    r"\bchecking your browser before accessing\b|"
+    r"\bverifica que eres humano\b|\bverifique que no es un robot\b)"
+)
 _SOURCE_MARK = re.compile(r"\[S\d+\]")
 _MODEL_URL = re.compile(r"https?://[^\s<>\"'`]+", re.I)
 _UNTRUSTED_DIRECTIVE = re.compile(
@@ -499,6 +506,10 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
             raise
         except Exception:
             continue
+        if _PAGE_CHALLENGE.search(text):
+            # Do not retry, rotate the client or fetch further pages to evade a
+            # rate limit/challenge. Keep any already verified partial sources.
+            return ("partial_limited" if sources else "web_limited"), tuple(sources)
         if not text or text in {"No readable text.", "Page redirect has no destination.",
                                 "Page exceeds the size limit.", "Unsupported page encoding.",
                                 "Invalid compressed page.", "Too many redirects."} or text.startswith(("Page unavailable", "This tool can only")):
@@ -528,11 +539,16 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             return Result("web_busy")
         try:
             status, sources = _research(question, locale)
-            if status != "ok":
+            if status not in {"ok", "partial_limited"}:
                 return Result(status)
             state.check_work_allowed()
-            return _extractive(question, sources, locale, sender=sender, synthesize=synthesize,
-                               on_wait=on_wait, on_start=on_start)
+            result = _extractive(question, sources, locale, sender=sender, synthesize=synthesize,
+                                 on_wait=on_wait, on_start=on_start)
+            if status == "partial_limited" and result.status == "ok":
+                notice = tr(locale, "Una fuente limitó el acceso o pidió verificación; detuve la búsqueda sin eludirlo.",
+                            "A source limited access or requested verification; I stopped without bypassing it.")
+                return Result(result.status, result.text + "\n\n" + notice, result.sources, result.truncated, result.method)
+            return result
         finally:
             _research_slots.release()
     messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
@@ -637,6 +653,9 @@ def display(result: Result, locale: str) -> str:
     if result.status == "web_busy":
         return tr(locale, "⏳ Hay varias búsquedas en curso. Prueba de nuevo en un momento.",
                   "⏳ Several searches are in progress. Please try again shortly.")
+    if result.status == "web_limited":
+        return tr(locale, "🔎 Una fuente limitó el acceso o pidió verificación; detuve la búsqueda sin eludirlo.",
+                  "🔎 A source limited access or requested verification; I stopped without bypassing it.")
     if result.status == "private_query":
         return tr(locale, "🔒 La consulta parece contener datos privados; no la envié al buscador. Reformúlala sin esos datos.",
                   "🔒 The query appears to contain private data; I did not send it to search. Rephrase without those details.")
