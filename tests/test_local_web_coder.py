@@ -326,3 +326,35 @@ def test_other_search_tools_refuse_obvious_private_data(question):
          mock.patch.object(tools, "search", side_effect=AssertionError("private search")):
         reply = capture(question)
     assert "no la envié al buscador" in reply
+
+
+def test_nested_action_from_missing_file_end_is_never_saved(monkeypatch):
+    malformed = ("<<<FILE nested.py>>>\nprint(1)\n"
+                 "<<<RUN>>>\npython3 nested.py\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>")
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *_, **__: model_reply(malformed))
+    original = [{"path": "nested.py", "text": "print('original')"}]
+    with pytest.raises(coder.CoderError, match="complete, safe actions"):
+        coder.run("Change nested.py", original, "en", local_coder.MODEL_KEY)
+    assert original[0]["text"] == "print('original')"
+
+
+def test_model_can_retry_and_close_missing_file_end(monkeypatch):
+    malformed = ("<<<FILE nested.py>>>\nprint(1)\n"
+                 "<<<RUN>>>\npython3 nested.py\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>")
+    fixed = "<<<FILE nested.py>>>\nprint(1)\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>"
+    prompts = []
+    def respond(messages, **_kwargs):
+        prompts.append(messages[-1]["content"])
+        return model_reply(malformed if len(prompts) == 1 else fixed)
+    monkeypatch.setattr(local_ai, "complete_messages", respond)
+    result = coder.run("Create nested.py", [], "en", local_coder.MODEL_KEY)
+    assert result["model_confirmed"] and len(prompts) == 2
+    assert "omitted its closing <<<END>>>" in prompts[1]
+    assert result["files"] == [{"path": "nested.py", "text": "print(1)"}]
+
+
+def test_unparsed_output_or_literal_end_cannot_silently_truncate_file(monkeypatch):
+    malformed = '<<<FILE script.py>>>\nprint("<<<END>>>")\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>'
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *_, **__: model_reply(malformed))
+    with pytest.raises(coder.CoderError, match="complete, safe actions"):
+        coder.run("Create script.py", [], "en", local_coder.MODEL_KEY)
