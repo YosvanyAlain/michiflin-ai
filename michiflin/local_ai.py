@@ -46,8 +46,23 @@ _DEFAULT_PORT = 18971
 _PRIVATE_QUERY = re.compile(
     r"(?i)(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\bbearer\s+\S+|"
     r"\b(?:password|contrase(?:ñ|n)as?|secrets?|secretos?|tokens?|api[_ -]?key|claves?)\b|"
-    r"\b(?:\d[ -]?){13,19}\b)"
+    r"\b(?:\d[ -]?){13,19}\b|"
+    r"\b(?:mi|mis|my|our|nuestro|nuestros|nuestra|nuestras)\s+"
+    r"(?:archivos?|ficheros?|proyectos?|documentos?|correos?|mensajes?|"
+    r"cuentas?|datos?|conversaci[oó]n|files?|projects?|documents?|emails?|messages?|accounts?|data|conversation)\b)"
 )
+# Remove only a leading request/internet wrapper, not the user's topic. The
+# raw question is still checked for obvious private data before this runs.
+_SEARCH_WRAPPER = re.compile(
+    r"^(?:(?:por favor|please)[,\s]+)?"
+    r"(?:(?:puedes|podr[ií]as|podr[ií]a|quiero que|can you|could you|would you)\s+)?"
+    r"(?:busca(?:r|me)?|b[uú]scame|investiga(?:r|me)?|invest[ií]game|consulta(?:r)?|"
+    r"search(?: for)?|look up|google)\s+", re.I)
+_SEARCH_PLACE = re.compile(r"^(?:(?:en|por|on|in)\s+(?:la\s+)?(?:web|internet|google|the web|the internet)\s+)", re.I)
+_RANK_FILLER = re.compile(
+    r"\b(?:informaci[oó]n|informaci[oó]nes|info|fuentes?|p[aá]ginas?|sitios?|"
+    r"resultados?|art[ií]culos?|oficial(?:es)?|actual(?:es|mente)?|"
+    r"information|sources?|pages?|sites?|results?|articles?|official|current)\b", re.I)
 _SOURCE_MARK = re.compile(r"\[S\d+\]")
 _MODEL_URL = re.compile(r"https?://[^\s<>\"'`]+", re.I)
 _UNTRUSTED_DIRECTIVE = re.compile(
@@ -330,6 +345,21 @@ def last_reply_was_web(history: list[Any] | None) -> bool:
     return False
 
 
+def _web_query(question: str) -> str:
+    """Strip politeness and search-command wrappers without inventing terms."""
+    query = _SEARCH_WRAPPER.sub("", question.strip().lstrip("¿¡").strip(), count=1)
+    query = _SEARCH_PLACE.sub("", query, count=1)
+    return query.strip(" ?!.¿¡")
+
+
+def _rank_query(question: str) -> str:
+    query = _web_query(question)
+    topic = _RANK_FILLER.sub(" ", query)
+    # Keep the original if it has no substantive terms left. This is only for
+    # local ranking, never to add or alter words sent to the search engine.
+    return topic if answer.terms(topic) else query
+
+
 def _extractive(question: str, sources: tuple[Source, ...], locale: str) -> Result:
     """Rank quoted page sentences in code; page content never enters the model.
 
@@ -341,7 +371,7 @@ def _extractive(question: str, sources: tuple[Source, ...], locale: str) -> Resu
         safe = [sentence for sentence in answer.sentences(source.text)
                 if not _UNTRUSTED_DIRECTIVE.search(sentence)]
         candidates.append(answer.Source(source.title, source.url, "\n".join(safe)))
-    selected = answer.rank(question, candidates, limit=4)
+    selected = answer.rank(_rank_query(question), candidates, limit=4)
     if not selected:
         return Result("no_relevant", sources=sources, method="web")
     lines, used = [], []
@@ -364,13 +394,16 @@ def _extractive(question: str, sources: tuple[Source, ...], locale: str) -> Resu
 
 
 def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
-    query = question.strip()
+    raw = question.strip()
+    query = _web_query(raw)
     # Avoid silently transmitting obvious private fields and do not truncate a
     # long prompt into an unintended query. This is defense in depth, not a DLP guarantee.
-    if _PRIVATE_QUERY.search(query):
+    if _PRIVATE_QUERY.search(raw):
         return "private_query", ()
-    if len(query) > 200:
+    if len(raw) > 200:
         return "long_query", ()
+    if not query:
+        return "no_sources", ()
     state.check_work_allowed()
     try:
         hits = tools.search(query, locale, 5, engine="standard")
@@ -398,7 +431,7 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
                                 "Page exceeds the size limit.", "Unsupported page encoding.",
                                 "Invalid compressed page.", "Too many redirects."} or text.startswith(("Page unavailable", "This tool can only")):
             continue
-        sources.append(Source(f"S{len(sources) + 1}", str(getattr(hit, "title", ""))[:100], url, text[:1100]))
+        sources.append(Source(f"S{len(sources) + 1}", str(getattr(hit, "title", ""))[:100], url, text[:6500]))
         if len(sources) >= 2:
             break
     return ("ok" if sources else "no_sources"), tuple(sources)
@@ -428,8 +461,25 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             return _extractive(question, sources, locale)
         finally:
             _research_slots.release()
-    if not ready():
+    messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
+    messages.extend(_history(history, anchor=anchor if answer_inline.is_continue(question) else None))
+    messages.append({"role": "user", "content": question[:3000]})
+    return complete_messages(messages, sender=sender, on_wait=on_wait, on_start=on_start)
+
+
+def complete_messages(messages: list[dict[str, str]], *, sender: str = "",
+                      on_wait: Callable[[], None] | None = None, on_start: Callable[[], None] | None = None,
+                      coding: bool = False) -> Result:
+    """Run a local-only turn through the shared FIFO; never use an API provider.
+
+    Coder checks the actual templated token count before inference. Oversized
+    projects are rejected intact, rather than silently truncating their files.
+    The extra calls are local tokenization, not model inference or web access.
+    """
+    if not configured() or not ready():
         return Result("unavailable")
+    if coding and len(json.dumps(messages, ensure_ascii=False).encode("utf-8")) > 32_000:
+        return Result("long_context")
     status, ticket = _turns.acquire(sender, check=state.check_work_allowed, on_wait=on_wait)
     if status != "ok" or ticket is None:
         return Result(status)
@@ -437,22 +487,25 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
         state.check_work_allowed()
         if on_start is not None:
             on_start()
-        # Service can have failed while the request was waiting.
         if not ready():
             return Result("unavailable")
-        messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
-        messages.extend(_history(history, anchor=anchor if answer_inline.is_continue(question) else None))
-        messages.append({"role": "user", "content": question[:3000]})
-        # Keep one inference per turn. When idle, allow a modestly longer
-        # answer than the old 384-token limit; if others are already queued,
-        # shorten the turn. The pinned llama.cpp stops at a newline after the
-        # requested generation time and reports finish_reason=length. Since a
-        # one-line answer may have no newline, token and RPC limits still apply.
         queued = bool(_turns.waiting())
         budget, milliseconds = (192, 15_000) if queued else (512, 55_000)
         request = {"messages": messages, "temperature": 0.3, "max_tokens": budget, "stream": False,
                    "t_max_predict_ms": milliseconds, "chat_template_kwargs": {"enable_thinking": False}}
         try:
+            if coding:
+                # Use the exact same chat template and thinking setting as the
+                # generation request. Reserve 512 output tokens plus 160 for
+                # small server/template differences in the 3072-token context.
+                rendered = _http("/apply-template", request, 12).get("prompt")
+                if not isinstance(rendered, str) or not rendered:
+                    raise ValueError("local_template")
+                tokens = _http("/tokenize", {"content": rendered, "add_special": False}, 12).get("tokens")
+                if not isinstance(tokens, list):
+                    raise ValueError("local_tokens")
+                if len(tokens) > 3072 - 512 - 160:
+                    return Result("long_context")
             response = _http("/v1/chat/completions", request, 125)
             state.check_work_allowed()
             choices = response.get("choices") or []
@@ -461,11 +514,14 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             content = message.get("content", "") if isinstance(message, dict) else ""
             if not isinstance(content, str):
                 raise ValueError("local_server_content")
-            text = _SOURCE_MARK.sub("[?]", strip_thinking(content).strip())
+            if coding:
+                # Only remove a leading thinking envelope, never rewrite
+                # source text, citation-like strings or later HTML tags.
+                text = re.sub(r"(?is)^\s*<think>.*?</think>\s*", "", content, count=1).strip()
+            else:
+                text = _SOURCE_MARK.sub("[?]", strip_thinking(content).strip())
             if not text:
                 raise ValueError("empty_local_response")
-            # An output can exceed the independent character guard even when
-            # the server reports a normal stop. Never hide that local cut.
             cut = len(text) > _MAX_GENERATED_CHARS or str(first.get("finish_reason") or "").lower() in {"length", "max_tokens", "max_output_tokens"}
             return Result("ok", text[:_MAX_GENERATED_CHARS], (), cut)
         except state.WorkPaused:

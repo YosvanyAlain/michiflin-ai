@@ -40,7 +40,23 @@ VIDEO_SEARCH = re.compile(r"^(?:(?:busca(?:r|me)?|b[uú]scame|encuentra(?:me)?|d
                           r"(?:(?:unos?|unas|los|las|algunos|el|la|some|the)\s+)?(?:videos?|v[ií]deos?|clips?|canci[oó]n(?:es)?|m[uú]sica|songs?|music)\s+"
                           r"(?:de|del|sobre|con|of|about|by|from)\s+(.{2,120}?)(?:\s+(?:en|on)\s+youtube)?[?.!]*$", re.I)
 YOUTUBE_SEARCH = re.compile(r"^(?:busca(?:r|me)?|b[uú]scame|search)?\s*(?:en|on)\s+youtube\s+(.{2,120})$|^(.{2,120}?)\s+(?:en|on)\s+youtube[?.!]*$", re.I)
-SEARCH = re.compile(r"^(busca|buscar|b[uú]scame|investiga|search|look up|google)\s+(.+)$", re.I)
+SEARCH = re.compile(
+    r"^(?:(?:por favor|please)[,\s]+)?"
+    r"(?:(?:puedes|podr[ií]as|podr[ií]a|quiero que|can you|could you|would you)\s+)?"
+    r"(busca(?:r|me)?|b[uú]scame|investiga(?:r|me)?|invest[ií]game|consulta(?:r)?|"
+    r"search(?: for)?|look up|google)\s+(.+)$", re.I)
+# Language names are not themselves requests to write or debug code. The
+# narrower guard below prevents current personal code/tasks from becoming web
+# searches, while allowing public questions such as current Python releases.
+_CODE_TASK = re.compile(
+    r"```|\b(?:c[oó]digo|code|script|algoritmo|algorithm|funci[oó]n|function|error|traceback|"
+    r"exception|bug|depura(?:r)?|debug|compil(?:a|ar|e|ing|er)|programa(?:r)?|"
+    r"escribe|escribir|crea|crear|write|create|implement|fix|arregla|corrige)\b", re.I)
+_PRIVATE_CURRENT = re.compile(
+    r"\b(?:yo|mi|mis|me|m[ií]o|m[ií]a|t[uú]|tus|tuy[oa]s?|tengo|tuve|uso|instal[eé]|personal|nuestro|nuestros|nuestra|nuestras|"
+    r"my|mine|myself|i|i['’]m|i['’]ve|i['’]d|your|yours|you|"
+    r"contrase(?:ñ|n)a|password|token|secret|secreto|diagn[oó]stico|diagnosis|"
+    r"historia cl[ií]nica|medical record|expediente|cuenta bancaria|bank account)\b", re.I)
 DEFINITION = re.compile(r"^(qu[eé] es|qu[eé] son|qui[eé]n es|qui[eé]n fue|qui[eé]nes son|qu[eé] significa|definici[oó]n de|what is|what are|who is|who was|define)\s+(.{2,80}?)\??$", re.I)
 CURRENT = re.compile(r"\b(hoy|ahora|actual|actualmente|[uú]ltim[oa]s?|reciente|esta semana|este mes|este a[nñ]o|202[5-9]|precio|cotizaci[oó]n|resultado|marcador|qui[eé]n gan[oó]|cu[aá]ndo (es|ser[aá]|juega)|today|now|current|latest|recent|price|score|who won|this week)\b", re.I)
 CODE = re.compile(r"```|\b(python|javascript|typescript|java|kotlin|c\+\+|c#|golang|rust|php|sql|bash|regex|html|css|react|node|django|flask|api|json|error|traceback|exception|bug|compil|funci[oó]n|function|script|c[oó]digo|code|programa|algoritmo|git)\b", re.I)
@@ -403,7 +419,7 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
             chat.text(chat_id, _search_reply(chat_id, match.group(2), locale))
         return
     match = DEFINITION.match(stripped)
-    if match and not CURRENT.search(stripped) and not (local_privacy and _PERSONAL_CONTEXT.search(match.group(2))):
+    if match and not CURRENT.search(stripped) and not (local_privacy and (_PERSONAL_CONTEXT.search(match.group(2)) or local_ai._PRIVATE_QUERY.search(stripped))):
         # Addressed/personal questions are conversation, not encyclopedia
         # definitions: do not silently send them to an external lookup.
         wiki_result = tools.wiki_summary(match.group(2), locale)
@@ -417,8 +433,8 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         # In a failed Actions test, only the explicit search command above may
         # send free text to a search engine; ordinary chat and code fail closed.
         research = (bool(CURRENT.search(stripped)) and bool(_CURRENT_QUESTION.match(stripped))
-                    and not CODE.search(stripped) and not _PERSONAL_CONTEXT.search(stripped)
-                    and not local_ai.test_unavailable())
+                    and not _CODE_TASK.search(stripped) and not _PRIVATE_CURRENT.search(stripped)
+                    and not local_ai._PRIVATE_QUERY.search(stripped) and not local_ai.test_unavailable())
         return local_reply(chat_id, stripped, locale, history, research=research, scope=scope)
     else:
         chat.text(chat_id, reply(chat_id, stripped, locale))
