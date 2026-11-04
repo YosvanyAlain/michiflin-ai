@@ -83,6 +83,9 @@ def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
     # Use one provider at a time, not DDGS's randomized multi-provider auto
     # mode. Never switch providers to get around a rate limit or CAPTCHA.
     for region, backend in ((regions[0], "bing"), (regions[0], "duckduckgo"), (regions[1], "bing"), (regions[1], "duckduckgo")):
+        with _search_pause_lock:
+            if time.monotonic() < _search_paused_until:
+                return []
         if time.time() - started > 25:
             break
         try:
