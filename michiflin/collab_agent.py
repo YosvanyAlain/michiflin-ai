@@ -86,6 +86,34 @@ def local_only(text: str) -> bool:
     return bool(_LOCAL_ONLY.search(text or ""))
 
 
+def _web_opt_out(text: str) -> bool:
+    return bool(re.search(r"(?i)\b(?:sin|no|without|do\s+not|don't)\s+(?:(?:buscar|busques?|consultar|consultes?|usar|use|search|searching)\s+)?(?:(?:en|on)\s+)?(?:(?:la|the)\s+)?(?:web|internet)\b", text or ""))
+
+
+def _explicit_web_query(text: str) -> tuple[str, str]:
+    """An optional short public topic comes only from the user, never a model.
+
+    No source text, files, invented URLs or provider replies become a query.
+    The same private-query detector as the ordinary web tool still applies.
+    """
+    value = text or ""
+    if _web_opt_out(value):
+        return "", ""
+    match = re.search(
+        r"(?i)\b(?:busca(?:r|me)?|investiga(?:r)?|consulta(?:r)?|search|look\s+up)\s+"
+        r"(?:(?:en|on|in)\s+)?(?:(?:la|the)\s+)?(?:web|internet|online)"
+        r"(?:\s*[:：]\s*|\s+(?:(?:informaci[oó]n|info|information)\s+)?(?:sobre|acerca\s+de|about|for)\s+)([^\n;]+)", value)
+    if not match:
+        return "", ""
+    query = re.split(r"(?i)\s+\b(?:y|and)\s+(?:consulta|pregunta|revisa|consult|ask|review)\b", match.group(1), maxsplit=1)[0]
+    query = " ".join(query.strip().strip('¿?¡! .\"').split())
+    if not query or len(query) > 160:
+        return "", "web_query_length"
+    if _SECRET.search(query) or local_ai._PRIVATE_QUERY.search(query) or re.search(r"(?i)https?://|www\.", query):
+        return "", "web_query_private"
+    return query, "ok"
+
+
 def _enabled() -> bool:
     return os.environ.get("LOCAL_COLLAB_OWNER", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -387,6 +415,13 @@ def _plan(request: str, files: list[dict[str, Any]], locale: str, *, kind: str =
         review = False
     elif re.search(r"(?i)\b(?:revisa|revisar|revisi[oó]n|verifica|verify|review)\b", request):
         review = True
+    # Explicit general web search is parsed from the user's own short topic,
+    # not invented by the local model or an external consultant.
+    _query, web_status = _explicit_web_query(request)
+    if _web_opt_out(request):
+        web = "none"
+    elif web_status:
+        web = "public"
     return Plan(count, review, image, web, True)
 
 
@@ -480,24 +515,29 @@ def _consult(budget: ProjectBudget, request: str, files: list[dict[str, Any]], u
 
 
 def _web_reference(plan: Plan, request: str, locale: str) -> tuple[list[str], list[local_ai.Source], str]:
-    """Search only an enumerated public topic; never send project text to search.
+    """Search fixed documentation or a short user-specified topic, never files.
 
     The plan and all external-provider choices are fixed before source text is
     read. A tiny directive-filtered quotation may be supplied to the local
     worker as tainted data; it can only emit strictly validated FILE/RUN/DONE
     blocks, and its commands run in the existing offline sandbox.
     """
-    if plan.web not in _PUBLIC_DOCS:
+    if plan.web == "public":
+        query, status = _explicit_web_query(request)
+        if status != "ok":
+            return [], [], status
+    elif plan.web in _PUBLIC_DOCS:
+        marker, query = _PUBLIC_DOCS[plan.web]
+        if marker.casefold() not in request.casefold() and plan.web != "c":
+            return [], [], ""
+        if plan.web == "c" and not re.search(r"(?i)\b(?:lenguaje|language)\s+c\b|\bc\s+language\b", request):
+            return [], [], ""
+    else:
         return [], [], ""
-    marker, query = _PUBLIC_DOCS[plan.web]
-    if marker.casefold() not in request.casefold() and plan.web != "c":
-        return [], [], ""
-    if plan.web == "c" and not re.search(r"(?i)\b(?:lenguaje|language)\s+c\b|\bc\s+language\b", request):
-        return [], [], ""
-    progress.phase("🔎 Consultando documentación pública…", "🔎 Checking public documentation…")
+    progress.phase("🔎 Consultando fuentes públicas…", "🔎 Checking public sources…")
     result = local_ai.complete("busca " + query, locale, research=True, sender=chat.sender())
     if result.status != "ok":
-        return [], [], "unavailable"
+        return [], [], {"private_query": "web_query_private", "long_query": "web_query_length"}.get(result.status, "unavailable")
     refs = []
     for match in re.finditer(r"(?m)^- «([^»]{1,420})» \[S\d+\]", result.text):
         value = _plain_item(match.group(1))
@@ -595,7 +635,11 @@ def _note(reason: str, locale: str) -> str:
         "no_model": ("No había un modelo externo disponible para esa consulta.", "No external model was available for that consultation."),
         "no_image_model": ("No había un modelo de imagen disponible; no inventé una imagen generada.", "No image model was available; I did not invent a generated image."),
         "unusable": ("Una respuesta externa no tenía un formato seguro y se descartó.", "An external response did not have a safe format and was discarded."),
-        "unavailable": ("No pude obtener documentación pública pertinente.", "I could not obtain relevant public documentation."),
+        "unavailable": ("No pude obtener fuentes públicas pertinentes.", "I could not obtain relevant public sources."),
+        "web_query_private": ("La consulta web parece contener datos privados o una dirección: no la envié al buscador.",
+                              "The web query appears to contain private data or a URL: I did not send it to search."),
+        "web_query_length": ("Para la búsqueda web, indica un tema público de hasta 160 caracteres.",
+                             "For web search, give a public topic of at most 160 characters."),
         "image_size": ("La imagen generada no cabía en los límites del proyecto.", "The generated image did not fit the project's size limits."),
         "image_name": ("No pude incorporar la imagen sin sobrescribir un archivo existente.", "I could not add the image without overwriting an existing file."),
     }
@@ -629,7 +673,7 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
     refs: list[str] = []
     if plan.valid and plan.web != "none":
         refs, trace.sources, status = _web_reference(plan, request, locale)
-        if status == "unavailable":
+        if status in {"unavailable", "web_query_private", "web_query_length"}:
             trace.notes.append(_note(status, locale))
     used: list[ai.Model] = []
     advice: list[str] = []
@@ -825,7 +869,7 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
     refs: list[str] = []
     if plan.valid and plan.web != "none":
         refs, trace.sources, status = _web_reference(plan, request, locale)
-        if status == "unavailable":
+        if status in {"unavailable", "web_query_private", "web_query_length"}:
             trace.notes.append(_note(status, locale))
     used: list[ai.Model] = []
     advice: list[str] = []
