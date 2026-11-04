@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from unittest import mock
 
-from michiflin import ai, chat, coder, local_ai, local_coder
+from michiflin import agent, ai, chat, coder, local_ai, local_coder
 
 
 def verify_files(files, command, expected):
@@ -81,6 +81,10 @@ def main():
         exercise("c-compile", "Crea main.c: un programa C completo que imprima exactamente OK. "
                  "Incluye un bloque RUN para compilar con gcc y ejecutar, y termina con DONE.", [],
                  "main.c", "gcc main.c -o test-c && ./test-c", "OK")
+        summed = exercise("sum-cli", "Crea suma.py: un programa sin dependencias que tome dos enteros "
+                          "de los argumentos y muestre su suma. Acepta negativos. Incluye un RUN "
+                          "python3 suma.py -4 9 y termina con DONE.", [], "suma.py", "python3 suma.py -4 9", "5")
+        verify_files(summed, "python3 suma.py 10 20", "30")
 
         # A local coding round and a regular agent turn share the same FIFO.
         inference_started.clear(); starts.clear()
@@ -102,6 +106,18 @@ def main():
                                   "offset_seconds": [round(x[1] - starts[0][1], 1) for x in starts],
                                   "chat": outcomes["chat"].status,
                                   "coder_confirmed": outcomes.get("code", {}).get("model_confirmed", False)}, ensure_ascii=False), flush=True)
+        # One public synthetic lookup through the actual local agent router.
+        # No chat history, account, external AI provider or real user data.
+        begin = time.monotonic()
+        chat.start_capture()
+        try:
+            research = agent.handle(77, "¿Puedes buscar información oficial sobre Python?", "es", scope="synthetic-probe")
+        finally:
+            captured = chat.stop_capture()
+        print("PUBLIC_SEARCH", json.dumps({"status": research.status if research else "no-route",
+              "method": research.method if research else "", "sources": len(research.sources) if research else 0,
+              "seconds": round(time.monotonic() - begin, 1), "text": "\n".join(captured)[:700]}, ensure_ascii=False), flush=True)
+        assert research and research.status == "ok" and research.method == "web" and research.sources
     print("SYNTHETIC_LOCAL_CODER_OK", flush=True)
 
 
