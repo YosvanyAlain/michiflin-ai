@@ -97,3 +97,38 @@ jobs:
           node tests/live_web.js
           for file in webxdc/*.js; do node --check "$file"; done
           git diff --check
+
+  synthetic-local-coder:
+    if: startsWith(github.ref_name, 'local-web-coder-probe-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    env:
+      CONFIG_DIR: ${{ runner.temp }}/michiflin-probe/config
+      JOB_DIR: ${{ runner.temp }}/michiflin-probe/jobs
+      PREVIEW_DIR: ${{ runner.temp }}/michiflin-probe/tmp
+      LOCAL_GGUF_ENABLED: "1"
+      LOCAL_GGUF_ACTIONS_TEST: "1"
+      LOCAL_GGUF_SOCKET_PATH: /run/michiflin-local-gguf/llama.sock
+      LOCAL_GGUF_KEY_FILE: ${{ runner.temp }}/michiflin-local-gguf-key
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Prepare isolated local model
+        timeout-minutes: 11
+        run: bash tools/local_gguf_session.sh prepare
+      - name: Start isolated local model
+        timeout-minutes: 4
+        run: bash tools/local_gguf_session.sh start
+      - name: Synthetic coding, compilation and FIFO
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python tools/local_coder_synthetic_probe.py
+      - name: Cleanup synthetic model
+        if: always()
+        run: bash tools/local_gguf_session.sh stop
