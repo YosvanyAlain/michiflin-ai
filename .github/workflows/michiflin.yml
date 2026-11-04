@@ -38,9 +38,9 @@ jobs:
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
       EMAIL_KEY_RECOVERY: ${{ vars.EMAIL_KEY_RECOVERY || '0' }}
-      # Both are explicit variables; the safe default remains owner-only.
-      OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}
-      INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}
+      # A clean identity is always private, regardless of legacy repo variables.
+      OWNER_ONLY: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '1' || vars.OWNER_ONLY || '1' }}
+      INVITE_AUTO_ACCESS: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || vars.INVITE_AUTO_ACCESS || '0' }}
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}

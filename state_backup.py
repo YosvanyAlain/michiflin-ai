@@ -779,6 +779,11 @@ def restore() -> None:
                 elif namespace == CLEAN_OWNER_NAMESPACE:
                     _verify_clean_origin(plaintext)
             except (ValueError, tarfile.TarError, sqlite3.Error, OSError):
+                if namespace == CLEAN_OWNER_NAMESPACE:
+                    # An older clean snapshot can replay completed jobs or reset
+                    # budgets. Preserve it for explicit recovery, never select
+                    # it automatically after a newer snapshot became invalid.
+                    raise RuntimeError("newest clean snapshot is invalid; refusing older fallback") from None
                 print("[backup] an invalid encrypted snapshot was skipped")
                 continue
             _install_restored(plaintext, target)
