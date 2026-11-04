@@ -103,13 +103,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 23
     env:
-      CONFIG_DIR: ${{ runner.temp }}/michiflin-probe/config
-      JOB_DIR: ${{ runner.temp }}/michiflin-probe/jobs
-      PREVIEW_DIR: ${{ runner.temp }}/michiflin-probe/tmp
+      CONFIG_DIR: /tmp/michiflin-probe/config
+      JOB_DIR: /tmp/michiflin-probe/jobs
+      PREVIEW_DIR: /tmp/michiflin-probe/tmp
       LOCAL_GGUF_ENABLED: "1"
       LOCAL_GGUF_ACTIONS_TEST: "1"
       LOCAL_GGUF_SOCKET_PATH: /run/michiflin-local-gguf/llama.sock
-      LOCAL_GGUF_KEY_FILE: ${{ runner.temp }}/michiflin-local-gguf-key
     steps:
       - uses: actions/checkout@v7
         with:
@@ -128,6 +127,7 @@ jobs:
       - name: Synthetic coding, compilation and FIFO
         env:
           PYTHONPATH: ${{ github.workspace }}
+          LOCAL_GGUF_KEY_FILE: ${{ runner.temp }}/michiflin-local-gguf-key
         run: python tools/local_coder_synthetic_probe.py
       - name: Cleanup synthetic model
         if: always()
