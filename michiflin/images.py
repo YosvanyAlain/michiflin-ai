@@ -294,7 +294,10 @@ class _AuthError(Exception):
 
 def _cloudflare(model: str, **kwargs) -> requests.Response:
     url = f"https://api.cloudflare.com/client/v4/accounts/{config.CLOUDFLARE_ACCOUNT_ID}/ai/run/{model}"
-    response = requests.post(url, headers={"Authorization": f"Bearer {config.CLOUDFLARE_AI_TOKEN}"}, timeout=120, **kwargs)
+    response = requests.post(url, headers={"Authorization": f"Bearer {config.CLOUDFLARE_AI_TOKEN}"}, timeout=120,
+                             allow_redirects=False, **kwargs)
+    if 300 <= int(response.status_code) < 400:
+        raise _SourceError("redirect")
     if response.ok:
         return response
     text = response.text[:800].lower()

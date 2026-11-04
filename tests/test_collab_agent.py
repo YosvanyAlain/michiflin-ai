@@ -10,6 +10,8 @@ import pytest
 
 from michiflin import ai, chat, collab_agent as c, coder, config, images, local_ai, local_coder, miniapp, state
 
+_REAL_CHECKPOINT = c._checkpoint_durable
+
 
 @pytest.fixture(autouse=True)
 def owner(monkeypatch):
@@ -19,6 +21,8 @@ def owner(monkeypatch):
     monkeypatch.setattr(local_ai, "privacy_mode", lambda: True)
     monkeypatch.setattr(local_ai, "ready", lambda: True)
     monkeypatch.setattr(state, "save", lambda: None)
+    monkeypatch.setattr(c, "_checkpoint_durable", lambda: True)
+    monkeypatch.setattr(c, "_CHECKPOINTS", {})
     monkeypatch.setitem(state.data, "collab_budgets", {})
     monkeypatch.setattr(chat, "sender", lambda: state.request_sender())
     state.act_as("owner@example.test")
@@ -50,7 +54,9 @@ def test_authorization_is_separate_opt_in_owner_secure_and_server_scope(monkeypa
     assert not c.authorized("123")
 
 
-@pytest.mark.parametrize("phrase", ["solo local: crea hola.py", "Exclusivamente con IA local", "no uses APIs", "local only", "no external models"])
+@pytest.mark.parametrize("phrase", ["solo local: crea hola.py", "Exclusivamente con IA local", "no uses APIs", "local only", "no external models",
+                                  "sin usar una API", "sin consultar modelos externos", "no recurras a APIs",
+                                  "do not use any external models", "without using any APIs"])
 def test_explicit_local_only_overrides_paid_collaboration(phrase):
     assert c.local_only(phrase)
     with pytest.raises(coder.CoderError):
@@ -61,17 +67,21 @@ def test_project_budget_persists_attempts_and_does_not_reset_on_empty_retries():
     b = c.ProjectBudget.begin("123", [], "create project")
     assert [b.reserve() for _ in range(5)] == [True, True, True, True, False]
     assert c.ProjectBudget.begin("123", [], "retry").remaining() == 0
-    # A nonempty snapshot observed from the client, then an empty one, proves reset.
     assert c.ProjectBudget.begin("123", [{"path": "hello.py", "text": "print(1)"}], "edit").remaining() == 0
-    assert c.ProjectBudget.begin("123", [], "create another").remaining() == 4
-    assert c.ProjectBudget.begin("456", [], "independent").remaining() == 4
+    assert c.ProjectBudget.begin("123", [], "create another").remaining() == 0
+    assert c.ProjectBudget.begin("456", [], "another app instance").remaining() == 0
+    new = c.ProjectBudget.begin("456", [], "nuevo proyecto: otra tarea")
+    assert new.remaining() == 4 and new.reserve()
+    assert not b.reserve()  # old in-flight work cannot spend the new project
+    assert c.ProjectBudget.begin("123", [], "nuevo proyecto: otra tarea").remaining() == 3
 
 
 def test_owner_may_authorize_four_more_once_per_explicit_request():
     b = c.ProjectBudget.begin("123", [], "create project")
     assert all(b.reserve() for _ in range(4))
     text = "Autorizo cuatro consultas externas más para revisar esto"
-    assert c.ProjectBudget.begin("123", [], text).remaining() == 4
+    b = c.ProjectBudget.begin("123", [], text)
+    assert b.remaining() == 4
     assert c.ProjectBudget.begin("123", [], text).remaining() == 4
     assert all(b.reserve() for _ in range(4))
     assert c.ProjectBudget.begin("123", [], text).remaining() == 0
@@ -303,3 +313,137 @@ def test_personal_api_explicit_preference_stays_in_current_owner_scope(monkeypat
     assert c._choose_model([], "usa mi API personal para esta tarea").provider == "personal-example"
     assert c._choose_model([], "consulta un modelo").provider == "free-provider"
     assert c._choose_model([personal], "usa mi API personal").provider == "free-provider"
+
+
+def test_checkpoint_fail_closed_and_restored_budget_cannot_double_spend(monkeypatch):
+    b = c.ProjectBudget.begin("123", [], "create")
+    checkpoint = mock.Mock(return_value=False)
+    monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
+    assert not b.reserve() and b.last_error == "checkpoint" and b.counts() == (0, 4)
+    checkpoint.return_value = True
+    assert b.reserve() and b.reserve() and checkpoint.call_count == 2
+    assert b.counts() == (2, 4)
+    # Simulate a restored snapshot taken before individual attempted requests.
+    snapshot = json.loads(json.dumps(state.data["collab_budgets"]))
+    snapshot[b.key]["used"] = 0
+    monkeypatch.setitem(state.data, "collab_budgets", snapshot)
+    monkeypatch.setattr(c, "_SESSION", "different-process")
+    restored = c.ProjectBudget.begin("123", [], "retry same project")
+    assert restored.counts() == (4, 4) and not restored.reserve()
+
+
+def test_durable_checkpoint_uses_native_verified_backup_and_no_rotation():
+    import state_backup
+    with mock.patch.object(state_backup, "configuration", return_value=("t", "private/repo", "p")), \
+         mock.patch.object(state_backup, "save") as checkpoint, \
+         mock.patch.dict(c.os.environ, {"STATE_BACKUP_STORAGE": "releases"}):
+        assert _REAL_CHECKPOINT()
+        checkpoint.assert_called_once_with(rotate=False)
+    with mock.patch.object(state_backup, "configuration", return_value=None), \
+         mock.patch.object(state_backup, "save") as checkpoint:
+        assert not _REAL_CHECKPOINT()
+        checkpoint.assert_not_called()
+
+
+def test_concurrent_reservations_never_exceed_four(monkeypatch):
+    import threading
+    b = c.ProjectBudget.begin("123", [], "create")
+    called = []
+    def reserve():
+        called.append(b.reserve())
+    threads = [threading.Thread(target=reserve) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert len(called) == 12 and sum(called) == 4 and b.counts() == (4, 4)
+
+
+def test_agent_and_coder_share_budget_across_conversations_and_instances():
+    project = c.ProjectBudget.begin("123", [{"path": "a.py", "text": "pass"}], "coder")
+    assert project.reserve() and project.reserve() and project.reserve()
+    general = c.ProjectBudget.begin("general/999:other", [], "consult")
+    assert general.counts() == (3, 4) and general.reserve() and not project.reserve()
+    assert c.ProjectBudget.begin("987", [], "empty project retry").remaining() == 0
+
+
+def test_local_coder_failure_after_api_is_never_described_as_no_api(monkeypatch):
+    monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(1, False, False, "none", True))
+    monkeypatch.setattr(c, "_models", lambda: [model("alpha")])
+    monkeypatch.setattr(ai, "available", lambda _: True)
+    monkeypatch.setattr(ai, "complete_exact", lambda *a, **k: ai.AIResult(
+        text=json.dumps({"advice": ["Validate input values before proceeding."]}), provider="alpha", model="test"))
+    monkeypatch.setattr(local_coder, "run", mock.Mock(side_effect=coder.CoderError("no API was used")))
+    with pytest.raises(coder.CoderError) as error:
+        c.run_project("Create a project", [{"path": "old.py", "text": "pass"}], "en", scope="123")
+    assert "external requests were attempted" in str(error.value)
+    assert "no API was used" not in str(error.value) and "original files were preserved" in str(error.value)
+
+
+def test_image_is_not_sent_when_work_was_interrupted(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "TEMP_ROOT", tmp_path)
+    monkeypatch.setattr(state, "check_work_allowed", mock.Mock(side_effect=state.WorkPaused()))
+    send = mock.Mock()
+    monkeypatch.setattr(chat, "send", send)
+    with pytest.raises(state.WorkPaused):
+        c._send_logo(12, {"b64": base64.b64encode(b"synthetic").decode()}, "test", "es")
+    send.assert_not_called()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_provider_and_image_redirects_are_not_followed(monkeypatch):
+    response = mock.Mock(ok=True, status_code=307)
+    post = mock.Mock(return_value=response)
+    monkeypatch.setattr(ai.requests, "post", post)
+    provider = ai.Provider("generic", "Generic", "openai", "https://example.test")
+    m = model("generic")
+    with pytest.raises(ai.requests.RequestException):
+        ai._openai(provider, m, [{"role": "user", "content": "private"}], None, 768)
+    assert post.call_count == 1 and post.call_args.kwargs["allow_redirects"] is False
+    post.reset_mock()
+    with pytest.raises(ai.requests.RequestException):
+        ai._gemini(provider, m, [{"role": "user", "content": "private"}], None, 768)
+    assert post.call_count == 1 and post.call_args.kwargs["allow_redirects"] is False
+    post.reset_mock()
+    with pytest.raises(images._SourceError):
+        images._cloudflare("model", json={"prompt": "private"})
+    assert post.call_count == 1 and post.call_args.kwargs["allow_redirects"] is False
+
+
+def test_plan_respects_explicit_no_review(monkeypatch):
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result("ok", json.dumps(
+        {"consultations": 1, "review": True, "image": False, "web": "none"})))
+    assert not c._plan("Crea una aplicación sin revisión", [], "es").review
+
+
+def test_manually_selected_coder_model_shares_limit_and_keeps_original(monkeypatch):
+    calls = []
+    def exact(messages, key, **kwargs):
+        calls.append((key, kwargs))
+        return ai.AIResult(text="ok", provider="explicit", model="m")
+    monkeypatch.setattr(ai, "complete_exact", exact)
+    previous = [{"path": "old.py", "text": "print('safe')"}]
+    def project(request, files, locale, key, *, project_budget):
+        results = [coder._ask([], key, "", project_budget) for _ in range(5)]
+        assert [r.ok for r in results] == [True, True, True, True, False]
+        return fake_result([{"path": "old.py", "text": "broken"}], confirmed=False)
+    monkeypatch.setattr(coder, "_run_project", project)
+    result = coder.run("Cambia la función", previous, "es", "explicit:model", scope="123")
+    assert len(calls) == 4 and all(k["max_tokens"] == 4096 for _, k in calls)
+    assert result["files"] == previous and result["project_complete"] is False
+    assert "4/4" in result["summary"]
+    assert c.ProjectBudget.begin("general/123:private", [], "agent").remaining() == 0
+
+
+def test_manually_selected_model_cannot_send_known_secrets_or_override_local_only(monkeypatch):
+    work = mock.Mock()
+    monkeypatch.setattr(coder, "_run_project", work)
+    with pytest.raises(coder.CoderError):
+        coder.run("solo local, por favor", [], "es", "external:model", scope="123")
+    with pytest.raises(coder.CoderError):
+        coder.run("edita", [{"path": ".env", "text": "abc"}], "es", "external:model", scope="123")
+    work.assert_not_called()
+
+
+def test_new_project_prefix_routes_general_to_shared_budget():
+    assert c.general_request("nuevo proyecto: una idea diferente")

@@ -873,7 +873,9 @@ def _call(item: Provider, model: Model, messages: list[dict[str, Any]], images: 
     if not response.ok:
         state.record_usage(model.key, False)
         kind = _cooldown_for(item, model, response.status_code, response.text[:2000], str(response.headers.get("Retry-After", "")))
-        log.warning("AI %s %s: HTTP %s -> %s · %s", item.key, model.model, response.status_code, kind, _excerpt(response.text))
+        # Error bodies can echo private project content. Keep diagnostics to
+        # status and category, never log the provider's raw response.
+        log.warning("AI %s %s: HTTP %s -> %s", item.key, model.model, response.status_code, kind)
         if kind in {"model", "auth"}:
             _mark(item, model, kind)
         return AIResult(provider=item.name, model=model.title(), error=kind)
@@ -1055,12 +1057,11 @@ def _openai(item: Provider, model: Model, messages: list[dict[str, Any]], images
     if item.api_key and item.key != "ovh":
         headers["Authorization"] = f"Bearer {item.api_key}"
     timeout = max(config.AI_TIMEOUT, 120) if item.key == "kilo" or max_tokens >= 8000 else config.AI_TIMEOUT
-    request_options = {"allow_redirects": False} if item.custom or item.key == "ovh" else {}
     response = requests.post(f"{item.base_url}/chat/completions", headers=headers, json=payload, timeout=timeout,
-                             **request_options)
-    if item.key == "ovh" and 300 <= int(response.status_code) < 400:
-        raise requests.RequestException("OVH redirect refused")
-    if not response.ok or (item.custom and 300 <= int(response.status_code) < 400):
+                             allow_redirects=False)
+    if 300 <= int(response.status_code) < 400:
+        raise requests.RequestException("provider redirect refused")
+    if not response.ok:
         return response, "", 0
     body = response.json()
     choice = (body.get("choices") or [{}])[0]
@@ -1090,7 +1091,10 @@ def _gemini(item: Provider, model: Model, messages: list[dict[str, Any]], images
     if system:
         payload["systemInstruction"] = {"parts": [{"text": system}]}
     response = requests.post(f"{item.base_url}/models/{model.model}:generateContent", params={"key": item.api_key}, json=payload,
-                             timeout=max(config.AI_TIMEOUT, 120) if max_tokens >= 8000 else config.AI_TIMEOUT)
+                             timeout=max(config.AI_TIMEOUT, 120) if max_tokens >= 8000 else config.AI_TIMEOUT,
+                             allow_redirects=False)
+    if 300 <= int(response.status_code) < 400:
+        raise requests.RequestException("provider redirect refused")
     if not response.ok:
         return response, "", 0
     body = response.json()
