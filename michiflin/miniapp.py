@@ -948,9 +948,12 @@ def _local_ai_disclosure(instance_id: int) -> None:
     if collab_agent.notice_for_instance(instance_id):
         spanish = ("Esta app conserva etiquetas anteriores. La colaboración autorizada puede consultar APIs, "
                    "incluidas las personales con posibles cargos, y compartir archivos: hasta cuatro llamadas por proyecto. "
-                   "Para una tarea sin APIs escribe «solo local». Las búsquedas usan fuentes externas.")
+                   "Para una tarea sin APIs escribe «solo local». Para empezar otro proyecto escribe «nuevo proyecto:». "
+                   "El límite se comparte entre el agente y Programador; tras una recuperación, lo no usado puede considerarse gastado. "
+                   "Las búsquedas usan fuentes externas.")
         english = ("This app retains older labels. Authorized collaboration may use APIs, including personal ones that may "
                    "incur charges, and share files: up to four calls per project. Write ‘local only’ for a task without APIs. "
+                   "Start another project with ‘new project:’. The limit is shared by agent and Coder; after recovery, unused calls may be counted as spent. "
                    "Searches use external sources.")
     else:
         spanish = "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas."
@@ -1659,7 +1662,8 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         if not use_local and not model.startswith("personal-") and usage.reserve_low():
             raise AppError(usage.reserve_text(locale))
     try:
-        result = (coder.run(text, files, locale, model, scope=scope) if use_collab
+        owner_scoped = collab_agent.authorized(scope) and (use_collab or (model and not use_local))
+        result = (coder.run(text, files, locale, model, scope=scope) if owner_scoped
                   else coder.run(text, files, locale, model))
     except coder.CoderError as exc:
         raise AppError(str(exc))

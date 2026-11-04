@@ -14,7 +14,9 @@ import io
 import json
 import os
 import re
+import secrets
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +32,9 @@ MAX_EXTERNAL_PROJECT_BYTES = 100_000
 MAX_ADVICE = 4
 MAX_ADVICE_CHARS = 220
 MAX_SCOPE = 64
+_SESSION = secrets.token_hex(16)
+_BUDGET_LOCK = threading.RLock()
+_CHECKPOINTS: dict[str, tuple[int, int]] = {}
 
 # Detection is defense in depth, NOT a complete data-loss-prevention system.
 _PRIVATE_FILE = re.compile(r"(?i)(?:^|/)(?:\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|credentials(?:\.[^/]*)?|secrets?(?:\.[^/]*)?)$|\.(?:pem|p12|pfx|key|keystore)$")
@@ -50,7 +55,13 @@ _UNTRUSTED_COMMAND = re.compile(
     r"upload|send\s+(?:the\s+)?(?:file|data|secret)|ignora|omite\s+las\s+instrucciones|"
     r"contrase(?:ñ|n)a|credencial|env[ií]a\s+(?:el|la|los|las|datos|archivos)|ejecuta|comando)\b)"
 )
-_LOCAL_ONLY = re.compile(r"(?i)\b(?:solo|s[oó]lo|exclusivamente|únicamente|unicamente)\s+(?:con\s+)?(?:ia\s+)?local\b|\b(?:sin|no\s+(?:uses?|consultes?|llames?|contactes?))\s+(?:las?\s+)?(?:apis?|modelos?\s+externos?)\b|\blocal\s+only\b|\b(?:no|without)\s+external\s+(?:apis?|models?)\b")
+_LOCAL_ONLY = re.compile(
+    r"(?i)\b(?:solo|s[oó]lo|exclusivamente|únicamente|unicamente)\s+(?:con\s+)?(?:ia\s+)?local\b|"
+    r"\b(?:sin|no|do\s+not|don't)\s+(?:(?:utilizar|utilices?|usar|uses?|consultar|consultes?|llamar|llames?|"
+    r"contactar|contactes?|recurrir\s+a|recurras\s+a|acceder\s+a|use|using|consult|consulting|call|calling)\s+)?"
+    r"(?:(?:a|con|las?|los|un|una|mis|ninguna?s?|ningunos?|the|any)\s+)?(?:apis?|ia\s+externa|modelos?\s+externos?|proveedores?\s+externos?|external\s+(?:apis?|models?))\b|"
+    r"\b(?:local\s+only|without\s+(?:(?:using|consulting)\s+)?(?:any\s+)?(?:apis?|external\s+(?:apis?|models?)))\b"
+)
 _MORE = re.compile(r"(?i)\b(?:(?:autorizo|permito|authorize|allow)\s+(?:hasta\s+)?(?:4|cuatro|four)\s+(?:llamadas|consultas|solicitudes|requests)\s+(?:externas?\s+)?(?:m[aá]s|adicionales|more)|(?:i\s+)?(?:allow|authorize)\s+(?:four|4)\s+more\s+(?:external\s+)?requests)\b")
 _NEW = re.compile(r"(?i)^\s*(?:nuevo\s+proyecto|new\s+project)\s*[:;,—-]")
 _VISUAL = re.compile(r"(?i)\b(?:logo(?:tipo)?|icono|icon|logomark|imagen|image|illustration|ilustraci[oó]n)\b")
@@ -123,8 +134,30 @@ def _payload(request: str, files: list[dict[str, Any]]) -> str:
 
 
 def _ledger_key(scope: str) -> str:
+    # This installed app does not expose a trustworthy project identifier.
+    # Share one conservative owner ledger between Coder, general chat and any
+    # existing private app instance. Never reset it merely on a new message.
     sender = state.request_sender().strip().casefold()
-    return hashlib.sha256((sender + "\0" + scope).encode()).hexdigest()[:40]
+    return hashlib.sha256(("collab-owner-v2\0" + sender).encode()).hexdigest()[:40]
+
+
+def _checkpoint_durable() -> bool:
+    """Verify an encrypted native snapshot before external AI can be used.
+
+    It includes the conservative restart ceiling in the existing state file.
+    A restore consumes unused calls as well, rather than ever spending twice.
+    No old snapshot is deleted, and no synthetic state is uploaded in tests.
+    """
+    try:
+        import state_backup
+        if not state_backup.configuration() or os.getenv("STATE_BACKUP_STORAGE", "releases").strip() != "releases":
+            return False
+        progress.phase("🔒 Guardando el límite de consultas de forma segura…",
+                       "🔒 Saving the request limit securely…")
+        state_backup.save(rotate=False)
+        return True
+    except Exception:
+        return False
 
 
 class BudgetError(Exception):
@@ -134,47 +167,66 @@ class BudgetError(Exception):
 @dataclass
 class ProjectBudget:
     key: str
+    epoch: int
+    last_error: str = "budget"
 
     @classmethod
     def begin(cls, scope: str, files: list[dict[str, Any]], request: str) -> ProjectBudget:
-        """Persist attempted calls; new projects need a confirmed client reset.
+        """One shared owner budget; only a distinct explicit new-project marker resets it.
 
-        The existing app has one Coder project per instance and does not send a
-        project ID. A nonempty input proves the client received files. A later
-        empty input then starts a new project. If no files were ever observed,
-        'nuevo proyecto:' explicitly starts another one; otherwise remain capped.
+        With no trusted project IDs in the installed UI, it is not safe to
+        infer a reset from an empty file list, another conversation or a retry.
+        The marker identifies a deliberately different project; another grant
+        explicitly authorizes four more calls. Exact retries cannot re-grant.
         """
         key = _ledger_key(scope)
-        with state.lock:
+        with _BUDGET_LOCK, state.lock:
             table = state.data.setdefault("collab_budgets", {})
             if not isinstance(table, dict):
                 raise BudgetError("invalid ledger")
             row = table.get(key)
             if row is None:
-                row = {"used": 0, "limit": MAX_EXTERNAL, "seen_files": False, "last_grant": ""}
+                row = {"used": 0, "limit": MAX_EXTERNAL, "epoch": 0,
+                       "last_grant": "", "last_project": "", "session": _SESSION, "restore_spent": 0}
                 table[key] = row
-            if not isinstance(row, dict) or not isinstance(row.get("used"), int) or not isinstance(row.get("limit"), int):
+            if (not isinstance(row, dict) or type(row.get("used")) is not int or type(row.get("limit")) is not int
+                    or type(row.get("epoch")) is not int or not 0 <= row["used"] <= row["limit"] <= 1000):
                 raise BudgetError("invalid ledger")
-            if (not files and bool(row.get("seen_files"))) or (not files and _NEW.search(request)):
-                row.update(used=0, limit=MAX_EXTERNAL, seen_files=False, last_grant="")
-            if files:
-                row["seen_files"] = True
+            # A saved reservation ceiling survives process loss and stale
+            # periodic counts. After any restart, remaining calls are treated
+            # as spent; a verified new grant/project is needed for more.
+            if row.get("session") != _SESSION:
+                floor = row.get("restore_spent", 0)
+                if type(floor) is not int or not 0 <= floor <= row["limit"]:
+                    raise BudgetError("invalid restart ceiling")
+                row["used"] = max(row["used"], floor)
+                row["session"], row["restore_spent"] = _SESSION, 0
+            if _NEW.search(request):
+                stamp = hashlib.sha256(request.encode("utf-8")).hexdigest()
+                if row.get("last_project") != stamp:
+                    row.update(used=0, limit=MAX_EXTERNAL, epoch=row["epoch"] + 1,
+                               restore_spent=0, last_grant="", last_project=stamp)
             if _MORE.search(request):
                 stamp = hashlib.sha256(request.encode("utf-8")).hexdigest()
                 if row.get("last_grant") != stamp:
                     row["limit"] = min(1000, max(MAX_EXTERNAL, row["limit"]) + MAX_EXTERNAL)
+                    row["epoch"] += 1
                     row["last_grant"] = stamp
             try:
                 state.save()
-            except OSError as exc:
+            except (OSError, TypeError, ValueError) as exc:
                 raise BudgetError("cannot persist ledger") from exc
-        return cls(key)
+            return cls(key, row["epoch"])
+
+    def _row(self) -> dict[str, Any] | None:
+        table = state.data.get("collab_budgets") or {}
+        row = table.get(self.key) if isinstance(table, dict) else None
+        return row if isinstance(row, dict) and row.get("epoch") == self.epoch else None
 
     def counts(self) -> tuple[int, int]:
         with state.lock:
-            table = state.data.get("collab_budgets") or {}
-            row = table.get(self.key) if isinstance(table, dict) else None
-            if not isinstance(row, dict):
+            row = self._row()
+            if not row:
                 return 0, 0
             try:
                 return max(0, int(row["used"])), max(0, int(row["limit"]))
@@ -186,19 +238,42 @@ class ProjectBudget:
         return max(0, limit - used)
 
     def reserve(self) -> bool:
-        """Reserve and persist BEFORE sending; failed/time-out calls still count."""
-        with state.lock:
-            table = state.data.get("collab_budgets") or {}
-            row = table.get(self.key) if isinstance(table, dict) else None
-            if not isinstance(row, dict) or self.remaining() <= 0:
-                return False
-            row["used"] += 1
-            try:
-                state.save()
-            except OSError:
-                row["used"] -= 1
-                return False
-            return True
+        """Count BEFORE network; make the restart ceiling durable first."""
+        with _BUDGET_LOCK:
+            with state.lock:
+                row = self._row()
+                if not row or self.remaining() <= 0:
+                    self.last_error = "budget"
+                    return False
+                token = (row["epoch"], row["limit"])
+                needs_checkpoint = _CHECKPOINTS.get(self.key) != token
+                if needs_checkpoint:
+                    row["restore_spent"] = row["limit"]
+                    try:
+                        state.save()
+                    except (OSError, TypeError, ValueError):
+                        self.last_error = "checkpoint"
+                        return False
+            if needs_checkpoint:
+                state.check_work_allowed()
+                if not _checkpoint_durable():
+                    self.last_error = "checkpoint"
+                    return False
+                state.check_work_allowed()
+                _CHECKPOINTS[self.key] = token
+            with state.lock:
+                row = self._row()
+                if not row or self.remaining() <= 0:
+                    self.last_error = "budget"
+                    return False
+                row["used"] += 1
+                try:
+                    state.save()
+                except (OSError, TypeError, ValueError):
+                    row["used"] -= 1
+                    self.last_error = "checkpoint"
+                    return False
+                return True
 
 
 def _json_object(text: str) -> dict[str, Any] | None:
@@ -231,9 +306,9 @@ def _plan(request: str, files: list[dict[str, Any]], locale: str, *, kind: str =
         role + "Decide if outside expertise is actually needed. For a simple request use zero consultations. "
         "For a nontrivial project you may request one or two independent consultant models and a review. "
         "Request an image only when a logo, icon or illustration is useful. "
-        "Return ONLY one JSON object with exactly these keys: "
-        '{"consultations":0,"review":false,"image":false,"web":"none"}. '
-        "consultations is 0, 1 or 2; review and image are booleans; web is exactly one of " + choices + ". "
+        "Honor explicit requests to consult several models, review, or generate an image. "
+        "Return ONLY a JSON object with exactly these four keys: consultations, review, image, web. "
+        "consultations is an integer 0, 1 or 2; review and image are JSON booleans; web is a string exactly one of " + choices + ". "
         "No file contents, names of providers, secrets, URLs, commands, markdown, or explanations. /no_think"
     )
     user = json.dumps({"request": request[:1800], "file_count": len(files),
@@ -258,7 +333,9 @@ def _plan(request: str, files: list[dict[str, Any]], locale: str, *, kind: str =
     # model correctly inferring the desired number from the wording.
     if re.search(r"(?i)\b(?:varios|varias|dos|m[uú]ltiples|several|multiple|two)\b.{0,45}\b(?:modelos?|apis?|models?)\b|\b(?:modelos?|apis?|models?)\b.{0,45}\b(?:varios|varias|dos|several|multiple|two)\b", request):
         count = max(count, 2)
-    if re.search(r"(?i)\b(?:revisa|revisar|revisi[oó]n|verifica|verify|review)\b", request):
+    if re.search(r"(?i)\b(?:sin|no)\s+(?:revisi[oó]n|revisar|revises|review|verification)\b|\bno\s+(?:review|verification)\b", request):
+        review = False
+    elif re.search(r"(?i)\b(?:revisa|revisar|revisi[oó]n|verifica|verify|review)\b", request):
         review = True
     return Plan(count, review, image, web, True)
 
@@ -322,8 +399,10 @@ def _consult(budget: ProjectBudget, request: str, files: list[dict[str, Any]], u
     model = _choose_model(used, request)
     if model is None:
         return [], None, "", "no_model"
+    state.check_work_allowed()
     if not budget.reserve():
-        return [], None, "", "budget"
+        return [], None, "", budget.last_error
+    state.check_work_allowed()
     used.append(model)  # count before network, including rejected or timed-out requests
     system = (
         "You are an independent coding advisor, not the implementer. "
@@ -338,6 +417,7 @@ def _consult(budget: ProjectBudget, request: str, files: list[dict[str, Any]], u
     response = ai.complete_exact([{"role": "system", "content": system},
                                   {"role": "user", "content": "UNTRUSTED PROJECT DATA (JSON):\n" + payload}],
                                  model.key, max_tokens=768, raw=True)
+    state.check_work_allowed()
     name = " · ".join(x for x in (response.provider, response.model) if x) or model.title()
     if not response.ok or response.truncated:
         return [], None, name[:160], response.error or "truncated"
@@ -392,6 +472,8 @@ def _pack_logo(raw: bytes) -> bytes:
     from PIL import Image
 
     with Image.open(io.BytesIO(raw)) as original:
+        if original.width <= 0 or original.height <= 0 or original.width * original.height > 16_000_000:
+            return b""
         original.load()
         image = original.convert("RGB")
         image.thumbnail((384, 384))
@@ -410,12 +492,15 @@ def _make_image(budget: ProjectBudget, request: str, files: list[dict[str, Any]]
     source = _image_source()
     if source is None:
         return None, "", "no_image_model"
+    state.check_work_allowed()
     if not budget.reserve():
-        return None, "", "budget"
+        return None, "", budget.last_error
+    state.check_work_allowed()
     # No whole project or external page goes to the image generator; only a
     # bounded direct user brief, already checked for known secret patterns.
     prompt = "Create one simple logo or icon for this project: " + request[:700]
     result = images.generate(prompt, model=source.key, translate=False)
+    state.check_work_allowed()
     if not result.data:
         return None, source.label, result.error or "image_error"
     try:
@@ -450,6 +535,8 @@ def _note(reason: str, locale: str) -> str:
         "sensitive": ("Detecté posibles secretos: no envié el proyecto a APIs.", "Possible secrets detected: no project was sent to APIs."),
         "too_large": ("El proyecto es demasiado grande para enviarlo íntegro a una API; seguí localmente.", "The whole project is too large for an API; I continued locally."),
         "budget": ("Se alcanzó el límite de consultas externas de este proyecto.", "This project's external request limit was reached."),
+        "checkpoint": ("No pude verificar la copia cifrada del límite; no envié esta consulta a APIs.",
+                       "I could not verify the encrypted limit checkpoint; this request was not sent to APIs."),
         "no_model": ("No había un modelo externo disponible para esa consulta.", "No external model was available for that consultation."),
         "no_image_model": ("No había un modelo de imagen disponible; no inventé una imagen generada.", "No image model was available; I did not invent a generated image."),
         "unusable": ("Una respuesta externa no tenía un formato seguro y se descartó.", "An external response did not have a safe format and was discarded."),
@@ -501,7 +588,7 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
             advice.extend(items)
             if status != "ok":
                 trace.notes.append(_note(status, locale))
-                if status in {"quota", "cooldown", "auth", "policy", "budget", "no_model", "sensitive", "too_large"}:
+                if status in {"quota", "cooldown", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
                     stopped = True
                     break
     image_file = None
@@ -526,7 +613,15 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
             image_file = None
             trace.notes.append(_note("image_size", locale))
     local_request = request + (f"\n\nA generated image is available as {image_file['path']}. Use it where appropriate." if image_file else "")
-    result = local_coder.run(local_request, prepared, locale, advice=(advice[:2] + refs[:2])[:MAX_ADVICE])
+    try:
+        result = local_coder.run(local_request, prepared, locale, advice=(advice[:2] + refs[:2])[:MAX_ADVICE])
+    except coder.CoderError:
+        if not trace.external_attempts:
+            raise
+        models = "; ".join(dict.fromkeys(trace.models + ([trace.image_source] if trace.image_source else [])))
+        raise coder.CoderError(tr(locale,
+            f"La IA local no pudo finalizar; se conservaron los archivos originales. Antes se intentaron {trace.external_attempts} consultas externas ({models}); podrían haber generado cargos.",
+            f"Local AI could not finish; original files were preserved. {trace.external_attempts} external requests were attempted first ({models}); charges may apply.")) from None
     # The generated asset must never cause an incomplete or unconfirmed result
     # to overwrite a real existing project.
     if image_file and not result.get("model_confirmed"):
@@ -619,7 +714,7 @@ def general_request(text: str) -> bool:
     # Explicit collaboration requests or longer substantive analysis only;
     # routine chat/search/calculation stays with the old no-provider route.
     complex_task = len(value) >= 180 and bool(agent.REASON.search(value)) and not agent.CURRENT.search(value)
-    return bool(explicit or complex_task or _MORE.search(value))
+    return bool(explicit or complex_task or _MORE.search(value) or _NEW.search(value))
 
 
 def _send_logo(chat_id: int, item: dict[str, str], source: str, locale: str) -> tuple[bool, str]:
@@ -631,6 +726,7 @@ def _send_logo(chat_id: int, item: dict[str, str], source: str, locale: str) -> 
             out.write(raw)
             path = Path(out.name)
         try:
+            state.check_work_allowed()
             sent = chat.send(chat_id, tr(locale, "Imagen generada · ", "Generated image · ") + source,
                              file=path, filename="imagen-generada.jpg", viewtype="Image")
         finally:
@@ -649,10 +745,9 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
     if not local_ai.ready():
         raise coder.CoderError(local_ai.display(local_ai.Result("unavailable"), locale))
     try:
-        # The old app has no chat-project ID. A single conservative budget is
-        # shared by this authenticated conversation until an explicit new task
-        # or fresh authorization, rather than resetting it on each message.
-        budget = ProjectBudget.begin("general/" + (history_scope or scope)[:200], [], request)
+        # One owner-wide budget also covers the Coder route and other existing
+        # instances: the installed UI cannot identify a shared project safely.
+        budget = ProjectBudget.begin(scope, [], request)
     except BudgetError:
         raise coder.CoderError(tr(locale, "No pude guardar el límite de consultas; no envié la petición a APIs.",
                                   "I could not save the request limit; the request was not sent to APIs.")) from None
@@ -681,7 +776,7 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
             advice.extend(items)
             if status != "ok":
                 trace.notes.append(_note(status, locale))
-                if status in {"quota", "cooldown", "auth", "policy", "budget", "no_model", "sensitive", "too_large"}:
+                if status in {"quota", "cooldown", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
                     stopped = True
                     break
     delivered: list[str] = []
@@ -761,8 +856,8 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
         text += "\n\n" + "\n\n".join(dict.fromkeys(trace.notes))
     if trace.external_attempts:
         used_count, limit = budget.counts()
-        text += tr(locale, f"\n\nConsultas externas usadas en esta conversación: {used_count}/{limit}.",
-                   f"\n\nExternal requests used in this conversation: {used_count}/{limit}.")
+        text += tr(locale, f"\n\nConsultas externas usadas en este proyecto: {used_count}/{limit}.",
+                   f"\n\nExternal requests used in this project: {used_count}/{limit}.")
     if budget.remaining() == 0:
         text += tr(locale, "\n\nPara autorizar cuatro consultas externas más, escribe «autorizo cuatro consultas externas más».",
                    "\n\nTo authorize four more external requests, write ‘I allow four more external requests’.")

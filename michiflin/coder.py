@@ -499,12 +499,51 @@ def run(request: str, files: list[dict[str, Any]], locale: str, model_key: str =
             return local_coder.run(request, files, locale)
         if model_key == collab_agent.MODEL_KEY:
             return collab_agent.run_project(request, files, locale, scope=scope)
+        if model_key and collab_agent.authorized(scope):
+            # A deliberately chosen API can still be working on the same
+            # project. Count it in the same owner budget as collaboration;
+            # never rotate providers or silently retry an HTTP rejection.
+            if collab_agent.local_only(request):
+                raise CoderError(tr(locale, "Pediste solo local, pero elegiste una API. Usa Automático para no enviar el proyecto.",
+                                    "You requested local only but selected an API. Use Automatic to avoid sending the project."))
+            if collab_agent._contains_sensitive(request, files):
+                raise CoderError(tr(locale, "Detecté posibles secretos; no envié el proyecto a una API.",
+                                    "Possible secrets were detected; the project was not sent to an API."))
+            try:
+                budget = collab_agent.ProjectBudget.begin(scope, files, request)
+            except collab_agent.BudgetError:
+                raise CoderError(tr(locale, "No pude guardar el límite; no envié el proyecto a APIs.",
+                                    "Could not save the limit; the project was not sent to APIs.")) from None
+            try:
+                result = _run_project(request, files, locale, model_key, project_budget=budget)
+            except CoderError:
+                used, limit = budget.counts()
+                if not used:
+                    raise
+                raise CoderError(tr(locale,
+                    f"El modelo no pudo finalizar; se conservaron los archivos originales. Consultas externas usadas: {used}/{limit}; podrían generar cargos.",
+                    f"The model could not finish; original files were preserved. External requests used: {used}/{limit}; charges may apply.")) from None
+            used, limit = budget.counts()
+            if not result.get("model_confirmed"):
+                result["files"], result["project_complete"] = files, False
+                result["summary"] = tr(locale, "Sin confirmación completa: conservé el proyecto original.",
+                                       "Without complete confirmation, the original project was preserved.")
+            result["summary"] += tr(locale, f"\n\nConsultas externas usadas en este proyecto: {used}/{limit}.",
+                                    f"\n\nExternal requests used in this project: {used}/{limit}.")
+            return result
         return _run_project(request, files, locale, model_key)
     finally:
         _busy.release()
 
 
-def _ask(messages: list[dict[str, Any]], model_key: str, sticky: str) -> ai.AIResult:
+def _ask(messages: list[dict[str, Any]], model_key: str, sticky: str, project_budget: Any = None) -> ai.AIResult:
+    if project_budget is not None:
+        runtime_state.check_work_allowed()
+        if not project_budget.reserve():
+            return ai.AIResult(error="collab_" + project_budget.last_error)
+        runtime_state.check_work_allowed()
+        # 4096 prevents ai._call's automatic retry for a token-limit error.
+        return ai.complete_exact(messages, model_key, max_tokens=min(4096, ANSWER_TOKENS), raw=True)
     if model_key:
         return ai.complete_exact(messages, model_key, max_tokens=ANSWER_TOKENS, raw=True)
     if sticky:
@@ -591,12 +630,13 @@ def web_check(files: list[dict[str, Any]]) -> list[str]:
     return problems
 
 
-def _wrap_up(messages: list[dict[str, Any]], model_key: str, sticky: str) -> str:
+def _wrap_up(messages: list[dict[str, Any]], model_key: str, sticky: str, project_budget: Any = None) -> str:
     """Out of rounds: ask only for the closing summary of what exists now."""
     final = messages + [{"role": "user", "content": "No rounds left. Do not write or run anything. Reply only with "
                          "<<<DONE>>>\nshort summary for the user, in their language: what was built, how to use it and "
                          "anything left unfinished\n<<<END>>>"}]
-    result = _ask(final, model_key, sticky)
+    result = (_ask(final, model_key, sticky, project_budget) if project_budget is not None
+              else _ask(final, model_key, sticky))
     if not result.ok:
         return ""
     found = [(body or arg).strip() for kind, arg, body in parse(result.text) if kind == "DONE"]
@@ -639,7 +679,8 @@ def _research(kind: str, argument: str, request: str, allowed: set[str], locale:
         return f"Research failed ({type(exc).__name__})."
 
 
-def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_key: str) -> dict[str, Any]:
+def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_key: str,
+                 *, project_budget: Any = None) -> dict[str, Any]:
     started = time.monotonic()
     can_run = isolation()
     if can_run:
@@ -684,10 +725,14 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
             if time.monotonic() - started > TIME_BUDGET:
                 break
             progress.phase(f"💻 Programando · paso {step + 1}", f"💻 Coding · step {step + 1}")
-            result = _ask(messages, model_key, sticky)
+            result = (_ask(messages, model_key, sticky, project_budget) if project_budget is not None
+                      else _ask(messages, model_key, sticky))
             runtime_state.check_work_allowed()
             if not result.ok:
                 if step == 0:
+                    if result.error.startswith("collab_"):
+                        from . import collab_agent
+                        raise CoderError(collab_agent._note(result.error.removeprefix("collab_"), locale))
                     raise CoderError(ai.describe_error(result.error, locale, result, model_key).replace("⚠️ IA: ", "").replace("⚠️ ", ""))
                 break
             used = result.signature()
@@ -815,7 +860,8 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
         export_issues = []
         output = read_files(folder, export_issues)
         if output and not summary and time.monotonic() - started < TIME_BUDGET + 60:
-            tentative = _wrap_up(messages, model_key, sticky)
+            tentative = (_wrap_up(messages, model_key, sticky, project_budget) if project_budget is not None
+                         else _wrap_up(messages, model_key, sticky))
             summary = tr(locale, "No hubo confirmación completa dentro del límite; los archivos pueden estar incompletos.",
                          "No complete confirmation within the limit; files may be incomplete.")
             if tentative:

@@ -336,14 +336,15 @@ class FreeGatewayTests(Base):
     def test_keyless_call_sends_no_credentials(self) -> None:
         seen = {}
 
-        def post(url, headers=None, json=None, timeout=None):
-            seen.update(url=url, headers=headers, tokens=json["max_tokens"], timeout=timeout)
+        def post(url, headers=None, json=None, timeout=None, allow_redirects=True):
+            seen.update(url=url, headers=headers, tokens=json["max_tokens"], timeout=timeout, allow_redirects=allow_redirects)
             return self.Reply({"choices": [{"message": {"content": "ok"}}], "usage": {"total_tokens": 3}})
         item = ai.provider("kilo")
         with mock.patch("michiflin.ai.requests.post", post):
             result = ai._call(item, item.models[0], [{"role": "user", "content": "hi"}], None, 500)
         self.assertTrue(result.ok)
         self.assertNotIn("Authorization", seen["headers"])
+        self.assertFalse(seen["allow_redirects"])
         self.assertGreaterEqual(seen["tokens"], 3200)
         self.assertGreaterEqual(seen["timeout"], 120)
 
