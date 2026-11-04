@@ -70,6 +70,17 @@ def main():
          mock.patch.object(chat, "sender", return_value="synthetic-coder@example.test"), \
          mock.patch.object(local_ai, "_http", side_effect=observed_http), \
          mock.patch.object(local_ai, "complete_messages", side_effect=observed_complete):
+        # One public synthetic lookup through the actual local agent router.
+        # No chat history, account, external AI provider or real user data.
+        begin = time.monotonic()
+        chat.start_capture()
+        try:
+            research = agent.handle(77, "¿Puedes buscar información oficial sobre Python?", "es", scope="synthetic-probe")
+        finally:
+            captured = chat.stop_capture()
+        print("PUBLIC_SEARCH", json.dumps({"status": research.status if research else "no-route",
+              "method": research.method if research else "", "sources": len(research.sources) if research else 0,
+              "seconds": round(time.monotonic() - begin, 1), "text": "\n".join(captured)[:700]}, ensure_ascii=False), flush=True)
         files = exercise("python", "Crea saludo.py, un programa que imprima exactamente HOLA y termine. "
                          "Incluye un bloque RUN para probarlo con python3 y termina con DONE.",
                          [{"path": "conservar.txt", "text": "original"}], "saludo.py", "python3 saludo.py", "HOLA")
@@ -106,17 +117,6 @@ def main():
                                   "offset_seconds": [round(x[1] - starts[0][1], 1) for x in starts],
                                   "chat": outcomes["chat"].status,
                                   "coder_confirmed": outcomes.get("code", {}).get("model_confirmed", False)}, ensure_ascii=False), flush=True)
-        # One public synthetic lookup through the actual local agent router.
-        # No chat history, account, external AI provider or real user data.
-        begin = time.monotonic()
-        chat.start_capture()
-        try:
-            research = agent.handle(77, "¿Puedes buscar información oficial sobre Python?", "es", scope="synthetic-probe")
-        finally:
-            captured = chat.stop_capture()
-        print("PUBLIC_SEARCH", json.dumps({"status": research.status if research else "no-route",
-              "method": research.method if research else "", "sources": len(research.sources) if research else 0,
-              "seconds": round(time.monotonic() - begin, 1), "text": "\n".join(captured)[:700]}, ensure_ascii=False), flush=True)
         assert research and research.status == "ok" and research.method == "web" and research.sources
     print("SYNTHETIC_LOCAL_CODER_OK", flush=True)
 
