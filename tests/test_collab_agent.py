@@ -612,3 +612,43 @@ def test_opt_out_is_checked_before_request_truncation(monkeypatch):
         miniapp.op_code(1, {"text": "x" * 6001 + " sin usar API", "model": "external:model"}, "es")
     with pytest.raises(miniapp.AppError):
         miniapp.op_image(1, {"prompt": "x" * 1501 + " sin usar API"}, "es")
+
+
+@pytest.mark.parametrize("query_text,topic", [
+    ("Consulta varios modelos y busca en la web: bibliotecas abiertas de Cuba", "bibliotecas abiertas de Cuba"),
+    ("Consulta varios modelos y busca en internet sobre aves migratorias", "aves migratorias"),
+    ("Ask several models and search the web about Cuban music", "Cuban music"),
+    ("Busca en la web: Python official docs y consulta varios modelos", "Python official docs"),
+])
+def test_general_web_topic_is_user_selected_not_model_or_project(query_text, topic, monkeypatch):
+    search = mock.Mock(return_value=local_ai.Result("ok", '- «Una fuente pública sobre el tema.» [S1]',
+                                                    (local_ai.Source("S1", "Synthetic source", "https://example.test", "safe"),)))
+    monkeypatch.setattr(local_ai, "complete", search)
+    plan = c.Plan(2, False, False, "public", True)
+    excerpts, sources, status = c._web_reference(plan, query_text, "es")
+    assert status == "ok" and sources[0].url == "https://example.test" and excerpts
+    assert search.call_args.args[0] == "busca " + topic
+    assert search.call_args.kwargs["research"] is True
+
+
+@pytest.mark.parametrize("query_text,reason", [
+    ("Consulta varios modelos. Busca en la web: correo privado a@example.test", "web_query_private"),
+    ("Consulta varios modelos. Busca en la web: https://example.test/private", "web_query_private"),
+    ("Consulta varios modelos. Busca en la web: " + "x" * 161, "web_query_length"),
+])
+def test_general_web_never_sends_private_url_or_overlong_topic(query_text, reason, monkeypatch):
+    search = mock.Mock(side_effect=AssertionError("unsafe query sent to web"))
+    monkeypatch.setattr(local_ai, "complete", search)
+    assert c._web_reference(c.Plan(2, False, False, "public", True), query_text, "es")[2] == reason
+    search.assert_not_called()
+
+
+def test_general_web_user_opt_out_and_host_override(monkeypatch):
+    assert c._explicit_web_query("No busques en la web. Busca en la web: mi tema") == ("", "")
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result(
+        "ok", json.dumps({"consultations": 0, "review": False, "image": False, "web": "none"})))
+    assert c._plan("Busca en la web: literatura cubana y consulta varios modelos", [], "es").web == "public"
+    assert c._plan("No busques en la web; consulta varios modelos", [], "es").web == "none"
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: local_ai.Result(
+        "ok", json.dumps({"consultations": 0, "review": False, "image": False, "web": "python"})))
+    assert c._plan("Python: no busques en la web; consulta varios modelos", [], "es").web == "none"
