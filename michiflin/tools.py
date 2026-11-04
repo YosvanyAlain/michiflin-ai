@@ -107,6 +107,12 @@ def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
     return []
 
 
+def search_limited() -> bool:
+    """Report an active rate-limit/challenge pause without retrying it."""
+    with _search_pause_lock:
+        return time.monotonic() < _search_paused_until
+
+
 def search(query: str, locale: str, limit: int = 6, engine: str = "standard") -> list[Result]:
     """Web results. Standard is keyless (but may rate-limit); advanced spends You.com calls and can fall back to standard."""
     if DDGS is None or not query.strip():

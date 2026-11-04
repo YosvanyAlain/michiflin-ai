@@ -482,6 +482,10 @@ def local_reply(chat_id: int, text: str, locale: str, history: list[Any] | None,
         # Do not store untrusted web text in the model's conversational history.
         remembered = local_ai.WEB_MARKER_ES if result.method == "web" else result.text
         local_ai.remember(chat_id, sender, text, remembered, scope)
+    elif research:
+        # A follow-up to a failed search must not silently continue an older,
+        # unrelated model answer. Do not retain a possibly private query here.
+        local_ai.remember(chat_id, sender, "", local_ai.WEB_MARKER_ES, scope)
     chat.text(chat_id, local_ai.display(result, locale))
     return result
 

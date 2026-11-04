@@ -581,15 +581,27 @@ def _web_reference(plan: Plan, request: str, locale: str, budget: ProjectBudget)
     progress.phase("🔎 Consultando fuentes públicas…", "🔎 Checking public sources…")
     result = local_ai.complete("busca " + query, locale, research=True, sender=chat.sender(), synthesize=False)
     if result.status != "ok":
+        if result.status == "web_limited" or result.limited:
+            return [], [], "web_limited_empty"
         return [], [], {"private_query": "web_query_private", "long_query": "web_query_length"}.get(result.status, "unavailable")
     refs = []
-    for match in re.finditer(r"(?m)^- «([^»]{1,420})» \[S\d+\]", result.text):
-        value = _plain_item(match.group(1))
-        if value:
+    used_labels: set[str] = set()
+    known_labels = {source.label for source in result.sources}
+    for match in re.finditer(r"(?m)^- «([^»]{1,420})» \[(S\d+)\]", result.text):
+        value, label = _plain_item(match.group(1)), match.group(2)
+        if value and label in known_labels:
             refs.append("Public source excerpt: " + value)
+            used_labels.add(label)
         if len(refs) >= 2:
             break
-    return refs, list(result.sources), "ok"
+    sources = [source for source in result.sources if source.label in used_labels]
+    if not sources or not refs:
+        return [], [], "web_limited_empty" if result.limited else "unavailable"
+    if result.limited:
+        status = "web_limited_one" if len(sources) == 1 else "web_limited"
+    else:
+        status = "one_source" if len(sources) == 1 else "ok"
+    return refs, sources, status
 
 
 def _image_source() -> images.Source | None:
@@ -669,6 +681,10 @@ class Trace:
     external_attempts: int = 0
 
 
+_WEB_ATTEMPT_STATUSES = {"ok", "unavailable", "one_source", "web_limited", "web_limited_one", "web_limited_empty"}
+_WEB_NOTICE_STATUSES = (_WEB_ATTEMPT_STATUSES - {"ok"}) | {"web_query_private", "web_query_length", "budget", "checkpoint"}
+
+
 def _note(reason: str, locale: str) -> str:
     choices = {
         "sensitive": ("Detecté posibles secretos: no envié el proyecto a APIs.", "Possible secrets detected: no project was sent to APIs."),
@@ -680,6 +696,14 @@ def _note(reason: str, locale: str) -> str:
         "no_image_model": ("No había un modelo de imagen disponible; no inventé una imagen generada.", "No image model was available; I did not invent a generated image."),
         "unusable": ("Una respuesta externa no tenía un formato seguro y se descartó.", "An external response did not have a safe format and was discarded."),
         "unavailable": ("No pude obtener fuentes públicas pertinentes.", "I could not obtain relevant public sources."),
+        "one_source": ("Solo encontré una fuente pertinente y no pude contrastarla con otra.",
+                       "I found only one relevant source and could not cross-check it with another."),
+        "web_limited": ("Una fuente limitó el acceso o pidió verificación; detuve la búsqueda sin eludirlo.",
+                        "A source limited access or requested verification; I stopped without bypassing it."),
+        "web_limited_one": ("Solo encontré una fuente pertinente y no pude contrastarla; otra limitó el acceso o pidió verificación y detuve la búsqueda sin eludirlo.",
+                            "I found only one relevant source and could not cross-check it; another limited access or requested verification, so I stopped without bypassing it."),
+        "web_limited_empty": ("El buscador o una fuente limitó el acceso o pidió verificación; detuve la búsqueda sin obtener fuentes ni eludirlo.",
+                              "The search provider or a source limited access or requested verification; I stopped without sources and without bypassing it."),
         "web_query_private": ("La consulta web parece contener datos privados o una dirección: no la envié al buscador.",
                               "The web query appears to contain private data or a URL: I did not send it to search."),
         "web_query_length": ("Para la búsqueda web, indica un tema público de hasta 160 caracteres.",
@@ -718,9 +742,9 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
     stopped = False
     if plan.valid and plan.web != "none":
         refs, trace.sources, status = _web_reference(plan, request, locale, budget)
-        if status in {"ok", "unavailable"}:
+        if status in _WEB_ATTEMPT_STATUSES:
             trace.external_attempts += 1
-        if status in {"unavailable", "web_query_private", "web_query_length", "budget", "checkpoint"}:
+        if status in _WEB_NOTICE_STATUSES:
             trace.notes.append(_note(status, locale))
         if status in {"budget", "checkpoint"}:
             stopped = True
@@ -918,12 +942,27 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
     stopped = False
     if plan.valid and plan.web != "none":
         refs, trace.sources, status = _web_reference(plan, request, locale, budget)
-        if status in {"ok", "unavailable"}:
+        if status in _WEB_ATTEMPT_STATUSES:
             trace.external_attempts += 1
-        if status in {"unavailable", "web_query_private", "web_query_length", "budget", "checkpoint"}:
+        if status in _WEB_NOTICE_STATUSES:
             trace.notes.append(_note(status, locale))
         if status in {"budget", "checkpoint"}:
             stopped = True
+        if plan.web == "public" and status in {"unavailable", "web_limited_empty", "web_query_private", "web_query_length", "budget", "checkpoint"}:
+            # An explicit web question with no usable sources must not be
+            # answered from the model's guesses or unsolicited advisers.
+            message = _note(status, locale) + tr(locale,
+                "\n\nNo puedo verificar esa información ahora; prueba con otra consulta o aporta una fuente.",
+                "\n\nI cannot verify that information now; try another query or provide a source.")
+            if trace.external_attempts:
+                used_count, limit = budget.counts()
+                message += tr(locale, f"\n\nConsultas externas usadas en este proyecto: {used_count}/{limit}.",
+                              f"\n\nExternal requests used in this project: {used_count}/{limit}.")
+            sender = state.request_sender().strip().lower()
+            local_ai.remember(chat_id, sender, "", local_ai.WEB_MARKER_ES, history_scope)
+            signature = tr(locale, "IA local · colaboración externa" if trace.external_attempts else "IA local · sin API",
+                           "Local AI · external collaboration" if trace.external_attempts else "Local AI · no API")
+            return {"text": message, "sig": signature, "files": [], "actions": []}
     used: list[ai.Model] = []
     advice: list[str] = []
     if plan.valid and not sensitive and not stopped:

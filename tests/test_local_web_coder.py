@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import time
 from unittest import mock
 
 import pytest
@@ -462,6 +463,46 @@ def test_partial_sources_are_kept_when_a_page_rate_limits(monkeypatch):
     monkeypatch.setattr(local_ai.smart_agent, "_read", read)
     monkeypatch.setattr(local_ai, "configured", lambda: True)
     result = local_ai.complete("Busca la biblioteca municipal", "es", research=True, synthesize=False)
-    assert result.status == "ok" and len(result.sources) == 1
+    assert result.status == "ok" and result.limited and len(result.sources) == 1
     assert opened == [hits[0].url, hits[1].url]
     assert "Solo encontré una fuente" in result.text and "detuve la búsqueda" in result.text
+
+
+def test_search_provider_rate_limit_is_reported_without_switching_or_opening_cached_sources(monkeypatch):
+    attempted = []
+    class Challenged:
+        def __init__(self, **_kwargs):
+            pass
+        def text(self, _query, **kwargs):
+            attempted.append(kwargs["backend"])
+            raise RuntimeError("HTTP 429 CAPTCHA")
+    monkeypatch.setattr(tools, "DDGS", Challenged)
+    monkeypatch.setattr(tools, "_search_paused_until", 0.0)
+    monkeypatch.setattr(tools, "_cache", {})
+    monkeypatch.setattr(local_ai, "configured", lambda: True)
+    monkeypatch.setattr(local_ai.smart_agent, "_read", lambda *_a, **_kw: pytest.fail("opened a page after challenge"))
+    result = local_ai.complete("Busca información pública de pruebas sintéticas", "es", research=True, synthesize=False)
+    assert result.status == "web_limited" and attempted == ["bing"]
+    assert "detuve la búsqueda" in local_ai.display(result, "es")
+    # Even a cached result does not lead to page fetches during the pause.
+    tools._cache["s:es:10:información pública de pruebas sintéticas"] = (
+        time.monotonic(), [tools.Result("cached", "https://cached.example.test/")])
+    again = local_ai.complete("Busca información pública de pruebas sintéticas", "es", research=True, synthesize=False)
+    assert again.status == "web_limited" and attempted == ["bing"]
+
+
+def test_nonrelevant_partial_search_still_reports_the_challenge_and_protects_history(monkeypatch):
+    hits = [tools.Result("A", "https://one.example.test/a"), tools.Result("B", "https://two.example.test/b")]
+    monkeypatch.setattr(tools, "search", lambda *_a, **_k: hits)
+    monkeypatch.setattr(tools, "search_limited", lambda: False)
+    monkeypatch.setattr(local_ai.smart_agent, "_read", lambda url, **_kw: (
+        "Las jirafas comen hojas y viven en ambientes de sabana tropical." if url == hits[0].url
+        else "Page unavailable (HTTP 429)."))
+    monkeypatch.setattr(local_ai, "configured", lambda: True)
+    result = local_ai.complete("Busca horarios biblioteca municipal", "es", research=True, synthesize=False)
+    text = local_ai.display(result, "es")
+    assert result.status == "no_relevant" and result.limited
+    assert "No pude extraer información pertinente" in text and "detuve la búsqueda" in text
+    assert "Fuentes consultadas:" in text
+    assert local_ai.last_reply_was_web([["assistant", text]])
+    assert local_ai._history([["assistant", text]]) == []

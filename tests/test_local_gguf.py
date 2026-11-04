@@ -500,3 +500,17 @@ def test_same_person_different_verified_instances_do_not_share_local_context(ser
     assert local_ai.history(818, sender, "app-b:grant-one") == []
     assert "huerta" in str(local_ai.history(818, sender, "app-a:grant-one"))
     local_ai.forget(818, sender)
+
+
+def test_failed_search_does_not_continue_an_older_unrelated_answer(server):
+    requests, _ = server
+    capture("Escribe una frase breve sobre jardinería")
+    assert sum(method == "POST" for method, _, _ in requests) == 1
+    with mock.patch.object(tools, "search", return_value=[]), mock.patch.object(tools, "search_limited", return_value=False):
+        failed = capture("Busca horario actual de Biblioteca Sol")
+    assert "No pude extraer información pertinente" in failed
+    assert "pregunta por un aspecto concreto" in capture("continúa")
+    assert sum(method == "POST" for method, _, _ in requests) == 1
+    remembered = local_ai.history(501, "alice@example.test")
+    assert local_ai.last_reply_was_web(remembered)
+    assert all("Biblioteca Sol" not in turn[1] for turn in remembered[-2:])

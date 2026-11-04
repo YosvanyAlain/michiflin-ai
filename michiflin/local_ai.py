@@ -99,6 +99,7 @@ class Result:
     sources: tuple[Source, ...] = ()
     truncated: bool = False
     method: str = "model"
+    limited: bool = False
 
 
 def _flag(name: str) -> bool:
@@ -474,6 +475,10 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
         raise
     except Exception:
         hits = []
+    if tools.search_limited():
+        # The search provider itself challenged us or is cooling down. Do not
+        # rotate providers or open cached results to bypass that restriction.
+        return "web_limited", ()
     # Prefer genuinely different hosts over repeated links from one site.
     # No host is retried when it rate-limits or challenges this reader.
     ordered: list[tuple[str, str, str]] = []
@@ -544,10 +549,11 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             state.check_work_allowed()
             result = _extractive(question, sources, locale, sender=sender, synthesize=synthesize,
                                  on_wait=on_wait, on_start=on_start)
-            if status == "partial_limited" and result.status == "ok":
+            if status == "partial_limited":
                 notice = tr(locale, "Una fuente limitó el acceso o pidió verificación; detuve la búsqueda sin eludirlo.",
                             "A source limited access or requested verification; I stopped without bypassing it.")
-                return Result(result.status, result.text + "\n\n" + notice, result.sources, result.truncated, result.method)
+                text = result.text + "\n\n" + notice if result.status == "ok" else result.text
+                return Result(result.status, text, result.sources, result.truncated, result.method, limited=True)
             return result
         finally:
             _research_slots.release()
@@ -668,8 +674,12 @@ def display(result: Result, locale: str) -> str:
     if result.status in {"no_sources", "no_relevant"}:
         message = tr(locale, "🔎 No pude extraer información pertinente de fuentes accesibles; no puedo verificar esta información ahora.",
                      "🔎 I could not extract relevant information from accessible sources, so I cannot verify this now.")
+        if result.limited:
+            message += tr(locale, "\n\nUna fuente limitó el acceso o pidió verificación; detuve la búsqueda sin eludirlo.",
+                          "\n\nA source limited access or requested verification; I stopped without bypassing it.")
         if result.sources:
-            message += "\n\n" + "\n".join(f"[{x.label}] {x.url}" for x in result.sources)
+            label = tr(locale, "Fuentes consultadas:", "Sources consulted:")
+            message += "\n\n" + label + "\n" + "\n".join(f"[{x.label}] {x.url}" for x in result.sources)
         return message
     return tr(locale, "⚠️ La IA local no está disponible. Inténtalo más tarde; no cambié a una API externa.",
               "⚠️ Local AI is unavailable. Try again later; no external API was used.")
