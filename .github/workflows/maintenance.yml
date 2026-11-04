@@ -1,29 +1,27 @@
-name: Technical maintenance
+name: Private recovery check without restore
 
 on:
-  schedule:
-    - cron: "20 3 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  actions: write
-
-concurrency:
-  group: michiflin-technical-maintenance
-  cancel-in-progress: false
+permissions: {}
 
 jobs:
-  old-action-logs:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
+          python-version: '3.12'
+      - name: Install verification libraries
+        run: python -m pip install --quiet 'requests==2.33.0' 'cryptography==46.0.3'
+      - name: Check without restoring or revealing private material
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          STATE_GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+          STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+          OLD_PASSWORD: ${{ secrets.STATE_BACKUP_PASSPHRASE }}
+          CLEAN_PASSWORD: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
+        run: python tools/audit_candidate_memory_only.py
