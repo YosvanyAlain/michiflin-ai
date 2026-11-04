@@ -109,8 +109,9 @@ jobs:
       STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
       STATE_BACKUP_REQUIRED: "1"
       STATE_BACKUP_STORAGE: releases
-      # Preserve existing recovery assets and all currently available blobs.
-      STATE_BACKUP_RETAIN_ALL: "1"
+      # Retain a bounded set of verified snapshots; recovery plans and other
+      # non-snapshot assets are never targeted by the automatic rotation.
+      STATE_BACKUP_RETAIN_ALL: "0"
       STATE_BACKUP_INCLUDE_BLOBS: "1"
       # Normal deployment retains the old native namespace. The new identity
       # switches only after its distinct clean seed has been verified and sealed.

@@ -65,9 +65,11 @@ CLEAN_OWNER_ORIGIN = ".owner-clean-origin-v1.json"
 CLEAN_OWNER_ASSET_PREFIX = "michiflin-owner-clean-state-"
 CLEAN_OWNER_PENDING_PREFIX = "michiflin-owner-clean-pending-"
 CLEAN_OWNER_ASSET_PATTERN = re.compile(r"^michiflin-owner-clean-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
-KEEP_RECENT = 12
-KEEP_DAILY = 7
-KEEP_WEEKLY = 4
+# The owner's bounded policy retains no more than 14 automated snapshots:
+# 6 recent, plus representatives from 5 different days and 3 different weeks.
+KEEP_RECENT = 6
+KEEP_DAILY = 5
+KEEP_WEEKLY = 3
 
 
 def _backup_names() -> tuple[str, str, re.Pattern[str]]:
@@ -437,9 +439,15 @@ def _managed(item: dict, prefix: str | None = None) -> bool:
 
 
 def retention_ids(items: list[dict]) -> set[int]:
-    """Keep the newest 12, plus up to 7 distinct days and 4 distinct weeks."""
+    """Keep six recent, five distinct days and three weeks, with overlap.
+
+    The oldest clean-owner snapshot is the verified seed for the recovery
+    plan. Keep it too; the shared newest snapshot leaves room within 14.
+    """
     ordered = sorted((x for x in items if _managed(x)), key=lambda x: (_created(x), x["id"]), reverse=True)
     keep = {x["id"] for x in ordered[:KEEP_RECENT]}
+    if ordered and os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == CLEAN_OWNER_NAMESPACE:
+        keep.add(ordered[-1]["id"])
     days: set[object] = set()
     weeks: set[tuple[int, int]] = set()
     for item in ordered:
@@ -525,11 +533,15 @@ def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphra
                         key=lambda x: (_created(x), x["id"]), reverse=True)
     # The new snapshot and at least one independently downloaded prior snapshot
     # must both decrypt and pass integrity checks before any deletion.
-    prior_verified = False
+    prior_verified = 0
     for item in candidates[:5]:
         try:
-            _verify_plaintext(decrypt_backup(_download_asset(token, repo, item["id"]), passphrase))
-            prior_verified = True
+            plaintext = decrypt_backup(_download_asset(token, repo, item["id"]), passphrase)
+            _verify_plaintext(plaintext)
+            if os.getenv("STATE_BACKUP_NAMESPACE", "").strip() == CLEAN_OWNER_NAMESPACE:
+                # Another epoch must never count as a recoverable clean copy.
+                _verify_clean_origin(plaintext)
+            prior_verified = item["id"]
             break
         except requests.RequestException:
             raise  # a network outage is not proof that a previous copy is corrupt
@@ -539,6 +551,11 @@ def _prune(token: str, repo: str, release_id: int, newly_verified: int, passphra
         print("[backup] rotation deferred until two independently verified copies exist")
         return
     keep = retention_ids(items)
+    if newly_verified not in keep or prior_verified not in keep:
+        # Unexpected timestamps or concurrent changes must not remove either
+        # of the two copies whose recovery was actually checked.
+        print("[backup] rotation deferred: verified copies are outside the retention set")
+        return
     now = datetime.now(timezone.utc)
     removed = 0
     for item in items:
