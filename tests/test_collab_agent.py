@@ -204,6 +204,7 @@ def test_one_exact_image_call_and_binary_fit_without_translator(monkeypatch):
     img = Image.new("RGB", (500, 500), "navy"); data = io.BytesIO(); img.save(data, "JPEG")
     source = images.Source("personal-demo:img", "Personal Demo", 5, personal=True)
     monkeypatch.setattr(c, "_image_source", lambda: source)
+    monkeypatch.setattr(c, "_personal_caps", lambda: [("personal-demo", 5, 0)])
     call = mock.Mock(return_value=images.ImageResult(data=data.getvalue(), source=source.label))
     monkeypatch.setattr(images, "generate", call)
     b = c.ProjectBudget.begin("123", [], "logo")
@@ -447,3 +448,75 @@ def test_manually_selected_model_cannot_send_known_secrets_or_override_local_onl
 
 def test_new_project_prefix_routes_general_to_shared_budget():
     assert c.general_request("nuevo proyecto: una idea diferente")
+
+
+def test_personal_daily_quota_is_conservative_after_restart(monkeypatch):
+    today = state.utc_day()
+    monkeypatch.setitem(state.data, "personal_ai_budgets", {today: {"personal-demo": 3}})
+    monkeypatch.setattr(c, "_personal_caps", lambda: [("personal-demo", 5, 3)])
+    b = c.ProjectBudget.begin("123", [], "synthetic project")
+    assert b.reserve()
+    snapshot = json.loads(json.dumps(state.data["collab_budgets"]))
+    snapshot[b.key]["used"] = 0  # restored snapshot may precede the request
+    monkeypatch.setitem(state.data, "collab_budgets", snapshot)
+    monkeypatch.setattr(c, "_SESSION", "new-process")
+    recovered = c.ProjectBudget.begin("123", [], "retry")
+    assert recovered.remaining() == 0
+    assert state.data["personal_ai_budgets"][today]["personal-demo"] == 5
+
+
+def test_new_personal_provider_forces_fresh_checkpoint(monkeypatch):
+    caps = []
+    checkpoint = mock.Mock(return_value=True)
+    monkeypatch.setattr(c, "_personal_caps", lambda: list(caps))
+    monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
+    b = c.ProjectBudget.begin("123", [], "project")
+    assert b.reserve() and checkpoint.call_count == 1
+    assert b.reserve() and checkpoint.call_count == 1
+    caps.append(("personal-demo", 10, 0))
+    assert b.reserve() and checkpoint.call_count == 2
+
+
+@pytest.mark.parametrize("prompt", ["Crea una app sin generar imagen", "No quiero imagen en esta app",
+                                     "Create a web app without generating an image", "No uses ningún icono"])
+def test_visual_opt_out_never_spends_image_call(prompt, monkeypatch):
+    monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(0, False, True, "none", True))
+    generate = mock.Mock(side_effect=AssertionError("visual opt-out ignored"))
+    monkeypatch.setattr(c, "_make_image", generate)
+    monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result(f))
+    c.run_project(prompt, [], "es", scope="123")
+    generate.assert_not_called()
+
+
+def test_existing_icon_is_reused_unless_new_image_explicitly_requested(monkeypatch):
+    old = [{"path": "icon.jpg", "b64": base64.b64encode(b"existing").decode()}]
+    monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(0, False, True, "none", True))
+    image = mock.Mock(return_value=(None, "", "no_image_model"))
+    monkeypatch.setattr(c, "_make_image", image)
+    monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result(f))
+    c.run_project("Crea una app que use el icono existente", old, "es", scope="123")
+    image.assert_not_called()
+    c.run_project("Genera un nuevo icono para esta app", old, "es", scope="123")
+    image.assert_called_once()
+
+
+def test_missing_personal_quota_metadata_fails_closed_before_api(monkeypatch):
+    monkeypatch.setattr(c, "_personal_caps", lambda: [])
+    checkpoint = mock.Mock(return_value=True)
+    monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
+    b = c.ProjectBudget.begin("123", [], "project")
+    assert not b.reserve("personal-missing") and b.last_error == "checkpoint"
+    assert b.counts() == (0, 4)
+    checkpoint.assert_not_called()
+
+
+def test_new_quota_day_requires_new_durable_checkpoint(monkeypatch):
+    clock = ["2030-01-01"]
+    monkeypatch.setattr(state, "utc_day", lambda: clock[0])
+    monkeypatch.setattr(c, "_personal_caps", lambda: [("personal-demo", 8, 0)])
+    checkpoint = mock.Mock(return_value=True)
+    monkeypatch.setattr(c, "_checkpoint_durable", checkpoint)
+    b = c.ProjectBudget.begin("123", [], "project")
+    assert b.reserve() and checkpoint.call_count == 1
+    clock[0] = "2030-01-02"
+    assert b.reserve() and checkpoint.call_count == 2

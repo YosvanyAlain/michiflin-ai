@@ -34,7 +34,7 @@ MAX_ADVICE_CHARS = 220
 MAX_SCOPE = 64
 _SESSION = secrets.token_hex(16)
 _BUDGET_LOCK = threading.RLock()
-_CHECKPOINTS: dict[str, tuple[int, int]] = {}
+_CHECKPOINTS: dict[str, tuple[Any, ...]] = {}
 
 # Detection is defense in depth, NOT a complete data-loss-prevention system.
 _PRIVATE_FILE = re.compile(r"(?i)(?:^|/)(?:\.env(?:\..*)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|credentials(?:\.[^/]*)?|secrets?(?:\.[^/]*)?)$|\.(?:pem|p12|pfx|key|keystore)$")
@@ -65,7 +65,11 @@ _LOCAL_ONLY = re.compile(
 _MORE = re.compile(r"(?i)\b(?:(?:autorizo|permito|authorize|allow)\s+(?:hasta\s+)?(?:4|cuatro|four)\s+(?:llamadas|consultas|solicitudes|requests)\s+(?:externas?\s+)?(?:m[aá]s|adicionales|more)|(?:i\s+)?(?:allow|authorize)\s+(?:four|4)\s+more\s+(?:external\s+)?requests)\b")
 _NEW = re.compile(r"(?i)^\s*(?:nuevo\s+proyecto|new\s+project)\s*[:;,—-]")
 _VISUAL = re.compile(r"(?i)\b(?:logo(?:tipo)?|icono|icon|logomark|imagen|image|illustration|ilustraci[oó]n)\b")
-_NO_VISUAL = re.compile(r"(?i)\b(?:sin|no\s+(?:uses?|generes?|crees?)|without|no)\s+(?:un\s+|una\s+|an?\s+)?(?:logo|icono|icon|imagen|image|ilustraci[oó]n|illustration)\b")
+_NO_VISUAL = re.compile(
+    r"(?i)\b(?:sin|no|without|do\s+not|don't)\s+(?:(?:uses?|usar|generar|generes?|crear|crees?|quiero|necesito|"
+    r"use|generate|create|want|need|using|generating|creating)\s+)?"
+    r"(?:(?:un|una|ning[uú]n|ninguna|an?|any)\s+)?(?:logo|icono|icon|imagen|image|ilustraci[oó]n|illustration)\b"
+)
 _VISUAL_CONTEXT = re.compile(r"(?i)\b(?:app|aplicaci[oó]n|web|website|interfaz|interface|dise[nñ]o|design|marca|brand|cartel|poster)\b")
 _VISUAL_VERB = re.compile(r"(?i)\b(?:genera|genera[rme]*|crea[rme]*|haz|hazme|dibuja[rme]*|dise[nñ]a[rme]*|necesito|quiero|generate|create|make|draw|design|need|want)\b")
 _PUBLIC_DOCS = {
@@ -160,6 +164,40 @@ def _checkpoint_durable() -> bool:
         return False
 
 
+def _personal_caps() -> list[tuple[str, int, int]]:
+    """Local vault metadata only; never retrieve keys or contact a provider."""
+    from . import personal_ai
+    try:
+        items = personal_ai.public_list(state.request_sender()) if state.personal_ai_secure() else []
+    except (personal_ai.PersonalError, OSError):
+        # An unreadable vault cannot furnish a personal provider either.
+        return []
+    rows = []
+    for item in items:
+        try:
+            key, daily, count = str(item.get("id") or ""), int(item.get("daily") or 0), int(item.get("attempts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if key.startswith("personal-") and 0 <= daily <= 1_000_000 and 0 <= count <= 1_000_000:
+            rows.append((key, daily, count))
+    return sorted(rows)
+
+
+def _restore_personal_floors(row: dict[str, Any]) -> None:
+    marker = row.get("restore_personal")
+    if marker is None:
+        return
+    if not isinstance(marker, dict) or not isinstance(marker.get("floors"), dict):
+        raise BudgetError("invalid personal restart ceilings")
+    if marker.get("day") != state.utc_day():
+        return
+    target = state.data.setdefault("personal_ai_budgets", {}).setdefault(state.utc_day(), {})
+    for key, floor in marker["floors"].items():
+        if not isinstance(key, str) or not key.startswith("personal-") or type(floor) is not int or not 0 <= floor <= 1_000_000:
+            raise BudgetError("invalid personal restart ceiling")
+        target[key] = max(int(target.get(key, 0)), floor)
+
+
 class BudgetError(Exception):
     pass
 
@@ -200,7 +238,9 @@ class ProjectBudget:
                 if type(floor) is not int or not 0 <= floor <= row["limit"]:
                     raise BudgetError("invalid restart ceiling")
                 row["used"] = max(row["used"], floor)
+                _restore_personal_floors(row)
                 row["session"], row["restore_spent"] = _SESSION, 0
+                row.pop("restore_personal", None)
             if _NEW.search(request):
                 stamp = hashlib.sha256(request.encode("utf-8")).hexdigest()
                 if row.get("last_project") != stamp:
@@ -237,18 +277,28 @@ class ProjectBudget:
         used, limit = self.counts()
         return max(0, limit - used)
 
-    def reserve(self) -> bool:
+    def reserve(self, personal_key: str = "") -> bool:
         """Count BEFORE network; make the restart ceiling durable first."""
         with _BUDGET_LOCK:
+            personal = _personal_caps()
+            if personal_key and not any(key == personal_key for key, _daily, _count in personal):
+                self.last_error = "checkpoint"
+                return False  # unreadable/changed vault: never guess the user's daily cap
             with state.lock:
                 row = self._row()
                 if not row or self.remaining() <= 0:
                     self.last_error = "budget"
                     return False
-                token = (row["epoch"], row["limit"])
+                # A provider added or its daily cap edited mid-project gets a
+                # fresh snapshot before that provider can receive requests.
+                fingerprint = tuple((key, daily) for key, daily, _count in personal)
+                token = (row["epoch"], row["limit"], state.utc_day(), fingerprint)
                 needs_checkpoint = _CHECKPOINTS.get(self.key) != token
                 if needs_checkpoint:
                     row["restore_spent"] = row["limit"]
+                    remaining = row["limit"] - row["used"]
+                    row["restore_personal"] = {"day": state.utc_day(), "floors": {
+                        key: min(daily, count + remaining) for key, daily, count in personal if daily}}
                     try:
                         state.save()
                     except (OSError, TypeError, ValueError):
@@ -400,7 +450,7 @@ def _consult(budget: ProjectBudget, request: str, files: list[dict[str, Any]], u
     if model is None:
         return [], None, "", "no_model"
     state.check_work_allowed()
-    if not budget.reserve():
+    if not budget.reserve(model.provider if model.provider.startswith("personal-") else ""):
         return [], None, "", budget.last_error
     state.check_work_allowed()
     used.append(model)  # count before network, including rejected or timed-out requests
@@ -493,7 +543,8 @@ def _make_image(budget: ProjectBudget, request: str, files: list[dict[str, Any]]
     if source is None:
         return None, "", "no_image_model"
     state.check_work_allowed()
-    if not budget.reserve():
+    personal_key = source.key.split(":", 1)[0] if source.personal and source.key.startswith("personal-") else ""
+    if not budget.reserve(personal_key):
         return None, "", budget.last_error
     state.check_work_allowed()
     # No whole project or external page goes to the image generator; only a
@@ -594,8 +645,14 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
     image_file = None
     # Explicit image requests win; a local plan may also request an image for
     # an evidently visual app/design. Plain unrelated requests cannot do so.
-    want_image = bool(plan.valid and not _NO_VISUAL.search(request) and
-                      (_VISUAL.search(request) or (plan.image and _VISUAL_CONTEXT.search(request))))
+    visual_mentioned = _VISUAL.search(request) or (plan.image and _VISUAL_CONTEXT.search(request))
+    existing_image = any(re.search(r"(?i)\.(?:png|jpe?g|webp|svg)$", str(item.get("path") or "")) for item in files)
+    explicit_new_image = re.search(
+        r"(?i)\b(?:genera|generar|dibuja|dibujar|generate|draw)\b.{0,80}\b(?:logo|icono|icon|imagen|image)\b|"
+        r"\b(?:crea|crear|dise[nñ]a|haz|create|design|make)\s+(?:(?:un|una|a|an|nuevo|nueva|new)\s+){0,3}"
+        r"(?:logo|icono|icon|imagen|image)\b", request)
+    want_image = bool(plan.valid and not _NO_VISUAL.search(request) and visual_mentioned
+                      and (not existing_image or explicit_new_image))
     if want_image and not sensitive and not stopped:
         image_file, source, status = _make_image(budget, request, files)
         if source:
