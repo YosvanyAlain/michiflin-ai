@@ -6,6 +6,7 @@ queries conversations, or prints passwords, addresses, fingerprints or IDs.
 """
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import io
 import json
@@ -58,7 +59,7 @@ def memory_integrity(plain):
             data = head + stream.read()
             if len(data) != member.size:
                 raise ValueError('incomplete database')
-            with sqlite3.connect(':memory:') as db:
+            with closing(sqlite3.connect(':memory:')) as db:
                 db.deserialize(data)
                 if db.execute('PRAGMA quick_check').fetchone() != ('ok',):
                     raise ValueError('database integrity')
