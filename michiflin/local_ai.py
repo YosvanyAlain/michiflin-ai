@@ -392,8 +392,8 @@ def _extractive(question: str, sources: tuple[Source, ...], locale: str, *,
     for index, source in enumerate(candidates):
         one = answer.rank(query, [source], limit=1)
         if one:
-            # Similar reports from distinct sources are still independent
-            # observations, and both must retain their own provenance.
+            # Keep provenance even for similar reports; separate domains do
+            # not establish editorial independence or factual correctness.
             selected.append((one[0][0], index))
     for sentence, index in answer.rank(query, candidates, limit=6):
         if len(selected) >= 6:
@@ -457,6 +457,21 @@ def _extractive(question: str, sources: tuple[Source, ...], locale: str, *,
     return Result("ok", body, tuple(used), method="web")
 
 
+def _source_site(host: str) -> str:
+    """Conservative site grouping; distinct domains do not prove editorial independence.
+
+    Avoid counting subdomains of the same site as separate sources, including
+    common country-code second-level suffixes, without any extra network lookup.
+    The heuristic can group unrelated sites or miss shared ownership.
+    """
+    parts = host.lower().rstrip(".").split(".")
+    if len(parts) <= 2:
+        return ".".join(parts)
+    if len(parts[-1]) == 2 and parts[-2] in {"ac", "co", "com", "edu", "gov", "mil", "net", "org"}:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
 def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
     raw = question.strip()
     query = _web_query(raw)
@@ -479,20 +494,21 @@ def _research(question: str, locale: str) -> tuple[str, tuple[Source, ...]]:
         # The search provider itself challenged us or is cooling down. Do not
         # rotate providers or open cached results to bypass that restriction.
         return "web_limited", ()
-    # Prefer genuinely different hosts over repeated links from one site.
-    # No host is retried when it rate-limits or challenges this reader.
+    # Prefer different sites over repeated hosts/subdomains of one site. The
+    # grouping is conservative and never proves independent ownership.
     ordered: list[tuple[str, str, str]] = []
     seen_urls: set[str] = set()
-    seen_hosts: set[str] = set()
+    seen_sites: set[str] = set()
     for hit in hits[:10]:
         url = smart_agent._url(str(getattr(hit, "url", "")))
         if not url or url in seen_urls:
             continue
         seen_urls.add(url)
         host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
-        if not host or host in seen_hosts:
+        site = _source_site(host)
+        if not host or site in seen_sites:
             continue
-        seen_hosts.add(host)
+        seen_sites.add(site)
         title = re.sub(r"[\r\n\x00-\x1f]+", " ", str(getattr(hit, "title", ""))).strip()[:100]
         title = _SOURCE_MARK.sub("", _MODEL_URL.sub("", title)).strip()
         ordered.append((url, host, title))
