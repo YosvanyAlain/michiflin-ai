@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import sys
 import tempfile
 from typing import Any
@@ -57,7 +58,14 @@ def _no_other_contacts(candidate: Path, expected_owner: str) -> None:
         contacts += list(rpc.get_blocked_contacts(account))
         for contact in contacts:
             address = str(getattr(contact, "address", "") or "").strip().casefold()
-            _require(not address or address == expected, "unexpected_contact_in_new_account")
+            _require(address == expected, "unexpected_contact_in_new_account")
+    # Some low-origin contacts are intentionally omitted by the public contact
+    # lists. Inspect the fresh candidate database too; never delete contacts.
+    databases = list((candidate / "accounts").rglob("dc.db"))
+    _require(len(databases) == 1 and not databases[0].is_symlink(), "candidate_database_invalid")
+    with sqlite3.connect(f"file:{databases[0]}?mode=ro", uri=True, timeout=30) as db:
+        for (value,) in db.execute("SELECT addr FROM contacts WHERE id > 9"):
+            _require(str(value or "").strip().casefold() == expected, "unexpected_contact_in_new_account")
 
 
 def prepare(candidate: Path, metadata: dict[str, Any], owner: str, epoch: str) -> dict[str, Any]:
@@ -162,6 +170,9 @@ def seed(candidate: Path, metadata: dict[str, Any], owner: str, epoch: str) -> s
 def activate(path: Path, owner: str) -> dict[str, Any]:
     """Verify the new account on every later session; never initialize anew."""
     _require(os.getenv("STATE_BACKUP_NAMESPACE", "") == state_backup.CLEAN_OWNER_NAMESPACE, "wrong_namespace")
+    _require(config.OWNER_ONLY and not config.INVITE_AUTO_ACCESS, "owner_only_policy_required")
+    _require(config.ALLOWED_SENDERS <= {str(owner or "").strip().casefold()}, "legacy_allowlist_present")
+    _require(not config.MAILBOX_PROFILES_JSON and not config.OWNER_NOTICE, "legacy_configuration_present")
     settings = state_backup.configuration()
     _require(settings is not None, "backup_credentials_missing")
     token, repo, _password = settings
@@ -189,6 +200,10 @@ def main() -> None:
         stream.write("OWNER_PGP_FINGERPRINT=" + marker["owner_fingerprint"] + "\n")
         stream.write("MICHIFLIN_NATIVE_FENCE_REQUIRED=0\nMICHIFLIN_GITHUB_RESUME_ONCE=0\n")
         stream.write("ALLOWED_SENDERS=\nMAILBOX_PROFILES_JSON=\nOWNER_NOTICE=\n")
+        # Preserve the generous owner-only margins without enabling invitations.
+        # These are application limits, not overrides of provider/platform caps.
+        stream.write("USER_MAX_JOBS=5\nUSER_AI_DAILY=0\nUSER_IMAGE_DAILY=0\n")
+        stream.write("USER_CODE_DAILY=0\nAI_RESERVE_PERCENT=10\n")
     print("SAFE_CLEAN_OWNER_ACTIVATED")
 
 

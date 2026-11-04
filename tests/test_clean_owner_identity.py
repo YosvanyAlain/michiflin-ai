@@ -145,3 +145,123 @@ def test_candidate_rejects_extra_contacts_instead_of_purging_them(tmp_path, monk
     with pytest.raises(clean.CleanIdentityError, match="unexpected_contact"):
         clean._no_other_contacts(candidate, OWNER)
     assert len(contacts) == 2  # never remove anyone or pretend the state is clean
+
+
+@pytest.mark.parametrize("unsafe", [
+    {"OWNER_ONLY": False},
+    {"INVITE_AUTO_ACCESS": True},
+    {"ALLOWED_SENDERS": {OWNER, "legacy@example.test"}},
+    {"MAILBOX_PROFILES_JSON": "[{}]"},
+    {"OWNER_NOTICE": "legacy notice"},
+])
+def test_activation_rejects_unsafe_legacy_configuration_before_network(tmp_path, monkeypatch, unsafe):
+    monkeypatch.setenv("STATE_BACKUP_NAMESPACE", state_backup.CLEAN_OWNER_NAMESPACE)
+    baseline = {"OWNER_ONLY": True, "INVITE_AUTO_ACCESS": False, "ALLOWED_SENDERS": {OWNER},
+                "MAILBOX_PROFILES_JSON": "", "OWNER_NOTICE": ""}
+    baseline.update(unsafe)
+    for key, value in baseline.items():
+        monkeypatch.setattr(clean.config, key, value)
+    credentials = mock.Mock(side_effect=AssertionError("unsafe configuration reached storage"))
+    monkeypatch.setattr(state_backup, "configuration", credentials)
+    with pytest.raises(clean.CleanIdentityError):
+        clean.activate(tmp_path, OWNER)
+    credentials.assert_not_called()
+
+
+def test_clean_workflow_forces_private_policy_without_changing_legacy_policy():
+    workflow = (clean.Path(__file__).resolve().parents[1] / ".github/workflows/michiflin.yml").read_text()
+    assert "OWNER_ONLY: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '1' || vars.OWNER_ONLY || '1' }}" in workflow
+    assert "INVITE_AUTO_ACCESS: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || vars.INVITE_AUTO_ACCESS || '0' }}" in workflow
+    assert "secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE']" in workflow
+
+
+def test_address_only_or_blocked_contacts_cannot_be_inherited(tmp_path, monkeypatch):
+    candidate = tmp_path / "candidate"
+    (candidate / "accounts").mkdir(parents=True)
+    owner = SimpleNamespace(address=OWNER)
+    other = SimpleNamespace(address="other@example.test")
+    calls = []
+    def get_ids(_account, flags, _query):
+        calls.append(flags)
+        return [10] if flags == 0 else [10, 11]
+    rpc = SimpleNamespace(get_all_account_ids=lambda: [1], get_contact_ids=get_ids,
+                          get_contact=lambda _a, i: {10: owner, 11: other}[i],
+                          get_blocked_contacts=lambda _a: [])
+    @contextmanager
+    def account_rpc(_path):
+        yield rpc
+    monkeypatch.setattr(clean.relay, "account_rpc", account_rpc)
+    with pytest.raises(clean.CleanIdentityError, match="unexpected_contact"):
+        clean._no_other_contacts(candidate, OWNER)
+    assert calls == [0, 4]
+    rpc.get_contact_ids = lambda _a, _flags, _query: [10]
+    rpc.get_blocked_contacts = lambda _a: [other]
+    with pytest.raises(clean.CleanIdentityError, match="unexpected_contact"):
+        clean._no_other_contacts(candidate, OWNER)
+
+
+def test_activation_exports_generous_owner_margins_without_open_invites(tmp_path, monkeypatch):
+    envfile = tmp_path / "environment"
+    monkeypatch.setenv("CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("OWNER_ADDRESS", OWNER)
+    monkeypatch.setenv("GITHUB_ENV", str(envfile))
+    monkeypatch.setattr(clean.sys, "argv", ["clean_owner_identity.py", "activate"])
+    monkeypatch.setattr(clean, "activate", lambda _p, _o: {"epoch": EPOCH, "owner_fingerprint": "A" * 40})
+    clean.main()
+    values = dict(line.split("=", 1) for line in envfile.read_text().splitlines())
+    assert values["USER_MAX_JOBS"] == "5"
+    assert all(values[k] == "0" for k in ("USER_AI_DAILY", "USER_IMAGE_DAILY", "USER_CODE_DAILY"))
+    assert values["AI_RESERVE_PERCENT"] == "10"
+    assert values["ALLOWED_SENDERS"] == values["MAILBOX_PROFILES_JSON"] == values["OWNER_NOTICE"] == ""
+
+
+def test_clean_restore_never_falls_back_to_an_older_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setenv("STATE_BACKUP_NAMESPACE", state_backup.CLEAN_OWNER_NAMESPACE)
+    monkeypatch.setenv("MICHIFLIN_CLEAN_EPOCH", EPOCH)
+    monkeypatch.setenv("STATE_BACKUP_REQUIRED", "1")
+    monkeypatch.setenv("STATE_BACKUP_STORAGE", "releases")
+    monkeypatch.setattr(state_backup, "configuration", lambda: ("token", "private/repo", "pass"))
+    monkeypatch.setattr(state_backup, "config_dir", lambda: tmp_path / "state")
+    monkeypatch.setattr(state_backup, "_get_ref", lambda *_: "anchor")
+    monkeypatch.setattr(state_backup, "_release", lambda *_: {"id": 1})
+    old = _asset(10, state_backup.CLEAN_OWNER_ASSET_PREFIX)
+    newest = dict(_asset(11, state_backup.CLEAN_OWNER_ASSET_PREFIX), created_at="2026-11-04T01:02:03Z")
+    monkeypatch.setattr(state_backup, "_assets", lambda *_: [old, newest])
+    read_ids = []
+    def download(_token, _repo, number):
+        read_ids.append(number)
+        return b"invalid encrypted data"
+    monkeypatch.setattr(state_backup, "_download_asset", download)
+    with pytest.raises(RuntimeError, match="refusing older fallback"):
+        state_backup.restore()
+    assert read_ids == [11]
+    assert not (tmp_path / "state").exists()
+
+
+def test_hidden_or_addressless_database_contacts_fail_closed(tmp_path, monkeypatch):
+    import sqlite3
+    candidate = tmp_path / "candidate"
+    folder = candidate / "accounts" / "only"
+    folder.mkdir(parents=True)
+    database = folder / "dc.db"
+    with sqlite3.connect(database) as db:
+        db.execute("CREATE TABLE contacts (id INTEGER PRIMARY KEY, addr TEXT)")
+        db.execute("INSERT INTO contacts VALUES (10, ?)", (OWNER,))
+        db.execute("INSERT INTO contacts VALUES (11, ?)", ("other@example.test",))
+    rpc = SimpleNamespace(get_all_account_ids=lambda: [1], get_contact_ids=lambda *_: [10],
+                          get_contact=lambda *_: SimpleNamespace(address=OWNER), get_blocked_contacts=lambda _a: [])
+    @contextmanager
+    def account_rpc(_path):
+        yield rpc
+    monkeypatch.setattr(clean.relay, "account_rpc", account_rpc)
+    with pytest.raises(clean.CleanIdentityError, match="unexpected_contact"):
+        clean._no_other_contacts(candidate, OWNER)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE contacts SET addr = '' WHERE id = 11")
+    with pytest.raises(clean.CleanIdentityError, match="unexpected_contact"):
+        clean._no_other_contacts(candidate, OWNER)
+    with sqlite3.connect(database) as db:
+        db.execute("UPDATE contacts SET addr = ? WHERE id = 11", (OWNER,))
+    clean._no_other_contacts(candidate, OWNER)
+    with sqlite3.connect(database) as db:
+        assert db.execute("SELECT count(*) FROM contacts").fetchone()[0] == 2
