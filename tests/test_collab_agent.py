@@ -156,7 +156,7 @@ def test_two_models_review_and_real_local_implementation_with_four_call_budget(m
     monkeypatch.setattr(local_coder, "run", local)
     got = c.run_project("Crea una aplicación compleja", [], "es", scope="123")
     assert len(called) == 3 and len({key.split(":")[0] for key, *_ in called}) == 3
-    assert all(kwargs["max_tokens"] == 768 for _, _, kwargs in called)
+    assert all(0 < kwargs["max_tokens"] <= 2048 for _, _, kwargs in called)
     assert len(implemented) == 2 and implemented[0] and implemented[1]
     assert got["project_complete"] and "revisión externa" in got["summary"]
     assert c.ProjectBudget.begin("123", [], "same project").remaining() == 1
@@ -520,3 +520,39 @@ def test_new_quota_day_requires_new_durable_checkpoint(monkeypatch):
     assert b.reserve() and checkpoint.call_count == 1
     clock[0] = "2030-01-02"
     assert b.reserve() and checkpoint.call_count == 2
+
+
+def test_reasoning_consultation_uses_more_tokens_but_never_retry_threshold(monkeypatch):
+    reason = ai.Model("reason", "think-model", {"code", "reason"}, 10)
+    monkeypatch.setattr(c, "_models", lambda: [reason])
+    monkeypatch.setattr(ai, "available", lambda _: True)
+    call = mock.Mock(return_value=ai.AIResult(
+        text=json.dumps({"advice": ["Validate the inputs before continuing."]}), provider="reason", model="think"))
+    monkeypatch.setattr(ai, "complete_exact", call)
+    budget = c.ProjectBudget.begin("123", [], "project")
+    assert c._consult(budget, "synthetic", [], [])[3] == "ok"
+    assert call.call_args.kwargs["max_tokens"] == 2048 < 4096
+
+
+def test_generated_image_receipt_is_host_verified_in_local_prompt(monkeypatch):
+    monkeypatch.setattr(c, "_plan", lambda *a, **k: c.Plan(0, False, True, "none", True))
+    monkeypatch.setattr(c, "_make_image", lambda *a: ({"path": "icon.jpg", "b64": base64.b64encode(b"pic").decode()}, "source", "ok"))
+    monkeypatch.setattr(c, "_send_logo", lambda *a: (True, "icon.jpg"))
+    monkeypatch.setattr(local_ai, "history", lambda *a: [])
+    monkeypatch.setattr(local_ai, "remember", lambda *a: None)
+    infer = mock.Mock(return_value=local_ai.Result("ok", "Aquí está."))
+    monkeypatch.setattr(local_ai, "complete_messages", infer)
+    result = c.run_general(5, "Genera un icono", "es", scope="123", task_id="t", history_scope="h")
+    assert "imagen generada como archivo adjunto" in result["text"]
+    assert "already generated and successfully delivered" in infer.call_args.args[0][0]["content"]
+
+
+def test_oversized_image_is_rejected_before_decompression(monkeypatch):
+    from PIL import Image
+    class FakeImage:
+        width, height = 20_000, 20_000
+        def __enter__(self): return self
+        def __exit__(self, *args): return None
+        def convert(self, *args): pytest.fail("decompressed oversized image")
+    monkeypatch.setattr(Image, "open", lambda *_: FakeImage())
+    assert images.compress(b"synthetic") == b""
