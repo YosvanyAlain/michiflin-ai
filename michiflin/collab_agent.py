@@ -643,7 +643,7 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
             advice.extend(items)
             if status != "ok":
                 trace.notes.append(_note(status, locale))
-                if status in {"quota", "cooldown", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
+                if status in {"quota", "cooldown", "busy", "model", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
                     stopped = True
                     break
     image_file = None
@@ -664,6 +664,8 @@ def run_project(request: str, files: list[dict[str, Any]], locale: str, *, scope
             trace.external_attempts += 1
         if status != "ok":
             trace.notes.append(_note(status, locale))
+            if status in {"quota", "cooldown", "busy", "model", "auth", "policy", "budget", "checkpoint"}:
+                stopped = True
     prepared = list(files)
     if image_file:
         prepared.append(image_file)
@@ -837,7 +839,7 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
             advice.extend(items)
             if status != "ok":
                 trace.notes.append(_note(status, locale))
-                if status in {"quota", "cooldown", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
+                if status in {"quota", "cooldown", "busy", "model", "auth", "policy", "budget", "checkpoint", "no_model", "sensitive", "too_large"}:
                     stopped = True
                     break
     delivered: list[str] = []
@@ -855,6 +857,8 @@ def run_general(chat_id: int, request: str, locale: str, *, scope: str, task_id:
                                       "The image was generated, but I could not send it to the chat."))
         elif status != "ok":
             trace.notes.append(_note(status, locale))
+            if status in {"quota", "cooldown", "busy", "model", "auth", "policy", "budget", "checkpoint"}:
+                stopped = True
 
     sender = state.request_sender().strip().lower()
     prior = local_ai.history(chat_id, sender, history_scope)

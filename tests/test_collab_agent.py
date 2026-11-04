@@ -556,3 +556,46 @@ def test_oversized_image_is_rejected_before_decompression(monkeypatch):
         def convert(self, *args): pytest.fail("decompressed oversized image")
     monkeypatch.setattr(Image, "open", lambda *_: FakeImage())
     assert images.compress(b"synthetic") == b""
+
+
+def test_explicit_local_only_blocks_other_users_external_tools_before_network(monkeypatch):
+    state.act_as("guest@example.test"); state.set_personal_ai_secure(False)
+    code = mock.Mock(side_effect=AssertionError("external coder called"))
+    text_api = mock.Mock(side_effect=AssertionError("external text model called"))
+    image_api = mock.Mock(side_effect=AssertionError("external image model called"))
+    monkeypatch.setattr(coder, "run", code)
+    monkeypatch.setattr(ai, "complete", text_api)
+    monkeypatch.setattr(ai, "complete_exact", text_api)
+    monkeypatch.setattr(images, "generate", image_api)
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_code(5, {"text": "sin usar una API, edita", "model": "external:model"}, "es")
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_ask(5, {"text": "solo local: responde", "space": "auto"}, "es")
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_image(5, {"prompt": "solo local: genera un icono"}, "es")
+    code.assert_not_called(); text_api.assert_not_called(); image_api.assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["busy", "model", "auth", "quota", "policy"])
+def test_refusals_stop_all_further_automatic_consultations(reason, monkeypatch):
+    monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(2, True, True, "none", True))
+    monkeypatch.setattr(c, "_models", lambda: [model("alpha"), model("beta")])
+    monkeypatch.setattr(ai, "available", lambda _: True)
+    call = mock.Mock(return_value=ai.AIResult(error=reason, provider="alpha", model="m"))
+    monkeypatch.setattr(ai, "complete_exact", call)
+    image = mock.Mock(side_effect=AssertionError("must not rotate after refusal"))
+    monkeypatch.setattr(c, "_make_image", image)
+    monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result([{"path": "a.py", "text": "pass"}]))
+    c.run_project("Crea una app con icono", [], "es", scope="123")
+    assert call.call_count == 1
+    image.assert_not_called()
+
+
+def test_image_quota_refusal_stops_review(monkeypatch):
+    monkeypatch.setattr(c, "_plan", lambda *_: c.Plan(0, True, True, "none", True))
+    monkeypatch.setattr(c, "_make_image", lambda *a: (None, "image source", "quota"))
+    review = mock.Mock(side_effect=AssertionError("review after quota refusal"))
+    monkeypatch.setattr(c, "_consult", review)
+    monkeypatch.setattr(local_coder, "run", lambda req, f, loc, **kw: fake_result([{"path": "a.py", "text": "pass"}]))
+    c.run_project("Crea un icono para esta app y revisa", [], "es", scope="123")
+    review.assert_not_called()
