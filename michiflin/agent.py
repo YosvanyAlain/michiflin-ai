@@ -391,6 +391,9 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     match = WEATHER.search(stripped)
     if match and len(stripped) < 120:
+        if local_privacy and local_ai._PRIVATE_QUERY.search(stripped):
+            chat.text(chat_id, local_ai.display(local_ai.Result("private_query"), locale))
+            return
         item.last_query, item.last_kind, item.last_results = stripped, "weather", []
         chat.text(chat_id, tools.weather_text(match.group(3).strip(" ?.,"), locale))
         return
@@ -404,10 +407,16 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
         return
     match = NEWS.match(stripped)
     if match and len(stripped) < 100:
+        if local_privacy and local_ai._PRIVATE_QUERY.search(stripped):
+            chat.text(chat_id, local_ai.display(local_ai.Result("private_query"), locale))
+            return
         chat.text(chat_id, tools.news_text(match.group(3), locale))
         return
     match = VIDEO_SEARCH.match(stripped) or YOUTUBE_SEARCH.match(stripped)
     if match and len(stripped) < 160:
+        if local_privacy and local_ai._PRIVATE_QUERY.search(stripped):
+            chat.text(chat_id, local_ai.display(local_ai.Result("private_query"), locale))
+            return
         query = next(group for group in match.groups() if group)
         chat.text(chat_id, video_reply(chat_id, query.strip(" ?.,"), locale))
         return

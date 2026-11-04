@@ -106,19 +106,20 @@ def _run_test(folder: Path, command: str, locale: str) -> tuple[int, str]:
         _restore_after_run(folder, snapshot, locale)
 
 
-def _checked_labels(files: list[dict[str, Any]], can_run: bool) -> list[str]:
+def _checked_labels(files: list[dict[str, Any]], can_run: bool, locale: str) -> list[str]:
     paths = [str(item["path"]).lower() for item in files if "text" in item]
     labels = []
     if any(path.endswith(".py") for path in paths):
         labels.append("Python AST")
     if can_run:
-        for extensions, tool, label in (((".js", ".mjs", ".cjs"), "node", "JavaScript syntax"),
-                                        ((".c",), "gcc", "C syntax"), ((".cc", ".cpp", ".cxx"), "g++", "C++ syntax"),
-                                        ((".java",), "javac", "Java compilation")):
+        for extensions, tool, spanish, english in (((".js", ".mjs", ".cjs"), "node", "sintaxis JavaScript", "JavaScript syntax"),
+                                                  ((".c",), "gcc", "sintaxis C", "C syntax"),
+                                                  ((".cc", ".cpp", ".cxx"), "g++", "sintaxis C++", "C++ syntax"),
+                                                  ((".java",), "javac", "compilación Java", "Java compilation")):
             if coder.shutil.which(tool) and any(path.endswith(extensions) for path in paths):
-                labels.append(label)
+                labels.append(tr(locale, spanish, english))
     if any(path.endswith((".html", ".htm")) for path in paths):
-        labels.append("HTML links/IDs")
+        labels.append(tr(locale, "enlaces e ID HTML", "HTML links/IDs"))
     return labels
 
 
@@ -222,7 +223,7 @@ def run(request: str, files: list[dict[str, Any]], locale: str) -> dict[str, Any
                 errors.append("Project export failed: " + "; ".join(issues[:4]))
             if changed and not issues:
                 problems = coder.web_check(current) + coder.syntax_check(folder, current, can_run)
-                checks = _checked_labels(current, can_run)
+                checks = _checked_labels(current, can_run, locale)
                 if problems:
                     errors.extend(problems[:8])
                     steps.append({"kind": "run", "cmd": "syntax / project checks", "code": 1, "out": "\n".join(problems)[:1500]})
@@ -273,6 +274,9 @@ def run(request: str, files: list[dict[str, Any]], locale: str) -> dict[str, Any
                             "Isolation is unavailable: I did not run or compile the project."))
         elif not ran:
             notes.append(tr(locale, "No se ejecutaron pruebas de comportamiento.", "No behavioral tests were run."))
+        else:
+            notes.append(tr(locale, "Se ejecutaron comandos en aislamiento; consulta su resultado en los pasos.",
+                            "Commands were run in isolation; check their results in the steps."))
         if checks:
             notes.append(tr(locale, "Comprobaciones realizadas: ", "Checks performed: ") + ", ".join(checks) + ".")
         return {"files": output, "project_complete": complete, "model_confirmed": confirmed and complete,

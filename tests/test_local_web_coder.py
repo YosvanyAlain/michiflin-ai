@@ -312,3 +312,17 @@ def test_long_local_request_is_not_silently_truncated(monkeypatch):
         with pytest.raises(miniapp.AppError, match="no se recortó"):
             miniapp.op_code(1, {"text": "x" * 6001, "model": ""}, "es")
     run.assert_not_called()
+
+
+@pytest.mark.parametrize("question", [
+    "Busca videos de mis archivos",
+    "Noticias sobre mi proyecto",
+    "Clima en mi cuenta secreta",
+])
+def test_other_search_tools_refuse_obvious_private_data(question):
+    with mock.patch.object(tools, "video_search", side_effect=AssertionError("private video search")), \
+         mock.patch.object(tools, "news_text", side_effect=AssertionError("private news search")), \
+         mock.patch.object(tools, "weather_text", side_effect=AssertionError("private weather lookup")), \
+         mock.patch.object(tools, "search", side_effect=AssertionError("private search")):
+        reply = capture(question)
+    assert "no la envié al buscador" in reply
