@@ -31,6 +31,9 @@ jobs:
       # User-authorized, temporary test. Set repository variable to 0 to opt out
       # at the next session. The server uses no provider AI key or account.
       LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '1' }}
+      # Independently opted in by the owner; ignored for everyone else and
+      # unless the request is in the current encrypted one-to-one app.
+      LOCAL_COLLAB_OWNER: ${{ vars.LOCAL_COLLAB_OWNER || '0' }}
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}

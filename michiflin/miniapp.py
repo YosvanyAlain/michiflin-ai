@@ -820,6 +820,8 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         # Never trust an app-supplied server context scope.
         actual_args = dict(args)
         actual_args.pop("_local_scope", None)
+        actual_args.pop("_collab_scope", None)  # never trust a client-supplied project identity
+        actual_args.pop("_collab_task", None)
         inline_key: tuple[int, str, str] | None = None
         if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
             from . import live_web
@@ -831,11 +833,17 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             if requested and not secure:
                 raise AppError(tr(locale, "Las APIs personales requieren la app actual en un chat individual cifrado.",
                                   "Personal APIs require the current app in an encrypted one-to-one chat."))
+            if (op == "code" and secure and int(identity[0].get("chat") or 0) == chat_id
+                    and identity[0].get("epoch") == admitted_entry.get("epoch")
+                    and identity[0].get("access_session") == admitted_entry.get("access_session")):
+                actual_args["_collab_scope"] = str(instance_id)
             if (op == "ask" and secure and int(identity[0].get("chat") or 0) == chat_id
                     and identity[0].get("epoch") == admitted_entry.get("epoch")
                     and identity[0].get("access_session") == admitted_entry.get("access_session")):
                 inline_key = _inline_pages.key(instance_id, address, _inline_scope(admitted_entry, args))
                 actual_args["_local_scope"] = f"{instance_id}:{inline_key[2]}"
+                actual_args["_collab_scope"] = str(instance_id)
+                actual_args["_collab_task"] = rid  # admitted request identity; not from the args payload
         gate = _ai_gate(address) if op in AI_OPS else None
         if gate is not None and not gate.acquire(blocking=False):
             raise AppError(tr(locale, "Espera a que termine tu consulta anterior.", "Wait until your previous request finishes."))
@@ -936,12 +944,21 @@ def _local_ai_disclosure(instance_id: int) -> None:
         if len(_local_ai_disclosed) >= 4096:
             _local_ai_disclosed.pop(next(iter(_local_ai_disclosed)))
         _local_ai_disclosed[instance_id] = True
+    from . import collab_agent
+    if collab_agent.notice_for_instance(instance_id):
+        spanish = ("Esta app conserva etiquetas anteriores. La colaboración autorizada puede consultar APIs, "
+                   "incluidas las personales con posibles cargos, y compartir archivos: hasta cuatro llamadas por proyecto. "
+                   "Para una tarea sin APIs escribe «solo local». Las búsquedas usan fuentes externas.")
+        english = ("This app retains older labels. Authorized collaboration may use APIs, including personal ones that may "
+                   "incur charges, and share files: up to four calls per project. Write ‘local only’ for a task without APIs. "
+                   "Searches use external sources.")
+    else:
+        spanish = "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas."
+        english = "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. Searches use external sources."
     sent = False
     try:
         sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {
-            "kind": "info",
-            "es": "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas.",
-            "en": "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. Searches use external sources.",
+            "kind": "info", "es": spanish, "en": english,
         }})
     finally:
         if not sent:
@@ -1396,6 +1413,17 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         from . import local_ai
         handled: list[local_ai.Result | None] = []
         scope = str(args.get("_local_scope") or "")[:200]
+        from . import collab_agent, coder
+        collab_scope = str(args.get("_collab_scope") or "")[:64]
+        collab_task = str(args.get("_collab_task") or "")[:40]
+        if collab_agent.authorized(collab_scope) and collab_task and collab_agent.general_request(text):
+            try:
+                answer = collab_agent.run_general(chat_id, text, locale, scope=collab_scope,
+                                                  task_id=collab_task, history_scope=scope)
+            except coder.CoderError as exc:
+                raise AppError(str(exc)) from None
+            answer["actions"] = actions_in(answer["text"], locale)
+            return answer
         def run_agent() -> None:
             result = (agent.handle(chat_id, text, locale, history, scope=scope) if scope
                       else agent.handle(chat_id, text, locale, history))
@@ -1593,7 +1621,7 @@ def op_tiktok_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 @op("code")
 def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     """Coder: free coding models write, run and fix a small project; the app keeps the files and builds the ZIP."""
-    from . import coder, local_ai, local_coder
+    from . import collab_agent, coder, local_ai, local_coder
 
     raw_text = _clean(args.get("text"))
     text = raw_text[:6000]
@@ -1613,11 +1641,13 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     # If local startup failed, Automatic fails closed instead of leaking a
     # project to an API. The dedicated key also fails closed if unavailable.
     use_local = model == local_coder.MODEL_KEY or (not model and local_ai.privacy_mode())
+    scope = str(args.get("_collab_scope") or "")[:64]
+    use_collab = bool(use_local and not model and not collab_agent.local_only(text) and collab_agent.authorized(scope))
     if use_local:
         if len(raw_text) > 6000:
             raise AppError(tr(locale, "La petición es demasiado larga para la IA local; no se recortó ni se modificó el proyecto.",
                               "The request is too long for local AI; it was not truncated and the project was not changed."))
-        model = local_coder.MODEL_KEY
+        model = collab_agent.MODEL_KEY if use_collab else local_coder.MODEL_KEY
     if model and not use_local and ai.model_by_key(model) is None:
         raise AppError(tr(locale, "Ese modelo ya no está disponible; elige otro o usa Automático.",
                           "That model is no longer available; pick another or use Automatic."))
@@ -1629,7 +1659,8 @@ def op_code(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         if not use_local and not model.startswith("personal-") and usage.reserve_low():
             raise AppError(usage.reserve_text(locale))
     try:
-        result = coder.run(text, files, locale, model)
+        result = (coder.run(text, files, locale, model, scope=scope) if use_collab
+                  else coder.run(text, files, locale, model))
     except coder.CoderError as exc:
         raise AppError(str(exc))
     if result.get("files") and address and (not use_local or result.get("project_complete", True)):
