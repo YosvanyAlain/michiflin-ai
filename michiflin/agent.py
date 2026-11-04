@@ -298,6 +298,21 @@ def _handle(chat_id: int, text: str, locale: str, history: list[Any] | None = No
                 "to a search engine or AI provider. You can ask ‘search ...’ for public sources."))
             return
         if local_ai.ready():
+            # Only the opted-in owner in the verified current app can use
+            # collaboration; don't falsely describe that mode as API-free.
+            from . import collab_agent
+            collab_scope = scope.split(":", 1)[0] if scope else ""
+            if collab_agent.authorized(collab_scope):
+                chat.text(chat_id, tr(locale,
+                    "Soy el agente de Michiflin. La IA local coordina y responde; para tareas complejas puede consultar "
+                    "modelos externos y, cuando corresponda, revisarlos o pedir una imagen, dentro del límite autorizado. "
+                    "Esos servicios pueden recibir la petición o archivos y las APIs personales pueden generar cargos. "
+                    "Escribe ‘solo local’ para esa tarea si no quieres consultas externas. La búsqueda pública envía su consulta al buscador.",
+                    "I am Michiflin's agent. Local AI coordinates and answers; for complex tasks it may consult external "
+                    "models and, when appropriate, request a review or image within the authorized limit. Those services "
+                    "may receive the request or files and personal APIs may incur charges. Write ‘local only’ for a task "
+                    "if you do not want external consultations. Public search sends its query to the search provider."))
+                return
             chat.text(chat_id, tr(
                 locale,
                 "Soy el agente de Michiflin AI. En este modo puedo conversar y ayudarte a redactar o programar "

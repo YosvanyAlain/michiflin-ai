@@ -176,7 +176,7 @@ def english_prompt(prompt: str) -> str:
     return text if 3 < len(text) < 1500 else prompt
 
 
-def generate(text: str, model: str = "") -> ImageResult:
+def generate(text: str, model: str = "", *, translate: bool = True) -> ImageResult:
     """One image, counted against the daily image allowance of people who are not administrators."""
     from . import usage
 
@@ -187,7 +187,7 @@ def generate(text: str, model: str = "") -> ImageResult:
     if not _image_lock.acquire(blocking=False):
         return ImageResult(error="busy")
     try:
-        result = _generate(text, model)
+        result = _generate(text, model) if translate else _generate(text, model, translate=False)
         if result.data and address:
             usage.spend(address, "image")
         return result
@@ -195,7 +195,7 @@ def generate(text: str, model: str = "") -> ImageResult:
         _image_lock.release()
 
 
-def _generate(text: str, model: str = "") -> ImageResult:
+def _generate(text: str, model: str = "", *, translate: bool = True) -> ImageResult:
     """A chosen model is used alone (no silent fallback), otherwise sources rotate fairly."""
     state.check_work_allowed()
     prompt = clean_prompt(text)
@@ -217,7 +217,7 @@ def _generate(text: str, model: str = "") -> ImageResult:
     if not pool:
         return ImageResult(error=last_error, prompt=prompt)
     # Do not send a private paid prompt to a separate translation service.
-    english = (prompt if pool[0].personal else english_prompt(prompt))[:1900]
+    english = (prompt if pool[0].personal or not translate else english_prompt(prompt))[:1900]
     state.check_work_allowed()
     for source in pool:
         state.check_work_allowed()
