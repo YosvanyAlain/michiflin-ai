@@ -18,7 +18,10 @@ import tarfile
 import tomllib
 
 import requests
-import state_backup
+
+# Executed as a script from tools/, so make the repository root importable.
+sys.path.insert(0, str(PurePosixPath(__file__).parent.parent))
+import state_backup  # noqa: E402
 
 
 def memory_integrity(plain):
