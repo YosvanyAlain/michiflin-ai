@@ -88,8 +88,8 @@ BRIDGE = r"""
         const placeId = request.args.place_id || 1;
         const data = {query: request.args.city, place:{id:placeId,label:placeId === 1 ? "Havana, Cuba" : "Havana, USA"},
           candidates:[{id:1,label:"Havana, Cuba"},{id:2,label:"Havana, USA"}],
-          timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"sunny"},
-          days:[{date:"2026-10-29",code:0,description:"clear",high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",high:29,low:24,rain:65}],source:"Open-Meteo"};
+          timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"clear",descriptions:{es:"despejado",en:"clear"}},
+          days:[{date:"2026-10-29",code:0,description:"clear",descriptions:{es:"despejado",en:"clear"},high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",descriptions:{es:"lluvia",en:"rain"},high:29,low:24,rain:65}],source:"Open-Meteo"};
         const at = Date.now() / 1000;
         window.__weatherHome.last = {at, data};
         return {...data, saved_at:at, saved_on_bot:true};
@@ -299,6 +299,13 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 screenshot_if_requested(page, language + "-home-weather-saved")
                 page.locator(".weather-banner").click()
                 self.assertIn("28", page.locator(".weather-temp").inner_text())
+                self.assertIn("despejado" if language == "es" else "clear", page.locator(".weather-place").inner_text().lower())
+                # Switch language while offline: descriptions already travel with
+                # the stored forecast; no weather request is necessary.
+                page.evaluate("""() => { prefs.lang = lang() === 'es' ? 'en' : 'es'; render(); }""")
+                self.assertIn("clear" if language == "es" else "despejado", page.locator(".weather-place").inner_text().lower())
+                self.assertIn("rain" if language == "es" else "lluvia", page.locator(".weather-days").inner_text().lower())
+                self.assertEqual(page.evaluate("weatherDescription({description: 'old snapshot'})"), "old snapshot")
                 self.assertEqual(page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'weather').length"), weather_calls)
                 self.assertTrue(page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth"))
                 self.assertEqual(errors, [])

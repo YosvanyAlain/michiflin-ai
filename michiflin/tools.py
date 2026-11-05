@@ -483,16 +483,19 @@ def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
         days = []
         for day, code, high, low, rain in zip(daily.get("time", []), daily.get("weather_code", []),
                 daily.get("temperature_2m_max", []), daily.get("temperature_2m_min", []), daily.get("precipitation_probability_max", [])):
-            days.append({"date": day, "code": code, "description": WEATHER.get(int(code), ("?", "?"))[index],
+            descriptions = WEATHER.get(int(code), ("?", "?"))
+            days.append({"date": day, "code": code, "description": descriptions[index],
+                         "descriptions": {"es": descriptions[0], "en": descriptions[1]},
                          "high": high, "low": low, "rain": rain})
+        descriptions = WEATHER.get(int(current["weather_code"]), ("?", "?"))
         return {"query": query, "place": {"id": place["id"], "label": _place_label(place)},
                 "candidates": [{"id": p["id"], "label": _place_label(p)} for p in places[:10]],
                 "timezone": body.get("timezone") or place.get("timezone") or "", "as_of": current.get("time") or "",
                 "current": {"temp": current.get("temperature_2m"), "feels": current.get("apparent_temperature"),
                             "humidity": current.get("relative_humidity_2m"), "wind": current.get("wind_speed_10m"),
                             "precipitation": current.get("precipitation"), "code": current.get("weather_code"),
-                            "is_day": current.get("is_day", 1),
-                            "description": WEATHER.get(int(current["weather_code"]), ("?", "?"))[index]},
+                            "is_day": current.get("is_day", 1), "description": descriptions[index],
+                            "descriptions": {"es": descriptions[0], "en": descriptions[1]}},
                 "days": days, "source": "Open-Meteo"}
     except WeatherError:
         raise
