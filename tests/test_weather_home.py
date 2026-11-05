@@ -3,6 +3,8 @@ from unittest import mock
 import pytest
 from michiflin import access, admin, chat, config, miniapp, state, tools, weather_home
 
+_real_state_save = state.save
+
 
 @pytest.fixture(autouse=True)
 def isolated_weather(monkeypatch):
@@ -164,3 +166,33 @@ def test_equivalent_city_query_does_not_trigger_duplicate_auto_lookup(monkeypatc
     monkeypatch.setattr(tools, "weather_data", fetch)
     assert not weather_home.poll_once(at=1001)
     fetch.assert_not_called()
+
+
+def test_weather_state_survives_restart_and_one_missed_cycle(tmp_path, monkeypatch):
+    # Exercise the real atomic JSON writer/loader against synthetic state only.
+    import copy
+    real_load = state.load
+    # Restore the writer captured before the autouse fixture patched it.
+    monkeypatch.setattr(state, "save", _real_state_save)
+    original = copy.deepcopy(state.data)
+    monkeypatch.setattr(state, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(state, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(state, "LEGACY_STATE_FILE", tmp_path / "missing-legacy.json")
+    try:
+        weather_home.view("owner@example.test", "es")
+        weather_home.remember("owner@example.test", sample("La Habana, Cuba", 42), at=1000)
+        key = weather_home._scope("owner@example.test")[0]
+        assert state.data["weather_home"][key]["last"]["at"] == 1000
+        state.data["weather_home"] = {}
+        real_load()
+        after = weather_home.view("owner@example.test", "es")
+        assert after["last"]["data"]["place"]["id"] == 42
+        assert after["next_at"] == 1000 + weather_home.INTERVAL
+        fetch = mock.Mock(return_value=sample())
+        monkeypatch.setattr(tools, "weather_data", fetch)
+        assert weather_home.poll_once(at=1000 + 5 * weather_home.INTERVAL)
+        assert not weather_home.poll_once(at=1001 + 5 * weather_home.INTERVAL)
+        assert fetch.call_count == 1  # no replay of missed intervals
+    finally:
+        state.data.clear()
+        state.data.update(original)
