@@ -424,6 +424,45 @@ class VaultAndBridgeTests(unittest.TestCase):
 
 
 class BrowserFrameTests(unittest.TestCase):
+    def test_human_drag_replays_recorded_path_and_releases_pointer(self):
+        page = mock.Mock()
+        path = [{"x": 20, "y": 40, "ms": 0}, {"x": 35, "y": 43, "ms": 45}, {"x": 70, "y": 46, "ms": 110}]
+        remote_worker.drag_pointer(page, path)
+        self.assertEqual(page.mouse.move.call_args_list, [mock.call(20, 40), mock.call(35, 43), mock.call(70, 46)])
+        self.assertEqual(page.wait_for_timeout.call_args_list, [mock.call(45), mock.call(65)])
+        page.mouse.down.assert_called_once_with()
+        page.mouse.up.assert_called_once_with()
+
+    def test_invalid_human_drag_does_not_touch_the_page(self):
+        start = {"x": 20, "y": 40, "ms": 0}
+        end = {"x": 70, "y": 46, "ms": 100}
+        invalid = [None, [], [start], [start] * 65, [dict(start, ms=1), end],
+                   [start, dict(end, x=480)], [start, dict(end, y=-1)], [start, dict(end, ms=8001)],
+                   [start, dict(end, ms=-1)], [start, dict(end, ms=True)], [start, dict(end, x=float("nan"))],
+                   [start, end, dict(end, ms=99)]]
+        for path in invalid:
+            page = mock.Mock()
+            with self.subTest(path=str(path)[:100]), self.assertRaises(ValueError):
+                remote_worker.drag_pointer(page, path)
+            page.mouse.down.assert_not_called()
+            page.mouse.move.assert_not_called()
+
+    def test_human_drag_releases_after_failed_move(self):
+        page = mock.Mock()
+        page.mouse.move.side_effect = [None, RuntimeError("closed")]
+        with self.assertRaises(RuntimeError):
+            remote_worker.drag_pointer(page, [{"x": 2, "y": 3, "ms": 0}, {"x": 5, "y": 7, "ms": 10}])
+        page.mouse.up.assert_called_once_with()
+
+    def test_human_drag_is_admitted_once_even_if_transport_retries(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
+        path = [{"x": 10, "y": 20, "ms": 0}, {"x": 110, "y": 20, "ms": 200}]
+        action = {"seq": 1, "action": "drag", "points": path}
+        session.submit(action)
+        session.submit(action)
+        self.assertEqual(session.queue.qsize(), 1)
+        self.assertEqual(session.queue.get_nowait()["points"], path)
+
     def test_sharp_frame_falls_back_and_remains_within_transport_limit(self):
         page = mock.Mock()
         page.screenshot.side_effect = lambda **kw: b"x" * (remote_worker.MAX_FRAME + 1 if kw["scale"] == "device" else 100)
@@ -438,6 +477,8 @@ class BrowserFrameTests(unittest.TestCase):
         result = remote_worker.frame(page, "economy")
         self.assertEqual(result["rendered"], "economy")
         self.assertEqual(page.screenshot.call_args.kwargs["scale"], "css")
+        self.assertEqual(page.screenshot.call_args.kwargs["quality"], 35)
+        self.assertEqual(page.screenshot.call_args.kwargs["animations"], "allow")
 
     def test_frame_rejects_even_an_economy_image_that_cannot_fit(self):
         page = mock.Mock()
@@ -487,6 +528,59 @@ class BrowserFrameTests(unittest.TestCase):
             session.run()
         self.assertEqual(exchange.call_count, 1)  # opening only, no external goto
         self.assertIn({"t": "error", "seq": 1, "error": "different_site", "route": "direct"}, sent)
+
+    def test_human_mode_is_selected_explicitly_and_rejects_malformed_values(self):
+        sid = "a" * 32
+        with mock.patch.object(live_web, "_authorized", return_value=({"chat": 7}, ALICE)), \
+             mock.patch.object(web_vault, "_secret", return_value=b"fixture"), \
+             mock.patch.object(live_web.Session, "start") as start, mock.patch.object(live_web, "_send") as send:
+            try:
+                for value, expected in ((None, "controlled"), ("human", "human"), ([], None), ("other", None)):
+                    payload = {"v": 1, "sid": sid, "t": "start", "url": "https://example.org/"}
+                    if value is not None:
+                        payload["browser"] = value
+                    with live_web._lock:
+                        live_web._sessions.pop(10, None)
+                    live_web.receive(10, list(json.dumps(payload).encode()))
+                    if expected:
+                        self.assertEqual(live_web._sessions[10].browser, expected)
+                    else:
+                        self.assertNotIn(10, live_web._sessions)
+                        self.assertEqual(send.call_args.args[2]["error"], "browser_failed")
+                self.assertEqual(start.call_count, 2)
+            finally:
+                with live_web._lock:
+                    live_web._sessions.pop(10, None)
+
+    def test_human_mode_never_loads_or_saves_existing_state(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/", browser="human")
+        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()), route="direct", gateway=None)
+        sent = []
+        def send(_instance, _sid, message):
+            sent.append(message)
+            if message.get("seq") == 0:
+                session.submit({"action": "save", "seq": 1})
+            elif message.get("seq") == 1:
+                session.submit({"action": "download", "seq": 2})
+            elif message.get("seq") == 2:
+                session.stop()
+            return True
+        with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()), \
+             mock.patch.object(live_web, "_send", side_effect=send), \
+             mock.patch.object(web_vault, "load") as load, mock.patch.object(web_vault, "save") as save, \
+             mock.patch.object(sandbox, "BrowserProcess") as factory, \
+             mock.patch.object(session, "_exchange", return_value={"kind": "frame", "image": ""}) as exchange:
+            factory.return_value.__enter__.return_value = worker
+            session.run()
+            forged = session._reply({"kind": "state", "storage": storage("synthetic")}, 3)
+        load.assert_not_called()
+        save.assert_not_called()
+        factory.assert_called_once_with(worker_file="human_browser_worker.py", lifetime=live_web.LIFETIME_SECONDS + 60)
+        self.assertEqual(exchange.call_count, 1)
+        self.assertIsNone(exchange.call_args.args[2]["storage"])
+        for seq in (1, 2):
+            self.assertIn({"t": "error", "seq": seq, "error": "human_no_saved_session", "route": "direct"}, sent)
+        self.assertEqual(forged, {"t": "error", "seq": 3, "error": "human_no_saved_session"})
 
 
 class EgressAndResearchTests(unittest.TestCase):
@@ -784,6 +878,12 @@ class RealSandboxTests(unittest.TestCase):
                         body = (b'<html><body style="height:2200px">Top'
                                 b'<button style="position:fixed;left:20px;top:80px;width:120px;height:50px" '
                                 b'onclick="localStorage.setItem(\'clicked\',\'yes\')">Click fixture</button>'
+                                b'<input type="range" min="0" max="100" value="0" '
+                                b'style="position:fixed;left:20px;top:155px;width:220px" '
+                                b'oninput="localStorage.setItem(\'slid\',this.value)">'
+                                b'<button style="position:fixed;left:20px;top:210px;width:150px;height:50px" '
+                                b'onpointerdown="this.dataset.start=performance.now()" '
+                                b'onpointerup="localStorage.setItem(\'held\',Math.round(performance.now()-this.dataset.start))">Hold</button>'
                                 b'<div style="position:absolute;top:2000px">Bottom</div></body></html>')
                         self.send_response(200); self.send_header("Content-Type", "text/html")
                         self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
@@ -888,6 +988,20 @@ class RealSandboxTests(unittest.TestCase):
                         saved = exchange({"action": "save", "seq": 2})
                         self.assertTrue(any(item["name"] == "clicked" and item["value"] == "yes"
                                             for origin in saved["storage"]["origins"] for item in origin["localStorage"]))
+                        # A genuine local fixture, not a real CAPTCHA: run the
+                        # recorded gesture through the isolated browser worker.
+                        dragged = exchange({"action": "drag", "seq": 20, "points": [
+                            {"x": 30, "y": 165, "ms": 0}, {"x": 100, "y": 165, "ms": 90},
+                            {"x": 220, "y": 165, "ms": 200}]})
+                        self.assertEqual(dragged["kind"], "frame")
+                        held = exchange({"action": "drag", "seq": 21, "points": [
+                            {"x": 70, "y": 230, "ms": 0}, {"x": 70, "y": 230, "ms": 200}]})
+                        self.assertEqual(held["kind"], "frame")
+                        saved = exchange({"action": "save", "seq": 22})
+                        data = {item["name"]: item["value"] for origin in saved["storage"]["origins"]
+                                for item in origin["localStorage"]}
+                        self.assertGreater(int(data["slid"]), 70)
+                        self.assertGreaterEqual(int(data["held"]), 180)
                         small = exchange({"action": "frame", "detail": "economy", "seq": 3})
                         self.assertEqual((small["kind"], small["rendered"]), ("frame", "economy"))
                         self.assertEqual(Image.open(io.BytesIO(base64.b64decode(small["image"]))).size, (480, 760))

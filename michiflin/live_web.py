@@ -24,8 +24,8 @@ from . import access, admin, chat, config, identity_guard, sandbox, state, web_v
 MAX_MESSAGE = 16_000
 MAX_RESPONSE = 125_000
 MAX_SESSIONS = 2
-IDLE_SECONDS = 150
-LIFETIME_SECONDS = 600
+IDLE_SECONDS = 300
+LIFETIME_SECONDS = 1200
 SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _lock = threading.RLock()
 _sessions: dict[int, Session] = {}
@@ -234,7 +234,11 @@ def receive(instance: int, values: list[int]) -> None:
             detail = body.get("detail")
             if not isinstance(detail, str) or detail not in {"sharp", "economy"}:
                 detail = "sharp"
-            session = Session(instance, sid, authenticated[1], site, url, locale, detail)
+            browser = body.get("browser", "controlled")
+            if not isinstance(browser, str) or browser not in {"controlled", "human"}:
+                _send(instance, sid, {"t": "error", "error": "browser_failed"})
+                return
+            session = Session(instance, sid, authenticated[1], site, url, locale, detail, browser)
             _sessions[instance] = session
             session.start()
         elif existing and existing.sid == sid:
@@ -282,9 +286,10 @@ def shutdown() -> None:
 
 
 class Session:
-    def __init__(self, instance: int, sid: str, owner: str, site: str, url: str, locale: str = "es", detail: str = "sharp"):
+    def __init__(self, instance: int, sid: str, owner: str, site: str, url: str, locale: str = "es", detail: str = "sharp", browser: str = "controlled"):
         self.instance, self.sid, self.owner, self.site, self.url, self.locale = instance, sid, owner, site, url, locale
         self.detail = detail if isinstance(detail, str) and detail in {"sharp", "economy"} else "sharp"
+        self.browser = browser if isinstance(browser, str) and browser in {"controlled", "human"} else "controlled"
         self.generation = state.kill_generation(owner)
         self.stopped = threading.Event()
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
@@ -312,7 +317,7 @@ class Session:
     def submit(self, body: dict[str, Any]) -> None:
         seq, action = body.get("seq"), body.get("action")
         if type(seq) is not int or seq < 1 or seq > 1_000_000 or not isinstance(action, str) or action not in {
-            "click", "text", "key", "scroll", "back", "forward", "reload", "goto", "frame", "save", "close", "capture", "download"
+            "click", "drag", "text", "key", "scroll", "back", "forward", "reload", "goto", "frame", "save", "close", "capture", "download"
         }:
             return
         with self.mutex:
@@ -327,7 +332,7 @@ class Session:
                 self.inflight = seq
                 reply = None
                 # The queue contains plaintext briefly, never on disk or in logs.
-                request = {key: body[key] for key in ("action", "seq", "x", "y", "text", "key", "amount", "url", "detail") if key in body}
+                request = {key: body[key] for key in ("action", "seq", "x", "y", "points", "text", "key", "amount", "url", "detail") if key in body}
                 try:
                     self.queue.put_nowait(request)
                 except queue.Full:
@@ -380,6 +385,8 @@ class Session:
             return {"t": "frame", "seq": seq, "image": result.get("image", ""), "width": result.get("width"),
                     "height": result.get("height"), "rendered": result.get("rendered", ""),
                     "warning": result.get("warning", "")}
+        if self.browser == "human" and kind in {"state", "page_url"}:
+            return {"t": "error", "seq": seq, "error": "human_no_saved_session"}
         if kind == "state":
             # Linearize persistence with both kill-switch transitions and guest
             # revocation. A concurrent disconnect also takes self.mutex first.
@@ -458,8 +465,12 @@ class Session:
             if not self._allowed():
                 return
             _send(self.instance, self.sid, {"t": "opening"})
-            storage = web_vault.load(self.owner, self.site)
-            with sandbox.BrowserProcess() as worker:
+            # A human browser is deliberately ephemeral: do not load, export,
+            # alter, or overwrite the encrypted sessions of the existing mode.
+            storage = None if self.browser == "human" else web_vault.load(self.owner, self.site)
+            script = "human_browser_worker.py" if self.browser == "human" else "remote_worker.py"
+            # Keep the OS-level worker deadline aligned with the session limit.
+            with sandbox.BrowserProcess(worker_file=script, lifetime=LIFETIME_SECONDS + 60) as worker:
                 if worker.process is None or worker.process.stdout is None:
                     raise sandbox.SandboxError("browser_failed")
                 opening = {"t": "opening", "route": worker.route}
@@ -487,11 +498,13 @@ class Session:
                         continue
                     seq = int(request["seq"])
                     worker_request = dict(request)
-                    if worker_request["action"] == "download":
-                        worker_request["action"] = "page_url"
-                    if worker_request["action"] == "goto" and not _same_site_url(worker_request.get("url"), self.site):
+                    if self.browser == "human" and worker_request["action"] in {"save", "download"}:
+                        result = {"kind": "error", "error": "human_no_saved_session"}
+                    elif worker_request["action"] == "goto" and not _same_site_url(worker_request.get("url"), self.site):
                         result = {"kind": "error", "error": "different_site"}
                     else:
+                        if worker_request["action"] == "download":
+                            worker_request["action"] = "page_url"
                         result = self._exchange(worker, reader, worker_request, 45)
                     if not self._allowed():
                         return

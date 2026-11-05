@@ -146,7 +146,7 @@ jobs:
         run: |
           echo "precedence ::ffff:0:0/96 100" | sudo tee -a /etc/gai.conf > /dev/null
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg p7zip-full socat iproute2 util-linux gnupg
+          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg p7zip-full socat iproute2 util-linux gnupg xvfb xdotool xclip
           pip install -r requirements.txt
           pip install -U --pre "yt-dlp[default]"
           # Cuba keeps UTC-4 through 2027; the runner image may ship older tzdata.
@@ -167,10 +167,12 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ env.PW_VERSION }}
+          key: playwright-graphical-${{ runner.os }}-${{ env.PW_VERSION }}
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ env.PW_VERSION }}
 
       - name: Install browser
-        run: python -m playwright install --with-deps --only-shell chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: Prepare isolated local AI test
         id: gguf_prepare

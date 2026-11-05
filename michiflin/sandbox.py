@@ -117,10 +117,12 @@ def browser_cache() -> Path:
 
 class BrowserProcess:
     def __init__(self, worker_file: str = "remote_worker.py", max_bytes: int = 100_000_000, lifetime: int = 660) -> None:
-        if worker_file not in {"remote_worker.py", "media_worker.py"}:
+        if worker_file not in {"remote_worker.py", "human_browser_worker.py", "media_worker.py"}:
             raise SandboxError("worker_unavailable")
         if not available():
             raise SandboxError("isolation_unavailable")
+        if worker_file == "human_browser_worker.py" and not all(shutil.which(name) for name in ("Xvfb", "xdotool", "xclip")):
+            raise SandboxError("human_unavailable")
         self.root = Path(tempfile.mkdtemp(prefix="michiflin-browser-"))
         self.root.chmod(0o711)  # the relay must traverse this random name to reach its socket
         self.gateway: egress.Gateway | None = None
@@ -153,7 +155,7 @@ class BrowserProcess:
             python = str(Path(sys.executable).resolve())
             if not python.startswith(("/usr/", "/opt/")):
                 raise SandboxError("python_unavailable")
-            if worker_file == "remote_worker.py":
+            if worker_file in {"remote_worker.py", "human_browser_worker.py"}:
                 cache = browser_cache()
             else:
                 cache = self.root / "empty-browsers"

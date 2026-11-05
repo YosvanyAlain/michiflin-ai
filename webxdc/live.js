@@ -18,16 +18,26 @@ function liveSite(value) {
 }
 
 window.liveWeb = {
-  channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "sharp",
-  startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null,
+  channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "economy", browser: "controlled",
+  startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null, onTraffic: null,
+  sentBytes: 0, receivedBytes: 0,
+  reportTraffic() {
+    if (this.onTraffic) this.onTraffic(this.sentBytes, this.receivedBytes);
+  },
   send(body) {
     if (!this.channel) return;
     const data = new TextEncoder().encode(JSON.stringify({ v: 1, sid: this.sid, ...body }));
     if (data.length > 15000) throw new Error("too_large");
     this.channel.send(data);
+    // Payload bytes only: not ETECSA billing, protocol overhead, or mail traffic.
+    this.sentBytes += data.byteLength;
+    this.reportTraffic();
   },
-  start(url, listener) {
+  start(url, listener, trafficListener = null) {
     this.stop();
+    this.sentBytes = 0;
+    this.receivedBytes = 0;
+    this.onTraffic = typeof trafficListener === "function" ? trafficListener : null;
     if (!window.webxdc || !window.webxdc.joinRealtimeChannel || !window.crypto || !crypto.getRandomValues) throw new Error("unsupported");
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     this.sid = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
@@ -40,6 +50,9 @@ window.liveWeb = {
       let message;
       try { message = JSON.parse(new TextDecoder().decode(data)); } catch (error) { return; }
       if (!message || message.v !== 1 || message.sid !== this.sid) return;
+      // Count duplicate and out-of-order payloads too: they still crossed the channel.
+      this.receivedBytes += typeof data.byteLength === "number" ? data.byteLength : 0;
+      this.reportTraffic();
       if (message.t === "opening" && this.ready) return;
       if (message.t === "opening") this.openingSeen = true;
       // Duplicate replies can arrive after a retry; do not put an old image or
@@ -67,7 +80,7 @@ window.liveWeb = {
       }
       if (this.onMessage) this.onMessage(message);
     });
-    const hello = () => { try { this.send({ t: "start", url, lang: lang(), detail: this.detail }); } catch (error) { /* peer may not be ready yet */ } };
+    const hello = () => { try { this.send({ t: "start", url, lang: lang(), detail: this.detail, browser: this.browser }); } catch (error) { /* peer may not be ready yet */ } };
     hello();
     this.startTimer = setInterval(hello, 3500);
     this.startDeadline = setTimeout(() => {
@@ -123,6 +136,7 @@ window.liveWeb = {
     this.ready = false;
     this.openingSeen = false;
     this.onMessage = null;
+    this.onTraffic = null;
     this.sid = "";
   },
 };
@@ -133,9 +147,16 @@ VIEWS.live_web = {
   render(main, params) {
     let site = "";
     try { site = liveSite(params.url); } catch (error) { add(main, failure(t("live_bad_url"))); return; }
-    window.liveWeb.detail = "sharp";
+    window.liveWeb.detail = "economy";
+    window.liveWeb.browser = "controlled";
     const status = h("div", { class: "note", role: "status" }, t("live_click_start"));
     const route = h("small", { class: "muted live-route", hidden: true });
+    const traffic = h("small", { class: "muted live-traffic", hidden: true });
+    const reportTraffic = (sent, received) => {
+      if (!main.isConnected) return;
+      traffic.hidden = false;
+      traffic.textContent = t("live_traffic", { sent: fmtSize(sent), received: fmtSize(received) });
+    };
     const stored = h("small", { class: "muted" }, t("live_checking"));
     const picture = h("img", { class: "live-screen", alt: t("live_screen"), hidden: true, draggable: "false" });
     const screenBox = h("div", { class: "live-screen-box", hidden: true, tabindex: "0", role: "region", "aria-label": t("live_screen") }, picture);
@@ -145,7 +166,17 @@ VIEWS.live_web = {
     const controls = h("div", { class: "stack", hidden: true });
     const navigation = h("div", { class: "row wrap live-navigation", hidden: true });
     let positionedFirstFrame = false;
+    let gesture = null;
     const auto = h("input", { type: "checkbox", disabled: true, onchange: (event) => window.liveWeb.setAuto(event.target.checked) });
+    const dragToggle = h("input", { type: "checkbox", disabled: true, onchange: (event) => {
+      gesture = null;
+      picture.classList.toggle("live-drag-active", event.target.checked);
+      if (event.target.checked) {
+        // Do not let an automatic refresh race a human gesture.
+        auto.checked = false;
+        window.liveWeb.setAuto(false);
+      }
+    } });
     const errKey = (code) => ({ bad_url: "live_bad_url", not_configured: "live_not_configured", vault: "live_vault",
       too_large: "live_too_large", site_limit: "live_site_limit", busy: "live_busy", unsupported: "live_unsupported",
       isolation_unavailable: "live_isolation", python_unavailable: "live_isolation", browser_missing: "live_isolation",
@@ -153,7 +184,18 @@ VIEWS.live_web = {
       paused: "live_paused", maintenance: "live_maintenance", stale_app: "live_stale_app", channel_timeout: "live_channel_timeout",
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
       different_site: "live_same_site", frame_too_large: "live_frame_large",
+      human_unavailable: "live_human_unavailable", human_no_saved_session: "live_human_no_saved_session",
+      human_close_popup_first: "live_human_close_popup_first",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
+    const modeNote = h("small", { class: "muted" }, t("live_mode_controlled_hint"));
+    const modePicker = segmented("controlled", [["controlled", t("live_mode_controlled")], ["human", t("live_mode_human")]], (value) => {
+      window.liveWeb.browser = value;
+      modeNote.textContent = t(value === "human" ? "live_mode_human_hint" : "live_mode_controlled_hint");
+      saveButton.hidden = value === "human";
+      downloadButton.hidden = value === "human";
+      closeWindowButton.hidden = value !== "human";
+    });
+    const lockMode = (locked) => modePicker.querySelectorAll("button").forEach((button) => { button.disabled = locked; });
     const run = (action, args) => {
       try {
         if (!window.liveWeb.action(action, args)) return toast(t("live_wait_action"), "bad");
@@ -167,7 +209,7 @@ VIEWS.live_web = {
       h("small", { class: "muted" }, t("live_zoom_hint")),
       h("details", { class: "live-options" }, h("summary", {}, t("live_view_options")),
         h("small", { class: "muted" }, t("live_detail_hint")),
-        segmented("sharp", [["sharp", t("live_detail_sharp")], ["economy", t("live_detail_economy")]], (value) => {
+        segmented("economy", [["economy", t("live_detail_economy")], ["sharp", t("live_detail_sharp")]], (value) => {
           window.liveWeb.detail = value;
           if (window.liveWeb.ready && !window.liveWeb.pending) run("frame");
         }),
@@ -181,9 +223,12 @@ VIEWS.live_web = {
     const clearView = () => {
       window.liveWeb.setAuto(false);
       auto.checked = false; auto.disabled = true;
+      dragToggle.checked = false; dragToggle.disabled = true; gesture = null;
+      picture.classList.remove("live-drag-active");
       picture.removeAttribute("src"); picture.hidden = true; screenBox.hidden = true;
       controls.hidden = true; navigation.hidden = true; closeButton.hidden = true; secret.value = "";
       start.hidden = false; positionedFirstFrame = false;
+      lockMode(false);
       route.hidden = true; route.textContent = "";
     };
     const receive = (message) => {
@@ -199,6 +244,7 @@ VIEWS.live_web = {
         picture.hidden = false;
         screenBox.hidden = false;
         auto.disabled = false;
+        dragToggle.disabled = false;
         controls.hidden = false;
         navigation.hidden = false;
         closeButton.hidden = false;
@@ -232,14 +278,53 @@ VIEWS.live_web = {
         }
       }
     };
-    picture.addEventListener("click", (event) => {
+    const screenPoint = (event) => {
       const rect = picture.getBoundingClientRect();
-      const x = Math.max(0, Math.min(479, Math.floor((event.clientX - rect.left) / rect.width * 480)));
-      const y = Math.max(0, Math.min(759, Math.floor((event.clientY - rect.top) / rect.height * 760)));
-      run("click", { x, y });
+      return {
+        x: Math.max(0, Math.min(479, Math.floor((event.clientX - rect.left) / rect.width * 480))),
+        y: Math.max(0, Math.min(759, Math.floor((event.clientY - rect.top) / rect.height * 760))),
+      };
+    };
+    picture.addEventListener("click", (event) => {
+      if (dragToggle.checked) { event.preventDefault(); return; }
+      run("click", screenPoint(event));
+    });
+    // The optional gesture is recorded from the person's real pointer events.
+    // It is sent once, in order, with the existing no-repeat sequence guard.
+    // Nothing analyzes or automatically solves a provider's challenge.
+    picture.addEventListener("pointerdown", (event) => {
+      if (!dragToggle.checked || gesture || !window.liveWeb.ready || !event.isPrimary || event.button !== 0) return;
+      if (window.liveWeb.pending) { toast(t("live_wait_action"), "bad"); return; }
+      event.preventDefault();
+      gesture = { id: event.pointerId, start: event.timeStamp, points: [{ ...screenPoint(event), ms: 0 }], tooLong: false };
+      try { picture.setPointerCapture(event.pointerId); } catch (error) { /* pointer capture is optional */ }
+    });
+    const collectPoint = (event) => {
+      if (!gesture || event.pointerId !== gesture.id) return;
+      event.preventDefault();
+      const ms = Math.max(0, Math.round(event.timeStamp - gesture.start));
+      if (ms > 8000) { gesture.tooLong = true; return; }
+      // Thin long paths while preserving their beginning and eventual end.
+      if (gesture.points.length >= 63) gesture.points = gesture.points.filter((_, i) => i === 0 || i % 2 === 0);
+      const previous = gesture.points[gesture.points.length - 1];
+      gesture.points.push({ ...screenPoint(event), ms: Math.max(previous.ms, ms) });
+    };
+    picture.addEventListener("pointermove", collectPoint);
+    picture.addEventListener("pointerup", (event) => {
+      if (!gesture || event.pointerId !== gesture.id) return;
+      collectPoint(event);
+      const completed = gesture;
+      gesture = null;
+      // Stay in gesture mode until explicitly turned off, so the synthesized
+      // click following pointerup cannot produce a second remote action.
+      if (completed.tooLong) { status.textContent = t("live_gesture_long"); return; }
+      run("drag", { points: completed.points });
+    });
+    picture.addEventListener("pointercancel", (event) => {
+      if (gesture && event.pointerId === gesture.id) { gesture = null; status.textContent = t("live_gesture_cancelled"); }
     });
     const start = h("button", { class: "btn primary", onclick: () => {
-      try { liveSite(params.url); window.liveWeb.start(params.url, receive); status.textContent = t("live_wait"); start.disabled = true; }
+      try { liveSite(params.url); window.liveWeb.start(params.url, receive, reportTraffic); status.textContent = t("live_wait"); start.disabled = true; lockMode(true); }
       catch (error) { status.textContent = t(errKey(error.message)); }
     } }, t("live_start"));
     const closeButton = h("button", { class: "btn small ghost", hidden: true, "aria-label": t("live_close"), onclick: () => run("close") }, t("close"));
@@ -270,7 +355,19 @@ VIEWS.live_web = {
       h("button", { class: "btn small ghost", "aria-label": t("live_scroll_down"), onclick: () => run("scroll", { amount: 240 }) }, "↓"),
       h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_up"), onclick: () => run("scroll", { amount: -600 }) }, "↑↑"),
       h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_down"), onclick: () => run("scroll", { amount: 600 }) }, "↓↓"),
-      closeButton);
+      closeButton,
+      h("label", { class: "row live-gesture" }, dragToggle, t("live_gesture")));
+    const closeWindowButton = h("button", { class: "btn small ghost", hidden: true, onclick: async () => {
+      if (await confirmBox(t("live_human_close_window"), t("live_human_close_window_q"), t("live_human_close_window"))) {
+        run("key", { key: "CloseWindow" });
+      }
+    } }, t("live_human_close_window"));
+    const saveButton = h("button", { class: "btn primary", onclick: async () => {
+      if (await confirmBox(t("live_save"), t("live_save_q"), t("live_save"))) run("save");
+    } }, t("live_save"));
+    const downloadButton = h("button", { class: "btn ghost", onclick: async () => {
+      if (await confirmBox(t("live_download"), t("live_download_q"), t("live_download"))) run("download");
+    } }, t("live_download"));
     add(controls,
       h("div", { class: "row wrap" },
         h("button", { class: "btn small ghost", onclick: () => run("back") }, "← ", t("back")),
@@ -291,25 +388,24 @@ VIEWS.live_web = {
         } }, t("live_type"))),
       h("div", { class: "row wrap" },
         h("button", { class: "btn small ghost", onclick: () => { secret.type = secret.type === "password" ? "text" : "password"; } }, t("live_show")),
-        ...[["Tab", "Tab"], ["Enter", "Enter"], ["Backspace", "⌫"]].map(([key, label]) =>
-          h("button", { class: "btn small ghost", onclick: () => run("key", { key }) }, label))),
+        ...[["Tab", "Tab"], ["Shift+Tab", "⇤"], ["Enter", "Enter"], ["Backspace", "⌫"],
+            ["Space", t("live_key_space")], ["Escape", "Esc"], ["ArrowLeft", "←"], ["ArrowRight", "→"]].map(([key, label]) =>
+          h("button", { class: "btn small ghost", "aria-label": t("live_key_label", { key: label }),
+                        onclick: () => run("key", { key }) }, label)), closeWindowButton),
       h("div", { class: "row wrap" },
-        h("button", { class: "btn primary", onclick: async () => {
-          if (await confirmBox(t("live_save"), t("live_save_q"), t("live_save"))) run("save");
-        } }, t("live_save")),
+        saveButton,
         h("button", { class: "btn ghost", onclick: async () => {
           if (await confirmBox(t("live_capture"), t("live_capture_q"), t("live_capture"))) run("capture");
         } }, t("live_capture")),
-        h("button", { class: "btn ghost", onclick: async () => {
-          if (await confirmBox(t("live_download"), t("live_download_q"), t("live_download"))) run("download");
-        } }, t("live_download"))));
+        downloadButton));
     const privacy = h("details", { class: "live-privacy" }, h("summary", {}, t("live_privacy_more")),
       h("p", { class: "muted small" }, t("live_privacy")), h("p", { class: "muted small" }, t("live_personal_hint")));
     const siteRow = h("div", { class: "row" }, h("small", { class: "site-address" }, params.url),
       h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")));
     add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy,
       siteRow, stored,
-      h("div", { class: "row wrap" }, start, disconnect), status, route,
+      h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote,
+      h("div", { class: "row wrap" }, start, disconnect), status, route, traffic,
       navigation, screenBox, viewSettings, controls);
     updateStored();
   },
