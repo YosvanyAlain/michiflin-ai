@@ -198,7 +198,7 @@ def test_authorized_hello_remembers_actual_app_language(app_state, monkeypatch):
     route.assert_called_once()
 
 
-def test_later_automatic_update_uses_the_observed_app_language(app_state, monkeypatch):
+def test_interaction_triggered_update_uses_the_observed_app_language(app_state, monkeypatch):
     app_state.update(build="current-build", locale="en")
     update = {"serial": 1, "payload": {"t": "req", "id": "synthetic", "op": "hello", "lang": "es", "args": {}}}
     rpc = SimpleNamespace(get_webxdc_status_updates=lambda *_args: json.dumps([update]))
@@ -208,7 +208,7 @@ def test_later_automatic_update_uses_the_observed_app_language(app_state, monkey
     miniapp.on_status_update(100)
     send = mock.Mock(return_value=201)
     monkeypatch.setattr(miniapp, "replace_app", send)
-    miniapp.proactive_upgrades()
+    miniapp._maybe_upgrade(100, app_state, miniapp.observed_locale(CHAT))
     send.assert_called_once_with(100, CHAT, "es", OWNER)
 
 
@@ -222,3 +222,80 @@ def test_unapproved_request_cannot_change_the_remembered_language(app_state, mon
     monkeypatch.setattr(miniapp, "_route", mock.Mock())
     miniapp.on_status_update(100)
     assert app_state["locale"] == "en"
+
+
+def test_sweeper_reads_pending_updates_without_broadcasting_on_startup(app_state, monkeypatch):
+    """A restart alone must not deliver an app or a maintenance notice to any chat."""
+    from michiflin import maintenance
+
+    other = {"chat": 92, "addr": "other@example.invalid", "build": "older", "locale": "en", "serial": 0}
+    state.data["apps"]["101"] = other
+    monkeypatch.setattr(maintenance, "get", lambda: {"revision": 3, "active": True})
+    monkeypatch.setattr(maintenance, "silent", lambda: False)
+    monkeypatch.setattr(maintenance, "sync_profile", mock.Mock())
+    monkeypatch.setattr(miniapp, "on_status_update", mock.Mock())
+    monkeypatch.setattr(miniapp, "_prune_seen", lambda: None)
+    monkeypatch.setattr(miniapp.time, "sleep", mock.Mock(side_effect=StopIteration))
+    send = mock.Mock()
+    replace = mock.Mock()
+    push = mock.Mock()
+    monkeypatch.setattr(chat, "send", send)
+    monkeypatch.setattr(miniapp, "replace_app", replace)
+    monkeypatch.setattr(miniapp, "push", push)
+    with pytest.raises(StopIteration):
+        miniapp.sweep_forever()
+    assert {call.args[0] for call in miniapp.on_status_update.call_args_list} == {100, 101}
+    send.assert_not_called()
+    replace.assert_not_called()
+    push.assert_not_called()
+
+
+def test_hello_from_old_app_offers_new_app_only_to_interacting_chat(app_state, monkeypatch):
+    """Opening an authorized old app can offer an update; it must not delete the old one."""
+    from concurrent.futures import Future
+
+    class Immediate:
+        def submit(self, function, *args):
+            future = Future()
+            try:
+                future.set_result(function(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+    state.data["apps"]["101"] = {"chat": 92, "addr": "other@example.invalid", "build": "old-build"}
+    monkeypatch.setitem(miniapp.OPS, "hello", lambda _chat, _args, _locale: {"hello": True})
+    monkeypatch.setattr(miniapp, "_workers", Immediate())
+    monkeypatch.setattr(miniapp, "respond", mock.Mock())
+    monkeypatch.setattr(miniapp, "_local_ai_disclosure", lambda _instance: None)
+    monkeypatch.setattr(state, "maintenance_active", lambda: False)
+    monkeypatch.setattr(state, "maintenance_interrupted", lambda _generation: False)
+    replace = mock.Mock(return_value=201)
+    monkeypatch.setattr(miniapp, "replace_app", replace)
+    miniapp.handle(100, dict(app_state), {"id": "interactive-hello", "op": "hello", "lang": "es", "args": {}})
+    replace.assert_called_once_with(100, CHAT, "es", OWNER)
+    assert "100" in state.data["apps"] and "101" in state.data["apps"]
+
+
+def test_invitee_bootstrap_does_not_upgrade_an_inactive_chat(app_state, monkeypatch):
+    """Only a missing first welcome may be recovered at startup."""
+    from contextlib import nullcontext
+    from michiflin import app, community, identity_guard, maintenance
+
+    monkeypatch.setattr(config, "INVITE_AUTO_ACCESS", True)
+    monkeypatch.setattr(maintenance, "silent", lambda: False)
+    monkeypatch.setattr(community, "addresses", lambda: [OWNER])
+    monkeypatch.setattr(community, "record", lambda _address: {"chat": CHAT})
+    monkeypatch.setattr(identity_guard, "authorized_chat", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(chat, "recipient_guard", lambda *_args, **_kwargs: nullcontext())
+    monkeypatch.setattr(miniapp, "_bound_apps", lambda _chat: [app_state])
+    welcome = mock.Mock()
+    monkeypatch.setattr(miniapp, "welcome", welcome)
+    bot = SimpleNamespace(rpc=SimpleNamespace(get_chat_contacts=lambda *_args: [11]))
+    previous_sender, previous_person = chat.sender(), state.acting_as()
+    try:
+        app._bootstrap_invitees(bot, 1)
+    finally:
+        chat.set_sender(previous_sender)
+        state.act_as(previous_person)
+    welcome.assert_not_called()

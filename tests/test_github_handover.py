@@ -46,18 +46,14 @@ class HandoverSafety(unittest.TestCase):
              mock.patch.object(maintenance, "silent_active", return_value=False), \
              mock.patch.object(miniapp, "_bound_apps", return_value=[{"build": "older"}]), \
              mock.patch.object(miniapp, "send_app") as send, \
-             mock.patch.object(miniapp, "replace_app") as replace, \
-             mock.patch.object(miniapp, "_maintenance_notify_lock") as lock:
+             mock.patch.object(miniapp, "replace_app") as replace:
             miniapp.welcome(10, "es")
             miniapp._maybe_upgrade(100, {"chat": 10}, "es")
-            miniapp.proactive_upgrades()
-            miniapp._notify_maintenance({"revision": 3})
             app._bootstrap_invitees(None, 0)
             app._bootstrap_verified_owner(None, 0)
             app._bootstrap_email_recovery(None, 0)
             send.assert_not_called()
             replace.assert_not_called()
-            lock.acquire.assert_not_called()
 
     def test_quiet_pause_clears_once_only_after_ready(self) -> None:
         order = []

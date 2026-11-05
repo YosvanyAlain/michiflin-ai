@@ -198,7 +198,7 @@ An optional email-key recovery policy can accept a replacement key for an alread
 
 It also includes:
 
-- **Maintenance and notice:** inactive by default; an explicit saved change starts or ends the pause. A duration may be set from 1 minute up to one year, or 0 for manual end. Authorized users are notified, and eligible queued work can resume; already-started requests may still finish.
+- **Maintenance and notice:** inactive by default; an explicit saved change starts or ends the pause. A duration may be set from 1 minute up to one year, or 0 for manual end. Authorized users see the notice when they interact; there is no broadcast. Eligible queued work can resume; already-started requests may still finish.
 - **Performance:** CPU use and load, memory (total and the bot's own), disk (free space and the downloads folder), network rate, response times of quick and heavy requests, threads and the queue.
 - **Usage:** the private view shows the owner's usage; historical amounts remain stored without granting access. Pausing the queue or resetting usage are explicit owner actions; neither is performed as a historical-data purge automatically.
 - **Server:** hosting, system image, processor, session number, start time, time until the planned restart, and whether a newer version is waiting.

@@ -252,17 +252,20 @@ def test_due_maintenance_restored_from_state_expires_once_under_concurrency():
     try:
         with state.lock:
             state.data["maintenance_notice"] = {"active":True, "expires":1, "generation":4, "revision":9}
-        notified = threading.Event()
+        updated = threading.Event()
         with mock.patch.object(state, "save"), mock.patch.object(queue, "wake") as wake, \
-             mock.patch.object(maintenance, "sync_profile"), \
-             mock.patch.object(miniapp, "_notify_maintenance", side_effect=lambda _notice: notified.set()) as notify:
+             mock.patch.object(miniapp, "push") as push, \
+             mock.patch.object(chat, "send") as send, \
+             mock.patch.object(maintenance, "sync_profile", side_effect=lambda: updated.set()) as profile:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 outcomes = list(pool.map(lambda _: maintenance.expire_if_due(), range(30)))
-            assert notified.wait(3)
+            assert updated.wait(3)
         assert outcomes.count(True) == 1
         assert state.data["maintenance_notice"]["active"] is False
         assert state.data["maintenance_notice"]["generation"] == 4
         assert state.data["maintenance_notice"]["revision"] == 10
-        assert wake.call_count == 1 and notify.call_count == 1
+        assert wake.call_count == 1 and profile.call_count == 1
+        push.assert_not_called()
+        send.assert_not_called()
     finally:
         with state.lock: state.data["maintenance_notice"] = saved

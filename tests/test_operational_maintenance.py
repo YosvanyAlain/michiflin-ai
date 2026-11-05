@@ -926,8 +926,7 @@ class OperationalMaintenanceTests(unittest.TestCase):
                 submit.assert_not_called()
                 self.assertIn(word, reply.call_args.args[3].lower())
         chat.set_sender(OWNER)
-        with mock.patch.object(maintenance, "sync_profile", return_value=False), \
-             mock.patch.object(miniapp, "_notify_maintenance"):
+        with mock.patch.object(maintenance, "sync_profile", return_value=False):
             result = miniapp.op_maintenance_notice(7, {"active": False, "es": "Pausa de prueba", "en": "Test maintenance"}, "en")
         self.assertFalse(result["notice"]["active"])
         self.assertFalse(state.maintenance_active())
@@ -1074,41 +1073,18 @@ class OperationalMaintenanceTests(unittest.TestCase):
             get_contact=lambda *_: SimpleNamespace(address=OWNER)))
         message = SimpleNamespace(id=330, chat_id=7, from_id=11, is_info=False,
                                   text="/maintenance no", file=None, file_name="")
-        notified = threading.Event()
+        updated = threading.Event()
         with mock.patch.object(chat, "text") as sent, \
-             mock.patch.object(maintenance, "sync_profile", return_value=False), \
-             mock.patch.object(miniapp, "_notify_maintenance", side_effect=lambda _notice: notified.set()):
+             mock.patch.object(chat, "send") as direct, \
+             mock.patch.object(miniapp, "push") as push, \
+             mock.patch.object(maintenance, "sync_profile", side_effect=lambda: updated.set()):
             self.assertIsNone(app._screen(bot, 1, message))
-            self.assertTrue(notified.wait(2))
+            self.assertTrue(updated.wait(2))
         self.assertFalse(state.maintenance_active())
         self.assertIn("disabled", sent.call_args.args[1].lower())
-
-    def test_current_private_chat_without_app_receives_notice(self):
-        self.share_with(ALICE, BOB)
-        self.assertTrue(access.revoke_guest(BOB))
-        state.data["access"]["allowed"] = ["historic@example.org"]
-        state.data["apps"] = {"1": {"chat": 7, "addr": OWNER, "locale": "en"}}
-        notice = self.toggle(True)
-        by_address = {ALICE: 42, BOB: 43, "historic@example.org": 44}
-        contacts = {42: ALICE, 43: BOB, 44: "historic@example.org"}
-        rpc = SimpleNamespace(lookup_contact_id_by_addr=lambda _acc, address: by_address.get(address, 0),
-                              get_chat_id_by_contact_id=lambda _acc, contact: contact + 100,
-                              get_basic_chat_info=lambda *_: SimpleNamespace(chat_type="Single", is_contact_request=False,
-                                                                             is_self_talk=False),
-                              get_contact=lambda _acc, contact: SimpleNamespace(address=contacts[contact]))
-        def send(_chat_id, _message, *, interrupted):
-            self.assertFalse(interrupted())
-            return 123
-        with mock.patch.object(chat, "ready", return_value=True), mock.patch.object(chat, "rpc", return_value=rpc), \
-             mock.patch.object(chat, "account", return_value=1), mock.patch.object(chat, "send", side_effect=send) as direct, \
-             mock.patch.object(miniapp, "push", return_value=True) as push:
-            miniapp._notify_maintenance(notice)
-        self.assertEqual(direct.call_count, 1)
-        self.assertEqual(direct.call_args.args[0], 142)
-        self.assertIn("mantenimiento", direct.call_args.args[1].lower())
-        self.assertEqual(push.call_args.args[0], 7)
-        self.assertNotIn("143", state.data["maintenance_notice"]["notified"])
-        self.assertNotIn("144", state.data["maintenance_notice"]["notified"])
+        self.assertEqual(sent.call_count, 1)  # only the owner who interacted
+        direct.assert_not_called()
+        push.assert_not_called()
 
     def test_live_browser_is_denied_and_existing_session_is_stopped(self):
         self.toggle(True)

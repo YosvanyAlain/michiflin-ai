@@ -566,7 +566,10 @@ def _bootstrap_invitees(bot: Any, accid: int) -> None:
             lock = _chat_locks.setdefault(chat_id, threading.Lock())
             with lock, chat.recipient_guard(chat_id, address, int(members[0])):
                 chat.set_sender(address)
-                miniapp.welcome(chat_id, _welcome_locale(chat_id))
+                # Recover a missing first welcome, never upgrade inactive chats
+                # merely because the bot restarted.
+                if not miniapp._bound_apps(chat_id):
+                    miniapp.welcome(chat_id, _welcome_locale(chat_id))
         except Exception as exc:
             log.warning("invitee welcome deferred (%s)", type(exc).__name__)
 
@@ -590,7 +593,10 @@ def _bootstrap_verified_owner(bot: Any, accid: int) -> None:
         lock = _chat_locks.setdefault(chat_id, threading.Lock())
         with lock, chat.recipient_guard(chat_id, config.OWNER_ADDRESS, int(members[0])):
             chat.set_sender(config.OWNER_ADDRESS)
-            if chat.recipient_allowed(chat_id) and not miniapp.latest_instance(chat_id):
+            # A temporary RPC lookup failure is not evidence that an old app
+            # disappeared. Keep its binding and wait for the owner to interact.
+            if (chat.recipient_allowed(chat_id) and not miniapp._bound_apps(chat_id)
+                    and not miniapp.latest_instance(chat_id)):
                 miniapp.welcome(chat_id, _welcome_locale(chat_id))
     except Exception as exc:
         log.warning("verified-owner startup deferred (%s)", type(exc).__name__)
@@ -684,7 +690,7 @@ def _bootstrap_email_recovery(bot: Any, accid: int) -> None:
             lock = _chat_locks.setdefault(chat_id, threading.Lock())
             with lock, chat.recipient_guard(chat_id, address, contact_id):
                 chat.set_sender(address)
-                if chat.recipient_allowed(chat_id):
+                if chat.recipient_allowed(chat_id) and not miniapp._bound_apps(chat_id):
                     miniapp.welcome(chat_id, _welcome_locale(chat_id))
     except Exception as exc:
         log.warning("email recovery startup deferred (%s)", type(exc).__name__)

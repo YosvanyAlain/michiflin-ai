@@ -764,7 +764,7 @@ def cmd_maintenance(chat_id: int, args: list[str], rest: str, locale: str) -> No
     if not config.is_owner_admin(chat.sender()):
         chat.text(chat_id, tr(locale, "Solo los administradores autorizados pueden cambiar mantenimiento.", "Only authorized administrators can change maintenance."))
         return
-    from . import maintenance, miniapp
+    from . import maintenance
     import threading
 
     words = args + rest.split()
@@ -777,11 +777,9 @@ def cmd_maintenance(chat_id: int, args: list[str], rest: str, locale: str) -> No
         return
     active = value in YES
     if active != current["active"]:
-        current = maintenance.set_notice(active, current["es"], current["en"])
-        def announce() -> None:
-            maintenance.sync_profile()
-            miniapp._notify_maintenance(current)
-        threading.Thread(target=announce, name="maintenance-command-notice", daemon=True).start()
+        maintenance.set_notice(active, current["es"], current["en"])
+        # Answer this owner and update the profile, without messaging other chats.
+        threading.Thread(target=maintenance.sync_profile, name="maintenance-command-profile", daemon=True).start()
     chat.text(chat_id, tr(locale,
         "🛠️ Mantenimiento activado. Las tareas y colas están pausadas." if active else
         "▶️ Mantenimiento desactivado. Las colas autorizadas pueden continuar; se conservan las pausas manuales y los permisos.",

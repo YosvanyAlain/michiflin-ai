@@ -199,6 +199,7 @@ def test_bootstrap_delivers_only_to_verified_owner_and_never_duplicates(tmp_path
     welcome = mock.Mock()
     monkeypatch.setattr(miniapp, "welcome", welcome)
     monkeypatch.setattr(miniapp, "latest_instance", lambda _chat: 0)
+    monkeypatch.setattr(miniapp, "_bound_apps", lambda _chat: [])
     previous_sender, previous_person = chat.sender(), app.state.acting_as()
     try:
         app._bootstrap_verified_owner(bot, 1)
@@ -206,8 +207,13 @@ def test_bootstrap_delivers_only_to_verified_owner_and_never_duplicates(tmp_path
         monkeypatch.setattr(miniapp, "latest_instance", lambda _chat: 31)
         app._bootstrap_verified_owner(bot, 1)
         assert welcome.call_count == 1
-        monkeypatch.setattr(identity_guard, "authorized_chat", lambda *_a, **_kw: False)
+        # A stale binding must also block a startup upgrade if RPC lookup fails.
         monkeypatch.setattr(miniapp, "latest_instance", lambda _chat: 0)
+        monkeypatch.setattr(miniapp, "_bound_apps", lambda _chat: [{"build": "old"}])
+        app._bootstrap_verified_owner(bot, 1)
+        assert welcome.call_count == 1
+        monkeypatch.setattr(identity_guard, "authorized_chat", lambda *_a, **_kw: False)
+        monkeypatch.setattr(miniapp, "_bound_apps", lambda _chat: [])
         app._bootstrap_verified_owner(bot, 1)
         assert welcome.call_count == 1
     finally:

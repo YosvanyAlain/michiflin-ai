@@ -387,49 +387,38 @@ class Isolated(unittest.TestCase):
             self.assertNotIn("Mensaje de mantenimiento", rpc.status)
             self.assertIn(original, rpc.status)
 
-    def test_maintenance_notifies_only_authorized_and_retries_queue_failure(self):
+    def test_maintenance_edit_does_not_broadcast_to_other_chats(self):
         state.data["apps"] = {"1": {"chat": 1, "addr": ALICE, "locale": "en"},
                               "2": {"chat": 2, "addr": BOB, "locale": "es"}}
-        notice = maintenance.set_notice(True, "Aviso", "Notice")
-        attempts = []
-        def send(chat_id, kind, payload, notification):
-            attempts.append((chat_id, notification))
-            return len(attempts) > 1
-        with mock.patch.object(miniapp.access, "bound_allowed", side_effect=lambda e: e["addr"] == ALICE), \
-             mock.patch.object(miniapp.admin, "is_allowed", side_effect=lambda addr: addr == ALICE), \
-             mock.patch.object(miniapp, "push", side_effect=send):
-            miniapp._notify_maintenance(notice)  # local queue failed, retry
-            miniapp._notify_maintenance(notice)
-            miniapp._notify_maintenance(notice)  # successful queueing is not repeated
-        self.assertEqual(attempts, [(1, "Maintenance: Notice"), (1, "Maintenance: Notice")])
-        self.assertEqual(state.data["maintenance_notice"]["notified"]["1"], notice["revision"])
+        with mock.patch.object(miniapp.admin, "is_admin", return_value=True), \
+             mock.patch.object(chat, "sender", return_value=ALICE), \
+             mock.patch.object(maintenance, "sync_profile", return_value=True), \
+             mock.patch.object(miniapp, "push") as push, \
+             mock.patch.object(chat, "send") as send:
+            result = miniapp.op_maintenance_notice(1, {"active": True, "es": "Aviso", "en": "Notice"}, "en")
+        self.assertTrue(result["notice"]["active"])
+        push.assert_not_called()
+        send.assert_not_called()
 
-    def test_updates_preserve_old_apps_check_recipient_and_send_each_new_build(self):
+    def test_interaction_updates_preserve_old_apps_and_deduplicate_builds(self):
         original = {"chat": 2, "addr": ALICE, "build": "old", "locale": "en", "sent": 1}
         state.data["apps"] = {"1": original.copy()}
         miniapp._upgraded.clear()
         with mock.patch.object(miniapp, "app_build", return_value="build-two"), \
              mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
-             mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
-             mock.patch.object(live_web, "_identity", return_value=(original, ALICE)), \
              mock.patch.object(miniapp, "replace_app", return_value=2) as send:
-            miniapp.proactive_upgrades()
-            miniapp.proactive_upgrades()
+            miniapp._maybe_upgrade(1, original, "en")
+            miniapp._maybe_upgrade(1, original, "en")
             self.assertEqual(send.call_count, 1)
             self.assertEqual(state.data["apps"]["1"], original)
         with mock.patch.object(miniapp, "app_build", return_value="build-three"), \
              mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
-             mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
-             mock.patch.object(live_web, "_identity", return_value=(original, ALICE)), \
              mock.patch.object(miniapp, "replace_app", return_value=3) as send:
-            miniapp.proactive_upgrades()
-            self.assertEqual(send.call_count, 1)  # a different build is not blocked by the 30-minute duplicate guard
-        with mock.patch.object(miniapp, "app_build", return_value="build-four"), \
-             mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
-             mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
-             mock.patch.object(live_web, "_identity", return_value=None), \
-             mock.patch.object(miniapp, "replace_app") as send:
-            miniapp.proactive_upgrades()
+            miniapp._maybe_upgrade(1, original, "en")
+            self.assertEqual(send.call_count, 1)  # a new build is not blocked by the duplicate guard
+        with mock.patch.object(live_web, "_identity", return_value=None), \
+             mock.patch.object(miniapp, "send_app") as send:
+            self.assertEqual(miniapp.replace_app(1, 2, "en", ALICE), 0)
             send.assert_not_called()
 
     def test_youtube_pages_preserve_order_deduplicate_and_isolate_cache(self):
