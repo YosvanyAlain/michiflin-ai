@@ -108,14 +108,26 @@ for (const reason of ["paused", "stale_app"]) {
   assert.strictEqual(test.leaves(), 1);
 }
 
+// Browser choice is explicit; the legacy mode remains the default.
+{
+  const test = boot();
+  test.web.start("https://example.org/", () => {});
+  assert.strictEqual(test.sent[0].browser, "controlled");
+  test.web.stop();
+  test.web.browser = "human";
+  test.web.start("https://example.org/", () => {});
+  assert.strictEqual(test.sent.filter((item) => item.t === "start").at(-1).browser, "human");
+  test.web.stop();
+}
+
 // Sharp/economy and optional still-frame refresh use the same ordered channel.
 // A slow reply never overlaps another action, and duplicate old frames are ignored.
 {
   const test = boot(), messages = [];
   test.web.start("https://example.org/", (message) => messages.push(message));
   const sid = test.web.sid;
-  assert.strictEqual(test.sent[0].detail, "sharp");
-  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "first", rendered: "sharp" });
+  assert.strictEqual(test.sent[0].detail, "economy");
+  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "first", rendered: "economy" });
   test.web.detail = "economy";
   test.web.setAuto(true);
   test.fire(5000);
@@ -138,4 +150,27 @@ for (const reason of ["paused", "stale_app"]) {
   assert.strictEqual(test.leaves(), 1);
 }
 
-console.log("live web startup ok; quality and refresh ok");
+// The byte counter records application payloads, including retries and old
+// packets, but not transport overhead or billing. It resets on a new session.
+{
+  const test = boot(), samples = [];
+  test.web.start("https://example.org/", () => {}, (sent, received) => samples.push([sent, received]));
+  assert(test.web.sentBytes > 0);
+  assert.strictEqual(test.web.receivedBytes, 0);
+  const sid = test.web.sid;
+  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "first" });
+  const first = test.web.receivedBytes;
+  assert(first > 0);
+  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "duplicate" });
+  assert(test.web.receivedBytes > first);
+  const beforeForeign = test.web.receivedBytes;
+  test.receive({ v: 1, sid: "0".repeat(32), t: "frame", seq: 0, image: "foreign" });
+  assert.strictEqual(test.web.receivedBytes, beforeForeign);
+  assert(samples.length >= 3);
+  test.web.stop();
+  test.web.start("https://example.org/", () => {});
+  assert.strictEqual(test.web.receivedBytes, 0);
+  test.web.stop();
+}
+
+console.log("live web startup ok; quality, refresh and byte estimate ok");

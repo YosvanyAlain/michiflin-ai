@@ -237,6 +237,39 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_human_gestures_operate_a_local_simulated_challenge(self) -> None:
+        """No third-party sites or real challenges: exercise the real Chromium input path."""
+        from michiflin import remote_worker
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(args=["--no-sandbox"])
+            try:
+                page = browser.new_page(viewport={"width": 480, "height": 760})
+                page.set_content('''<!doctype html><style>body {margin:0}
+                  #slider {position:absolute;left:20px;top:25px;width:220px}
+                  #hold {position:absolute;left:20px;top:90px;width:150px;height:50px}
+                  iframe {position:absolute;left:20px;top:180px;width:200px;height:90px}</style>
+                  <input id="slider" type="range" min="0" max="100" value="0">
+                  <button id="hold">Hold</button>
+                  <iframe srcdoc="&lt;button id='inside' onclick='document.body.dataset.clicked=1'&gt;Choose&lt;/button&gt;"></iframe>
+                  <script>hold.onpointerdown=()=>window.pressed=performance.now();
+                    hold.onpointerup=()=>window.held=performance.now()-window.pressed;</script>''')
+                remote_worker.drag_pointer(page, [
+                    {"x": 30, "y": 34, "ms": 0}, {"x": 80, "y": 34, "ms": 80},
+                    {"x": 160, "y": 34, "ms": 160}, {"x": 220, "y": 34, "ms": 240},
+                ])
+                self.assertGreater(int(page.locator("#slider").input_value()), 70)
+                remote_worker.drag_pointer(page, [{"x": 70, "y": 110, "ms": 0}, {"x": 70, "y": 110, "ms": 200}])
+                self.assertGreaterEqual(page.evaluate("window.held"), 180)
+                frame = page.frame_locator("iframe")
+                box = frame.locator("#inside").bounding_box()
+                page.mouse.click(box["x"] + 8, box["y"] + 8)
+                self.assertEqual(frame.locator("body").get_attribute("data-clicked"), "1")
+                result = remote_worker.frame(page, "economy")
+                self.assertEqual(result["kind"], "frame")
+                self.assertEqual(result["rendered"], "economy")
+            finally:
+                browser.close()
+
     def test_paused_queue_shows_retained_bytes_and_loss_warning_bilingual(self) -> None:
         for language in ("es", "en"):
             with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
@@ -262,8 +295,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
     def test_live_view_zoom_quality_navigation_and_search_with_simulated_realtime(self) -> None:
         # The bridge and picture below are deliberately simulated; the separate
         # sandbox integration verifies real Chromium screenshots and clicks.
-        for language in ("es", "en"):
-            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+        for language, engine in (("es", "chromium"), ("en", "chromium"), ("es", "webkit"), ("en", "webkit")):
+            with self.subTest(language=language, engine=engine), browser_fixture(language, {"width": 390, "height": 844}, engine=engine) as (page, errors):
                 page.evaluate(r"""() => {
                   const c = document.createElement('canvas'); c.width = 960; c.height = 1520;
                   const ctx = c.getContext('2d'); ctx.fillStyle = 'white'; ctx.fillRect(0,0,c.width,c.height);
@@ -301,6 +334,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.get_by_role("button", name="Copiar enlace" if language == "es" else "Copy link").click()
                 page.get_by_text("No se pudo copiar" if language == "es" else "Could not copy", exact=False).wait_for()
                 settings = page.get_by_text("Calidad y actualización" if language == "es" else "Quality and refresh")
+                self.assertEqual(page.evaluate("window.liveWeb.detail"), "economy")
                 settings.click()
                 auto_name = "Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)"
                 self.assertTrue(page.get_by_label(auto_name).is_disabled())
@@ -308,8 +342,24 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(page.evaluate("window.liveWeb.detail"), "economy")
                 page.get_by_role("tab", name="Más nitidez" if language == "es" else "Sharper").click()
                 settings.click()
+                self.assertEqual(page.evaluate("window.liveWeb.browser"), "controlled")
+                mode = page.get_by_role("tab", name="Gráfico temporal" if language == "es" else "Temporary graphical")
+                mode.click()
+                self.assertEqual(page.evaluate("window.liveWeb.browser"), "human")
+                self.assertTrue(page.get_by_text("no carga ni borra" if language == "es" else "does not load or delete", exact=False).is_visible())
                 page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
                 page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 960")
+                self.assertTrue(mode.is_disabled())
+                self.assertTrue(page.evaluate("window.__liveActions.some(x => x.t === 'start' && x.browser === 'human')"))
+                self.assertFalse(page.get_by_role("button", name="Guardar sesión" if language == "es" else "Save session").is_visible())
+                self.assertFalse(page.get_by_role("button", name="Descargar este video" if language == "es" else "Download this video").is_visible())
+                close_window = page.get_by_role("button", name="Cerrar ventana actual" if language == "es" else "Close current window")
+                self.assertTrue(close_window.is_visible())
+                close_window.click()
+                self.assertTrue(page.get_by_text("se perderá la sesión temporal" if language == "es" else "temporary session is lost", exact=False).is_visible())
+                page.locator(".btn.danger").click()
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'key' && x.key === 'CloseWindow')")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
                 page.wait_for_function("document.querySelector('.live-navigation')?.getBoundingClientRect().top < 150")
                 self.assertTrue(page.get_by_role("button", name="Cerrar navegador" if language == "es" else "Close browser").is_visible())
                 self.assertLess(page.locator(".live-screen-box").bounding_box()["y"], 250)
@@ -353,6 +403,33 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 input_address.fill("https://www.tiktok.com/@sample/video/67890")
                 input_address.press("Enter")
                 page.wait_for_function("window.__liveActions.some(x => x.action === 'goto' && x.url.includes('67890'))")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+                # Capture an actual pointer path on the zoomed view; the app must
+                # send exactly one drag, never a synthetic second click.
+                gesture_label = "Mantener o arrastrar en la vista" if language == "es" else "Hold or drag on the view"
+                gesture = page.get_by_label(gesture_label, exact=False)
+                gesture.check()
+                before_clicks = page.evaluate("window.__liveActions.filter(x => x.action === 'click').length")
+                screen.scroll_into_view_if_needed()
+                bounds = page.locator(".live-screen-box").bounding_box()
+                x, y = bounds["x"] + 35, bounds["y"] + 45
+                page.mouse.move(x, y)
+                page.mouse.down()
+                page.mouse.move(x + 90, y + 12, steps=8)
+                page.wait_for_timeout(120)
+                page.mouse.up()
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'drag')")
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+                drag = page.evaluate("window.__liveActions.filter(x => x.action === 'drag').at(-1)")
+                self.assertGreaterEqual(len(drag["points"]), 2)
+                self.assertEqual(drag["points"][0]["ms"], 0)
+                self.assertGreater(drag["points"][-1]["x"], drag["points"][0]["x"])
+                self.assertGreater(drag["points"][-1]["ms"], 0)
+                self.assertEqual(page.evaluate("window.__liveActions.filter(x => x.action === 'click').length"), before_clicks)
+                self.assertIn("no es tu saldo" if language == "es" else "not your ETECSA balance", page.locator(".live-traffic").inner_text())
+                gesture.uncheck()
+                page.get_by_role("button", name="Tecla Espacio" if language == "es" else "Key Space").click()
+                page.wait_for_function("window.__liveActions.some(x => x.action === 'key' && x.key === 'Space')")
                 page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
                 frames_before_auto = page.evaluate("window.__liveActions.filter(x => x.action === 'frame').length")
                 page.get_by_label("Actualizar cada 5 s (usa datos; no es video)" if language == "es" else "Refresh every 5 s (uses data; not video)").check()
