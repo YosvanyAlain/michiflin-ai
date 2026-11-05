@@ -290,6 +290,14 @@ def test_bootstrap_finishes_previously_bound_pending_contact_request(enabled, mo
         chat.set_sender(previous_sender)
     assert not rpc.info[22].is_contact_request
     welcome.assert_called_once_with(22, "es")
+    # Startup must not automatically upgrade an existing inactive app.
+    monkeypatch.setattr(miniapp, "_bound_apps", lambda _chat: [{"build": "old"}])
+    previous_sender = chat.sender()
+    try:
+        app._bootstrap_email_recovery(SimpleNamespace(rpc=rpc), 1)
+    finally:
+        chat.set_sender(previous_sender)
+    welcome.assert_called_once_with(22, "es")
 
 
 def test_identity_cutover_never_uses_weakened_email_mode_for_new_identity(enabled):

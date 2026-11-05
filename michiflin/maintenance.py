@@ -93,12 +93,9 @@ def expire_if_due() -> bool:
     from . import queue
     queue.wake()
 
-    def announce() -> None:
-        from . import miniapp
-        notice = get()
-        sync_profile()
-        miniapp._notify_maintenance(notice)
-    threading.Thread(target=announce, name="maintenance-expired", daemon=True).start()
+    # Publish only the owner's status; people learn about maintenance when
+    # they interact. Do not send a bulk message on automatic expiration.
+    threading.Thread(target=sync_profile, name="maintenance-expired", daemon=True).start()
     return True
 
 

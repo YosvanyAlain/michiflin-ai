@@ -53,7 +53,7 @@ _dispatch_pending: dict[str, tuple[str, str]] = {}  # ticket -> (lane, person)
 _LANE_LIMITS = {"normal": 64, "owner": 16, "owner_work": 32, "pause": 32}
 _PERSON_LIMITS = {"normal": 8, "owner": 16, "owner_work": 32, "pause": 2}
 _instance_locks: dict[int, threading.Lock] = {}
-# Welcome, recovery and proactive upgrade must decide and hand off together.
+# Welcome, recovery and interaction-triggered upgrade must decide and hand off together.
 _upgrade_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
 # Exact pending pages stay only in process memory, isolated by app, grant and recipient.
@@ -1042,56 +1042,17 @@ def _deliver(instance_id: int, rid: str, text: str) -> None:
             break
 
 
-def proactive_upgrades() -> None:
-    """Deliver the current build without waiting for an old app to be opened.
-
-    Keep old messages and their instance-local storage until migration can be
-    proven. Only bot-sent, current-authorized individual encrypted chats are
-    eligible; an old binding must never reactivate a revoked contact.
-    """
-    if maintenance.silent():
-        return  # no unsolicited app upgrades during or after the quiet handover
-    from . import live_web
-
-    with state.lock:
-        entries = [(int(key), dict(entry)) for key, entry in _apps().items()
-                   if str(key).isdigit() and isinstance(entry, dict)]
-    newest: dict[int, tuple[int, dict[str, Any]]] = {}
-    for msg_id, entry in entries:
-        try:
-            chat_id = int(entry.get("chat") or 0)
-            address = str(entry.get("addr") or "").strip().lower()
-            if (not chat_id or not address or not access.bound_allowed(entry) or not admin.is_allowed(address)
-                    or (chat_id in newest and msg_id < newest[chat_id][0])):
-                continue
-            newest[chat_id] = (msg_id, entry)
-        except (TypeError, ValueError):
-            continue
-    for msg_id, entry in newest.values():
-        if entry.get("build") == app_build():
-            continue
-        # The RPC identity check verifies bot ownership, recipient, current
-        # authorization and encryption. A failure never causes deletion.
-        identity = live_web._identity(msg_id)
-        if not identity or identity[1] != str(entry.get("addr") or "").strip().casefold():
-            continue
-        with state.person(identity[1]):
-            _maybe_upgrade(msg_id, identity[0], str(entry.get("locale") or "es"))
-
-
 def sweep_forever() -> None:
-    """Re-read updates and send upgraded apps even while users are away."""
-    first, last_upgrade = True, 0.0
+    """Re-read pending updates; never send new apps or notices to inactive chats."""
+    first, last_profile_check = True, 0.0
     while True:
         try:
             now = time.time()
-            if first or now - last_upgrade >= 120:
-                proactive_upgrades()
+            if first or now - last_profile_check >= 120:
                 notice = maintenance.get()
                 if notice["revision"] and not maintenance.silent():
-                    threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-retry", daemon=True).start()
                     threading.Thread(target=maintenance.sync_profile, name="maintenance-profile", daemon=True).start()
-                last_upgrade = now
+                last_profile_check = now
             with state.lock:
                 keys = [int(key) for key, entry in _apps().items()
                         if first or now - float(entry.get("active", 0)) < 86400 or now - float(entry.get("sent", 0)) < 172800]
@@ -2200,89 +2161,6 @@ def op_owner_only(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "maintenance_notice": maintenance.get(), "message": ""}
 
 
-_maintenance_notify_lock = threading.Lock()
-
-
-def _notify_maintenance(notice: dict[str, Any]) -> None:
-    """Retry failed local queueing, but never notify a revoked or stale grant."""
-    if maintenance.silent() or not notice.get("revision") or not _maintenance_notify_lock.acquire(blocking=False):
-        return
-    try:
-        with state.lock:
-            entries = [dict(entry) for entry in _apps().values() if isinstance(entry, dict)]
-        chats: dict[int, tuple[str, str, bool, str]] = {}
-        for entry in entries:
-            try:
-                address = str(entry.get("addr") or "").strip().lower()
-                chat_id = int(entry.get("chat") or 0)
-                if chat_id and address and access.bound_allowed(entry) and admin.is_allowed(address):
-                    chats[chat_id] = (address, str(entry.get("locale") or "es"), True, access.session_stamp(address))
-            except (TypeError, ValueError):
-                continue
-        # Also cover currently authorized people with an existing private chat
-        # but no app yet. Never revive historic grants or create a new contact.
-        if chat.ready():
-            mode = access.snapshot()
-            if config.INVITE_AUTO_ACCESS:
-                from . import community
-                addresses = config.owner_admin_addresses() | set(community.addresses())
-            else:
-                with state.lock:
-                    addresses = (config.owner_admin_addresses() | set(mode["guests"]) if mode["controlled"] else
-                                 config.owner_admin_addresses() | set(config.ALLOWED_SENDERS) | set(admin._access()["allowed"]))
-            for address in addresses - {item[0] for item in chats.values()}:
-                if not address or not admin.is_allowed(address):
-                    continue
-                try:
-                    target = identity_guard.current_email_chat(address)
-                    if target:
-                        members = chat.rpc().get_chat_contacts(chat.account(), target)
-                        contact = int(members[0]) if len(members) == 1 else 0
-                    else:
-                        contact = int(chat.rpc().lookup_contact_id_by_addr(chat.account(), address) or 0)
-                        target = int(chat.rpc().get_chat_id_by_contact_id(chat.account(), contact) or 0) if contact else 0
-                    info = chat.rpc().get_basic_chat_info(chat.account(), target) if target else None
-                    kind = getattr(getattr(info, "chat_type", ""), "value", getattr(info, "chat_type", ""))
-                    actual = str(chat.rpc().get_contact(chat.account(), contact).address or "").strip().lower()
-                    if (target and str(kind) == "Single" and not getattr(info, "is_contact_request", False)
-                            and not getattr(info, "is_self_talk", False) and actual == address
-                            and identity_guard.authorized_chat(chat.rpc(), chat.account(), target, address, contact_id=contact)):
-                        with state.person(address):
-                            locale = "en" if state.setting("language") == "en" else "es"
-                        chats[target] = (address, locale, False, access.session_stamp(address))
-                except Exception:
-                    continue
-        for chat_id, (address, locale, has_app, stamp) in chats.items():
-            if maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address):
-                continue
-            with state.lock:
-                record = state.data.get("maintenance_notice") or {}
-                if (record.get("notified") or {}).get(str(chat_id)) == notice["revision"]:
-                    continue
-            message = (tr(locale, "Mantenimiento: ", "Maintenance: ") + notice["en" if locale == "en" else "es"] if notice["active"] else
-                       tr(locale, "Mantenimiento finalizado; las colas autorizadas pueden continuar.",
-                          "Maintenance ended; authorized queues may continue."))
-            if has_app:
-                queued = push(chat_id, "maintenance", notice, message)
-            else:
-                def interrupted() -> bool:
-                    return (maintenance.get()["revision"] != notice["revision"] or not admin.is_allowed(address)
-                            or access.session_stamp(address) != stamp
-                            or not _verified_binding({"chat": chat_id, "addr": address}))
-                queued = bool(chat.send(chat_id, "🛠️ " + message, interrupted=interrupted))
-            if queued:
-                # Accepted into the local mail queue, not confirmed delivered.
-                with state.lock:
-                    record = state.data.get("maintenance_notice") or {}
-                    if record.get("revision") == notice["revision"]:
-                        record.setdefault("notified", {})[str(chat_id)] = notice["revision"]
-                        state.save()
-    finally:
-        _maintenance_notify_lock.release()
-        latest = maintenance.get()
-        if latest["revision"] != notice["revision"]:
-            threading.Thread(target=_notify_maintenance, args=(latest,), name="maintenance-latest", daemon=True).start()
-
 
 @op("maintenance_notice")
 def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> Any:
@@ -2296,7 +2174,6 @@ def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> An
         raise AppError(tr(locale, "Aviso inválido: usa un mensaje de hasta 280 caracteres.",
                           "Invalid notice: use a message of up to 280 characters.")) from None
     profile_updated = maintenance.sync_profile()
-    threading.Thread(target=_notify_maintenance, args=(notice,), name="maintenance-notice", daemon=True).start()
     return {"notice": notice, "profile_updated": profile_updated}
 
 
