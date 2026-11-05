@@ -652,7 +652,7 @@ function homeWeatherBanner() {
       h("span", { class: "rate-banner-brand" }, "Open-Meteo", icon("next"))),
     data ? h("div", { class: "weather-banner-body" }, icon(weatherIcon(currentWeather.code, currentWeather.is_day), "weather-banner-icon"),
       h("div", { class: "weather-banner-copy" }, h("small", {}, data.place.label),
-        h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, currentWeather.description)))) :
+        h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, weatherDescription(currentWeather))))) :
       h("div", { class: "weather-banner-copy" }, h("b", {}, saved.city), h("small", {}, t("weather_banner_empty"))),
     h("span", { class: "rate-banner-foot" }, last ? [t(old ? "weather_banner_old" : "weather_banner_saved"), " · ", fmtTime(last.at)] : t("weather_source")));
 }
@@ -2036,6 +2036,14 @@ function weatherValue(value, suffix = "") {
   return value === null || value === undefined ? "—" : `${fmtNumber(value, 1)}${suffix}`;
 }
 
+// Saved forecasts remain readable in either language, even offline. Older
+// snapshots may contain only one description and keep that as a safe fallback.
+function weatherDescription(item) {
+  const descriptions = item && item.descriptions;
+  const translated = descriptions && descriptions[lang()];
+  return typeof translated === "string" && translated ? translated : String((item && item.description) || "");
+}
+
 VIEWS.weather = {
   tab: "apps",
   title: () => t("tile_weather"),
@@ -2085,7 +2093,7 @@ VIEWS.weather = {
         const date = new Date(day.date + "T12:00:00");
         return h("div", { class: "weather-day" },
           h("small", {}, Number.isNaN(date.getTime()) ? day.date : date.toLocaleDateString(lang(), { weekday: "short", day: "numeric" })),
-          icon(weatherIcon(day.code)), h("small", { class: "weather-desc" }, day.description),
+          icon(weatherIcon(day.code)), h("small", { class: "weather-desc" }, weatherDescription(day)),
           h("b", {}, `${weatherValue(day.high, "°")} / ${weatherValue(day.low, "°")}`),
           h("small", {}, `${weatherValue(day.rain, "%")} ${t("weather_rain")}`));
       });
@@ -2097,7 +2105,7 @@ VIEWS.weather = {
           h("div", { class: "weather-sky" }, icon(weatherIcon(current.code, current.is_day), "weather-art")),
           h("div", { class: "weather-place" }, h("small", {}, data.place.label),
             h("div", { class: "weather-temp" }, weatherValue(current.temp, "°")),
-            h("b", {}, current.description), h("small", {}, `${t("weather_feels")} ${weatherValue(current.feels, "°C")}`)),
+            h("b", {}, weatherDescription(current)), h("small", {}, `${t("weather_feels")} ${weatherValue(current.feels, "°C")}`)),
           h("div", { class: "weather-stats" },
             h("span", {}, icon("drop"), h("small", {}, t("weather_humidity")), h("b", {}, weatherValue(current.humidity, "%"))),
             h("span", {}, icon("wind"), h("small", {}, t("weather_wind")), h("b", {}, weatherValue(current.wind, " km/h"))),

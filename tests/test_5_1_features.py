@@ -76,6 +76,8 @@ def test_weather_selects_only_search_candidates_and_builds_forecast():
         assert data["place"]["id"] == 2
         assert len(data["candidates"]) == 2
         assert data["current"]["description"] == "rain"
+        assert data["current"]["descriptions"] == {"es": "lluvia", "en": "rain"}
+        assert data["days"][0]["descriptions"] == {"es": "lluvia", "en": "rain"}
         assert data["days"][0]["rain"] == 80
         with pytest.raises(tools.WeatherError): tools.weather_data("Santiago", "en", 55)
 
