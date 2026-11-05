@@ -182,7 +182,7 @@ def run(request: str, files: list[dict[str, Any]], locale: str, *, advice: list[
     if can_run:
         coder._lock_private()
     coder.ROOT.mkdir(parents=True, exist_ok=True)
-    coder.ROOT.chmod(0o711)
+    coder.ROOT.chmod(0o700)
     folder = Path(tempfile.mkdtemp(prefix="local-", dir=coder.ROOT))
     folder.chmod(0o777)
     steps: list[dict[str, Any]] = []

@@ -196,3 +196,25 @@ def test_weather_state_survives_restart_and_one_missed_cycle(tmp_path, monkeypat
     finally:
         state.data.clear()
         state.data.update(original)
+
+
+def test_geocoding_never_silently_falls_back_to_a_different_region(monkeypatch):
+    class Response:
+        def __init__(self, body):
+            self.body = body
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self.body
+
+    places = [{"id": 1, "name": "Santiago", "admin1": "Región Metropolitana", "country": "Chile", "latitude": -33, "longitude": -70},
+              {"id": 2, "name": "Santiago", "admin1": "Santiago", "country": "Cuba", "latitude": 20, "longitude": -75}]
+    forecast = {"current": {"temperature_2m": 25, "weather_code": 0}, "daily": {}}
+    def get(url, **_kwargs):
+        return Response({"results": places} if "geocoding" in url else forecast)
+    monkeypatch.setattr(tools.requests, "get", get)
+    assert tools.weather_data("Santiago, Santiago, Cuba", "es")["place"]["id"] == 2
+    with pytest.raises(tools.WeatherError, match="not_found"):
+        tools.weather_data("Santiago, España", "es")
+    # An explicitly selected provider ID survives a translated region label.
+    assert tools.weather_data("Santiago, Havana, Cuba", "es", place_id=2)["place"]["id"] == 2

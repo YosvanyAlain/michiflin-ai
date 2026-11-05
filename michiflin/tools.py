@@ -454,18 +454,23 @@ def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
                                params={"name": name, "count": 10, "language": locale, "format": "json"}, timeout=15)
         geocode.raise_for_status()
         state.check_work_allowed()
-        places = geocode.json().get("results") or []
-        if len(parts) > 1:
-            needle = " ".join(parts[1:]).casefold()
-            matched = [p for p in places if needle in _place_label(p).casefold()]
-            if matched:
-                places = matched
-        places = [p for p in places if isinstance(p, dict) and p.get("id") and p.get("latitude") is not None and p.get("longitude") is not None]
+        places = [p for p in (geocode.json().get("results") or []) if isinstance(p, dict)
+                  and p.get("id") and p.get("latitude") is not None and p.get("longitude") is not None]
         if not places:
             raise WeatherError("not_found")
-        place = next((p for p in places if p["id"] == place_id), None) if place_id else places[0]
-        if place is None:
-            raise WeatherError("place_changed")
+        if place_id:
+            # A place deliberately selected before is identified by its stable
+            # provider ID; a later language change may translate its label.
+            place = next((p for p in places if p["id"] == place_id), None)
+            if place is None:
+                raise WeatherError("place_changed")
+        else:
+            if len(parts) > 1:
+                qualifiers = [part.casefold() for part in parts[1:]]
+                places = [p for p in places if all(part in _place_label(p).casefold() for part in qualifiers)]
+                if not places:
+                    raise WeatherError("not_found")  # do not silently select another country or region
+            place = places[0]
         forecast = requests.get("https://api.open-meteo.com/v1/forecast", params={
             "latitude": place["latitude"], "longitude": place["longitude"],
             "current": "temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m,is_day",

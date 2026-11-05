@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import ai, config, progress, smart_agent, state as runtime_state, tools
+from . import ai, coder_jail, config, progress, smart_agent, state as runtime_state, tools
 from .util import tr
 
 MAX_STEPS = 14
@@ -67,31 +67,30 @@ def _tool_path() -> str:
     return ":".join(dict.fromkeys(folders))
 
 
-def _wrap(command: str) -> list[str]:
-    """Run one shell command as nobody in fresh network, PID and mount namespaces with resource limits."""
-    return [
-        "sudo", "-n", "timeout", "-k", "3", str(RUN_TIMEOUT),
-        "unshare", "--net", "--pid", "--fork", "--kill-child", "--mount-proc", "--",
-        "setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", "--",
-        "env", "-i", f"PATH={_tool_path()}", "HOME=/tmp", "LANG=C.UTF-8",
-        # Bound JVM worker threads and virtual reservations on large CI hosts without relaxing sandbox limits.
-        "JAVA_TOOL_OPTIONS=-Xms16m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=256m "
-        "-XX:CompressedClassSpaceSize=128m -XX:ReservedCodeCacheSize=64m -XX:ActiveProcessorCount=2 -XX:+UseSerialGC",
-        "PYTHONDONTWRITEBYTECODE=1", "PYTHONIOENCODING=utf-8",
-        "prlimit", "--cpu=20", "--as=2147483648", "--fsize=20971520", "--nproc=256", "--",
-        "bash", "-c", "umask 000; " + command,
-    ]
-
-
 def isolation() -> bool:
-    """True when commands can run fully isolated; without it the agent only writes files."""
+    """Probe the real jail; on failure the agent writes files without running them."""
     global _isolation
     if _isolation is None:
         _isolation = False
-        if config.CODE_RUN and all(shutil.which(tool) for tool in ("sudo", "unshare", "setpriv", "prlimit", "timeout")):
+        system_path = os.defpath + ":/usr/local/sbin:/usr/sbin:/sbin"
+        tools_available = all(shutil.which(tool, path=system_path) for tool in
+                              ("sudo", "unshare", "setpriv", "prlimit", "timeout", "mount", "chroot"))
+        if config.CODE_RUN and tools_available:
             try:
-                probe = subprocess.run(_wrap("id -u"), capture_output=True, text=True, timeout=20, cwd=tempfile.gettempdir())
-                _isolation = probe.returncode == 0 and probe.stdout.strip() == "65534"
+                with tempfile.TemporaryDirectory(prefix="michi-coder-check-") as directory:
+                    root = Path(directory)
+                    root.chmod(0o755)
+                    project = root / "project"
+                    project.mkdir(mode=0o777)
+                    project.chmod(0o777)
+                    # This explicitly public, synthetic file must remain hidden
+                    # even though Unix permissions alone would permit reading it.
+                    outside = root / "synthetic-public.txt"
+                    outside.write_text("sandbox check", encoding="utf-8")
+                    outside.chmod(0o644)
+                    probe = f'test "$(id -u)" = 65534 && test ! -e {shlex.quote(str(outside))}'
+                    code, _output = coder_jail.run(project, probe, timeout=10, tool_path=_tool_path())
+                    _isolation = code == 0
             except (OSError, subprocess.SubprocessError):
                 _isolation = False
     return _isolation
@@ -117,12 +116,7 @@ def _remove(folder: Path) -> None:
 
 
 def _run(folder: Path, command: str) -> tuple[int, str]:
-    try:
-        done = subprocess.run(_wrap(command), cwd=folder, capture_output=True, timeout=RUN_TIMEOUT + 10)
-        output = (done.stdout + done.stderr).decode("utf-8", "replace")
-        code = done.returncode
-    except subprocess.TimeoutExpired:
-        output, code = "", 124
+    code, output = coder_jail.run(folder, command, timeout=RUN_TIMEOUT, tool_path=_tool_path())
     if code in {124, 137}:
         output += f"\n[stopped: {RUN_TIMEOUT} s or CPU limit reached]"
     if len(output) > OUTPUT_MAX:
@@ -687,7 +681,9 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
     if can_run:
         _lock_private()
     ROOT.mkdir(parents=True, exist_ok=True)
-    ROOT.chmod(0o711)
+    # The root-only setup can bind the project into its jail without granting
+    # other host users traversal into the temporary project store.
+    ROOT.chmod(0o700)
     folder = Path(tempfile.mkdtemp(prefix="p", dir=ROOT))
     folder.chmod(0o777)
     steps: list[dict[str, Any]] = []
