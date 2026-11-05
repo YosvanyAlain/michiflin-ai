@@ -4,19 +4,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import threading
 import time
-from typing import Any
-
 from . import config, rate_store, state, tools
 
 ALERT_INTERVAL = 6 * 3600
 SAFE_ERRORS = {"authorization", "rate_limit", "connection", "timeout", "http", "invalid", "empty", "storage"}
-
-
-def _current_health() -> dict[str, Any]:
-    with state.lock:
-        section = state.data.setdefault("eltoque", {})
-        value = section.setdefault("health", {})
-        return dict(value) if isinstance(value, dict) else {}
 
 
 def _owner_notification(es: str, en: str, kind: str) -> bool:
