@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, answer_inline, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_inline, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -696,7 +696,7 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     _send_status(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates",
+WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
             "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
@@ -1366,9 +1366,13 @@ def settings_view(locale: str) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 @op("hello")
 def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    try:
+        weather = weather_home.view(chat.sender(), locale)
+    except weather_home.WeatherHomeError:
+        weather = None  # do not break the entire app if weather state cannot be saved
     return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
-            "maintenance_notice": maintenance.get(), "rates_summary": tools.saved_rates_snapshot(),
+            "maintenance_notice": maintenance.get(), "rates_summary": tools.saved_rates_snapshot(), "weather_home": weather,
             "rates_derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS,
             "modes": {"kill_switch": op_kill_switch(chat_id, {}, locale), "nauta_strict": op_nauta_strict(chat_id, {}, locale)}}
 
@@ -1955,11 +1959,29 @@ def op_weather(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         place_id = args.get("place_id", 0)
         if type(place_id) is not int or place_id < 0:
             raise tools.WeatherError("place_changed")
-        return tools.weather_data(_clean(args.get("city"))[:120], locale, place_id)
+        return weather_home.query(chat.sender(), _clean(args.get("city"))[:120], locale, place_id)
     except tools.WeatherError as exc:
         if str(exc) == "not_found":
             raise AppError(tr(locale, "No encontré esa ciudad. Prueba con otro nombre.", "City not found. Try another name.")) from None
         raise AppError(tr(locale, "No pude consultar Open-Meteo. Inténtalo de nuevo.", "Could not reach Open-Meteo. Try again.")) from None
+
+
+@op("weather_settings")
+def op_weather_settings(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    action = str(args.get("do") or "")
+    try:
+        value = args.get("on") if action == "auto" else {"city": _clean(args.get("city"))[:120], "place_id": args.get("place_id")}
+        weather_home.settings(chat.sender(), action, value)
+        return weather_home.view(chat.sender(), locale)
+    except weather_home.WeatherHomeError as exc:
+        if str(exc) == "no_result":
+            raise AppError(tr(locale, "Consulta y guarda primero una ciudad.", "First look up and save a city.")) from None
+        if str(exc) == "changed":
+            raise AppError(tr(locale, "La última consulta cambió. Vuelve a abrir o consultar la ciudad antes de elegirla.",
+                              "The last lookup changed. Reopen or look up the city before selecting it.")) from None
+        if str(exc) in {"storage", "full"}:
+            raise AppError(tr(locale, "No pude guardar el ajuste del clima.", "Could not save the weather setting.")) from None
+        raise AppError(tr(locale, "No se pudo cambiar ese ajuste.", "Could not change that setting.")) from None
 
 
 @op("translate")

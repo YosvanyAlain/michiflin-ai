@@ -425,13 +425,13 @@ function upsertJob(job) {
 
 let syncing = null;
 
-function hello(force = false) {
+function hello(force = false, quiet = false) {
   if (!force && cache.at && now() - cache.at < 900 && cache.lang === lang()) return Promise.resolve();
-  syncing = syncing || sync(force).finally(() => { syncing = null; });
+  syncing = syncing || sync(force, quiet).finally(() => { syncing = null; });
   return syncing;
 }
 
-async function sync(force) {
+async function sync(force, quiet = false) {
   try {
     const data = await bridge.call("hello");
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
@@ -443,11 +443,12 @@ async function sync(force) {
       const currentRates = store.get("rates", null);
       if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) store.set("rates", data.rates_summary);
     }
+    if (data.weather_home) saveWeatherHome(data.weather_home);
     bus.emit("rates");
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
   } catch (error) {
-    if (force && !error.cancelled) toast(error.message, "bad");
+    if (force && !quiet && !error.cancelled) toast(error.message, "bad");
   }
 }
 
@@ -596,6 +597,66 @@ function watchVisibleRates(element) {
   setTimeout(check, 8000);
 }
 
+// Per-person bot snapshot plus an offline device copy.
+function weatherHome() {
+  const saved = store.get("weatherHome", null);
+  return saved && typeof saved === "object" ? saved : { city: t("default_city"), auto: false, last: null, next_at: 0, interval: 21600 };
+}
+
+function validWeatherLast(last) {
+  return !!(last && last.data && last.data.place && last.data.current && Number(last.at) > 0);
+}
+
+function saveWeatherHome(data) {
+  if (!data || typeof data !== "object" || typeof data.city !== "string") return;
+  const old = weatherHome();
+  if (validWeatherLast(old.last) && old.last.local_only &&
+      (!validWeatherLast(data.last) || Number(old.last.at) > Number(data.last.at))) data = { ...data, last: old.last };
+  store.set("weatherHome", data);
+  bus.emit("weather_home");
+}
+
+function saveManualWeather(data) {
+  if (!data || !data.place || !data.current) return;
+  const { saved_at, saved_on_bot, ...snapshot } = data;
+  const home = weatherHome();
+  home.last = { at: Number(saved_at) || now(), data: snapshot, local_only: saved_on_bot !== true };
+  store.set("weatherHome", home);
+  bus.emit("weather_home");
+}
+
+function watchHomeWeather(element) {
+  const check = () => {
+    if (!element.isConnected) return;
+    const saved = weatherHome();
+    const due = Number(saved.next_at) || 0;
+    const lastAttempt = Number(store.get("weatherHomeSyncAt", 0)) || 0;
+    // Only retrieve the saved snapshot; the bot does the bounded API refresh.
+    if (saved.auto === true && document.visibilityState !== "hidden" && now() >= due + 90 && now() - lastAttempt >= 21600) {
+      store.set("weatherHomeSyncAt", now());
+      hello(true, true);
+    }
+    if (element.isConnected) setTimeout(check, 60000);
+  };
+  setTimeout(check, 90000);
+}
+
+function homeWeatherBanner() {
+  const saved = weatherHome();
+  const last = validWeatherLast(saved.last) ? saved.last : null;
+  const data = last && last.data;
+  const currentWeather = data && data.current;
+  const old = last && now() - Number(last.at) > 1.2 * Math.max(21600, Number(saved.interval) || 0);
+  return h("button", { class: "weather-banner", onclick: () => go("weather") },
+    h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("weather"), t("home_banner_weather")),
+      h("span", { class: "rate-banner-brand" }, "Open-Meteo", icon("next"))),
+    data ? h("div", { class: "weather-banner-body" }, icon(weatherIcon(currentWeather.code, currentWeather.is_day), "weather-banner-icon"),
+      h("div", { class: "weather-banner-copy" }, h("small", {}, data.place.label),
+        h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, currentWeather.description)))) :
+      h("div", { class: "weather-banner-copy" }, h("b", {}, saved.city), h("small", {}, t("weather_banner_empty"))),
+    h("span", { class: "rate-banner-foot" }, last ? [t(old ? "weather_banner_old" : "weather_banner_saved"), " · ", fmtTime(last.at)] : t("weather_source")));
+}
+
 function homeRatesBanner() {
   const data = store.get("rates", null);
   const valid = data && data.rates && typeof data.rates === "object";
@@ -610,13 +671,51 @@ function homeRatesBanner() {
     h("span", { class: "rate-banner-foot" }, valid ? [t(stale ? "rates_saved_status" : "rates_live_status"), " · ", fmtTime(data.at), " · ", since(data.at)] : t("rates_banner_sub")));
 }
 
+function homeCarousel() {
+  const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
+  const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
+  const slides = [
+    () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
+      h("div", { class: "hero-art" }, icon("cat"))),
+    homeRatesBanner,
+    homeWeatherBanner,
+  ];
+  let active = 0;
+  const dots = labels.map((key, index) => h("button", { class: "home-banner-dot", type: "button", "aria-label": t(key),
+    title: t(key), onclick: () => { active = index; draw(); } }));
+  const root = h("section", { class: "home-carousel", "aria-label": t("home_banners") }, slot,
+    h("div", { class: "home-banner-controls", role: "group", "aria-label": t("home_banners") }, dots));
+  const draw = () => {
+    fill(slot, slides[active]());
+    dots.forEach((dot, index) => {
+      dot.classList.toggle("on", index === active);
+      if (index === active) dot.setAttribute("aria-current", "true");
+      else dot.removeAttribute("aria-current");
+    });
+  };
+  const refresh = () => { if (!slot.contains(document.activeElement)) draw(); };
+  ["hello", "rates", "weather_home"].forEach((kind) => bus.on(kind, refresh));
+  const rotate = () => {
+    if (!root.isConnected) return;
+    const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced && document.visibilityState !== "hidden" && !root.contains(document.activeElement)) {
+      active = (active + 1) % slides.length;
+      draw();
+    }
+    if (root.isConnected) setTimeout(rotate, 8000);
+  };
+  draw();
+  setTimeout(rotate, 8000);
+  watchVisibleRates(root);
+  watchHomeWeather(root);
+  return root;
+}
+
 VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
     const status = h("div", { class: "chips" });
     const advisory = h("div");
-    const ratesBanner = h("div", { class: "rates-banner-slot" });
-    const drawRates = () => fill(ratesBanner, homeRatesBanner());
     const drawStatus = () => fill(status, ...statusChips());
     const drawAdvisory = () => {
       const item = cache.maintenance_notice;
@@ -625,21 +724,13 @@ VIEWS.home = {
     };
     ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
     ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
-    ["hello", "rates"].forEach((kind) => bus.on(kind, drawRates));
-    drawStatus(); drawAdvisory(); drawRates();
-    add(main, 
-      h("div", { class: "hero" },
-        h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
-        h("div", { class: "hero-art" }, icon("cat"))),
-      status,
-      advisory,
-      ratesBanner,
-      searchBox(),
+    drawStatus(); drawAdvisory();
+    add(main,
+      homeCarousel(), status, advisory, searchBox(),
       section(t("shortcuts"), tiles([], ["health", "rates"])),
       section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })), noticeList()),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
-    watchVisibleRates(ratesBanner);
   },
 };
 
@@ -1950,11 +2041,46 @@ VIEWS.weather = {
   title: () => t("tile_weather"),
   render(main) {
     const box = h("div", { class: "stack weather-result" });
-    const cities = store.get("cities", [t("default_city")]);
+    const settings = h("div", { class: "card stack weather-settings" });
+    const savedCities = store.get("cities", [t("default_city")]);
+    const cities = Array.isArray(savedCities) && savedCities.length ? savedCities : [t("default_city")];
     let sequence = 0;
+    const drawSettings = () => {
+      const home = weatherHome();
+      const toggle = h("button", { class: "btn small", type: "button" }, t(home.auto ? "weather_auto_disable" : "weather_auto_enable"));
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        try {
+          const result = await bridge.call("weather_settings", { do: "auto", on: !home.auto });
+          saveWeatherHome(result);
+          toast(t("weather_setting_saved"), "ok");
+        } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+        finally { toggle.disabled = false; }
+      });
+      fill(settings, h("div", { class: "row between wrap" },
+        h("div", { class: "stack grow" }, h("b", {}, t("weather_default_city", { city: home.city })),
+          h("small", { class: "muted" }, t(home.auto ? "weather_auto_on" : "weather_auto_off"))), toggle),
+        h("small", { class: "muted" }, t("weather_auto_detail")), h("small", { class: "muted" }, t("weather_privacy")));
+    };
     const draw = (data) => {
       const current = data.current || {};
       const candidates = data.candidates || [];
+      const home = weatherHome();
+      const last = validWeatherLast(home.last) && home.last.data.query === data.query &&
+        Number(home.last.data.place.id) === Number(data.place.id) ? home.last : null;
+      const isDefault = home.city === data.query && Number(home.place_id) === Number(data.place.id);
+      const chooseDefault = h("button", { class: "btn small", type: "button", disabled: isDefault || !!(last && last.local_only) },
+        t(isDefault ? "weather_is_default" : "weather_use_default"));
+      chooseDefault.addEventListener("click", async () => {
+        chooseDefault.disabled = true;
+        try {
+          const result = await bridge.call("weather_settings", { do: "use_last", city: data.query, place_id: Number(data.place.id) });
+          saveWeatherHome(result);
+          if (box.isConnected) draw(data);
+          toast(t("weather_default_saved"), "ok");
+        } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+        finally { chooseDefault.disabled = false; }
+      });
       const daily = (data.days || []).map((day) => {
         const date = new Date(day.date + "T12:00:00");
         return h("div", { class: "weather-day" },
@@ -1977,6 +2103,9 @@ VIEWS.weather = {
             h("span", {}, icon("wind"), h("small", {}, t("weather_wind")), h("b", {}, weatherValue(current.wind, " km/h"))),
             h("span", {}, icon("cloudrain"), h("small", {}, t("weather_rain")), h("b", {}, weatherValue(current.precipitation, " mm"))))),
         h("small", { class: "muted" }, t("weather_observed", { time: `${data.as_of || "—"}${data.timezone ? " · " + data.timezone : ""}` })),
+        last ? h("small", { class: "muted" }, t("weather_banner_saved"), " · ", fmtTime(last.at)) : null,
+        last && last.local_only ? h("p", { class: "note warn", role: "status" }, t("weather_local_only")) : null,
+        chooseDefault,
         daily.length ? section(t("weather_forecast"), h("div", { class: "weather-days" }, daily)) : null,
         h("small", { class: "muted" }, t("weather_source")));
     };
@@ -1986,12 +2115,29 @@ VIEWS.weather = {
       fill(box, loading());
       try {
         const data = await bridge.call("weather", { city, place_id: placeId });
+        if (ticket === sequence) saveManualWeather(data);
         if (box.isConnected && ticket === sequence) draw(data);
-      } catch (error) { if (box.isConnected && ticket === sequence && !error.cancelled) fill(box, failure(error.message, () => run(city, placeId))); }
+      } catch (error) {
+        if (box.isConnected && ticket === sequence && !error.cancelled) {
+          const last = weatherHome().last;
+          if (validWeatherLast(last)) {
+            draw(last.data);
+            box.prepend(h("p", { class: "note warn", role: "status" }, error.message));
+          } else fill(box, failure(error.message, () => run(city, placeId)));
+        }
+      }
     };
+    bus.on("weather_home", () => {
+      drawSettings();
+      const last = weatherHome().last;
+      if (!sequence && validWeatherLast(last)) draw(last.data);
+    });
+    drawSettings();
     add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather", label: t("weather_find") }),
-      h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box);
-    add(box, empty(t("weather_none"), "weather"));
+      h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box, settings);
+    const last = weatherHome().last;
+    if (validWeatherLast(last)) draw(last.data);
+    else add(box, empty(t("weather_none"), "weather"));
   },
 };
 

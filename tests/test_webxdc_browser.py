@@ -45,11 +45,14 @@ BRIDGE = r"""
   window.__delay = 0;
   window.__fixtureSession = "synthetic-boot-session";
   window.__sessionChangedNext = "";
+  window.__weatherHome = { city: "La Habana, Cuba", place_id: 0, auto: true, last: null,
+    next_at: Date.now() / 1000 + 21600, interval: 21600 };
   const responseFor = (request) => {
     switch (request.op) {
       case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: [],
         modes: { kill_switch: {active:window.__modes.kill_switch}, nauta_strict: {active:window.__modes.nauta_strict, part_mb:3} },
-        maintenance_notice: {active:false, es:"Mensaje de mantenimiento", en:"Maintenance message", revision:0, expires:0} };
+        maintenance_notice: {active:false, es:"Mensaje de mantenimiento", en:"Maintenance message", revision:0, expires:0},
+        weather_home: window.__weatherHome };
       case "kill_switch":
       case "nauta_strict":
         if (typeof request.args.value === "boolean") window.__modes[request.op] = request.args.value;
@@ -81,9 +84,24 @@ BRIDGE = r"""
         if (request.args.history) return { history: Array.from({length:request.args.days}, (_,i)=>({
           date: new Date(Date.UTC(2026,9,1+i)).toISOString().slice(0,10), rates:{USD:390+i,EUR:420+i*2} })), complete:true, days:request.args.days, source:"elTOQUE API", derived_allowed:false };
         return { rates: { USD: 390, EUR: 420, MLC: 250 }, at: Date.now() / 1000, source:"elTOQUE API", refresh_seconds:300, derived_allowed:false };
-      case "weather": return {query: request.args.city, place:{id:1,label:"Havana, Cuba"}, candidates:[{id:1,label:"Havana, Cuba"},{id:2,label:"Havana, USA"}],
-        timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"sunny"},
-        days:[{date:"2026-10-29",code:0,description:"clear",high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",high:29,low:24,rain:65}],source:"Open-Meteo"};
+      case "weather": {
+        const placeId = request.args.place_id || 1;
+        const data = {query: request.args.city, place:{id:placeId,label:placeId === 1 ? "Havana, Cuba" : "Havana, USA"},
+          candidates:[{id:1,label:"Havana, Cuba"},{id:2,label:"Havana, USA"}],
+          timezone:"America/Havana",as_of:"2026-10-29T10:00",current:{temp:28,feels:30,humidity:72,wind:13,precipitation:0,code:0,is_day:1,description:"sunny"},
+          days:[{date:"2026-10-29",code:0,description:"clear",high:30,low:23,rain:10},{date:"2026-10-30",code:63,description:"rain",high:29,low:24,rain:65}],source:"Open-Meteo"};
+        const at = Date.now() / 1000;
+        window.__weatherHome.last = {at, data};
+        return {...data, saved_at:at, saved_on_bot:true};
+      }
+      case "weather_settings":
+        if (request.args.do === "auto") window.__weatherHome.auto = request.args.on;
+        if (request.args.do === "use_last" && window.__weatherHome.last) {
+          const last = window.__weatherHome.last.data;
+          if (last.query !== request.args.city || last.place.id !== request.args.place_id) throw Error("result changed");
+          window.__weatherHome.city = last.query; window.__weatherHome.place_id = last.place.id;
+        }
+        return window.__weatherHome;
       case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
       case "youtube_search": {
         const rows = window.__searchResults || [];
@@ -237,6 +255,61 @@ def screenshot_if_requested(page, name: str) -> None:
 
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_home_carousel_and_saved_weather_bilingual(self) -> None:
+        cases = [("es", {"width": 320, "height": 760}), ("en", {"width": 1280, "height": 800})]
+        for language, viewport in cases:
+            with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
+                page.emulate_media(reduced_motion="reduce")
+                self.assertEqual(page.locator(".home-carousel").count(), 1)
+                self.assertEqual(page.locator(".home-banner-controls button").count(), 3)
+                if language == "es":
+                    self.assertIn("la tasa de cambio a un toque", page.evaluate("I18N.es.home_sub_morning"))
+                rate_name = "Tasas de cambio" if language == "es" else "Exchange rates"
+                weather_name = "Clima" if language == "es" else "Weather"
+                page.locator(".home-banner-controls").get_by_role("button", name=rate_name).click()
+                self.assertTrue(page.locator(".home-banner-slot .rate-banner").is_visible())
+                page.locator(".home-banner-controls").get_by_role("button", name=weather_name).click()
+                self.assertTrue(page.locator(".home-banner-slot .weather-banner").is_visible())
+                self.assertIn("La Habana", page.locator(".home-banner-slot .weather-banner").inner_text())
+                screenshot_if_requested(page, language + "-home-weather-empty")
+                page.locator(".home-banner-slot .weather-banner").click()
+                self.assertEqual(page.evaluate("current.view"), "weather")
+                self.assertTrue(page.get_by_text("no se usa la ubicación del dispositivo" if language == "es" else "device location is not used", exact=False).is_visible())
+                city = page.get_by_placeholder("Ciudad" if language == "es" else "City")
+                city.fill("La Habana, Cuba")
+                city.press("Enter")
+                page.locator(".weather-temp").wait_for()
+                self.assertIn("28", page.locator(".weather-temp").inner_text())
+                self.assertEqual(page.evaluate("weatherHome().last.data.place.id"), 1)
+                use = page.get_by_role("button", name="Usar esta ubicación como predeterminada" if language == "es" else "Use this location as the default")
+                use.click()
+                page.get_by_role("button", name="Ubicación predeterminada" if language == "es" else "Default location", exact=True).wait_for()
+                self.assertEqual(page.evaluate("window.__weatherHome.place_id"), 1)
+                pause = page.get_by_role("button", name="Pausar actualización" if language == "es" else "Pause refresh")
+                pause.click()
+                page.get_by_role("button", name="Activar actualización" if language == "es" else "Enable refresh").wait_for()
+                self.assertFalse(page.evaluate("window.__weatherHome.auto"))
+                page.get_by_role("button", name="Activar actualización" if language == "es" else "Enable refresh").click()
+                page.get_by_role("button", name="Pausar actualización" if language == "es" else "Pause refresh").wait_for()
+                screenshot_if_requested(page, language + "-weather-saved")
+                weather_calls = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'weather').length")
+                page.locator('.tab[data-tab="home"]:visible').click()
+                page.locator(".home-banner-controls").get_by_role("button", name=weather_name).click()
+                self.assertIn("28", page.locator(".weather-banner").inner_text())
+                screenshot_if_requested(page, language + "-home-weather-saved")
+                page.locator(".weather-banner").click()
+                self.assertIn("28", page.locator(".weather-temp").inner_text())
+                self.assertEqual(page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'weather').length"), weather_calls)
+                self.assertTrue(page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth"))
+                self.assertEqual(errors, [])
+
+    def test_home_carousel_rotates_without_extra_weather_queries(self) -> None:
+        with browser_fixture("es", {"width": 390, "height": 844}) as (page, errors):
+            page.wait_for_function("document.querySelector('.home-banner-controls [aria-current=true]')?.getAttribute('aria-label') === 'Tasas de cambio'", timeout=11000)
+            page.wait_for_function("document.querySelector('.home-banner-controls [aria-current=true]')?.getAttribute('aria-label') === 'Clima'", timeout=11000)
+            self.assertEqual(page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'weather').length"), 0)
+            self.assertEqual(errors, [])
+
     def test_human_gestures_operate_a_local_simulated_challenge(self) -> None:
         """No third-party sites or real challenges: exercise the real Chromium input path."""
         from michiflin import remote_worker

@@ -206,6 +206,8 @@ def test_home_rates_banner_stale_and_provider_policy_fail_closed(language, width
           })),complete:true,source:'elTOQUE API',days:7,derived_allowed:true});
           go('home');
         }""")
+        rate_name = "Tasas de cambio" if language == "es" else "Exchange rates"
+        page.locator(".home-banner-controls").get_by_role("button", name=rate_name).click()
         banner = page.locator(".rate-banner")
         assert "elTOQUE" in banner.inner_text() and "855" in banner.inner_text()
         assert "EUR" in banner.inner_text() and "ECU" not in banner.inner_text()
@@ -230,6 +232,7 @@ def test_home_rates_banner_stale_and_provider_policy_fail_closed(language, width
         assert page.locator(".rate-status.stale").is_visible()
         assert ("guardad" if language == "es" else "saved") in page.locator("#view .note.warn").first.inner_text().lower()
         page.evaluate("go('home')")
+        page.locator(".home-banner-controls").get_by_role("button", name=rate_name).click()
         assert page.locator(".rate-banner.is-stale").is_visible()
         assert ("guardad" if language == "es" else "saved") in page.locator(".rate-banner").inner_text().lower()
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
