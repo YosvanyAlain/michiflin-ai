@@ -21,6 +21,19 @@ def test_setup_failure_never_falls_back_to_host(monkeypatch):
     assert len(calls) == 1  # no unisolated fallback and no automatic command retry
 
 
+def test_private_project_root_rejects_a_planted_symlink(tmp_path, monkeypatch):
+    target = tmp_path / "protected-fixture"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+    planted = tmp_path / "michiflin-code"
+    planted.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(coder, "ROOT", planted)
+    with pytest.raises(coder.CoderError, match="private project space"):
+        coder._private_root("en")
+    assert (target.stat().st_mode & 0o777) == 0o755
+    assert not list(target.iterdir())
+
+
 def test_runtime_roots_never_mount_all_opt_or_home():
     roots = coder_jail.runtime_roots()
     assert all(root.startswith("/opt/") for root in roots)
