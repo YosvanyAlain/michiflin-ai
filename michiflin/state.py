@@ -49,6 +49,7 @@ data: dict[str, Any] = {
     "maintenance_notice": {},
     "personal_ai_budgets": {},
     "eltoque": {},  # received public rates and monitor status only; never API credentials
+    "weather_home": {},  # per-current-grant selected city and last weather; no device geolocation
 }
 
 # Settings each person keeps for themselves; everything else is shared and changed only by administrators.

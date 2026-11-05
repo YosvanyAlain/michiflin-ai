@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state, weather_home
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -874,6 +874,7 @@ def on_start(bot: Any, args: Any) -> None:
         threading.Thread(target=_background_after_maintenance, args=(browser.warm_up,), name="browser-warmup", daemon=True).start()
     threading.Thread(target=maintenance.scheduler, name="maintenance-scheduler", daemon=True).start()
     threading.Thread(target=rates_monitor.run, args=(_draining,), name="eltoque-monitor", daemon=True).start()
+    threading.Thread(target=weather_home.run, args=(_draining,), name="weather-home", daemon=True).start()
     queue.start()
     _start_cursor(bot, accid)
     _pool.submit(_bootstrap_verified_owner, bot, accid)

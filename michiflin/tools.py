@@ -449,9 +449,11 @@ def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
     parts = [part.strip() for part in query.split(",") if part.strip()]
     name = parts[0] if parts else query
     try:
+        state.check_work_allowed()
         geocode = requests.get("https://geocoding-api.open-meteo.com/v1/search",
                                params={"name": name, "count": 10, "language": locale, "format": "json"}, timeout=15)
         geocode.raise_for_status()
+        state.check_work_allowed()
         places = geocode.json().get("results") or []
         if len(parts) > 1:
             needle = " ".join(parts[1:]).casefold()
@@ -471,6 +473,7 @@ def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
             "forecast_days": 5, "timezone": "auto",
         }, timeout=15)
         forecast.raise_for_status()
+        state.check_work_allowed()
         body = forecast.json()
         current = body.get("current") or {}
         daily = body.get("daily") or {}
@@ -501,7 +504,8 @@ def weather_text(query: str, locale: str) -> str:
     if not query.strip():
         return tr(locale, "Uso: /clima <ciudad>", "Usage: /weather <city>")
     try:
-        data = weather_data(query, locale)
+        from . import chat, weather_home
+        data = weather_home.query(chat.sender(), query, locale)
     except WeatherError as exc:
         if str(exc) == "not_found":
             return tr(locale, f"🌦️ No encontré “{query}”.", f"🌦️ “{query}” was not found.")
@@ -514,6 +518,9 @@ def weather_text(query: str, locale: str) -> str:
         name = datetime.fromisoformat(day["date"]).strftime("%d/%m")
         lines.append(f"{name}: {day['description']} · {day['low']}–{day['high']} °C · 💧{day['rain']}%")
     lines.append("\nOpen-Meteo · " + data["as_of"])
+    if data.get("saved_on_bot") is False:
+        lines.append(tr(locale, "No se pudo guardar esta consulta para Inicio.",
+                        "This lookup could not be saved for Home."))
     return "\n".join(lines)
 
 

@@ -602,22 +602,23 @@ def complete_messages(messages: list[dict[str, str]], *, sender: str = "",
         if not ready():
             return Result("unavailable")
         queued = bool(_turns.waiting())
-        budget, milliseconds = (192, 15_000) if queued else (512, 55_000)
+        budget, milliseconds = (192, 15_000) if queued else (768 if coding else 512, 55_000)
         request = {"messages": messages, "temperature": 0.3, "max_tokens": budget, "stream": False,
                    "t_max_predict_ms": milliseconds, "chat_template_kwargs": {"enable_thinking": False}}
         try:
             if coding:
-                # Use the exact same chat template and thinking setting as the
-                # generation request. Reserve 512 output tokens plus 160 for
-                # small server/template differences in the 3072-token context.
+                # Count the exact template and preserve every input token. Leave 160
+                # tokens for template/server differences before output.
                 rendered = _http("/apply-template", request, 12).get("prompt")
                 if not isinstance(rendered, str) or not rendered:
                     raise ValueError("local_template")
                 tokens = _http("/tokenize", {"content": rendered, "add_special": False}, 12).get("tokens")
                 if not isinstance(tokens, list):
                     raise ValueError("local_tokens")
-                if len(tokens) > 3072 - 512 - 160:
+                room = 3072 - len(tokens) - 160
+                if room < 192:
                     return Result("long_context")
+                request["max_tokens"] = min(budget, room)
             response = _http("/v1/chat/completions", request, 125)
             state.check_work_allowed()
             choices = response.get("choices") or []

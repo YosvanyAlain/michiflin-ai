@@ -115,7 +115,7 @@ def test_tokenization_and_chat_are_only_local_and_preserve_code(monkeypatch):
     assert [path for path, _ in calls].count("/tokenize") == 1
     assert [path for path, _ in calls].count("/v1/chat/completions") == 1
     body = next(payload for path, payload in calls if path == "/v1/chat/completions")
-    assert body["max_tokens"] == 512 and body["chat_template_kwargs"]["enable_thinking"] is False
+    assert body["max_tokens"] == 768 and body["chat_template_kwargs"]["enable_thinking"] is False
 
 
 def test_oversized_local_context_fails_before_inference(monkeypatch):
@@ -127,7 +127,7 @@ def test_oversized_local_context_fails_before_inference(monkeypatch):
         if path == "/apply-template":
             return {"prompt": "x"}
         if path == "/tokenize":
-            return {"tokens": [1] * 2401}
+            return {"tokens": [1] * 2721}
         raise AssertionError("inference of oversized project")
     monkeypatch.setattr(local_ai, "_http", request)
     reply = local_ai.complete_messages([{"role": "user", "content": "x"}], sender="alice", coding=True)
@@ -260,8 +260,8 @@ def test_failing_test_cannot_be_erased_by_done(monkeypatch):
     monkeypatch.setattr(coder, "_run", lambda *_: (1, "synthetic failure"))
     monkeypatch.setattr(coder, "syntax_check", lambda *_: [])
     first = model_reply("<<<FILE x.py>>>\nprint(1)\n<<<END>>>\n<<<RUN>>>\npython3 x.py\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>")
-    monkeypatch.setattr(local_ai, "complete_messages", mock.Mock(side_effect=[first, model_reply("<<<DONE>>>\nDone\n<<<END>>>"),
-                                                                             model_reply("<<<DONE>>>\nDone\n<<<END>>>")]))
+    replies = [first] + [model_reply("<<<DONE>>>\nDone\n<<<END>>>")] * (local_coder.MAX_ROUNDS - 1)
+    monkeypatch.setattr(local_ai, "complete_messages", mock.Mock(side_effect=replies))
     result = coder.run("Create x.py", [], "en", local_coder.MODEL_KEY)
     assert not result["model_confirmed"] and "Unconfirmed draft" in result["summary"]
 
@@ -525,3 +525,54 @@ def test_research_does_not_count_subdomains_of_one_site_as_independent(monkeypat
     assert [source.url for source in sources] == opened
     assert local_ai._source_site("docs.python.org") == local_ai._source_site("www.python.org")
     assert local_ai._source_site("news.first.co.uk") != local_ai._source_site("second.co.uk")
+
+
+def test_local_coder_output_budget_fits_the_exact_remaining_context(monkeypatch):
+    bodies = []
+    def request(path, payload, _timeout):
+        if path == "/health": return {"status": "ok"}
+        if path == "/apply-template": return {"prompt": "synthetic"}
+        if path == "/tokenize": return {"tokens": [1] * 2500}
+        bodies.append(payload)
+        return {"choices": [{"message": {"content": "<<<DONE>>>\nOK\n<<<END>>>"}, "finish_reason": "stop"}]}
+    monkeypatch.setattr(local_ai, "_http", request)
+    reply = local_ai.complete_messages([{"role": "user", "content": "x"}], sender="alice", coding=True)
+    assert reply.status == "ok" and bodies[0]["max_tokens"] == 3072 - 2500 - 160
+    assert bodies[0]["messages"] == [{"role": "user", "content": "x"}]
+
+
+def test_cut_without_a_complete_file_stops_without_repeating(monkeypatch):
+    model = mock.Mock(return_value=model_reply("<<<FILE new.py>>>\nprint('partial", True))
+    monkeypatch.setattr(local_ai, "complete_messages", model)
+    with pytest.raises(coder.CoderError, match="cut off"):
+        coder.run("Create a project", [], "en", local_coder.MODEL_KEY)
+    assert model.call_count == 1
+
+
+def test_cut_stages_complete_file_and_continues_same_project(monkeypatch):
+    prompts = []
+    replies = iter([
+        model_reply("<<<FILE first.py>>>\nprint('first')\n<<<END>>>\n<<<FILE second.py>>>\npartial", True),
+        model_reply("<<<FILE second.py>>>\nprint('second')\n<<<END>>>\n<<<DONE>>>\nDone\n<<<END>>>"),
+    ])
+    def respond(messages, **_kwargs):
+        prompts.append(messages[-1]["content"])
+        return next(replies)
+    monkeypatch.setattr(local_ai, "complete_messages", respond)
+    result = coder.run("Create two small files", [], "en", local_coder.MODEL_KEY)
+    assert result["model_confirmed"] and len(prompts) == 2
+    assert "first.py" in prompts[1] and "everything after them was discarded" in prompts[1]
+    assert {item["path"] for item in result["files"]} == {"first.py", "second.py"}
+    assert all("partial" not in item["text"] for item in result["files"])
+
+
+def test_cut_staged_changes_do_not_replace_existing_project_without_confirmation(monkeypatch):
+    original = [{"path": "keep.txt", "text": "original"}]
+    replies = iter([
+        model_reply("<<<FILE keep.txt>>>\nnew\n<<<END>>>\n<<<FILE other.py>>>\npartial", True),
+        model_reply("<<<FILE other.py>>>\npartial", True),
+    ])
+    monkeypatch.setattr(local_ai, "complete_messages", lambda *a, **k: next(replies))
+    result = coder.run("Change the project", original, "en", local_coder.MODEL_KEY)
+    assert not result["project_complete"] and not result["model_confirmed"]
+    assert result["files"] == original

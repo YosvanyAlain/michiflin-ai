@@ -786,6 +786,31 @@ details[open] .caret { transform: rotate(180deg); }
 
 @media (max-width: 350px) { .tabs .tab { font-size: 10px; } }
 
+/* One accessible home area for the greeting, rates and saved weather. */
+.home-carousel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.home-banner-slot > .hero, .home-banner-slot > .rate-banner, .home-banner-slot > .weather-banner { min-height: 152px; }
+.home-banner-controls { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.home-banner-dot { display: grid; place-items: center; width: 32px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.home-banner-dot::after { content: ""; width: 8px; height: 8px; border-radius: 10px; background: var(--muted); opacity: .45; transition: width .2s, opacity .2s; }
+.home-banner-dot.on::after { width: 22px; background: var(--accent); opacity: 1; }
+.home-banner-dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; }
+.weather-banner { display: flex; flex-direction: column; justify-content: space-between; gap: 10px; width: 100%; padding: 17px;
+  border: 0; border-radius: 20px; color: #fff; text-align: left; overflow: hidden;
+  background: linear-gradient(125deg, #0d617d, #237fa5 62%, #6aafba); box-shadow: var(--shadow); cursor: pointer; }
+.weather-banner:active { transform: scale(.99); }
+.weather-banner-body { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.weather-banner-icon.ic { flex: none; width: 42px; height: 42px; stroke-width: 1.5; }
+.weather-banner-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.weather-banner-copy > div { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.weather-banner-copy strong { font-size: clamp(25px, 6vw, 34px); line-height: 1; letter-spacing: -.04em; }
+.weather-banner-copy small, .weather-banner-copy span { opacity: .92; }
+.weather-settings .stack { gap: 4px; }
+@media (max-width: 420px) {
+  .weather-settings .row { align-items: stretch; flex-direction: column; }
+  .weather-settings .row > .btn { align-self: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) { .home-banner-dot::after { transition: none; } }
+
 /* elTOQUE: compact home entry, honest freshness and accessible real data. */
 .rate-banner { position: relative; display: flex; flex-direction: column; gap: 12px; width: 100%; padding: 17px;
   border: 0; border-radius: 20px; color: #fff; text-align: left; overflow: hidden;
