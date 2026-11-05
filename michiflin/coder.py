@@ -96,6 +96,23 @@ def isolation() -> bool:
     return _isolation
 
 
+def _private_root(locale: str) -> Path:
+    """Prepare the temp project store without following a planted symlink."""
+    try:
+        ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if os.fstat(fd).st_uid != os.getuid():
+                raise PermissionError("unexpected owner")
+            os.fchmod(fd, 0o700)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise CoderError(tr(locale, "No pude preparar un espacio de proyecto privado; no ejecuté comandos.",
+                            "Could not prepare a private project space; no commands were run.")) from None
+    return ROOT
+
+
 def _lock_private() -> None:
     """Keep the bot's own folders unreadable for the sandbox user."""
     for folder in {config.CONFIG_DIR, config.JOB_ROOT, config.TEMP_ROOT, Path.home()}:
@@ -680,11 +697,10 @@ def _run_project(request: str, files: list[dict[str, Any]], locale: str, model_k
     can_run = isolation()
     if can_run:
         _lock_private()
-    ROOT.mkdir(parents=True, exist_ok=True)
     # The root-only setup can bind the project into its jail without granting
     # other host users traversal into the temporary project store.
-    ROOT.chmod(0o700)
-    folder = Path(tempfile.mkdtemp(prefix="p", dir=ROOT))
+    project_root = _private_root(locale)
+    folder = Path(tempfile.mkdtemp(prefix="p", dir=project_root))
     folder.chmod(0o777)
     steps: list[dict[str, Any]] = []
     summary, used, sticky = "", "", ""

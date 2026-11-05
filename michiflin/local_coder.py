@@ -181,9 +181,8 @@ def run(request: str, files: list[dict[str, Any]], locale: str, *, advice: list[
     can_run = coder.isolation() and not no_run
     if can_run:
         coder._lock_private()
-    coder.ROOT.mkdir(parents=True, exist_ok=True)
-    coder.ROOT.chmod(0o700)
-    folder = Path(tempfile.mkdtemp(prefix="local-", dir=coder.ROOT))
+    project_root = coder._private_root(locale)
+    folder = Path(tempfile.mkdtemp(prefix="local-", dir=project_root))
     folder.chmod(0o777)
     steps: list[dict[str, Any]] = []
     feedback, summary, last_error = "", "", ""
