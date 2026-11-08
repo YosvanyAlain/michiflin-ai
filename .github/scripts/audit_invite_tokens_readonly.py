@@ -97,6 +97,7 @@ def main():
     ids = sorted(set(ids))
     print('SAFE_TEST_MATCHING_SINGLE_CHAT_COUNT='+str(len(ids)))
     print('SAFE_TEST_MATCHING_UNBLOCKED_CHAT_COUNT='+str(sum(int(db.execute('SELECT blocked FROM chats WHERE id=?',(c,)).fetchone()[0] or 0)==0 for c in ids)))
+    print('SAFE_TEST_SINGLE_MEMBER_CHAT_COUNT='+str(sum(db.execute('SELECT COUNT(*) FROM chats_contacts WHERE chat_id=? AND contact_id>9',(c,)).fetchone()[0]==1 for c in ids)))
     incoming=0
     for cid,_,_,_ in matching:
         for chat_id in ids:
@@ -109,6 +110,15 @@ def main():
     apps = state.get('apps',{}) if isinstance(state,dict) else {}
     app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
     print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
+    settings = state.get('settings',{}) if isinstance(state,dict) else {}
+    prefs = state.get('prefs',{}) if isinstance(state,dict) else {}
+    own = prefs.get(address,{}) if isinstance(prefs,dict) else {}
+    mode = (own.get('chat_mode') if isinstance(own,dict) else None) or (settings.get('chat_mode') if isinstance(settings,dict) else None) or 'default'
+    print('SAFE_TEST_CHAT_MODE='+str(mode if mode in ('app','full','default') else 'other'))
+    maintenance = state.get('maintenance_notice',{}) if isinstance(state,dict) else {}
+    print('SAFE_MAINTENANCE_ACTIVE='+('YES' if isinstance(maintenance,dict) and maintenance.get('active') is True else 'NO'))
+    bindings=state.get('email_key_bindings',{}) if isinstance(state,dict) else {}
+    print('SAFE_TEST_KEY_BINDING_PRESENT='+('YES' if isinstance(bindings,dict) and address in bindings else 'NO'))
     print('SAFE_SNAPSHOT_CREATED='+str(asset.get('created_at','unknown')))
     db.close()
 
