@@ -1,8 +1,8 @@
-"""Compare identity and invitation commitments against the clean snapshot.
+"""Inspect only the isolated test contact in the current clean snapshot.
 
 No bot process or network identity is started. The authenticated backup and
-its database remain in memory. No contacts, message tables or blobs are queried. Addresses, tokens and
-fingerprints are not logged or exported.
+its database remain in memory. Only the known synthetic contact and its own chat metadata are queried.
+No user conversations, message text, addresses or keys are logged or exported.
 """
 from __future__ import annotations
 import base64
@@ -66,61 +66,48 @@ def main():
         if marker_handle is None:
             raise ValueError('clean identity marker missing')
         marker = json.load(marker_handle)
+        states = [m for m in tf.getmembers() if m.isfile() and m.name == 'michiflin/michiflin-state.json']
+        if len(states)!=1 or states[0].size>10000000:
+            raise ValueError('state metadata unavailable')
+        state_handle = tf.extractfile(states[0])
+        if state_handle is None:
+            raise ValueError('state metadata missing')
+        state = json.load(state_handle)
     # Memory-only SQLite: only identity metadata and SecureJoin tokens are queried.
     db = sqlite3.connect(':memory:')
     db.deserialize(database_bytes)
     db.execute('PRAGMA query_only = ON')
-    invite_row = db.execute("SELECT token FROM tokens WHERE namespc=100 AND (foreign_key='' OR foreign_key IS NULL) ORDER BY id DESC LIMIT 1").fetchone()
-    auth_row = db.execute("SELECT token, timestamp FROM tokens WHERE namespc=110 AND (foreign_key='' OR foreign_key IS NULL) ORDER BY id DESC LIMIT 1").fetchone()
-    address_row = db.execute("SELECT value FROM config WHERE keyname='configured_addr'").fetchone()
-    public_row = db.execute("SELECT public_key FROM keypairs WHERE id=(SELECT value FROM config WHERE keyname='key_id')").fetchone()
-    if not invite_row or not auth_row or not address_row or not public_row:
-        raise ValueError('required contact metadata missing')
-    if not 0 <= int(time.time()) - int(auth_row[1]) < 6 * 86400:
-        raise ValueError('no sufficiently fresh auth token')
-    public_key = bytes(public_row[0])
-    with tempfile.TemporaryDirectory(prefix='michiflin-public-') as home:
-        result = subprocess.run(['gpg','--no-options','--batch','--no-autostart','--no-auto-key-retrieve',
-                                 '--homedir',home,'--with-colons','--show-keys'],
-                                input=public_key,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15,check=True)
-    primary = []
-    waiting = False
-    for line in result.stdout.decode('utf-8','strict').splitlines():
-        fields = line.split(':'); kind = fields[0]
-        if kind in ('sec','ssb'):
-            raise ValueError('not public key material')
-        if kind == 'pub':
-            primary.append(''); waiting = True
-        elif kind in ('sub','uid','uat'):
-            waiting = False
-        elif kind == 'fpr' and waiting and len(fields)>9:
-            primary[-1] = fields[9]; waiting = False
-    if len(primary)!=1 or not re.fullmatch(r'[A-Fa-f0-9]{40,64}', primary[0]):
-        raise ValueError('public fingerprint unavailable')
-    commitment = json.loads(os.environ['IDENTITY_COMMITMENT'])
-    challenge = base64.b64decode(commitment['challenge'], validate=True)
-    if len(challenge)!=32:
-        raise ValueError('invalid comparison challenge')
-    def match(name, value):
-        digest = hmac.new(challenge, str(value).encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(digest, commitment[name])
-    token_rows = db.execute("SELECT namespc, token, timestamp FROM tokens WHERE namespc IN (100,110) AND (foreign_key='' OR foreign_key IS NULL) LIMIT 500").fetchall()
-    invite_present = any(namespace==100 and match('invite', value) for namespace,value,_ in token_rows)
-    auth_present = any(namespace==110 and match('auth', value) for namespace,value,_ in token_rows)
-    matched_auth_fresh = any(namespace==110 and match('auth',value) and 0 <= int(time.time())-int(timestamp) < 6*86400 for namespace,value,timestamp in token_rows)
-    marker_fp = str(marker.get('bot_fingerprint','')).replace(' ','').upper()
-    results = {
-        'CANDIDATE_ADDRESS_MATCH': match('address',str(address_row[0]).casefold()),
-        'CANDIDATE_KEY_MATCH': match('fingerprint',primary[0].upper()),
-        'CANDIDATE_MARKER_MATCH': match('fingerprint',marker_fp),
-        'SNAPSHOT_KEY_MATCHES_MARKER': hmac.compare_digest(primary[0].upper(),marker_fp),
-        'INVITE_NUMBER_PRESENT': invite_present,
-        'AUTH_TOKEN_PRESENT': auth_present,
-        'AUTH_TOKEN_FRESH': matched_auth_fresh,
-    }
-    for name, value in results.items():
+    test = json.loads(os.environ['TEST_CONTACT'])
+    address = str(test['address']).strip().casefold()
+    challenge = base64.b64decode(test['challenge'], validate=True)
+    if not re.fullmatch(r'[^\s@]{1,128}@[^\s@]{1,253}',address) or len(challenge)!=32:
+        raise ValueError('invalid test-contact selector')
+    target = db.execute('SELECT id, fingerprint, verifier, blocked FROM contacts WHERE lower(addr)=? AND id>9',(address,)).fetchone()
+    result = {'TEST_CONTACT_PRESENT': bool(target)}
+    if target:
+        cid, fingerprint, verifier, blocked = target
+        fp = str(fingerprint or '').replace(' ','').upper()
+        result['TEST_KEY_MATCH'] = hmac.compare_digest(hmac.new(challenge,fp.encode(),hashlib.sha256).hexdigest(),test['fingerprint'])
+        result['TEST_VERIFIED_BY_SELF'] = int(verifier or 0)==1
+        result['TEST_CORE_BLOCKED'] = bool(blocked)
+        chats = db.execute('SELECT chats.id, chats.blocked, chats.type FROM chats JOIN chats_contacts ON chats.id=chats_contacts.chat_id WHERE chats_contacts.contact_id=? AND chats.type=100',(cid,)).fetchall()
+        result['TEST_SINGLE_CHAT_PRESENT'] = bool(chats)
+        result['TEST_CHAT_UNBLOCKED'] = any(int(row[1] or 0)==0 for row in chats)
+        ids = [int(row[0]) for row in chats]
+        # Read only this synthetic contact's new message metadata, never its text.
+        count=0
+        for chat_id in ids:
+            count += db.execute('SELECT COUNT(*) FROM msgs WHERE chat_id=? AND from_id=? AND hidden=0 AND deleted=0 AND timestamp>=?',(chat_id,cid,1794166380)).fetchone()[0]
+        print('SAFE_TEST_INCOMING_AFTER_1933_COUNT='+str(count))
+        access = state.get('access',{}) if isinstance(state,dict) else {}
+        blocked_list = access.get('blocked',[]) if isinstance(access,dict) else []
+        result['TEST_APP_BLOCKED'] = any(str(item).casefold()==address for item in blocked_list) if isinstance(blocked_list,list) else True
+        apps = state.get('apps',{}) if isinstance(state,dict) else {}
+        app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
+        print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
+    for name,value in result.items():
         print('SAFE_'+name+'='+('YES' if value else 'NO'))
-    print('SAFE_SNAPSHOT_CREATED=' + str(asset.get('created_at','unknown')))
+    print('SAFE_SNAPSHOT_CREATED='+str(asset.get('created_at','unknown')))
     db.close()
 
 
