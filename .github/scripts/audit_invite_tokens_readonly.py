@@ -168,6 +168,37 @@ def main():
     apps = state.get('apps',{}) if isinstance(state,dict) else {}
     app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
     print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
+    matched_apps=[]
+    if isinstance(apps,dict):
+        for item_id,entry in apps.items():
+            if not str(item_id).isdigit() or not isinstance(entry,dict):
+                continue
+            if str(entry.get('addr','')).strip().casefold()!=address or str(entry.get('chat','')).isdigit() is False or int(entry['chat']) not in ids:
+                continue
+            row=db.execute('SELECT rfc724_mid,chat_id,from_id,type FROM msgs WHERE id=?',(int(item_id),)).fetchone()
+            if not row or not row[0] or int(row[1]) not in ids or int(row[2])!=1 or int(row[3])!=80:
+                continue
+            if hmac.compare_digest(hmac.new(challenge,str(row[0]).encode(),hashlib.sha256).hexdigest(),test['app_mid']):
+                matched_apps.append((int(item_id),entry))
+    print('SAFE_TEST_RECEIVED_APP_MATCH_COUNT='+str(len(matched_apps)))
+    print('SAFE_TEST_RECEIVED_APP_GRANT_STAMP_COUNT='+str(sum(bool(entry.get('access_session')) for _,entry in matched_apps)))
+    print('SAFE_TEST_RECEIVED_APP_EPOCH_COUNT='+str(sum(bool(entry.get('epoch')) for _,entry in matched_apps)))
+    print('SAFE_TEST_RECEIVED_APP_CURSOR_NONZERO_COUNT='+str(sum(int(entry.get('serial') or 0)>0 for _,entry in matched_apps)))
+    request_counts={'hello':0,'rates':0,'browser_session':0};response_count=0
+    for msg_id,_ in matched_apps:
+        for (raw,) in db.execute('SELECT update_item FROM msgs_status_updates WHERE msg_id=?',(msg_id,)):
+            try:
+                update=json.loads(raw);payload=update.get('payload',{}) if isinstance(update,dict) else {}
+                if isinstance(payload,dict) and payload.get('t')=='req' and payload.get('op') in request_counts:
+                    request_counts[payload['op']]+=1
+                if isinstance(payload,dict) and payload.get('t') in {'ack','res','chunk'}:
+                    response_count+=1
+            except (TypeError,ValueError):
+                pass
+    print('SAFE_TEST_APP_HELLO_UPDATES='+str(request_counts['hello']))
+    print('SAFE_TEST_APP_RATES_UPDATES='+str(request_counts['rates']))
+    print('SAFE_TEST_APP_BROWSER_STATUS_UPDATES='+str(request_counts['browser_session']))
+    print('SAFE_TEST_APP_RESPONSE_UPDATES='+str(response_count))
     settings = state.get('settings',{}) if isinstance(state,dict) else {}
     prefs = state.get('prefs',{}) if isinstance(state,dict) else {}
     own = prefs.get(address,{}) if isinstance(prefs,dict) else {}
