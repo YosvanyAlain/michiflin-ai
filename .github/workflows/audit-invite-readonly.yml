@@ -6,7 +6,6 @@ permissions:
   contents: read
 jobs:
   metadata-only:
-    if: ${{ false }} # only enabled for one explicitly authorized audit
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
