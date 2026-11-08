@@ -13,6 +13,8 @@ import json
 import subprocess
 import tempfile
 import os
+import importlib.util
+import types
 import re
 import sqlite3
 import sys
@@ -91,6 +93,18 @@ def main():
     print('SAFE_TEST_KEY_MATCH_COUNT='+str(len(matching)))
     key_rows = [db.execute('SELECT public_key FROM public_keys WHERE fingerprint=?',(row[1],)).fetchone() for row in matching]
     print('SAFE_TEST_PUBLIC_KEY_AVAILABLE_COUNT='+str(sum(bool(row and row[0]) for row in key_rows)))
+    valid_cards=0
+    if key_rows:
+        package=types.ModuleType('michiflin'); package.__path__=[]
+        sys.modules['michiflin']=package; sys.modules['michiflin.config']=types.ModuleType('michiflin.config')
+        spec=importlib.util.spec_from_file_location('michiflin.identity_guard','michiflin/identity_guard.py')
+        guard=importlib.util.module_from_spec(spec); sys.modules[spec.name]=guard; spec.loader.exec_module(guard)
+        for key_row in key_rows:
+            if key_row and key_row[0]:
+                card='BEGIN:VCARD\r\nVERSION:4.0\r\nKEY:data:application/pgp-keys;base64\\,'+base64.b64encode(key_row[0]).decode()+'\r\nEND:VCARD\r\n'
+                actual=guard._fingerprint_from_key(guard._card_key(card))
+                valid_cards+=int(bool(actual) and fp_matches(actual))
+    print('SAFE_TEST_SIMULATED_VCARD_PARSE_MATCH_COUNT='+str(valid_cards))
     print('SAFE_TEST_VERIFIED_KEY_COUNT='+str(sum(int(row[2] or 0)==1 for row in matching)))
     print('SAFE_TEST_MATCHING_CORE_BLOCKED_COUNT='+str(sum(bool(row[3]) for row in matching)))
     ids = []
@@ -100,13 +114,14 @@ def main():
     print('SAFE_TEST_MATCHING_SINGLE_CHAT_COUNT='+str(len(ids)))
     print('SAFE_TEST_MATCHING_UNBLOCKED_CHAT_COUNT='+str(sum(int(db.execute('SELECT blocked FROM chats WHERE id=?',(c,)).fetchone()[0] or 0)==0 for c in ids)))
     print('SAFE_TEST_SINGLE_MEMBER_CHAT_COUNT='+str(sum(db.execute('SELECT COUNT(*) FROM chats_contacts WHERE chat_id=? AND contact_id>9',(c,)).fetchone()[0]==1 for c in ids)))
+    print('SAFE_TEST_SELF_TALK_CHAT_COUNT='+str(sum(any(part.startswith('K=') for part in str(db.execute('SELECT param FROM chats WHERE id=?',(c,)).fetchone()[0] or '').split('\n')) for c in ids)))
     # All variants of *this same test address*, not just its verified key,
     # so a non-encrypted address-contact delivery cannot be missed.
     received=[]
     all_chat_ids=set(ids)
     for cid,_,_,_ in targets:
         all_chat_ids.update(int(row[0]) for row in db.execute('SELECT chat_id FROM chats_contacts WHERE contact_id=?',(cid,)).fetchall())
-        received += db.execute('SELECT id, chat_id, from_id, state, param, type, (length(trim(txt))>0), to_id FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
+        received += db.execute('SELECT id, chat_id, from_id, state, param, type, (length(trim(txt))>0), to_id, timestamp_rcvd FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
     print('SAFE_TEST_INCOMING_AFTER_1952_COUNT='+str(len(received)))
     print('SAFE_TEST_INCOMING_FROM_MATCHING_KEY_COUNT='+str(sum(int(row[2]) in {int(t[0]) for t in matching} for row in received)))
     print('SAFE_TEST_INCOMING_FRESH_COUNT='+str(sum(int(row[3])==10 for row in received)))
@@ -146,6 +161,10 @@ def main():
     attempt = attempts.get(address,{}) if isinstance(attempts,dict) else {}
     count=attempt.get('count',0) if isinstance(attempt,dict) else 0
     print('SAFE_TEST_RECORDED_ATTEMPTS='+str(int(count)) if str(count).isdigit() else 'SAFE_TEST_RECORDED_ATTEMPTS=UNKNOWN')
+    try: last_attempt=float(attempt.get('last',0)) if isinstance(attempt,dict) else 0
+    except (TypeError,ValueError): last_attempt=0
+    print('SAFE_TEST_ATTEMPT_AFTER_1953='+('YES' if last_attempt>=1794167580 else 'NO'))
+    print('SAFE_TEST_ATTEMPT_NEAR_RECEIPT='+('YES' if any(0<=last_attempt-float(row[8])<=300 for row in received) else 'NO'))
     apps = state.get('apps',{}) if isinstance(state,dict) else {}
     app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
     print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
