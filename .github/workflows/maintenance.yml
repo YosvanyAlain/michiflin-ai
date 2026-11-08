@@ -1,20 +1,18 @@
-name: Technical maintenance
-
+name: Read-only invitation verification
 on:
-  schedule:
-    - cron: "20 3 * * *"
   workflow_dispatch:
-
+    inputs:
+      pair_digest:
+        description: "SHA-256 of the two random invitation tokens, not the invitation"
+        required: true
+        type: string
 permissions:
   contents: read
-  actions: write
-
 concurrency:
-  group: michiflin-technical-maintenance
+  group: invitation-audit-only
   cancel-in-progress: false
-
 jobs:
-  old-action-logs:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -22,8 +20,11 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
+      - run: pip install 'cryptography>=44,<47' 'requests>=2.31,<3'
+      - name: Compare only invitation tokens in memory
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+          STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+          STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
+          EXPECTED_PAIR_DIGEST: ${{ inputs.pair_digest }}
+        run: python tools/audit_invite_tokens.py
