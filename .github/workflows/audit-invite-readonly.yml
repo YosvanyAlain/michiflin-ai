@@ -6,7 +6,6 @@ permissions:
   contents: read
 jobs:
   metadata-only:
-    if: ${{ false }} # One-time identity audit completed.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -15,10 +14,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install 'requests>=2.31,<3' 'cryptography>=44,<47'
-      - name: Compare identity and invitation commitments in memory
+      - name: Inspect only the synthetic test contact and chat metadata in memory
         env:
           STATE_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
           STATE_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
-          IDENTITY_COMMITMENT: ${{ secrets.MICHIFLIN_IDENTITY_AUDIT_COMMITMENT }}
+          TEST_CONTACT: ${{ secrets.MICHIFLIN_TEST_CONTACT_AUDIT }}
         run: python .github/scripts/audit_invite_tokens_readonly.py
