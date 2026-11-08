@@ -22,6 +22,8 @@ MAGIC = b"MICHIFLIN-STATE-1\0"
 def pair_present(db: sqlite3.Connection, expected: str) -> bool:
     first = db.execute("SELECT token FROM tokens WHERE namespc=100 AND COALESCE(foreign_key,'')='' LIMIT 101").fetchall()
     second = db.execute("SELECT token FROM tokens WHERE namespc=110 AND COALESCE(foreign_key,'')='' LIMIT 101").fetchall()
+    print("SAFE_CONTACT_INVITATION_COUNT_" + str(len(first)))
+    print("SAFE_CONTACT_AUTH_COUNT_" + str(len(second)))
     if len(first) > 100 or len(second) > 100:
         raise ValueError("too_many_tokens")
     for (a,) in first:
