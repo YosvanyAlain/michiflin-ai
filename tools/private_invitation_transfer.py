@@ -81,5 +81,7 @@ def main() -> None:
 if __name__=='__main__':
     try:main()
     except Exception as exc:
+        allowed={'input_validation','not_private','missing_backup','backup_stale','invalid_backup','invalid_database','invalid_marker','unconfirmed_identity','missing_invitation_data','identity_mismatch','duplicate_transfer','upload_mismatch'}
         print('SAFE_PRIVATE_TRANSFER_FAILED_'+type(exc).__name__)
+        if isinstance(exc, ValueError) and str(exc) in allowed: print('SAFE_REASON_'+str(exc))
         raise SystemExit(1) from None
