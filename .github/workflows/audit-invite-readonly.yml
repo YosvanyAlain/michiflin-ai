@@ -6,6 +6,7 @@ permissions:
   contents: read
 jobs:
   metadata-only:
+    if: ${{ false }} # One-time audit finished; never re-create temporary capsules on a later push.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
