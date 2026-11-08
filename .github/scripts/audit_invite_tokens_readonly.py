@@ -98,11 +98,34 @@ def main():
     print('SAFE_TEST_MATCHING_SINGLE_CHAT_COUNT='+str(len(ids)))
     print('SAFE_TEST_MATCHING_UNBLOCKED_CHAT_COUNT='+str(sum(int(db.execute('SELECT blocked FROM chats WHERE id=?',(c,)).fetchone()[0] or 0)==0 for c in ids)))
     print('SAFE_TEST_SINGLE_MEMBER_CHAT_COUNT='+str(sum(db.execute('SELECT COUNT(*) FROM chats_contacts WHERE chat_id=? AND contact_id>9',(c,)).fetchone()[0]==1 for c in ids)))
-    incoming=0
-    for cid,_,_,_ in matching:
-        for chat_id in ids:
-            incoming += db.execute('SELECT COUNT(*) FROM msgs WHERE chat_id=? AND from_id=? AND hidden=0 AND deleted=0 AND timestamp>=?',(chat_id,cid,1794166380)).fetchone()[0]
-    print('SAFE_TEST_INCOMING_AFTER_1933_COUNT='+str(incoming))
+    # All variants of *this same test address*, not just its verified key,
+    # so a non-encrypted address-contact delivery cannot be missed.
+    received=[]
+    all_chat_ids=set(ids)
+    for cid,_,_,_ in targets:
+        all_chat_ids.update(int(row[0]) for row in db.execute('SELECT chat_id FROM chats_contacts WHERE contact_id=?',(cid,)).fetchall())
+        received += db.execute('SELECT id, chat_id, from_id, state, param, type FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
+    print('SAFE_TEST_INCOMING_AFTER_1952_COUNT='+str(len(received)))
+    print('SAFE_TEST_INCOMING_FROM_MATCHING_KEY_COUNT='+str(sum(int(row[2]) in {int(t[0]) for t in matching} for row in received)))
+    print('SAFE_TEST_INCOMING_FRESH_COUNT='+str(sum(int(row[3])==10 for row in received)))
+    print('SAFE_TEST_INCOMING_NOTICED_COUNT='+str(sum(int(row[3])==13 for row in received)))
+    print('SAFE_TEST_INCOMING_SEEN_COUNT='+str(sum(int(row[3])==16 for row in received)))
+    def has_e2ee(param):
+        return any(part.strip()=='c=1' for part in str(param or '').split('\n'))
+    print('SAFE_TEST_INCOMING_E2EE_COUNT='+str(sum(has_e2ee(row[4]) for row in received)))
+    inbox=state.get('inbox',{}) if isinstance(state,dict) else {}
+    held=state.get('github_native_held_v1',{}) if isinstance(state,dict) else {}
+    held_messages=held.get('messages',{}) if isinstance(held,dict) else {}
+    print('SAFE_TEST_INBOX_PENDING_COUNT='+str(sum(str(row[0]) in inbox for row in received)) if isinstance(inbox,dict) else 'SAFE_TEST_INBOX_PENDING_COUNT=UNKNOWN')
+    print('SAFE_TEST_HELD_COUNT='+str(sum(str(row[0]) in held_messages for row in received)) if isinstance(held_messages,dict) else 'SAFE_TEST_HELD_COUNT=UNKNOWN')
+    outgoing=[]
+    for chat_id in all_chat_ids:
+        outgoing += db.execute('SELECT type, state FROM msgs WHERE chat_id=? AND from_id=1 AND hidden=0 AND deleted=0 AND timestamp_sent>=?',(chat_id,1794167534)).fetchall()
+    print('SAFE_TEST_OUTGOING_COUNT='+str(len(outgoing)))
+    print('SAFE_TEST_OUTGOING_XDC_COUNT='+str(sum(int(row[0])==80 for row in outgoing)))
+    print('SAFE_TEST_OUTGOING_PENDING_COUNT='+str(sum(int(row[1])==20 for row in outgoing)))
+    print('SAFE_TEST_OUTGOING_FAILED_COUNT='+str(sum(int(row[1])==24 for row in outgoing)))
+    print('SAFE_TEST_OUTGOING_DELIVERED_COUNT='+str(sum(int(row[1])==26 for row in outgoing)))
     access = state.get('access',{}) if isinstance(state,dict) else {}
     blocked_list = access.get('blocked',[]) if isinstance(access,dict) else []
     app_blocked = any(str(item).casefold()==address for item in blocked_list) if isinstance(blocked_list,list) else True
@@ -118,7 +141,11 @@ def main():
     maintenance = state.get('maintenance_notice',{}) if isinstance(state,dict) else {}
     print('SAFE_MAINTENANCE_ACTIVE='+('YES' if isinstance(maintenance,dict) and maintenance.get('active') is True else 'NO'))
     bindings=state.get('email_key_bindings',{}) if isinstance(state,dict) else {}
-    print('SAFE_TEST_KEY_BINDING_PRESENT='+('YES' if isinstance(bindings,dict) and address in bindings else 'NO'))
+    present=isinstance(bindings,dict) and address in bindings and isinstance(bindings[address],dict)
+    print('SAFE_TEST_KEY_BINDING_PRESENT='+('YES' if present else 'NO'))
+    fp = str(matching[0][1] or '').replace(' ','').upper() if matching else ''
+    expected_digest=hashlib.sha256(('email-key-v1:'+fp).encode('ascii')).hexdigest() if fp else ''
+    print('SAFE_TEST_KEY_BINDING_MATCH='+('YES' if present and hmac.compare_digest(str(bindings[address].get('key','')),expected_digest) and bindings[address].get('chat') in ids else 'NO'))
     print('SAFE_SNAPSHOT_CREATED='+str(asset.get('created_at','unknown')))
     db.close()
 
