@@ -89,6 +89,8 @@ def main():
         return hmac.compare_digest(hmac.new(challenge,fp.encode(),hashlib.sha256).hexdigest(),test['fingerprint'])
     matching = [row for row in targets if fp_matches(row[1])]
     print('SAFE_TEST_KEY_MATCH_COUNT='+str(len(matching)))
+    key_rows = [db.execute('SELECT public_key FROM public_keys WHERE fingerprint=?',(row[1],)).fetchone() for row in matching]
+    print('SAFE_TEST_PUBLIC_KEY_AVAILABLE_COUNT='+str(sum(bool(row and row[0]) for row in key_rows)))
     print('SAFE_TEST_VERIFIED_KEY_COUNT='+str(sum(int(row[2] or 0)==1 for row in matching)))
     print('SAFE_TEST_MATCHING_CORE_BLOCKED_COUNT='+str(sum(bool(row[3]) for row in matching)))
     ids = []
@@ -104,7 +106,7 @@ def main():
     all_chat_ids=set(ids)
     for cid,_,_,_ in targets:
         all_chat_ids.update(int(row[0]) for row in db.execute('SELECT chat_id FROM chats_contacts WHERE contact_id=?',(cid,)).fetchall())
-        received += db.execute('SELECT id, chat_id, from_id, state, param, type FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
+        received += db.execute('SELECT id, chat_id, from_id, state, param, type, (length(trim(coalesce(txt,'')))>0), to_id FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
     print('SAFE_TEST_INCOMING_AFTER_1952_COUNT='+str(len(received)))
     print('SAFE_TEST_INCOMING_FROM_MATCHING_KEY_COUNT='+str(sum(int(row[2]) in {int(t[0]) for t in matching} for row in received)))
     print('SAFE_TEST_INCOMING_FRESH_COUNT='+str(sum(int(row[3])==10 for row in received)))
@@ -113,6 +115,16 @@ def main():
     def has_e2ee(param):
         return any(part.strip()=='c=1' for part in str(param or '').split('\n'))
     print('SAFE_TEST_INCOMING_E2EE_COUNT='+str(sum(has_e2ee(row[4]) for row in received)))
+    print('SAFE_TEST_INCOMING_TEXT_PRESENT_COUNT='+str(sum(bool(row[6]) for row in received)))
+    print('SAFE_TEST_INCOMING_EXPECTED_CHAT_COUNT='+str(sum(int(row[1]) in ids for row in received)))
+    print('SAFE_TEST_INCOMING_INFO_DESTINATION_COUNT='+str(sum(int(row[7])==2 for row in received)))
+    def is_system_command(param):
+        for part in str(param or '').split('\n'):
+            if part.startswith('S='):
+                try: return int(part[2:]) not in (0,6)
+                except ValueError: return False
+        return False
+    print('SAFE_TEST_INCOMING_SYSTEM_COMMAND_COUNT='+str(sum(is_system_command(row[4]) for row in received)))
     inbox=state.get('inbox',{}) if isinstance(state,dict) else {}
     held=state.get('github_native_held_v1',{}) if isinstance(state,dict) else {}
     held_messages=held.get('messages',{}) if isinstance(held,dict) else {}
@@ -130,6 +142,10 @@ def main():
     blocked_list = access.get('blocked',[]) if isinstance(access,dict) else []
     app_blocked = any(str(item).casefold()==address for item in blocked_list) if isinstance(blocked_list,list) else True
     print('SAFE_TEST_APP_BLOCKED='+('YES' if app_blocked else 'NO'))
+    attempts = access.get('attempts',{}) if isinstance(access,dict) else {}
+    attempt = attempts.get(address,{}) if isinstance(attempts,dict) else {}
+    count=attempt.get('count',0) if isinstance(attempt,dict) else 0
+    print('SAFE_TEST_RECORDED_ATTEMPTS='+str(int(count)) if str(count).isdigit() else 'SAFE_TEST_RECORDED_ATTEMPTS=UNKNOWN')
     apps = state.get('apps',{}) if isinstance(state,dict) else {}
     app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
     print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
