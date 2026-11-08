@@ -82,31 +82,33 @@ def main():
     challenge = base64.b64decode(test['challenge'], validate=True)
     if not re.fullmatch(r'[^\s@]{1,128}@[^\s@]{1,253}',address) or len(challenge)!=32:
         raise ValueError('invalid test-contact selector')
-    target = db.execute('SELECT id, fingerprint, verifier, blocked FROM contacts WHERE lower(addr)=? AND id>9',(address,)).fetchone()
-    result = {'TEST_CONTACT_PRESENT': bool(target)}
-    if target:
-        cid, fingerprint, verifier, blocked = target
-        fp = str(fingerprint or '').replace(' ','').upper()
-        result['TEST_KEY_MATCH'] = hmac.compare_digest(hmac.new(challenge,fp.encode(),hashlib.sha256).hexdigest(),test['fingerprint'])
-        result['TEST_VERIFIED_BY_SELF'] = int(verifier or 0)==1
-        result['TEST_CORE_BLOCKED'] = bool(blocked)
-        chats = db.execute('SELECT chats.id, chats.blocked, chats.type FROM chats JOIN chats_contacts ON chats.id=chats_contacts.chat_id WHERE chats_contacts.contact_id=? AND chats.type=100',(cid,)).fetchall()
-        result['TEST_SINGLE_CHAT_PRESENT'] = bool(chats)
-        result['TEST_CHAT_UNBLOCKED'] = any(int(row[1] or 0)==0 for row in chats)
-        ids = [int(row[0]) for row in chats]
-        # Read only this synthetic contact's new message metadata, never its text.
-        count=0
+    targets = db.execute('SELECT id, fingerprint, verifier, blocked FROM contacts WHERE lower(addr)=? AND id>9',(address,)).fetchall()
+    print('SAFE_TEST_CONTACT_COUNT='+str(len(targets)))
+    def fp_matches(value):
+        fp = str(value or '').replace(' ','').upper()
+        return hmac.compare_digest(hmac.new(challenge,fp.encode(),hashlib.sha256).hexdigest(),test['fingerprint'])
+    matching = [row for row in targets if fp_matches(row[1])]
+    print('SAFE_TEST_KEY_MATCH_COUNT='+str(len(matching)))
+    print('SAFE_TEST_VERIFIED_KEY_COUNT='+str(sum(int(row[2] or 0)==1 for row in matching)))
+    print('SAFE_TEST_MATCHING_CORE_BLOCKED_COUNT='+str(sum(bool(row[3]) for row in matching)))
+    ids = []
+    for cid,_,_,_ in matching:
+        ids += [int(row[0]) for row in db.execute('SELECT chats.id FROM chats JOIN chats_contacts ON chats.id=chats_contacts.chat_id WHERE chats_contacts.contact_id=? AND chats.type=100',(cid,)).fetchall()]
+    ids = sorted(set(ids))
+    print('SAFE_TEST_MATCHING_SINGLE_CHAT_COUNT='+str(len(ids)))
+    print('SAFE_TEST_MATCHING_UNBLOCKED_CHAT_COUNT='+str(sum(int(db.execute('SELECT blocked FROM chats WHERE id=?',(c,)).fetchone()[0] or 0)==0 for c in ids)))
+    incoming=0
+    for cid,_,_,_ in matching:
         for chat_id in ids:
-            count += db.execute('SELECT COUNT(*) FROM msgs WHERE chat_id=? AND from_id=? AND hidden=0 AND deleted=0 AND timestamp>=?',(chat_id,cid,1794166380)).fetchone()[0]
-        print('SAFE_TEST_INCOMING_AFTER_1933_COUNT='+str(count))
-        access = state.get('access',{}) if isinstance(state,dict) else {}
-        blocked_list = access.get('blocked',[]) if isinstance(access,dict) else []
-        result['TEST_APP_BLOCKED'] = any(str(item).casefold()==address for item in blocked_list) if isinstance(blocked_list,list) else True
-        apps = state.get('apps',{}) if isinstance(state,dict) else {}
-        app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
-        print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
-    for name,value in result.items():
-        print('SAFE_'+name+'='+('YES' if value else 'NO'))
+            incoming += db.execute('SELECT COUNT(*) FROM msgs WHERE chat_id=? AND from_id=? AND hidden=0 AND deleted=0 AND timestamp>=?',(chat_id,cid,1794166380)).fetchone()[0]
+    print('SAFE_TEST_INCOMING_AFTER_1933_COUNT='+str(incoming))
+    access = state.get('access',{}) if isinstance(state,dict) else {}
+    blocked_list = access.get('blocked',[]) if isinstance(access,dict) else []
+    app_blocked = any(str(item).casefold()==address for item in blocked_list) if isinstance(blocked_list,list) else True
+    print('SAFE_TEST_APP_BLOCKED='+('YES' if app_blocked else 'NO'))
+    apps = state.get('apps',{}) if isinstance(state,dict) else {}
+    app_count = sum(1 for entry in apps.values() if isinstance(entry,dict) and str(entry.get('chat','')).isdigit() and int(entry['chat']) in ids) if isinstance(apps,dict) else 0
+    print('SAFE_TEST_APP_INSTANCE_COUNT='+str(app_count))
     print('SAFE_SNAPSHOT_CREATED='+str(asset.get('created_at','unknown')))
     db.close()
 
