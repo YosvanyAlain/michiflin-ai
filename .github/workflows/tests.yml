@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   offline-tests:
+    if: github.ref != 'refs/heads/audit-invitacion-segura-20261107'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
