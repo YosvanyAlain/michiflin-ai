@@ -3,7 +3,19 @@ on:
   workflow_dispatch:
     inputs:
       pair_digest:
-        description: "SHA-256 of the two random invitation tokens, not the invitation"
+        description: SHA-256 of both original invitation tokens
+        required: true
+        type: string
+      transfer_public_key:
+        description: Ephemeral X25519 public key
+        required: true
+        type: string
+      transfer_id:
+        description: Opaque one-time transfer identifier
+        required: true
+        type: string
+      identity_digest:
+        description: SHA-256 of candidate address and verified fingerprint
         required: true
         type: string
 permissions:
@@ -21,10 +33,19 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install 'cryptography>=44,<47' 'requests>=2.31,<3'
-      - name: Compare only invitation tokens in memory
+      - name: Compare original invitation without accessing messages
         env:
           GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
           STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
           EXPECTED_PAIR_DIGEST: ${{ inputs.pair_digest }}
         run: python tools/audit_invite_tokens.py
+      - name: Transfer current invitation data end-to-end encrypted
+        env:
+          GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+          STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+          STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
+          EXPECTED_IDENTITY_DIGEST: ${{ inputs.identity_digest }}
+          TRANSFER_ID: ${{ inputs.transfer_id }}
+          TRANSFER_PUBLIC_KEY: ${{ inputs.transfer_public_key }}
+        run: python tools/private_invitation_transfer.py
