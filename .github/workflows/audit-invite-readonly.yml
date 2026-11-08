@@ -13,11 +13,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python -m pip install 'requests>=2.31,<3' 'cryptography>=44,<47'
-      - name: Compare identity and invitation commitments in memory
+      - run: python -m pip install 'requests>=2.31,<3' 'cryptography>=44,<47' pynacl
+      - name: Prepare a private encrypted capsule for the sealed production identity
         env:
           STATE_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
           STATE_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
-          IDENTITY_COMMITMENT: ${{ secrets.MICHIFLIN_IDENTITY_AUDIT_COMMITMENT }}
+          CLEAN_IDENTITY_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
+          OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+          CAPSULE_PUBLIC_KEY: 73YL5sWMIvsfsEJcjnahYiILfv0Scix9NC6Qp1wlEgU=
         run: python .github/scripts/audit_invite_tokens_readonly.py
