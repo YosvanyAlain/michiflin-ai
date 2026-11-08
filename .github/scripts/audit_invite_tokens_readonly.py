@@ -106,7 +106,7 @@ def main():
     all_chat_ids=set(ids)
     for cid,_,_,_ in targets:
         all_chat_ids.update(int(row[0]) for row in db.execute('SELECT chat_id FROM chats_contacts WHERE contact_id=?',(cid,)).fetchall())
-        received += db.execute('SELECT id, chat_id, from_id, state, param, type, (length(trim(coalesce(txt,'')))>0), to_id FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
+        received += db.execute('SELECT id, chat_id, from_id, state, param, type, (length(trim(txt))>0), to_id FROM msgs WHERE from_id=? AND hidden=0 AND deleted=0 AND timestamp_rcvd>=?',(cid,1794167534)).fetchall()
     print('SAFE_TEST_INCOMING_AFTER_1952_COUNT='+str(len(received)))
     print('SAFE_TEST_INCOMING_FROM_MATCHING_KEY_COUNT='+str(sum(int(row[2]) in {int(t[0]) for t in matching} for row in received)))
     print('SAFE_TEST_INCOMING_FRESH_COUNT='+str(sum(int(row[3])==10 for row in received)))
