@@ -60,6 +60,10 @@ def main() -> None:
     if not row or not inv or not auth or not all(isinstance(v,str) and 8<=len(v)<=512 for v in (row[0],inv[0],auth[0])):
         raise ValueError('missing_invitation_data')
     address=row[0].strip().casefold()
+    fp_digest=os.environ['EXPECTED_FINGERPRINT_DIGEST']
+    if not re.fullmatch(r'[0-9a-f]{64}',fp_digest):raise ValueError('input_validation')
+    print('SAFE_FINGERPRINT_LENGTH_'+str(len(fingerprint)))
+    print('SAFE_FINGERPRINT_MATCH_'+('YES' if hashlib.sha256(fingerprint.encode()).hexdigest()==fp_digest else 'NO'))
     if len(fingerprint)!=40 or hashlib.sha256((address+'\0'+fingerprint).encode()).hexdigest()!=expected:
         raise ValueError('identity_mismatch')
     payload=json.dumps({'version':1,'address':address,'fingerprint':fingerprint,'i':inv[0],'s':auth[0],
