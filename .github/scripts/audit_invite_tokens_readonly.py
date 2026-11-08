@@ -1,8 +1,8 @@
-"""Prepare a private encrypted invitation for the sealed production identity.
+"""Compare identity and invitation commitments against the clean snapshot.
 
 No bot process or network identity is started. The authenticated backup and
 its database remain in memory. No contacts, message tables or blobs are queried. Addresses, tokens and
-fingerprints are not logged; the small encrypted capsule is private and temporary.
+fingerprints are not logged or exported.
 """
 from __future__ import annotations
 import base64
@@ -22,7 +22,6 @@ from pathlib import PurePosixPath
 
 import requests
 from cryptography.fernet import Fernet
-from nacl.public import PublicKey, SealedBox
 
 MAGIC = b'MICHIFLIN-STATE-1\0'
 PATTERN = re.compile(r'^michiflin-owner-clean-state-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$')
@@ -98,40 +97,29 @@ def main():
             primary[-1] = fields[9]; waiting = False
     if len(primary)!=1 or not re.fullmatch(r'[A-Fa-f0-9]{40,64}', primary[0]):
         raise ValueError('public fingerprint unavailable')
+    commitment = json.loads(os.environ['IDENTITY_COMMITMENT'])
+    challenge = base64.b64decode(commitment['challenge'], validate=True)
+    if len(challenge)!=32:
+        raise ValueError('invalid comparison challenge')
+    def match(name, value):
+        digest = hmac.new(challenge, str(value).encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(digest, commitment[name])
+    token_rows = db.execute("SELECT namespc, token, timestamp FROM tokens WHERE namespc IN (100,110) AND (foreign_key='' OR foreign_key IS NULL) LIMIT 500").fetchall()
+    invite_present = any(namespace==100 and match('invite', value) for namespace,value,_ in token_rows)
+    auth_present = any(namespace==110 and match('auth', value) for namespace,value,_ in token_rows)
+    matched_auth_fresh = any(namespace==110 and match('auth',value) and 0 <= int(time.time())-int(timestamp) < 6*86400 for namespace,value,timestamp in token_rows)
     marker_fp = str(marker.get('bot_fingerprint','')).replace(' ','').upper()
-    owner_fp = str(marker.get('owner_fingerprint','')).replace(' ','').upper()
-    epoch = os.environ['CLEAN_IDENTITY_EPOCH'].strip()
-    expected_owner = os.environ['OWNER_ADDRESS'].strip().casefold()
-    if (marker.get('version') != 1 or marker.get('confirmed') is not True
-        or marker.get('fresh_account') is not True
-        or not re.fullmatch(r'[0-9a-f]{48}',epoch) or marker.get('epoch') != epoch
-        or not re.fullmatch(r'[A-F0-9]{40,64}',marker_fp)
-        or not re.fullmatch(r'[A-F0-9]{40,64}',owner_fp) or marker_fp == owner_fp
-        or marker.get('owner_address','').strip().casefold() != expected_owner
-        or type(marker.get('owner_chat')) is not int or marker['owner_chat'] <= 9
-        or any(key in marker for key in ('source_asset_id','legacy_asset_id','imported_backup'))
-        or not hmac.compare_digest(primary[0].upper(),marker_fp)):
-        raise ValueError('production identity marker mismatch')
-    payload = json.dumps({'fingerprint':primary[0].upper(), 'marker_fingerprint':marker_fp,
-                          'address':address_row[0], 'invite':invite_row[0], 'auth':auth_row[0],
-                          'auth_timestamp':int(auth_row[1]),
-                          'snapshot_created':asset.get('created_at','unknown')}, separators=(',',':')).encode()
-    recipient = PublicKey(base64.b64decode(os.environ['CAPSULE_PUBLIC_KEY'], validate=True))
-    capsule = SealedBox(recipient).encrypt(payload)
-    upload_url = listing.json()['upload_url'].split('{',1)[0]
-    if not upload_url.startswith('https://uploads.github.com/repos/' + repo + '/'):
-        raise ValueError('unexpected upload host')
-    name = 'temporary-secure-check-' + os.environ['GITHUB_RUN_ID'] + '.bin'
-    if any(a.get('name') == name for a in listing.json().get('assets', [])):
-        raise ValueError('capsule already exists')
-    upload_headers = {**headers, 'Content-Type':'application/octet-stream', 'Accept':'application/vnd.github+json'}
-    upload = requests.post(upload_url, headers=upload_headers, params={'name':name}, data=capsule, timeout=45)
-    upload.raise_for_status()
-    uploaded = upload.json()
-    if uploaded.get('name')!=name or not isinstance(uploaded.get('id'),int):
-        raise ValueError('capsule upload unconfirmed')
-    print('SAFE_CAPSULE_ASSET_ID=' + str(uploaded['id']))
-    print('SAFE_CURRENT_KEY_MATCHES_SEALED_MARKER=YES')
+    results = {
+        'CANDIDATE_ADDRESS_MATCH': match('address',str(address_row[0]).casefold()),
+        'CANDIDATE_KEY_MATCH': match('fingerprint',primary[0].upper()),
+        'CANDIDATE_MARKER_MATCH': match('fingerprint',marker_fp),
+        'SNAPSHOT_KEY_MATCHES_MARKER': hmac.compare_digest(primary[0].upper(),marker_fp),
+        'INVITE_NUMBER_PRESENT': invite_present,
+        'AUTH_TOKEN_PRESENT': auth_present,
+        'AUTH_TOKEN_FRESH': matched_auth_fresh,
+    }
+    for name, value in results.items():
+        print('SAFE_'+name+'='+('YES' if value else 'NO'))
     print('SAFE_SNAPSHOT_CREATED=' + str(asset.get('created_at','unknown')))
     db.close()
 
