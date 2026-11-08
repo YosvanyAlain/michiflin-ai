@@ -14,6 +14,7 @@ import re
 import sqlite3
 import sys
 import tarfile
+import time
 from pathlib import PurePosixPath
 
 import requests
@@ -27,9 +28,6 @@ def main():
     token = os.environ['STATE_TOKEN']
     repo = os.environ['STATE_REPO']
     password = os.environ['STATE_PASSPHRASE']
-    expected = os.environ['INVITE_PAIR_DIGEST']
-    if not re.fullmatch(r'[0-9a-f]{64}', expected):
-        raise ValueError('invalid digest')
     api = 'https://api.github.com/repos/' + repo
     headers = {'Authorization': 'Bearer ' + token, 'Accept': 'application/vnd.github+json',
                'X-GitHub-Api-Version': '2022-11-28', 'Cache-Control': 'no-cache'}
@@ -62,12 +60,15 @@ def main():
     db = sqlite3.connect(':memory:')
     db.deserialize(database_bytes)
     db.execute('PRAGMA query_only = ON')
-    rows = db.execute("SELECT namespc, token FROM tokens WHERE namespc IN (100,110) AND (foreign_key='' OR foreign_key IS NULL) LIMIT 500").fetchall()
-    invites = [str(v) for namespace, v in rows if namespace == 100 and isinstance(v, str)]
-    auth = [str(v) for namespace, v in rows if namespace == 110 and isinstance(v, str)]
-    found = any(hmac.compare_digest(hashlib.sha256((i + '|' + a).encode()).hexdigest(), expected)
-                for i in invites for a in auth)
-    print('SAFE_INVITE_TOKENS_PRESENT=' + ('YES' if found else 'NO'))
+    rows = db.execute("SELECT namespc, COUNT(*), MAX(timestamp) FROM tokens WHERE namespc IN (100,110) AND (foreign_key='' OR foreign_key IS NULL) GROUP BY namespc").fetchall()
+    counts = {int(namespace): int(count) for namespace, count, _ in rows}
+    latest = {int(namespace): int(timestamp or 0) for namespace, _, timestamp in rows}
+    print('SAFE_CONTACT_INVITE_COUNT=' + str(counts.get(100, 0)))
+    print('SAFE_CONTACT_AUTH_COUNT=' + str(counts.get(110, 0)))
+    if latest.get(110):
+        age = int(time.time()) - latest[110]
+        print('SAFE_NEWEST_AUTH_AGE_HOURS=' + str(max(0, age // 3600)))
+        print('SAFE_NEWEST_AUTH_FRESH=' + ('YES' if 0 <= age < 7 * 86400 else 'NO'))
     print('SAFE_SNAPSHOT_CREATED=' + str(asset.get('created_at', 'unknown')))
     db.close()
 

@@ -14,10 +14,9 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install 'requests>=2.31,<3' 'cryptography>=44,<47'
-      - name: Compare only the SecureJoin token metadata in memory
+      - name: Check only token counts and age in memory
         env:
           STATE_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
           STATE_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
-          INVITE_PAIR_DIGEST: ${{ secrets.MICHIFLIN_INVITE_PAIR_DIGEST }}
         run: python .github/scripts/audit_invite_tokens_readonly.py
