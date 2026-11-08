@@ -18,6 +18,10 @@ on:
         description: SHA-256 of candidate address and verified fingerprint
         required: true
         type: string
+      fingerprint_digest:
+        description: SHA-256 of independently verified candidate fingerprint
+        required: true
+        type: string
 permissions:
   contents: read
 concurrency:
@@ -46,6 +50,7 @@ jobs:
           STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
           EXPECTED_IDENTITY_DIGEST: ${{ inputs.identity_digest }}
+          EXPECTED_FINGERPRINT_DIGEST: ${{ inputs.fingerprint_digest }}
           TRANSFER_ID: ${{ inputs.transfer_id }}
           TRANSFER_PUBLIC_KEY: ${{ inputs.transfer_public_key }}
         run: python tools/private_invitation_transfer.py
