@@ -235,9 +235,16 @@ def receive(instance: int, values: list[int]) -> None:
             if not isinstance(detail, str) or detail not in {"sharp", "economy"}:
                 detail = "sharp"
             browser = body.get("browser", "controlled")
-            if not isinstance(browser, str) or browser not in {"controlled", "human"}:
+            if not isinstance(browser, str) or browser not in {"controlled", "human", "graphical_saved"}:
                 _send(instance, sid, {"t": "error", "error": "browser_failed"})
                 return
+            if browser == "graphical_saved":
+                # Prior packages disclose only their own modes; never let an
+                # old or altered client opt into an undisclosed browser flow.
+                from . import miniapp
+                if authenticated[0].get("build") != miniapp.app_build():
+                    _send(instance, sid, {"t": "error", "error": "unsupported"})
+                    return
             session = Session(instance, sid, authenticated[1], site, url, locale, detail, browser)
             _sessions[instance] = session
             session.start()
@@ -289,7 +296,7 @@ class Session:
     def __init__(self, instance: int, sid: str, owner: str, site: str, url: str, locale: str = "es", detail: str = "sharp", browser: str = "controlled"):
         self.instance, self.sid, self.owner, self.site, self.url, self.locale = instance, sid, owner, site, url, locale
         self.detail = detail if isinstance(detail, str) and detail in {"sharp", "economy"} else "sharp"
-        self.browser = browser if isinstance(browser, str) and browser in {"controlled", "human"} else "controlled"
+        self.browser = browser if isinstance(browser, str) and browser in {"controlled", "human", "graphical_saved"} else "controlled"
         self.generation = state.kill_generation(owner)
         self.stopped = threading.Event()
         self.queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2)
@@ -347,8 +354,8 @@ class Session:
                     and not state.work_interrupted(self.owner, self.generation))
 
     def _hide_infobars(self) -> bool:
-        # The current and exact 58a0657 package disclose hidden infobars;
-        # the older 618c355 package does not and keeps the warnings visible.
+        # Current and exact 582d273 / 58a0657 packages disclose hidden
+        # infobars; 618c355 does not and keeps the warnings visible.
         from . import miniapp
         identity = _authorized(self.instance)
         return bool(identity and identity[1] == self.owner and miniapp.discloses_infobars(identity[0]))
@@ -472,10 +479,11 @@ class Session:
             if not self._allowed():
                 return
             _send(self.instance, self.sid, {"t": "opening"})
-            # A human browser is deliberately ephemeral: do not load, export,
-            # alter, or overwrite the encrypted sessions of the existing mode.
+            # The temporary human mode stays ephemeral. The new graphical
+            # savable mode shares the exact encrypted state format with the
+            # legacy controlled mode; old apps retain their old behavior.
             storage = None if self.browser == "human" else web_vault.load(self.owner, self.site)
-            script = "human_browser_worker.py" if self.browser == "human" else "remote_worker.py"
+            script = "remote_worker.py" if self.browser == "controlled" else "human_browser_worker.py"
             # Keep the OS-level worker deadline aligned with the session limit.
             with sandbox.BrowserProcess(worker_file=script, lifetime=LIFETIME_SECONDS + 60) as worker:
                 if worker.process is None or worker.process.stdout is None:
@@ -486,8 +494,10 @@ class Session:
                 _send(self.instance, self.sid, opening)
                 reader = io.BufferedReader(worker.process.stdout, buffer_size=65536)
                 initial = {"url": self.url, "storage": storage, "detail": self.detail}
-                if self.browser == "human":
+                if self.browser in {"human", "graphical_saved"}:
                     initial["hide_infobars"] = self._hide_infobars()
+                if self.browser == "graphical_saved":
+                    initial["savable"] = True
                 first = self._exchange(worker, reader, initial, 50)
                 if not self._allowed():
                     return

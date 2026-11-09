@@ -514,3 +514,34 @@ def test_owner_can_regrant_one_guest_from_preserved_old_app(app_state, monkeypat
         assert not response.call_args.args[3]
     finally:
         access.reset()
+
+
+def test_latest_two_compatible_packages_keep_exact_original_live_bytes(app_state, monkeypatch):
+    # The published packages were archived byte-for-byte before this UI change.
+    # This synthetic epoch is independent of any user's real instance.
+    latest = app_compat.latest_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    recent = app_compat.recent_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    older = app_compat.previous_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    assert (latest, recent, older) == ("925b474bbe", "35e3d9314d", "c7544a8050")
+    assert all(miniapp.compatible_build({"build": value}) for value in (latest, recent, older))
+    assert miniapp.discloses_infobars({"build": latest})
+    assert miniapp.discloses_infobars({"build": recent})
+    assert not miniapp.discloses_infobars({"build": older})
+    monkeypatch.setattr(config, "BOT_EPOCH", "unrelated-epoch")
+    assert all(not miniapp.compatible_build({"build": value}) for value in (latest, recent, older))
+
+
+def test_latest_and_recent_compatibility_fail_closed_if_their_live_copy_changes(app_state, monkeypatch, tmp_path):
+    import shutil
+    for attr, build, expected in (("_LATEST", app_compat.latest_build, "925b474bbe"),
+                                  ("_RECENT", app_compat.recent_build, "35e3d9314d")):
+        original = getattr(app_compat, attr)
+        copy = tmp_path / attr
+        shutil.copytree(original, copy)
+        with monkeypatch.context() as patch:
+            patch.setattr(app_compat, attr, copy)
+            assert build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES) == expected
+            with (copy / "live.js").open("a", encoding="utf-8") as handle:
+                handle.write("\n// synthetic change\n")
+            assert build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES) == ""
+            assert not miniapp.compatible_build({"build": expected})

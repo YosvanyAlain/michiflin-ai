@@ -1,4 +1,4 @@
-"""Fail-closed compatibility for the two exact previously shipped WebXDC packages.
+"""Fail-closed compatibility for exact previously shipped WebXDC packages.
 
 Only files changed by a later package are archived. Every other source file is
 verified against the pinned manifest before its epoch-specific hash is returned.
@@ -12,7 +12,9 @@ from pathlib import Path
 _PREVIOUS = Path(__file__).resolve().parent / "compat" / "618c355"
 _REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _RECENT = Path(__file__).resolve().parent / "compat" / "58a0657"
-_RECENT_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js"}
+_RECENT_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_LATEST = Path(__file__).resolve().parent / "compat" / "582d273"
+_LATEST_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
@@ -41,3 +43,8 @@ def previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
 def recent_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """The exact 58a0657 package, or an empty string when it cannot be verified."""
     return _pinned_build(epoch, app_dir, files, _RECENT, _RECENT_REPLACED)
+
+
+def latest_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """The exact 582d273 package, or empty when it cannot be verified."""
+    return _pinned_build(epoch, app_dir, files, _LATEST, _LATEST_REPLACED)

@@ -112,7 +112,7 @@ for (const reason of ["paused", "stale_app"]) {
 {
   const test = boot();
   test.web.start("https://example.org/", () => {});
-  assert.strictEqual(test.sent[0].browser, "controlled");
+  assert.strictEqual(test.sent[0].browser, "graphical_saved");
   test.web.stop();
   test.web.browser = "human";
   test.web.start("https://example.org/", () => {});

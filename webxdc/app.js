@@ -93,8 +93,8 @@ function chrome() {
   jobBadge();
 }
 
-// Navigation counts distinguish locally pending work from unread results. Home
-// summarizes the other tabs; opening Home does not mark their results as read.
+// Navigation badges report unread results only, never a request still running.
+// Home summarizes other tabs; opening Home does not mark those results as read.
 const badgeCounts = {};
 function pendingTarget(meta) {
   const ctx = meta.ctx || {};
@@ -122,13 +122,13 @@ function notificationCounts() {
   return counts;
 }
 function countLabel(base, count) {
-  return `${base} · ${t("notification_counts", { pending: count.pending, unread: count.unread })}`;
+  return `${base} · ${t("notification_counts", { unread: count.unread })}`;
 }
 function jobBadge() {
   const counts = notificationCounts();
   document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     const id = tab.dataset.tab, count = counts[id] || { pending: 0, unread: 0 };
-    const total = count.pending + count.unread, node = $(".tab-badge", tab);
+    const total = count.unread, node = $(".tab-badge", tab);
     if (!node) return;
     node.hidden = total === 0;
     node.textContent = total > 99 ? "99+" : String(total);
@@ -138,7 +138,7 @@ function jobBadge() {
     }
     tab.setAttribute("aria-label", total ? countLabel(t("tab_" + id), count) : t("tab_" + id));
   });
-  Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.pending + value.unread])));
+  Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.unread])));
   bus.emit("badges");
 }
 
@@ -393,6 +393,10 @@ async function fetchView(target, op, args, draw, options = {}) {
 
 function samePlace(target) {
   if (!target || target.view !== current.view) return false;
+  // Downloads canonicalizes its default subsection after render. Treat that
+  // as the same visible page, but not the separate kit or links subsections.
+  if (target.view === "downloads")
+    return ((target.params || {}).section || "downloads") === ((current.params || {}).section || "downloads");
   return JSON.stringify(target.params || {}) === JSON.stringify(current.params || {});
 }
 function visiblePlace(target) {
@@ -541,7 +545,12 @@ bridge.handlers.weather = (data, error, ctx, rid) => {
 };
 bus.always("notices", jobBadge);
 bridge.watchers.add(jobBadge);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markVisibleNoticesRead(); });
+function reflectAppVisibility() {
+  document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
+  if (document.visibilityState === "visible") markVisibleNoticesRead();
+}
+document.addEventListener("visibilitychange", reflectAppVisibility);
+document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
 
 // ---------------------------------------------------------------------------
 // Bot replies: tap commands become buttons, links open in the reader.
@@ -699,7 +708,7 @@ function tiles(extra = [], omit = []) {
   const draw = () => {
     for (const entry of buttons) {
       const count = shortcutCount(entry.view, entry.params);
-      const total = count.pending + count.unread;
+      const total = count.unread;
       entry.count.hidden = !total; entry.count.textContent = total > 99 ? "99+" : String(total);
       entry.button.setAttribute("aria-label", total ? countLabel(t(entry.label), count) : t(entry.label));
     }
@@ -857,16 +866,51 @@ function watchHomeWeather(element) {
   setTimeout(check, 90000);
 }
 
+// WMO codes from the saved Open-Meteo snapshot only. Unknown or missing
+// conditions are neutral: never invent sunshine, precipitation, or a day/night.
+function weatherScene(current) {
+  if (!current || !(typeof current.code === "number" ||
+      (typeof current.code === "string" && /^\d{1,3}$/.test(current.code.trim())))) return "unknown";
+  const code = Number(current.code);
+  if (!Number.isInteger(code)) return "unknown";
+  if (code === 0) return "clear";
+  if (code === 1 || code === 2) return "partly";
+  if (code === 3) return "cloudy";
+  if (code === 45 || code === 48) return "fog";
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return "rain";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "snow";
+  if ([95, 96, 99].includes(code)) return "storm";
+  return "unknown";
+}
+
+function weatherBannerArt(current) {
+  const scene = weatherScene(current);
+  if (scene === "unknown") return null;
+  const known = current.is_day_known !== false;
+  const day = known && (current.is_day === 1 || current.is_day === true);
+  const night = known && (current.is_day === 0 || current.is_day === false);
+  const orb = scene === "clear" || scene === "partly";
+  const cloud = scene !== "clear";
+  return h("span", { class: `weather-scene scene-${scene}${night ? " at-night" : ""}`, "aria-hidden": "true" },
+    orb && (day || night) ? icon(night ? "moon" : "sun", "scene-orb") : null,
+    cloud ? icon("weather", "scene-cloud") : null,
+    scene === "fog" ? h("i", { class: "scene-fog-lines" }) : null,
+    scene === "rain" || scene === "storm" ? h("i", { class: "scene-precip-rain" }) : null,
+    scene === "snow" ? h("i", { class: "scene-precip-snow" }) : null,
+    scene === "storm" ? icon("bolt", "scene-bolt") : null);
+}
+
 function homeWeatherBanner() {
   const saved = weatherHome();
   const last = validWeatherLast(saved.last) ? saved.last : null;
   const data = last && last.data;
   const currentWeather = data && data.current;
   const old = last && now() - Number(last.at) > 1.2 * Math.max(21600, Number(saved.interval) || 0);
-  return h("button", { class: "weather-banner", onclick: () => go("weather") },
+  return h("button", { class: "weather-banner", "data-weather-scene": weatherScene(currentWeather), onclick: () => go("weather") },
+    weatherBannerArt(currentWeather),
     h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("weather"), t("home_banner_weather")),
       h("span", { class: "rate-banner-brand" }, "Open-Meteo", icon("next"))),
-    data ? h("div", { class: "weather-banner-body" }, icon(weatherIcon(currentWeather.code, currentWeather.is_day), "weather-banner-icon"),
+    data ? h("div", { class: "weather-banner-body" }, icon(weatherIcon(currentWeather.code, currentWeather.is_day_known === false ? null : (currentWeather.is_day ?? null)), "weather-banner-icon"),
       h("div", { class: "weather-banner-copy" }, h("small", {}, data.place.label),
         h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, weatherDescription(currentWeather))))) :
       h("div", { class: "weather-banner-copy" }, h("b", {}, saved.city), h("small", {}, t("weather_banner_empty"))),
@@ -892,7 +936,7 @@ function homeCarousel() {
   const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
   const slides = [
     () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art" }, icon("cat"))),
+      h("div", { class: "hero-art" }, icon("cat"), icon("catpixel", "pixel-mascot"))),
     homeRatesBanner,
     homeWeatherBanner,
   ];
@@ -921,6 +965,13 @@ function homeCarousel() {
     if (root.isConnected) setTimeout(rotate, 8000);
   };
   draw();
+  if ("IntersectionObserver" in window) {
+    const observer = new IntersectionObserver((entries) => {
+      if (!root.isConnected) { observer.disconnect(); return; }
+      root.classList.toggle("motion-paused", !entries.some((entry) => entry.isIntersecting));
+    });
+    observer.observe(root);
+  }
   setTimeout(rotate, 8000);
   watchVisibleRates(root);
   watchHomeWeather(root);
@@ -991,7 +1042,7 @@ function notifiedSpaceCard(name, title, hint, view, params = {}) {
   const button = h("button", { class: "card space-card", onclick: () => openNotifiedView(view, params) },
     h("span", { class: "space-icon" }, icon(name)), h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), marker, icon("next"));
   const draw = () => {
-    const count = shortcutCount(view, params), total = count.pending + count.unread;
+    const count = shortcutCount(view, params), total = count.unread;
     marker.hidden = !total; marker.textContent = total > 99 ? "99+" : String(total);
     button.setAttribute("aria-label", total ? countLabel(title, count) : title);
   };
@@ -2348,7 +2399,11 @@ VIEWS.rates = {
 
 function weatherIcon(code, isDay = 1) {
   code = Number(code);
-  if (code === 0 || code === 1) return isDay ? "sun" : "moon";
+  if (code === 0 || code === 1) {
+    if (isDay === 1 || isDay === true) return "sun";
+    if (isDay === 0 || isDay === false) return "moon";
+    return "info"; // Forecast did not say whether it is day or night.
+  }
   if (code === 45 || code === 48) return "cloudfog";
   if (code >= 95) return "cloudstorm";
   if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "cloudsnow";
@@ -2426,7 +2481,7 @@ VIEWS.weather = {
           select(String(data.place.id), candidates.map((item) => [String(item.id), item.label]), (value) => run(data.query, Number(value))),
           h("small", { class: "muted" }, t("weather_choose"))) : null,
         h("div", { class: "weather-hero" },
-          h("div", { class: "weather-sky" }, icon(weatherIcon(current.code, current.is_day), "weather-art")),
+          h("div", { class: "weather-sky" }, icon(weatherIcon(current.code, current.is_day_known === false ? null : (current.is_day ?? null)), "weather-art")),
           h("div", { class: "weather-place" }, h("small", {}, data.place.label),
             h("div", { class: "weather-temp" }, weatherValue(current.temp, "°")),
             h("b", {}, weatherDescription(current)), h("small", {}, `${t("weather_feels")} ${weatherValue(current.feels, "°C")}`)),
@@ -2790,7 +2845,11 @@ function clearKeys(prefix) {
 VIEWS.settings = {
   title: () => t("tab_settings"),
   render(main) {
-    const appRow = (label, control) => h("div", { class: "setting" }, h("span", { class: "grow" }, label), control);
+    const appRow = (label, control) => {
+      // The visible setting name also labels its select or tab group for VoiceOver.
+      if (control) control.setAttribute("aria-label", label);
+      return h("div", { class: "setting" }, h("span", { class: "grow" }, label), control);
+    };
     const wipe = (title, work) => h("button", { class: "list-row", onclick: async () => {
       if (await confirmBox(title, t("wipe_q"), t("delete"))) {
         await work();
@@ -2812,6 +2871,19 @@ VIEWS.settings = {
           savePrefs();
           applyLook();
         })),
+        appRow(t("set_style"), select(prefs.style, [["michiflin", t("style_michiflin")], ["material", t("style_material")],
+          ["pixel", t("style_pixel")], ["ocean", t("style_ocean")]], (value) => {
+          prefs.style = value;
+          savePrefs();
+          applyLook();
+        })),
+        appRow(t("set_accent"), select(prefs.accent, [["style", t("accent_style")], ["teal", t("accent_teal")],
+          ["violet", t("accent_violet")], ["blue", t("accent_blue")], ["rose", t("accent_rose")]], (value) => {
+          prefs.accent = value;
+          savePrefs();
+          applyLook();
+        })),
+        h("small", { class: "style-hint" }, t("style_hint")),
         appRow(t("set_engine"), select(searchEngine(prefs.engine), ENGINES.map((key) => [key, t("engine_" + key)]), (value) => {
           prefs.engine = value;
           savePrefs();

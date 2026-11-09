@@ -213,7 +213,10 @@ def test_geocoding_never_silently_falls_back_to_a_different_region(monkeypatch):
     def get(url, **_kwargs):
         return Response({"results": places} if "geocoding" in url else forecast)
     monkeypatch.setattr(tools.requests, "get", get)
-    assert tools.weather_data("Santiago, Santiago, Cuba", "es")["place"]["id"] == 2
+    selected = tools.weather_data("Santiago, Santiago, Cuba", "es")
+    assert selected["place"]["id"] == 2
+    assert selected["current"]["is_day"] == 1  # historical clients retain their field
+    assert selected["current"]["is_day_known"] is False  # no claim about missing data
     with pytest.raises(tools.WeatherError, match="not_found"):
         tools.weather_data("Santiago, España", "es")
     # An explicitly selected provider ID survives a translated region label.

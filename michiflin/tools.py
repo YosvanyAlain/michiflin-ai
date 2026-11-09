@@ -499,7 +499,10 @@ def weather_data(query: str, locale: str, place_id: int = 0) -> dict[str, Any]:
                 "current": {"temp": current.get("temperature_2m"), "feels": current.get("apparent_temperature"),
                             "humidity": current.get("relative_humidity_2m"), "wind": current.get("wind_speed_10m"),
                             "precipitation": current.get("precipitation"), "code": current.get("weather_code"),
-                            "is_day": current.get("is_day", 1), "description": descriptions[index],
+                            "is_day": current.get("is_day", 1),
+                            # Preserve the historical field for old clients, but
+                            # let newer ones avoid inventing day/night if omitted.
+                            "is_day_known": current.get("is_day") in (0, 1), "description": descriptions[index],
                             "descriptions": {"es": descriptions[0], "en": descriptions[1]}},
                 "days": days, "source": "Open-Meteo"}
     except WeatherError:

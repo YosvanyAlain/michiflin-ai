@@ -1,8 +1,9 @@
-"""Optional manually operated graphical browser in the existing private jail.
+"""Manually operated graphical Chromium in the existing private jail.
 
-No WebDriver, CDP, page scripts or CAPTCHA solver are used. GUI events are
-limited to the authenticated person's requests, over stdin/stdout. The browser
-profile and clipboard live on the jail's tmpfs, not the host filesystem.
+The temporary mode launches Chromium directly, without WebDriver or CDP.
+The explicitly selected savable mode uses Playwright for the compatible storage
+state and page URL, but input and display still use the same GUI. It does not
+solve challenges. Browser profile and clipboard live in the jail's tmpfs.
 """
 from __future__ import annotations
 
@@ -25,6 +26,9 @@ from playwright.sync_api import sync_playwright
 WIDTH, HEIGHT, SCALE = 480, 760, 2
 MAX_FRAME = 87_000
 MAX_LINE = 3_000_000
+# Leave room for vault identity/metadata and the JSON pipe envelope.
+MAX_STORAGE_UTF8 = 1_990_000
+MAX_STORAGE_PIPE = 2_950_000
 MAX_GESTURE_POINTS = 64
 MAX_GESTURE_MS = 8_000
 DISPLAY = ":87"
@@ -320,7 +324,8 @@ def main() -> int:
         return 1
     HOME.mkdir(mode=0o700, parents=True, exist_ok=True)
     PROFILE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    # Only locate the vendor browser here; do not launch it through Playwright.
+    # Locate the vendor executable. Temporary mode launches it directly;
+    # only the explicitly chosen savable mode uses Playwright below.
     with sync_playwright() as playwright:
         binary = playwright.chromium.executable_path
     if not Path(binary).is_file():
@@ -328,6 +333,33 @@ def main() -> int:
         return 1
     display = _process(["Xvfb", DISPLAY, "-screen", "0", f"{WIDTH*SCALE}x{HEIGHT*SCALE}x24", "-nolisten", "tcp", "-ac"])
     browser: subprocess.Popen | None = None
+    controller: Any = None
+    managed: Any = None
+    context: Any = None
+    savable = initial.get("savable") is True
+
+    def browser_alive() -> bool:
+        return bool(managed.is_connected()) if savable and managed is not None else bool(browser and browser.poll() is None)
+
+    def current_page(require_single: bool = False) -> Any:
+        # Pump Playwright's event loop after GUI-only input so newly opened or
+        # closed popups are reflected before selecting the latest visible page.
+        pages = [item for item in context.pages if not item.is_closed()]
+        if pages:
+            try:
+                pages[0].wait_for_timeout(10)
+            except Exception:
+                pass
+        pages = [item for item in context.pages if not item.is_closed()]
+        if not pages:
+            raise ValueError("page")
+        # For a download, we cannot reliably infer which one of several tabs
+        # the desktop has focused. Never queue the wrong page; ask the user to
+        # close the extra tab or popup first. Saving storage is context-wide.
+        if require_single and len(pages) != 1:
+            return None
+        return pages[-1]
+
     try:
         for _ in range(100):
             if display.poll() is not None:
@@ -350,11 +382,26 @@ def main() -> int:
                 "--force-device-scale-factor=2", "--new-window", "about:blank"]
         if initial.get("hide_infobars") is True:
             args.insert(1, "--disable-infobars")
-        browser = _process(args)
+        if savable:
+            # Playwright's private pipe (not a TCP debugging endpoint) supplies
+            # the same cookies/origins/IndexedDB format as the legacy worker.
+            # User gestures, screenshots and navigation remain GUI operations.
+            controller = sync_playwright().start()
+            launch_args = [arg for arg in args[1:] if not arg.startswith("--user-data-dir=")
+                           and arg not in {"--new-window", "about:blank"}]
+            managed = controller.chromium.launch(headless=False, env=ENV,
+                                                  proxy={"server": "http://127.0.0.1:18080"}, args=launch_args)
+            options: dict[str, Any] = {"no_viewport": True, "accept_downloads": False}
+            if initial.get("storage") is not None:
+                options["storage_state"] = initial["storage"]
+            context = managed.new_context(**options)
+            context.new_page()
+        else:
+            browser = _process(args)
         # The desktop is not exposed as VNC or a host TCP port. Wait briefly
         # for a visible Chromium window before sending the first frame.
         for _ in range(120):
-            if browser.poll() is not None:
+            if not browser_alive():
                 raise ValueError("browser")
             windows = _visible_windows()
             if windows:
@@ -388,14 +435,30 @@ def main() -> int:
             if isinstance(requested_detail, str) and requested_detail in {"sharp", "economy"}:
                 detail = requested_detail
             try:
-                if browser.poll() is not None:
+                if not browser_alive():
                     emit({"kind": "error", "seq": seq, "error": "browser_failed"})
                     break
                 if action == "close":
                     emit({"kind": "closed", "seq": seq})
                     break
                 if action in {"save", "page_url"}:
-                    emit({"kind": "error", "seq": seq, "error": "human_no_saved_session"})
+                    if not savable or context is None:
+                        emit({"kind": "error", "seq": seq, "error": "human_no_saved_session"})
+                    elif action == "save":
+                        storage = context.storage_state(indexed_db=True)
+                        page = current_page()
+                        storage["_michiflin_user_agent"] = str(page.evaluate("navigator.userAgent"))[:512]
+                        if (len(json.dumps(storage, ensure_ascii=False).encode("utf-8")) > MAX_STORAGE_UTF8
+                                or len(json.dumps(storage, ensure_ascii=True).encode("ascii")) > MAX_STORAGE_PIPE):
+                            emit({"kind": "error", "seq": seq, "error": "too_large"})
+                        else:
+                            emit({"kind": "state", "seq": seq, "storage": storage})
+                    else:
+                        page = current_page(require_single=True)
+                        if page is None:
+                            emit({"kind": "error", "seq": seq, "error": "multiple_pages"})
+                        else:
+                            emit({"kind": "page_url", "seq": seq, "url": page.url})
                     continue
                 if action in {"click", "drag", "text", "key", "scroll", "back", "forward", "reload", "goto"}:
                     # If a provider just closed its own popup, restore the only
@@ -429,7 +492,7 @@ def main() -> int:
                     if key == "CloseWindow":
                         time.sleep(0.4)
                         visible = _visible_windows()
-                        if browser.poll() is not None or not visible:
+                        if not browser_alive() or not visible:
                             emit({"kind": "closed", "seq": seq})
                             break
                         # Xvfb has no desktop window manager to restore focus
@@ -468,6 +531,21 @@ def main() -> int:
                 except Exception:
                     emit({"kind": "error", "seq": seq, "error": "action_failed"})
     finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if managed is not None:
+            try:
+                managed.close()
+            except Exception:
+                pass
+        if controller is not None:
+            try:
+                controller.stop()
+            except Exception:
+                pass
         _stop(browser)
         _stop(display)
     return 0

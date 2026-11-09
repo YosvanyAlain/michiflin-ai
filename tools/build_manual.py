@@ -203,7 +203,7 @@ class Manual(BaseDocTemplate):
             canvas.setFont("Body", 9)
             canvas.setFillColor(colors.HexColor("#bfd5d0"))
             canvas.drawString(59, 255, "Guía técnica y práctica en español")
-            canvas.drawString(59, 237, "30 de octubre de 2026 · edición 5.5")
+            canvas.drawString(59, 237, "Edición 5.5 · interfaz y navegador")
             canvas.setFont("Body", 8)
             canvas.drawString(59, 77, "El ZIP de código y este PDF son entregas separadas.")
         else:
@@ -309,7 +309,7 @@ MODULES = {
     "filekit_transfer.py": "Importación explícita por adjuntos y copia de trabajos verificados sin borrar los originales.",
     "files.py": "Examina enlaces directos, detecta tamaño y formato, descarga con Range y protege reanudaciones.",
     "handover.py": "Barrera de reejecución para el relevo de estado; no ejecuta ni elimina solicitudes antiguas.",
-    "human_browser_worker.py": "Navegador gráfico temporal controlado por la persona, sin solucionador automático de CAPTCHA.",
+    "human_browser_worker.py": "Navegador gráfico temporal o guardable controlado por la persona; la persistencia compatible usa Playwright y ningún modo resuelve CAPTCHA automáticamente.",
     "identity_guard.py": "Verifica chat, clave y permisos; recuperación por correo solo si se activa, con riesgo de suplantación y registro de claves retiradas.",
     "images.py": "Selecciona proveedores y modelos de imagen, valida respuestas y genera un archivo compacto.",
     "links.py": "Representa enlaces con comandos cortos para navegar desde el chat.",
@@ -400,10 +400,13 @@ def build_story() -> list:
               bullet("El estado se guarda y se respalda por separado, sujeto a las limitaciones de la infraestructura."),
               PageBreak(), chapter("02 · Recorrido de uso"),
               sub("Inicio y navegación"),
-              p("Abre el chat verificado del bot y entra en la miniapp más reciente. Inicio reúne el buscador, accesos directos y un resumen de la cola. La barra inferior conduce a IA, Web, Apps y Descargas; Ajustes se abre desde el icono correspondiente. Las etiquetas pueden variar con la versión y el idioma."),
+              p("Abre el chat verificado del bot y entra en la miniapp correspondiente. Inicio reúne el buscador, accesos directos y un resumen de la cola. La barra inferior conduce a IA, Web, Apps y Descargas; Ajustes se abre desde el icono correspondiente. Las etiquetas pueden variar con la versión y el idioma; las capturas de esta guía son ilustraciones de versiones anteriores y pruebas sintéticas."),
+              p("En Ajustes elige Michiflin, Material You, Pixel Art u Océano, claro, oscuro o sistema y un color de acento. Material You es una inspiración y no toma automáticamente los colores del dispositivo. Los banners respetan movimiento reducido; el clima representa la observación guardada sin solicitar otra solo para animar."),
+              p("Los indicadores de pestañas y accesos avisan cuando llega una respuesta o error mientras no ves su resultado, no cuando comienza la consulta. El progreso de Descargas y la actividad son distintos. Son avisos de esta miniapp, no notificaciones del sistema; un resultado caducado no se vuelve a pedir a escondidas."),
               sub("Buscar, leer y abrir la web"),
               p("Escribe una pregunta o pega un enlace. El lector ligero prioriza texto y enlaces; una captura o PDF necesita un navegador disponible en el servidor. El navegador Live es otra función: muestra una sesión remota en un cliente compatible con tiempo real. No todas las páginas o clientes lo admiten."),
-              p("En Live puedes intentar iniciar sesión en un sitio y elegir Guardar sesión. Esa acción guarda el estado cifrado por persona y sitio; no demuestra que el proveedor acepte el inicio de sesión. La sesión del navegador normal de tu teléfono no se copia automáticamente. Si aparece CAPTCHA, complétalo tú cuando sea posible; no intentes eludirlo."),
+              p("Live ofrece Gráfico con sesión y Gráfico temporal. En el primero, Chromium visible se maneja con tus gestos y Playwright restaura los datos guardados, los guarda al confirmarlo y obtiene la dirección para descargas compatibles; el temporal no carga ni modifica sesiones guardadas. El estado se cifra por persona y sitio. Para descargar desde Live cierra primero otras pestañas o ventanas: si hay varias, no se elige una página al azar. El descargador usa cookies y agente, no localStorage ni IndexedDB; cada proveedor puede rechazar el navegador o la descarga. La sesión normal de tu teléfono no se copia. Si aparece CAPTCHA, complétalo tú cuando sea posible; no intentes eludirlo."),
+              p("Las pruebas sintéticas comprobaron guardar y restaurar entre el modo anterior y el gráfico, separación entre usuarios y rechazo de certificados inválidos. También se descargó localmente un video público pequeño de Wikimedia sin cuenta ni chat. No se ha demostrado iniciar sesión personal, descargar contenido privado ni la aceptación de CAPTCHA en todos los sitios."),
               sub("IA, agente y modelos personales"),
               p("El agente unificado ofrece dos modos: sin cuota de modelos y con IA/API. El primero usa herramientas y fuentes sin activar imágenes por sí solo; el segundo puede elegir un modelo o usar selección automática y realizar hasta cuatro pasos. Los adjuntos compatibles van directamente al modelo elegido con el contexto reciente. Verifica el resultado y el coste real del proveedor."),
               p("La conversación automática anterior conserva una entrada separada de historial. Los catálogos de texto e imagen se abren por proveedor; los modelos de texto también se agrupan por categoría. La disponibilidad real puede cambiar."),
@@ -457,7 +460,7 @@ def build_story() -> list:
               bullet("Los adjuntos grandes y parciales de JOB_DIR no están incluidos por defecto."),
               bullet("Borrar una sesión actual no elimina necesariamente copias antiguas ni revoca la sesión ante el proveedor."),
               sub("Qué sucede al actualizar la miniapp"),
-              p("Cada versión de la WebXDC tiene almacenamiento independiente. El bot envía una instancia nueva a los chats pertinentes y deja de aceptar operaciones ordinarias de la antigua. La instancia anterior se conserva: no la borres hasta que hayas verificado un respaldo o una migración de los datos que te importan. La conservación del mensaje, por sí sola, no demuestra una migración de proyectos."),
+              p("Cada mensaje de WebXDC tiene almacenamiento independiente. Abrir una instancia anterior no envía automáticamente otra. Para actualizar, solicita y confirma una nueva desde Ajustes y Sincronización si está disponible. Algunas versiones anteriores exactas y del mismo epoch siguen siendo compatibles; las desconocidas o modificadas se rechazan. Conserva la anterior hasta verificar los datos que te importan: conservar el mensaje o el respaldo del bot no demuestra que los proyectos locales hayan migrado."),
               PageBreak(), chapter("05 · Cómo se construyó"),
               p("El proyecto combina piezas existentes: deltabot-cli y deltachat2 para correo y eventos; Python para la lógica; HTML, CSS y JavaScript para WebXDC; requests para HTTP; yt-dlp y ffmpeg para medios; Playwright para navegación; y cryptography para bóvedas y respaldos. No hay un modelo de lenguaje pesado permanente dentro de Actions."),
               table(["Capa", "Archivos clave", "Responsabilidad"], [
@@ -605,7 +608,7 @@ def build_story() -> list:
               PageBreak(), chapter("11 · Pruebas, límites y decisiones técnicas"),
               sub("Qué se comprobó en la validación privada"),
               bullet("Mantenimiento con dueño y dos invitados sintéticos, por Delta Chat y WebXDC reales, en español e inglés."),
-              bullet("Nueva miniapp cifrada enviada proactivamente; la anterior permaneció y rechazó operaciones ordinarias."),
+              bullet("En una validación histórica se entregó una miniapp cifrada y se conservó la anterior; ese comportamiento de entonces no significa que se envíe automáticamente otra ahora."),
               bullet("Interfaz real de Desktop para activar y desactivar mantenimiento; el aviso de pérdida de progreso se mostró en una prueba visual simulada."),
               bullet("Descarga local interrumpida y reanudada en el mismo disco con Range, If-Range y SHA-256; protección frente a un origen cambiado."),
               bullet("Entrega de dos adjuntos distintos en un chat verificado sintético, con cifrado extremo a extremo y hashes coincidentes."),

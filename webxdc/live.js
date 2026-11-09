@@ -18,7 +18,7 @@ function liveSite(value) {
 }
 
 window.liveWeb = {
-  channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "economy", browser: "controlled",
+  channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "economy", browser: "graphical_saved",
   startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null, onTraffic: null,
   sentBytes: 0, receivedBytes: 0,
   reportTraffic() {
@@ -148,7 +148,7 @@ VIEWS.live_web = {
     let site = "";
     try { site = liveSite(params.url); } catch (error) { add(main, failure(t("live_bad_url"))); return; }
     window.liveWeb.detail = "economy";
-    window.liveWeb.browser = "controlled";
+    window.liveWeb.browser = "graphical_saved";
     const status = h("div", { class: "note", role: "status" }, t("live_click_start"));
     const route = h("small", { class: "muted live-route", hidden: true });
     const traffic = h("small", { class: "muted live-traffic", hidden: true });
@@ -198,10 +198,10 @@ VIEWS.live_web = {
       unconfirmed: "live_unconfirmed", timeout: "live_timeout", closed: "live_closed", not_saved: "live_save_first",
       different_site: "live_same_site", frame_too_large: "live_frame_large",
       human_unavailable: "live_human_unavailable", human_address_unready: "live_human_address_unready",
-      human_no_saved_session: "live_human_no_saved_session", human_close_popup_first: "live_human_close_popup_first",
+      human_no_saved_session: "live_human_no_saved_session", human_close_popup_first: "live_human_close_popup_first", multiple_pages: "live_multiple_pages",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
-    const modeNote = h("small", { class: "muted" }, t("live_mode_controlled_hint"));
-    const modePicker = segmented("controlled", [["controlled", t("live_mode_controlled")], ["human", t("live_mode_human")]], async (value) => {
+    const modeNote = h("small", { class: "muted" }, t("live_mode_graphical_saved_hint"));
+    const modePicker = segmented("graphical_saved", [["graphical_saved", t("live_mode_graphical_saved")], ["human", t("live_mode_human")]], async (value) => {
       if (!window.liveWeb.channel) { applyMode(value); return; }
       const previous = activeMode || window.liveWeb.browser;
       if (value === previous) return;
@@ -225,10 +225,10 @@ VIEWS.live_web = {
     const applyMode = (value) => {
       window.liveWeb.browser = value;
       paintMode(value);
-      modeNote.textContent = t(value === "human" ? "live_mode_human_hint" : "live_mode_controlled_hint");
+      modeNote.textContent = t(value === "human" ? "live_mode_human_hint" : "live_mode_graphical_saved_hint");
       saveButton.hidden = value === "human";
       downloadButton.hidden = value === "human";
-      closeWindowButton.hidden = value !== "human";
+      closeWindowButton.hidden = !["human", "graphical_saved"].includes(value);
     };
     const run = (action, args) => {
       try {
@@ -533,6 +533,7 @@ VIEWS.live_web = {
       h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote,
       h("div", { class: "row wrap" }, start, disconnect), status, route, traffic,
       navigation, screenBox, viewSettings, controls);
+    applyMode("graphical_saved");
     updateStored();
   },
 };

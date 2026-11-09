@@ -21,7 +21,7 @@ This guide walks through the mini app and the chat features. For setup and confi
 2. The bot sends one mini app with one welcome. When your language is not known yet, the same message includes short Spanish and English instructions. Tap **Download** if shown, then **Start** or the app icon to open it. The interface follows the device language or your chosen setting. A brief introduction explains the tabs and how answers arrive; you can replay it from **How it works**. No command is needed to join. If you later lose the app, `/app` can request a fresh copy. Pin the chat or keep the app message at hand.
 3. Use the app for everything. Every action is sent to the bot as a small message inside the same chat, and the answer comes back to the app, usually within a few seconds to a couple of minutes.
 
-You can close the app at any time: pending work completes and shows up when you return. The indicator at the top shows requests in progress, and a request with no answer after a few minutes is marked so you can retry it.
+You can close the app, although delivery and server availability are not guaranteed. Activity and download progress are separate from tab and shortcut badges. A badge marks a reply or error received when its result was not in view; starting a request alone does not create one. These are local indicators, not system notifications. Some results are cached briefly; an expired result is not silently requested again.
 
 Text written in the chat itself only gets a short reply pointing to the app. Files you send (voice notes, photos, documents) are still transcribed or analyzed.
 
@@ -36,7 +36,7 @@ Text written in the chat itself only gets a short reply pointing to the app. Fil
 - **Status chips:** time until the next server restart, items in the queue and the last update.
 - **Shortcuts:** the most used apps, one tap away.
 
-The theme follows the device (light or dark) unless you choose one in Settings.
+Appearance follows the device (light or dark) unless changed in Settings. Choose the Michiflin, Material You-inspired, Pixel Art or Ocean visual style and an independent accent. Material You does not automatically read the device's colors. Animated decorations respect reduced-motion settings, and the weather scene uses the saved observation without an extra query.
 
 ## AI
 
