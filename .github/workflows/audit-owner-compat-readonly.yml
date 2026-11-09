@@ -6,7 +6,6 @@ permissions:
   contents: read
 jobs:
   app-metadata-only:
-    if: ${{ false }} # audit was executed once; keep disabled
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
@@ -21,5 +20,5 @@ jobs:
           STATE_REPO: ${{ secrets.STATE_BACKUP_REPO }}
           STATE_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
           OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
-          BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+          CLEAN_IDENTITY_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
         run: python .github/scripts/audit_owner_compat.py
