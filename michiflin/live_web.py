@@ -71,13 +71,13 @@ def _identity(instance: int) -> tuple[dict[str, Any], str] | None:
 
 
 def _authorized(instance: int) -> tuple[dict[str, Any], str] | None:
-    """Admit browser work only for a current build with the kill switch off."""
+    """Admit browser work only for a verified compatible build with the kill switch off."""
     from . import miniapp
     identity = _identity(instance)
     if not identity:
         return None
     entry, owner = identity
-    if entry.get("build") != miniapp.app_build() or state.maintenance_active() or state.get_kill_switch(owner):
+    if not miniapp.compatible_build(entry) or state.maintenance_active() or state.get_kill_switch(owner):
         return None
     return identity
 
@@ -127,13 +127,13 @@ def _notice_stale(instance: int, entry: dict[str, Any], owner: str, locale: str)
 
     def interrupted() -> bool:
         current = _identity(instance)
-        return not current or current[1] != owner or current[0].get("build") == miniapp.app_build()
+        return not current or current[1] != owner or miniapp.compatible_build(current[0])
 
-    text = ("La mini app abierta es anterior y no puede iniciar Live. Abre la versión más reciente del chat. "
-            "Si no ha llegado, usa Ajustes → Sincronizar ahora para solicitarla. La app anterior y sus datos se conservan."
+    text = ("La mini app abierta es anterior y no puede iniciar Live. Si deseas una versión nueva, ve a "
+            "Ajustes → Sincronización → Pedir app nueva. La app anterior y sus datos se conservan."
             if locale == "es" else
-            "The open mini app is older and cannot start Live. Open the newest app in the chat. "
-            "If it has not arrived, use Settings → Sync now to request it. The older app and its data are kept.")
+            "The open mini app is older and cannot start Live. To request a new version, go to "
+            "Settings → Sync → Get a new app. The older app and its data are kept.")
     try:
         sent = chat.send(chat_id, text, quote=instance, interrupted=interrupted)
     except Exception:
@@ -151,7 +151,7 @@ def _deny(instance: int, sid: str, locale: str) -> None:
     if not identity:
         return
     entry, owner = identity
-    reason = ("stale_app" if entry.get("build") != miniapp.app_build()
+    reason = ("stale_app" if not miniapp.compatible_build(entry)
               else "maintenance" if state.maintenance_active()
               else "paused" if state.get_kill_switch(owner) else "")
     if not reason:
@@ -346,6 +346,13 @@ class Session:
         return bool(authenticated and authenticated[1] == self.owner and not self.stopped.is_set()
                     and not state.work_interrupted(self.owner, self.generation))
 
+    def _hide_infobars(self) -> bool:
+        # Only the new package discloses that additional browser warnings may
+        # be hidden. A compatible old package must keep those warnings visible.
+        from . import miniapp
+        identity = _authorized(self.instance)
+        return bool(identity and identity[1] == self.owner and identity[0].get("build") == miniapp.app_build())
+
     def _exchange(self, process: sandbox.BrowserProcess, reader: io.BufferedReader, value: dict[str, Any], timeout: float) -> dict[str, Any]:
         worker = process.process
         if worker is None or not worker.stdin or not worker.stdout:
@@ -478,7 +485,10 @@ class Session:
                     self.last_reply = opening
                 _send(self.instance, self.sid, opening)
                 reader = io.BufferedReader(worker.process.stdout, buffer_size=65536)
-                first = self._exchange(worker, reader, {"url": self.url, "storage": storage, "detail": self.detail}, 50)
+                initial = {"url": self.url, "storage": storage, "detail": self.detail}
+                if self.browser == "human":
+                    initial["hide_infobars"] = self._hide_infobars()
+                first = self._exchange(worker, reader, initial, 50)
                 if not self._allowed():
                     return
                 reply = self._route_reply(self._reply(first, 0), worker)

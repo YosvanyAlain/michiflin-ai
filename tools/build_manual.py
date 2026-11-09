@@ -284,6 +284,7 @@ MODULES = {
     "answer.py": "Respuestas sin IA a partir de fuentes públicas: extracción, clasificación de frases y citas.",
     "answer_inline.py": "Continuación privada y acotada de respuestas largas dentro de la misma instancia autorizada.",
     "app.py": "Cableado principal de Delta Chat: eventos, recepción ordenada, arranque y parada de trabajadores.",
+    "app_compat.py": "Comprueba la huella exacta de la miniapp anterior compatible sin abrir el acceso a versiones desconocidas.",
     "browser.py": "Capturas, PDF y renderizado de páginas mediante Chromium, cuando el entorno es compatible.",
     "cf_safety.py": "Presupuesto conservador local para el uso compartido de Cloudflare Workers AI.",
     "chat.py": "Envío y consulta de mensajes de Delta Chat, actualizaciones WebXDC y seguimiento de entrega.",

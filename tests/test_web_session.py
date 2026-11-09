@@ -145,6 +145,30 @@ class VaultAndBridgeTests(unittest.TestCase):
         entry["build"] = "outdated"
         self.assertIsNone(live_web._authorized(10))
 
+    def test_exact_compatible_previous_browser_still_requires_all_privacy_gates(self):
+        entry, rpc = self._authorization()
+        entry["build"] = "known-previous"
+        with mock.patch.object(miniapp.app_compat, "previous_build", return_value="known-previous"):
+            self.assertEqual(live_web._authorized(10), (entry, ALICE))
+            rpc.get_basic_chat_info.return_value.is_encrypted = False
+            self.assertIsNone(live_web._authorized(10))
+            rpc.get_basic_chat_info.return_value.is_encrypted = True
+            with mock.patch.object(live_web.access, "bound_allowed", return_value=False):
+                self.assertIsNone(live_web._authorized(10))
+            state.get_kill_switch.return_value = True
+            self.assertIsNone(live_web._authorized(10))
+            state.get_kill_switch.return_value = False
+            entry["build"] = "unknown-old"
+            self.assertIsNone(live_web._authorized(10))
+
+    def test_infobars_are_hidden_only_for_current_disclosing_app(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "host:example.org", "https://example.org/", browser="human")
+        with mock.patch.object(miniapp, "app_build", return_value="new-build"):
+            for identity, expected in ((None, False), (({"build": "known-previous"}, ALICE), False),
+                                       (({"build": "new-build"}, BOB), False), (({"build": "new-build"}, ALICE), True)):
+                with self.subTest(identity=identity), mock.patch.object(live_web, "_authorized", return_value=identity):
+                    self.assertEqual(session._hide_infobars(), expected)
+
     def test_paused_browser_explains_denial_without_starting_worker(self):
         entry, rpc = self._authorization()
         state.get_kill_switch.return_value = True
@@ -173,7 +197,7 @@ class VaultAndBridgeTests(unittest.TestCase):
         self.assertEqual(data, {"v": 1, "sid": "b" * 32, "t": "error", "error": "stale_app"})
         self.assertNotIn("example.org", json.dumps(data))
         self.assertEqual(send.call_count, 1)
-        self.assertIn("Sincronizar ahora", send.call_args.args[1])
+        self.assertIn("Pedir app nueva", send.call_args.args[1])
         start.assert_not_called()
 
     def test_stale_or_paused_denial_never_reaches_unauthorized_chat(self):
@@ -424,6 +448,22 @@ class VaultAndBridgeTests(unittest.TestCase):
 
 
 class BrowserFrameTests(unittest.TestCase):
+    def test_scroll_targets_the_pointer_and_checks_coordinates_first(self):
+        page = mock.Mock()
+        remote_worker.scroll_pointer(page, {"amount": 240, "x": 100, "y": 500})
+        self.assertEqual(page.mouse.method_calls, [mock.call.move(100, 500), mock.call.wheel(0, 240)])
+        page.reset_mock()
+        remote_worker.scroll_pointer(page, {"amount": -600})  # older clients omit the target
+        self.assertEqual(page.mouse.method_calls, [mock.call.wheel(0, -600)])
+        for bad in ({"amount": 240, "x": 10}, {"amount": 240, "x": 480, "y": 3},
+                    {"amount": 240, "x": True, "y": 3}, {"amount": "240", "x": 2, "y": 3}):
+            with self.subTest(request=bad):
+                page.reset_mock()
+                with self.assertRaises(ValueError):
+                    remote_worker.scroll_pointer(page, bad)
+                page.mouse.assert_not_called()
+                self.assertEqual(page.mouse.method_calls, [])
+
     def test_human_drag_replays_recorded_path_and_releases_pointer(self):
         page = mock.Mock()
         path = [{"x": 20, "y": 40, "ms": 0}, {"x": 35, "y": 43, "ms": 45}, {"x": 70, "y": 46, "ms": 110}]

@@ -400,22 +400,22 @@ class Isolated(unittest.TestCase):
         push.assert_not_called()
         send.assert_not_called()
 
-    def test_interaction_updates_preserve_old_apps_and_deduplicate_builds(self):
+    def test_explicit_updates_preserve_old_apps_and_deduplicate_builds(self):
         original = {"chat": 2, "addr": ALICE, "build": "old", "locale": "en", "sent": 1}
         state.data["apps"] = {"1": original.copy()}
         miniapp._upgraded.clear()
         with mock.patch.object(miniapp, "app_build", return_value="build-two"), \
-             mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
+             mock.patch.object(chat, "sender", return_value=ALICE), \
              mock.patch.object(miniapp, "replace_app", return_value=2) as send:
-            miniapp._maybe_upgrade(1, original, "en")
-            miniapp._maybe_upgrade(1, original, "en")
+            miniapp.op_reinstall(2, {"_app_instance_id": 1}, "en")
+            miniapp.op_reinstall(2, {"_app_instance_id": 1}, "en")
             self.assertEqual(send.call_count, 1)
             self.assertEqual(state.data["apps"]["1"], original)
         with mock.patch.object(miniapp, "app_build", return_value="build-three"), \
-             mock.patch.object(miniapp.access, "bound_allowed", return_value=True), \
+             mock.patch.object(chat, "sender", return_value=ALICE), \
              mock.patch.object(miniapp, "replace_app", return_value=3) as send:
-            miniapp._maybe_upgrade(1, original, "en")
-            self.assertEqual(send.call_count, 1)  # a new build is not blocked by the duplicate guard
+            miniapp.op_reinstall(2, {"_app_instance_id": 1}, "en")
+            self.assertEqual(send.call_count, 1)
         with mock.patch.object(live_web, "_identity", return_value=None), \
              mock.patch.object(miniapp, "send_app") as send:
             self.assertEqual(miniapp.replace_app(1, 2, "en", ALICE), 0)

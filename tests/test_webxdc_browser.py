@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -125,6 +125,7 @@ BRIDGE = r"""
     }
   };
   window.__sentUpdates = [];
+  window.__fixtureResponses = [];
   window.__serial = 0;
   window.__listener = null;
   window.webxdc = {
@@ -145,8 +146,10 @@ BRIDGE = r"""
               code = "session_changed";
             } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
                 (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op)) ||
-                (window.__realFilekit && request.op === "filekit")) {
+                (window.__realFilekit && request.op === "filekit") ||
+                (window.__realDelivery && request.op === "reinstall")) {
               const endpoint = request.op === "filekit" ? "/api/filekit" :
+                request.op === "reinstall" ? "/api/delivery" :
                 window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access";
               const result = await fetch(endpoint,
                 { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
@@ -155,11 +158,14 @@ BRIDGE = r"""
               error = body.error || "";
             } else data = responseFor(request);
           } catch (err) { error = String(err); }
-          if (window.__listener) window.__listener({
-            serial: ++window.__serial,
-            payload: { t: "res", re: request.id, ok: !fail && !error, data: (fail || error) ? null : data,
-              error: fail ? "SIMULATED network uncertainty" : error, code }
-          });
+          if (window.__listener) {
+            window.__fixtureResponses.push(request.op);
+            window.__listener({
+              serial: ++window.__serial,
+              payload: { t: "res", re: request.id, ok: !fail && !error, data: (fail || error) ? null : data,
+                error: fail ? "SIMULATED network uncertainty" : error, code }
+            });
+          }
         }, window.__delay);
       }
     },
@@ -176,13 +182,18 @@ BRIDGE = r"""
 
 @contextmanager
 def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False,
-                    real_filekit: bool = False, engine: str = "chromium"):
-    """Fake Delta bridge; optionally connect access UI to real Python handlers, not a live bot."""
+                    real_filekit: bool = False, engine: str = "chromium", touch: bool = False,
+                    legacy_package: bool = False, delivery_handler=None):
+    """Fake Delta bridge; optionally connect UI to Python handlers, never a live bot."""
+    from michiflin import app_compat
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
         root = Path(temporary)
+        if legacy_package and not app_compat.previous_build("fixture-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES):
+            raise ValueError("the previous package could not be verified")
         for name in miniapp.APP_FILES:
             (root / name).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(miniapp.APP_DIR / name, root / name)
+            source = app_compat._PREVIOUS if legacy_package and name in app_compat._REPLACED else miniapp.APP_DIR
+            shutil.copy2(source / name, root / name)
         (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
 
         class QuietHandler(http.server.SimpleHTTPRequestHandler):
@@ -191,13 +202,15 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
 
             def do_POST(self) -> None:
                 if not ((self.path == "/api/access" and real_access) or (self.path == "/api/personal" and real_personal) or
-                        (self.path == "/api/filekit" and real_filekit)):
+                        (self.path == "/api/filekit" and real_filekit) or (self.path == "/api/delivery" and delivery_handler)):
                     self.send_error(404)
                     return
                 try:
                     request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
                     chat.set_sender("owner@example.org")
-                    if self.path == "/api/personal":
+                    if self.path == "/api/delivery":
+                        result = delivery_handler(request)
+                    elif self.path == "/api/personal":
                         from michiflin import personal_ai
                         state.set_personal_ai_secure(True)
                         def fake_provider(_provider, method, suffix, body=None, **_options):
@@ -227,8 +240,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
         try:
             with sync_playwright() as playwright:
                 browser = getattr(playwright, engine).launch(**({"args": ["--no-sandbox"]} if engine == "chromium" else {}))
-                page = browser.new_page(viewport=viewport, locale=language)
-                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()};")
+                page = browser.new_page(viewport=viewport, locale=language, has_touch=touch)
+                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()}; window.__realDelivery = {str(bool(delivery_handler)).lower()};")
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)
@@ -253,8 +266,127 @@ def screenshot_if_requested(page, name: str) -> None:
         page.screenshot(path=str(directory / f"SIMULADO-{name}.png"), full_page=False)
 
 
+def install_live_frame_fixture(page) -> None:
+    """Open Live against a harmless synthetic still frame and recorded actions."""
+    page.evaluate(r"""() => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 480; canvas.height = 760;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'white'; ctx.fillRect(0, 0, 480, 760);
+      ctx.fillStyle = 'black'; ctx.font = '22px sans-serif';
+      for (let i = 0; i < 15; i++) ctx.fillText('Fixture ' + (i + 1), 20, 32 + i * 48);
+      const image = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+      window.__testLiveActions = [];
+      window.webxdc.joinRealtimeChannel = () => {
+        let listener;
+        return {
+          setListener(fn) { listener = fn; },
+          send(data) {
+            const req = JSON.parse(new TextDecoder().decode(data));
+            window.__testLiveActions.push(req);
+            if (req.t !== 'start' && req.t !== 'action') return;
+            const msg = { v: 1, sid: req.sid, t: req.action === 'close' ? 'closed' : 'frame',
+              seq: req.seq || 0, image, width: 480, height: 760, rendered: req.detail || 'economy' };
+            setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), window.__testLiveDelay || 100);
+          },
+          leave() {},
+        };
+      };
+      go('live_web', { url: 'https://fixture.example/' });
+    }""")
+
+
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class WebXDCBrowserSmoke(unittest.TestCase):
+    def test_previous_package_manual_update_needs_confirmation_and_keeps_old_instance(self) -> None:
+        """Exercise the old iPhone-sized UI through the real, synthetic delivery handler."""
+        from concurrent.futures import Future
+        from michiflin import app_compat, live_web, maintenance, perf
+
+        class Immediate:
+            def submit(self, function, *args):
+                future = Future()
+                try:
+                    future.set_result(function(*args))
+                except Exception as error:
+                    future.set_exception(error)
+                return future
+
+        owner, epoch = "owner@example.org", "fixture-epoch"
+        old_build = app_compat.previous_build(epoch, str(miniapp.APP_DIR), miniapp.APP_FILES)
+        self.assertTrue(old_build)
+        entry = {"chat": 7, "addr": owner, "build": old_build, "epoch": epoch,
+                 "locale": "es", "sent": time.time(), "serial": 0, "access_session": ""}
+        original_entry = copy.deepcopy(entry)
+        synthetic_state = copy.deepcopy(state.data)
+        synthetic_state["apps"] = {"100": entry}
+        sent, replies = [], []
+
+        def fake_send(chat_id, text, **kwargs):
+            self.assertEqual(chat_id, 7)
+            self.assertEqual(kwargs.get("viewtype"), "Webxdc")
+            self.assertFalse(kwargs.get("interrupted", lambda: False)())
+            self.assertTrue(Path(kwargs["file"]).is_file())
+            sent.append((text, kwargs))
+            return 201
+
+        def record_response(instance, request_id, data, error="", **_kwargs):
+            self.assertEqual(instance, 100)
+            replies.append((request_id, data, error))
+
+        def delivery_handler(request):
+            self.assertEqual(request.get("op"), "reinstall")
+            before = len(replies)
+            miniapp.handle(100, dict(entry), request)
+            if len(replies) != before + 1 or replies[-1][2]:
+                raise ValueError("synthetic delivery refused")
+            return replies[-1][1]
+
+        with tempfile.TemporaryDirectory(prefix="michiflin-update-fixture-") as temporary, ExitStack() as stack:
+            for obj, name, value in (
+                (state, "data", synthetic_state), (state, "save", lambda: None),
+                (state, "maintenance_active", lambda: False), (state, "maintenance_interrupted", lambda _generation: False),
+                (state, "get_kill_switch", lambda _address: False), (state, "kill_generation", lambda _address: 0),
+                (state, "work_interrupted", lambda _address, _generation: False),
+                (state, "guard_work", lambda *_args: nullcontext()),
+                (config, "BOT_EPOCH", epoch), (config, "BOT_EPOCH_STRICT", True),
+                (config, "TEMP_ROOT", Path(temporary)), (config, "service_access_allowed", lambda address: address == owner),
+                (access, "bound_allowed", lambda item: item.get("addr") == owner),
+                (admin, "is_allowed", lambda address: address == owner), (admin, "seen", lambda _address: None),
+                (miniapp, "_verified_binding", lambda _entry: True), (miniapp, "_workers", Immediate()),
+                (miniapp, "_upgraded", {}), (miniapp, "respond", record_response),
+                (live_web, "_identity", lambda instance: (entry, owner) if instance == 100 else None),
+                (chat, "sender", lambda: owner), (chat, "send", fake_send),
+                (maintenance, "text", lambda _locale: ""), (perf, "note_op", lambda *_args: None),
+            ):
+                stack.enter_context(mock.patch.object(obj, name, value))
+            with browser_fixture("es", {"width": 390, "height": 844}, engine="webkit", touch=True,
+                                 legacy_package=True, delivery_handler=delivery_handler) as (page, errors):
+                self.assertEqual(sent, [])  # opening and hello are not consent
+                page.evaluate("go('settings')")
+                request = page.get_by_role("button", name="Pedir app nueva", exact=True)
+                request.tap()
+                page.get_by_text("Cada instancia tiene almacenamiento independiente", exact=False).wait_for()
+                self.assertEqual(sent, [])
+                page.get_by_role("button", name="Cancelar", exact=True).tap()
+                self.assertEqual(sent, [])
+                request.tap()
+                page.get_by_role("button", name="Enviar app nueva", exact=True).tap()
+                page.get_by_text("Listo: abre la app nueva", exact=False).wait_for()
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(set(synthetic_state["apps"]), {"100", "201"})
+                self.assertEqual(synthetic_state["apps"]["100"], original_entry)
+                self.assertEqual(synthetic_state["apps"]["201"]["build"], miniapp.app_build())
+                self.assertIn("almacenamiento independiente", sent[0][0])
+                # A second synthetic confirmation is deduplicated, not another delivery.
+                request.tap()
+                page.get_by_role("button", name="Enviar app nueva", exact=True).tap()
+                page.wait_for_function("window.__fixtureResponses.filter(op => op === 'reinstall').length === 2")
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(len(replies), 2)
+                self.assertTrue(replies[-1][1].get("already"))
+                self.assertEqual(errors, [])
+
     def test_home_carousel_and_saved_weather_bilingual(self) -> None:
         cases = [("es", {"width": 320, "height": 760}), ("en", {"width": 1280, "height": 800})]
         for language, viewport in cases:
@@ -372,6 +504,226 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 screenshot_if_requested(page, language + "-partial-progress-warning")
                 self.assertEqual(errors, [])
 
+    def test_live_small_mobile_frame_scroll_and_swipe(self) -> None:
+        # A narrow mobile frame used to be trapped in a second vertical scroller.
+        # The realtime bridge and picture here are synthetic, not a live site.
+        for language, engine, viewport in (
+            ("es", "chromium", {"width": 320, "height": 568}),
+            ("es", "chromium", {"width": 360, "height": 640}),
+            ("en", "webkit", {"width": 360, "height": 640}),
+        ):
+            with self.subTest(language=language, engine=engine, viewport=viewport), browser_fixture(language, viewport, engine=engine) as (page, errors):
+                install_live_frame_fixture(page)
+                page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
+                page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+                box, image = page.locator(".live-screen-box"), page.locator(".live-screen")
+                self.assertLessEqual(box.evaluate("e => e.scrollHeight - e.clientHeight"), 1,
+                                     "100% frame is clipped by an inner vertical scroller")
+                switch_label = ("Deslizar en la vista para mover la página" if language == "es"
+                                else "Swipe on the view to scroll the page")
+                swipe = page.get_by_label(switch_label)
+                swipe.check()
+                image.scroll_into_view_if_needed()
+                rect = image.bounding_box()
+                x = rect["x"] + rect["width"] * .5
+                y = max(80, rect["y"] + min(280, rect["height"] * .7))
+                args = {"pointerId": 1, "pointerType": "touch", "isPrimary": True, "button": 0,
+                        "clientX": x, "clientY": y, "bubbles": True}
+                image.dispatch_event("pointerdown", {**args, "buttons": 1})
+                image.dispatch_event("pointermove", {**args, "buttons": 1, "clientY": y - 90})
+                image.dispatch_event("pointerup", {**args, "buttons": 0, "clientY": y - 90})
+                # A browser may synthesize a click after pointerup; it must not
+                # accidentally activate the webpage following a swipe.
+                image.dispatch_event("click", {"clientX": x, "clientY": y - 90, "bubbles": True})
+                page.wait_for_function("window.__testLiveActions.some(x => x.action === 'scroll')")
+                actions = page.evaluate("window.__testLiveActions")
+                scroll = [item for item in actions if item.get("action") == "scroll"][-1]
+                self.assertEqual(scroll["amount"], 240)
+                self.assertTrue(0 <= scroll["x"] < 480 and 0 <= scroll["y"] < 760)
+                self.assertFalse(any(item.get("action") == "click" for item in actions))
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+                swipe.uncheck()
+                page.locator(".live-zoom").get_by_role("tab", name="150%").click()
+                self.assertGreater(box.evaluate("e => e.scrollHeight - e.clientHeight"), 0)
+                self.assertEqual(errors, [])
+
+    def test_live_real_touch_swipe_and_tap_are_distinct(self) -> None:
+        # Chromium touch events go through the browser's actual input pipeline;
+        # the webpage/realtime peer is still a local synthetic fixture.
+        with browser_fixture("es", {"width": 360, "height": 640}, touch=True) as (page, errors):
+            install_live_frame_fixture(page)
+            page.get_by_role("button", name="Iniciar navegador").click()
+            page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            swipe = page.get_by_label("Deslizar en la vista para mover la página")
+            swipe.check()
+            image = page.locator(".live-screen")
+            image.scroll_into_view_if_needed()
+            rect = image.bounding_box()
+            x, y = rect["x"] + rect["width"] * .5, min(490, max(220, rect["y"] + 250))
+            cdp = page.context.new_cdp_session(page)
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchStart", "touchPoints": [{"x": x, "y": y, "id": 0}]})
+            for dy in (20, 45, 70, 100):
+                cdp.send("Input.dispatchTouchEvent", {"type": "touchMove", "touchPoints": [{"x": x, "y": y - dy, "id": 0}]})
+            cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
+            page.wait_for_function("window.__testLiveActions.some(x => x.action === 'scroll')")
+            page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            actions = page.evaluate("window.__testLiveActions")
+            self.assertEqual(len([item for item in actions if item.get("action") == "scroll"]), 1)
+            self.assertFalse(any(item.get("action") == "click" for item in actions))
+            # This deliberate tap can follow quickly, even while the preceding
+            # swipe's compatibility-click suppression is still active.
+            page.touchscreen.tap(x, y - 30)
+            page.wait_for_function("window.__testLiveActions.some(x => x.action === 'click')")
+            page.wait_for_timeout(750)  # any synthesized click must not duplicate it
+            self.assertEqual(len([item for item in page.evaluate("window.__testLiveActions") if item.get("action") == "click"]), 1)
+            self.assertEqual(errors, [])
+
+    def test_touch_tap_in_swipe_mode_needs_no_native_click_and_never_duplicates(self) -> None:
+        # Test both mobile engines. The first deliberate tap emits pointer
+        # events only, modelling browsers that omit the compatibility click.
+        for engine in ("chromium", "webkit"):
+            with self.subTest(engine=engine), browser_fixture("es", {"width": 360, "height": 640}, engine=engine, touch=True) as (page, errors):
+                install_live_frame_fixture(page)
+                page.get_by_role("button", name="Iniciar navegador").tap()
+                page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+                page.locator(".live-screen-box:not([aria-busy])").wait_for()
+                page.get_by_label("Deslizar en la vista para mover la página").check()
+                image = page.locator(".live-screen")
+                image.scroll_into_view_if_needed()
+                rect = image.bounding_box()
+                x, y = rect["x"] + rect["width"] / 2, min(480, max(200, rect["y"] + 200))
+                pointer = {"pointerId": 31, "pointerType": "touch", "isPrimary": True, "button": 0,
+                           "clientX": x, "clientY": y, "bubbles": True}
+                # A stroke that returns to its origin is not a tap. Neither is
+                # a gesture with a second finger or a cancelled touch.
+                image.dispatch_event("pointerdown", {**pointer, "buttons": 1})
+                image.dispatch_event("pointermove", {**pointer, "buttons": 1, "clientY": y - 70})
+                image.dispatch_event("pointerup", {**pointer, "buttons": 0})
+                image.dispatch_event("click", {"clientX": x, "clientY": y, "bubbles": True})
+                image.dispatch_event("pointerdown", {**pointer, "buttons": 1})
+                image.dispatch_event("pointerdown", {**pointer, "pointerId": 32, "isPrimary": False, "buttons": 1})
+                image.dispatch_event("pointerup", {**pointer, "buttons": 0})
+                image.dispatch_event("click", {"clientX": x, "clientY": y, "bubbles": True})
+                image.dispatch_event("pointerdown", {**pointer, "buttons": 1})
+                image.dispatch_event("pointercancel", {**pointer, "buttons": 0})
+                image.dispatch_event("pointerup", {**pointer, "buttons": 0})
+                self.assertFalse(any(item.get("action") in {"click", "scroll"} for item in page.evaluate("window.__testLiveActions")))
+                image.dispatch_event("pointerdown", {**pointer, "buttons": 1})
+                image.dispatch_event("pointerup", {**pointer, "buttons": 0})
+                page.wait_for_function("window.__testLiveActions.filter(x => x.action === 'click').length === 1")
+                # If the browser subsequently supplies a compatibility click,
+                # it cannot turn the same tap into another remote action.
+                image.dispatch_event("click", {"clientX": x, "clientY": y, "bubbles": True})
+                self.assertEqual(len([x for x in page.evaluate("window.__testLiveActions") if x.get("action") == "click"]), 1)
+                page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+                page.locator(".live-screen-box:not([aria-busy])").wait_for()
+                image.scroll_into_view_if_needed()
+                rect = image.bounding_box()
+                x, y = rect["x"] + rect["width"] / 2, min(480, max(200, rect["y"] + 200))
+                page.touchscreen.tap(x, y)
+                page.wait_for_function("window.__testLiveActions.filter(x => x.action === 'click').length === 2")
+                page.wait_for_timeout(750)
+                self.assertEqual(len([x for x in page.evaluate("window.__testLiveActions") if x.get("action") == "click"]), 2)
+                self.assertEqual(errors, [])
+
+    def test_live_does_not_apply_a_press_started_while_a_frame_was_pending(self) -> None:
+        with browser_fixture("es", {"width": 360, "height": 640}) as (page, errors):
+            install_live_frame_fixture(page)
+            page.get_by_role("button", name="Iniciar navegador").click()
+            page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            page.evaluate("window.__testLiveDelay = 700")
+            image = page.locator(".live-screen")
+            image.scroll_into_view_if_needed()
+            rect = image.bounding_box()
+            x, y = rect["x"] + rect["width"] / 2, min(480, max(200, rect["y"] + 200))
+            page.mouse.click(x, y)
+            page.wait_for_function("!!window.liveWeb.pending")
+            page.mouse.move(x + 20, y + 20)
+            page.mouse.down()  # begins on the stale frame while the first click is pending
+            page.wait_for_function("!window.liveWeb.pending")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            page.mouse.up()  # must not become a second click on the new page
+            page.wait_for_timeout(200)
+            self.assertEqual(len([v for v in page.evaluate("window.__testLiveActions") if v.get("action") == "click"]), 1)
+            page.mouse.click(x + 20, y + 20)
+            page.wait_for_function("window.__testLiveActions.filter(x => x.action === 'click').length === 2")
+            self.assertEqual(errors, [])
+
+    def test_live_change_mode_requires_confirmation_and_restart(self) -> None:
+        with browser_fixture("es", {"width": 360, "height": 640}) as (page, errors):
+            install_live_frame_fixture(page)
+            page.get_by_role("button", name="Iniciar navegador").click()
+            page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+            human = page.get_by_role("tab", name="Gráfico temporal")
+            self.assertFalse(human.is_disabled(), "mode change must not silently become unusable")
+            human.click()
+            page.get_by_role("button", name="Cancelar", exact=True).click()
+            self.assertEqual(page.evaluate("window.liveWeb.browser"), "controlled")
+            self.assertFalse(page.evaluate("window.__testLiveActions.some(x => x.action === 'close')"))
+            human.click()
+            page.locator("#sheet .btn.danger").click()
+            page.wait_for_function("window.__testLiveActions.some(x => x.action === 'close')")
+            page.wait_for_function("window.liveWeb.browser === 'human' && !window.liveWeb.channel")
+            self.assertEqual(human.get_attribute("aria-selected"), "true")
+            self.assertTrue(page.get_by_role("button", name="Iniciar navegador").is_visible())
+            page.get_by_role("button", name="Iniciar navegador").click()
+            page.wait_for_function("window.__testLiveActions.some(x => x.t === 'start' && x.browser === 'human')")
+            self.assertEqual(errors, [])
+
+    def test_live_unverified_initial_address_explains_failure_bilingually(self) -> None:
+        for language in ("es", "en"):
+            with self.subTest(language=language), browser_fixture(language, {"width": 390, "height": 844}) as (page, errors):
+                page.evaluate("""() => {
+                  window.webxdc.joinRealtimeChannel = () => {
+                    let listener;
+                    return {setListener(fn) { listener = fn; }, send(data) {
+                      const req = JSON.parse(new TextDecoder().decode(data));
+                      if (req.t === 'start') setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(
+                        {v:1,sid:req.sid,t:'error',seq:0,error:'human_address_unready'}))), 50);
+                    }, leave() {}};
+                  };
+                  go('live_web', {name:'Fixture', url:'https://fixture.example'});
+                }""")
+                page.get_by_role("tab", name="Gráfico temporal" if language == "es" else "Temporary graphical").click()
+                start = page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser")
+                start.click()
+                message = "No se pudo comprobar la dirección" if language == "es" else "The address could not be verified"
+                page.get_by_text(message, exact=False).wait_for()
+                self.assertTrue(start.is_enabled())
+                self.assertFalse(page.evaluate("!!window.liveWeb.channel"))
+                self.assertEqual(errors, [])
+
+    def test_live_mode_and_tap_in_iphone_sized_webkit(self) -> None:
+        # WebKit with touch input approximates an iPhone WebView. It is not an
+        # iOS device, and the realtime peer is intentionally a synthetic stub.
+        with browser_fixture("es", {"width": 390, "height": 844}, engine="webkit", touch=True) as (page, errors):
+            install_live_frame_fixture(page)
+            page.get_by_role("button", name="Iniciar navegador").tap()
+            page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            image = page.locator(".live-screen")
+            image.scroll_into_view_if_needed()
+            rect = image.bounding_box()
+            page.touchscreen.tap(rect["x"] + rect["width"] / 2, min(650, max(220, rect["y"] + 200)))
+            page.wait_for_function("window.__testLiveActions.some(x => x.action === 'click')")
+            page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
+            page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            human = page.get_by_role("tab", name="Gráfico temporal")
+            self.assertFalse(human.is_disabled())
+            human.tap()
+            page.get_by_role("button", name="Cancelar", exact=True).tap()
+            self.assertEqual(page.evaluate("window.liveWeb.browser"), "controlled")
+            human.tap()
+            page.locator("#sheet .btn.danger").tap()
+            page.wait_for_function("window.liveWeb.browser === 'human' && !window.liveWeb.channel")
+            self.assertEqual(human.get_attribute("aria-selected"), "true")
+            page.get_by_role("button", name="Iniciar navegador").tap()
+            page.wait_for_function("window.__testLiveActions.some(x => x.t === 'start' && x.browser === 'human')")
+            self.assertEqual(errors, [])
+
     def test_live_view_zoom_quality_navigation_and_search_with_simulated_realtime(self) -> None:
         # The bridge and picture below are deliberately simulated; the separate
         # sandbox integration verifies real Chromium screenshots and clicks.
@@ -429,7 +781,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(page.get_by_text("no carga ni borra" if language == "es" else "does not load or delete", exact=False).is_visible())
                 page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
                 page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 960")
-                self.assertTrue(mode.is_disabled())
+                self.assertFalse(mode.is_disabled())  # changing mode now requires an explicit close confirmation
+                self.assertEqual(mode.get_attribute("aria-selected"), "true")
                 self.assertTrue(page.evaluate("window.__liveActions.some(x => x.t === 'start' && x.browser === 'human')"))
                 self.assertFalse(page.get_by_role("button", name="Guardar sesión" if language == "es" else "Save session").is_visible())
                 self.assertFalse(page.get_by_role("button", name="Descargar este video" if language == "es" else "Download this video").is_visible())

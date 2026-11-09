@@ -10,13 +10,14 @@ import base64
 import ctypes
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from PIL import Image, ImageGrab
 from playwright.sync_api import sync_playwright
@@ -154,6 +155,102 @@ def _paste(text: object) -> None:
         _stop(owner)
 
 
+def _clear_clipboard() -> None:
+    # The X server is private to this temporary browser. Clear the selection
+    # owner after verification so a copied address does not remain available.
+    library = ctypes.CDLL("libX11.so.6")
+    library.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    library.XOpenDisplay.restype = ctypes.c_void_p
+    library.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+    library.XInternAtom.restype = ctypes.c_ulong
+    library.XSetSelectionOwner.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+    library.XSetSelectionOwner.restype = ctypes.c_int
+    library.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    library.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    handle = library.XOpenDisplay(DISPLAY.encode("ascii"))
+    if not handle:
+        raise ValueError("display")
+    try:
+        selection = library.XInternAtom(handle, b"CLIPBOARD", 0)
+        if not selection:
+            raise ValueError("clipboard")
+        library.XSetSelectionOwner(handle, selection, 0, 0)  # None, CurrentTime
+        library.XSync(handle, 0)
+    finally:
+        library.XCloseDisplay(handle)
+
+
+def _read_clipboard() -> bytes:
+    # Called only on the fresh about:blank window, before the first navigation.
+    # Neither the address nor the selected text enters argv, a file or a log.
+    try:
+        result = subprocess.run(["xclip", "-selection", "clipboard", "-out"], env=ENV,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=3, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return b""
+    return result.stdout if result.returncode == 0 and len(result.stdout) <= 16384 else b""
+
+
+def _prepared_address_matches(url: str, selected: bytes) -> bool:
+    # Chrome may add a slash to an empty path, omit :443, lowercase the host or
+    # percent-encode non-ASCII text when copying the edited address. Permit only
+    # these normalizations; never collapse an encoded slash or alter a query.
+    try:
+        actual = selected.decode("utf-8")
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in url + actual):
+            return False
+        if not valid_url(url) or not valid_url(actual):
+            return False
+        a, b = urlsplit(url), urlsplit(actual)
+
+        def encoded(value: str, safe: str) -> str:
+            text = quote(value, safe=safe + "%")
+            return re.sub(r"%[0-9a-fA-F]{2}", lambda match: match.group().upper(), text)
+
+        path_safe = "/:@!$&'()*+,;=-._~"
+        query_safe = path_safe + "?"
+        return (a.hostname == b.hostname and (a.port or 443) == (b.port or 443)
+                and encoded(a.path or "/", path_safe) == encoded(b.path or "/", path_safe)
+                and ("?" in url.split("#", 1)[0]) == ("?" in actual.split("#", 1)[0])
+                and ("#" in url) == ("#" in actual)
+                and encoded(a.query, query_safe) == encoded(b.query, query_safe)
+                and encoded(a.fragment, query_safe) == encoded(b.fragment, query_safe))
+    except (ValueError, UnicodeError):
+        return False
+
+
+def _open_initial_address(url: str, main_window: str) -> None:
+    # X11 may report a window visible before Chrome's address bar handles keys.
+    # Verify the edited address in the temporary clipboard before submitting.
+    # Retrying preparation cannot repeat a navigation: Return is sent only once,
+    # after an equivalent address and a fresh check that the main window has focus.
+    if not valid_url(url) or any(ord(ch) < 32 or ord(ch) == 127 for ch in url):
+        raise ValueError("address_unready")
+    for _ in range(6):
+        if _focused_window() != main_window:
+            raise ValueError("focus")
+        try:
+            _xdotool("key", "--clearmodifiers", "ctrl+l")
+            _paste(url)
+            if _focused_window() != main_window:
+                raise ValueError("focus")
+            _clear_clipboard()  # a stale paste owner must not fake verification
+            _xdotool("key", "--clearmodifiers", "ctrl+a")
+            _xdotool("key", "--clearmodifiers", "ctrl+c")
+            time.sleep(0.1)
+            selected = _read_clipboard()
+        finally:
+            _clear_clipboard()
+        if _prepared_address_matches(url, selected):
+            if _focused_window() != main_window:
+                raise ValueError("focus")
+            _xdotool("key", "--clearmodifiers", "Return")
+            return
+        time.sleep(0.5)
+    raise ValueError("address_unready")
+
+
 def _point(point: Any) -> tuple[int, int, int]:
     if not isinstance(point, dict):
         raise ValueError("point")
@@ -162,6 +259,17 @@ def _point(point: Any) -> tuple[int, int, int]:
             or not 0 <= x < WIDTH or not 0 <= y < HEIGHT or not 0 <= ms <= MAX_GESTURE_MS):
         raise ValueError("point")
     return x, y, ms
+
+
+def _scroll(request: dict[str, Any]) -> None:
+    """Move the pointer to the human's target before sending physical wheel events."""
+    amount = request.get("amount")
+    if type(amount) is not int or amount not in {-600, -240, 240, 600}:
+        raise ValueError("scroll")
+    if "x" in request or "y" in request:
+        x, y, _ = _point({"x": request.get("x"), "y": request.get("y"), "ms": 0})
+        _xdotool("mousemove", str(x * SCALE), str(y * SCALE))
+    _xdotool("click", "--repeat", "7" if abs(amount) == 600 else "3", "--delay", "30", "4" if amount < 0 else "5")
 
 
 def _drag(points: Any) -> None:
@@ -231,11 +339,17 @@ def main() -> int:
             raise ValueError("display")
         # The private network namespace has only this vetted local CONNECT
         # gateway. No direct or bypass connection to the host is available.
+        # The server's namespace/chroot provides isolation; Chromium's own
+        # sandbox is disabled. Only a current app discloses that infobars may
+        # be hidden. The old compatible app keeps the browser warnings visible.
+        # Certificate checks are never disabled here.
         args = [binary, "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--no-first-run",
                 "--no-default-browser-check", "--disable-background-networking", "--disable-sync",
                 "--disable-quic", "--proxy-server=http://127.0.0.1:18080", "--proxy-bypass-list=<-loopback>",
                 "--user-data-dir=" + str(PROFILE), "--window-size=480,760", "--window-position=0,0",
                 "--force-device-scale-factor=2", "--new-window", "about:blank"]
+        if initial.get("hide_infobars") is True:
+            args.insert(1, "--disable-infobars")
         browser = _process(args)
         # The desktop is not exposed as VNC or a host TCP port. Wait briefly
         # for a visible Chromium window before sending the first frame.
@@ -254,9 +368,12 @@ def main() -> int:
         root_window = _root_window()
         if _restore_root_focus(root_window) != main_window:
             raise ValueError("focus")
-        _xdotool("key", "--clearmodifiers", "ctrl+l")
-        _paste(initial["url"])
-        _xdotool("key", "--clearmodifiers", "Return")
+        try:
+            _open_initial_address(str(initial["url"]), main_window)
+        except Exception:
+            # Do not submit an unverified address or expose it in the error.
+            emit({"kind": "error", "error": "human_address_unready"})
+            return 1
         time.sleep(1)
         requested_detail = initial.get("detail")
         detail = requested_detail if isinstance(requested_detail, str) and requested_detail in {"sharp", "economy"} else "economy"
@@ -319,10 +436,7 @@ def main() -> int:
                         # after a popup closes; bring the remaining browser back.
                         _focus_window(main_window if main_window in visible else visible[-1])
                 elif action == "scroll":
-                    amount = request.get("amount")
-                    if type(amount) is not int or amount not in {-600, -240, 240, 600}:
-                        raise ValueError("scroll")
-                    _xdotool("click", "--repeat", "7" if abs(amount) == 600 else "3", "--delay", "30", "4" if amount < 0 else "5")
+                    _scroll(request)
                 elif action in {"back", "forward", "reload"}:
                     _xdotool("key", "--clearmodifiers", {"back": "alt+Left", "forward": "alt+Right", "reload": "ctrl+r"}[action])
                 elif action == "goto":
