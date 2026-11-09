@@ -122,8 +122,10 @@ const store = {
   set(key, value) {
     try {
       localStorage.setItem("mf." + key, JSON.stringify(value));
+      return true;
     } catch (error) {
       toast(t("storage_full"), "bad");
+      return false;
     }
   },
   del(key) {

@@ -296,7 +296,7 @@ def test_previous_compatibility_fails_closed_when_snapshot_or_other_asset_change
     shutil.copytree(Path(__file__).resolve().parents[1] / "michiflin" / "compat" / "618c355", old)
     current = tmp_path / "webxdc"
     shutil.copytree(miniapp.APP_DIR, current)
-    with (current / "core.js").open("a", encoding="utf-8") as handle:
+    with (current / "index.html").open("a", encoding="utf-8") as handle:
         handle.write("\n// tampered synthetic copy\n")
     assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == ""
 

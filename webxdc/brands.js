@@ -81,22 +81,38 @@ const BRAND_RULES = [
   [/\bphi-?\d|microsoft/i, "microsoft"],
   [/kimi|moonshot/i, "moonshot"],
   [/openrouter/i, "openrouter"],
+  [/reflection|\bbeam\b/i, "label:BM"],
+  [/recursive|\bflint\b/i, "label:FL"],
+  [/poolside|laguna/i, "label:PS"],
+  [/cohere|north-mini/i, "label:CO"],
+  [/kilo-auto/i, "label:K"],
 ];
-const PROVIDER_BRANDS = { gemini: "gemini", mistral: "mistral", zai: "zai", cloudflare: "cloudflare", openrouter: "openrouter", ghmodels: "openai" };
+const PROVIDER_BRANDS = { gemini: "gemini", mistral: "mistral", zai: "zai", cloudflare: "cloudflare", openrouter: "openrouter", ghmodels: "openai",
+  groq: "label:GQ", ovh: "label:OV", sambanova: "label:SN", llm7: "label:L7", kilo: "label:K", bazaarlink: "label:BZ", orcarouter: "label:OR" };
 
 function brandOf(model, provider) {
   for (const text of [(model && model.title) || "", (model && model.id) || ""]) {
     for (const [pattern, name] of BRAND_RULES) if (pattern.test(text)) return name;
   }
-  return PROVIDER_BRANDS[provider && provider.key] || "";
+  const maker = PROVIDER_BRANDS[provider && provider.key];
+  if (!model && maker) return maker;
+  const label = String((model && (model.title || model.id)) || (provider && provider.name) || "IA")
+    .replace(/[^\p{L}\p{N}]+/gu, "").slice(0, 2).toUpperCase() || "IA";
+  return "label:" + label;
 }
 
 function brandMark(name, extra = "") {
   const brand = BRANDS[name];
   const holder = document.createElement("span");
   holder.className = `brand ${extra}`;
-  holder.innerHTML = brand
-    ? `<svg viewBox="0 0 24 24" aria-hidden="true" style="color:${brand.color === "currentColor" ? "inherit" : brand.color}">${brand.svg}</svg>`
-    : `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS.ai}</svg>`;
+  holder.setAttribute("aria-hidden", "true");
+  if (brand) holder.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" style="color:${brand.color === "currentColor" ? "inherit" : brand.color}">${brand.svg}</svg>`;
+  else if (name && name.startsWith("label:")) {
+    // Generic initials are not vendor logos. Never treat provider-supplied text as HTML.
+    holder.classList.add("brand-monogram");
+    holder.textContent = name.slice(6, 8);
+    const hue = [...name].reduce((value, ch) => (value * 31 + ch.codePointAt(0)) % 360, 0);
+    holder.style.backgroundImage = `linear-gradient(145deg, hsla(${hue}, 65%, 52%, .24), transparent 75%)`;
+  } else holder.innerHTML = `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS.ai}</svg>`;
   return holder;
 }

@@ -12,12 +12,12 @@ class TranslationUiTests(unittest.TestCase):
             for language in ("es", "en"):
                 with self.subTest(engine=engine, language=language), browser_fixture(language, {"width":375, "height":800}, engine=engine) as (page, errors):
                     page.evaluate("""() => {
-                      const original = bridge.call.bind(bridge);
+                      const original = bridge.request.bind(bridge);
                       window.translationCalls = 0;
-                      bridge.call = (op, args) => {
-                        if (op !== 'translate') return original(op, args);
+                      bridge.request = (op, args, ctx) => {
+                        if (op !== 'translate') return original(op, args, ctx);
                         window.translationCalls++;
-                        return new Promise(resolve => { window.finishTranslation = resolve; });
+                        return {id:'translation-fixture', promise:new Promise(resolve => { window.finishTranslation = resolve; })};
                       };
                       go('translate');
                     }""")
