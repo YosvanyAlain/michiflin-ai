@@ -46,13 +46,15 @@ The bot sends a WebXDC app bound to the authorized chat. The interface exchanges
 | **Web** | Results from the selected engine, reader view, history, PDF, screenshot and download actions |
 | **Apps** | YouTube, translator, rates, weather, news, utilities, status and administration |
 | **Downloads** | Queue, saved links and the integrated file kit: local copies, temporary server workspace, bulk operations, archives and parts joining |
-| **Settings** | App language and theme, Nauta strict and kill switch, bot settings and data cleanup |
+| **Settings** | Language, appearance, visual style and accent; Nauta strict, kill switch and bot settings |
 
-The app follows the device language (Spanish or English) and theme, and adapts from phones to desktop.
+The app follows the device language (Spanish or English) and light/dark preference unless changed. Settings offers Michiflin, Material You-inspired, Pixel Art and Ocean styles, plus independent accent colors. Material You is an inspiration, not automatic system-color extraction. Decorations respect reduced motion and weather scenes use the existing saved Open-Meteo observation without new weather requests.
+
+Tab and shortcut badges count replies or errors received away from their relevant view, not requests merely in progress; queue progress remains separate. These are local app indicators, not operating-system notifications. Some results are cached briefly and an expired result is never silently requested again.
 
 ## Chat usage
 
-By default the bot works **only through the mini app**. It sends the app automatically when a contact first connects, and any text written in the chat is answered with a pointer to the latest app. `/app` sends a fresh copy at any time. Files sent to the chat (voice notes, photos, documents) are still processed.
+By default the bot works **only through the mini app**. It sends one app when a contact first connects; text in the chat can point back to that app. When an update is needed, request and confirm one in **Settings → Synchronization**, if available. Each app message has separate local storage: keep the existing instance until its important data have been checked or migrated. Files sent to the chat (voice notes, photos, documents) are still processed.
 
 Setting `chat` to `full` (or `CHAT_MODE=full` as the default) restores classic chat mode, where every feature is also a bilingual command. The command list is in the [guide](docs/GUIDE.md#classic-chat-mode).
 

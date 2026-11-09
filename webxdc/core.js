@@ -97,6 +97,7 @@ const ICONS = {
   clip: '<path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
   more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
   cat: '<path d="M5 9.5 6.5 3l4 3.6a6 6 0 0 1 3 0L17.5 3 19 9.5c1 4.5-1.6 10.5-7 10.5S4 14 5 9.5z"/><circle cx="9.5" cy="12" r="1.6"/><circle cx="14.5" cy="12" r="1.6"/>',
+  catpixel: '<path fill="#ebfbf4" stroke="none" shape-rendering="crispEdges" d="M4 2h3v2h2v2h6V4h2V2h3v6h1v8h-2v2h-2v2H7v-2H5v-2H3V8h1z"/><path fill="#0a6257" stroke="none" shape-rendering="crispEdges" d="M6 6h2v2h8V6h2v4h1v5h-2v2H7v-2H5v-5h1z"/><path fill="#f3ba42" stroke="none" shape-rendering="crispEdges" d="M7 11h2v2H7zm8 0h2v2h-2z"/>',
   notes: '<rect x="4" y="3" width="16" height="19" rx="3"/><path d="M8 2v3M16 2v3M8 10h8M8 14h8M8 18h5"/>',
   links: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4l-1.5 1.5"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2.6 2.6a4.5 4.5 0 0 0 6.4 6.4l1.5-1.5"/>',
   nauta: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6M4 17l5-4M20 17l-5-4"/>',
@@ -133,7 +134,7 @@ const store = {
   },
 };
 
-const prefs = Object.assign({ lang: "auto", theme: "system", engine: "web" }, store.get("prefs", {}));
+const prefs = Object.assign({ lang: "auto", theme: "system", style: "michiflin", accent: "style", engine: "web" }, store.get("prefs", {}));
 
 function savePrefs() {
   store.set("prefs", prefs);
@@ -158,7 +159,9 @@ function t(key, vars) {
 }
 
 function applyLook() {
-  document.documentElement.dataset.theme = prefs.theme;
+  document.documentElement.dataset.theme = ["system", "light", "dark"].includes(prefs.theme) ? prefs.theme : "system";
+  document.documentElement.dataset.style = ["michiflin", "material", "pixel", "ocean"].includes(prefs.style) ? prefs.style : "michiflin";
+  document.documentElement.dataset.accent = ["style", "teal", "violet", "blue", "rose"].includes(prefs.accent) ? prefs.accent : "style";
   document.documentElement.lang = lang();
 }
 

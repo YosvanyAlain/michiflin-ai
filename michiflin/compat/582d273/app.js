@@ -1,0 +1,3425 @@
+"use strict";
+
+const TABS = [
+  { id: "home", icon: "home" },
+  { id: "ai", icon: "ai" },
+  { id: "web", icon: "web" },
+  { id: "apps", icon: "apps" },
+  { id: "downloads", icon: "downloads" },
+  { id: "settings", icon: "settings" },
+];
+const ENGINES = ["web", "news", "wiki"];
+const searchEngine = (value) => ENGINES.includes(value) ? value : "web";
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const TOUCH = matchMedia("(pointer: coarse)").matches;
+
+const cache = Object.assign({ version: "", admin: false, models: null, health: null, settings: null, jobs: [], maintenance_notice: null, lang: "", at: 0 }, store.get("cache", {}));
+const memo = new Map();
+const VIEWS = {};
+let current = { view: TABS.some((tab) => tab.id === store.get("tab")) ? store.get("tab") : "home", params: {} };
+let trail = [];
+
+function saveCache() {
+  store.set("cache", cache);
+}
+
+// Daily AI allowance of people who are not administrators (null for administrators).
+function onQuota(quota) {
+  cache.quota = quota || null;
+  saveCache();
+  bus.emit("quota");
+}
+
+function quotaLeft(kind) {
+  const item = cache.quota && cache.quota[kind];
+  return item && item.limit ? Math.max(0, item.limit - item.used) : null;
+}
+
+function quotaChip(kind) {
+  if (!cache.quota) return null;
+  if (cache.quota.low && kind !== "image") return h("span", { class: "chip warn" }, icon("bolt"), t("quota_low_chip"));
+  const left = quotaLeft(kind);
+  if (left === null) return null;
+  const item = cache.quota[kind];
+  if (!left) return h("span", { class: "chip warn" }, icon("clock"), t("quota_none_" + kind, { time: fmtTime(cache.quota.reset) }));
+  return h("span", { class: "chip" }, icon("user"), t("quota_left_" + kind, { n: left, m: item.limit }));
+}
+
+function quotaNote() {
+  const box = h("div", {});
+  const draw = () => {
+    if (!cache.quota) return fill(box);
+    const left = (kind) => { const value = quotaLeft(kind); return value === null ? "∞" : String(value); };
+    const unlimited = ["ask", "image", "code"].every((kind) => quotaLeft(kind) === null);
+    fill(box, h("p", { class: `note ${cache.quota.low ? "warn" : ""}` }, icon(cache.quota.low ? "bolt" : "user"), h("span", { class: "grow" },
+      unlimited ? t("quota_capacity_note") : t("quota_note", { ask: left("ask"), image: left("image"), code: left("code"), time: fmtTime(cache.quota.reset) }),
+      cache.quota.low ? " " + t("quota_low_note") : "")));
+  };
+  bus.on("quota", draw);
+  draw();
+  return box;
+}
+
+const bus = {
+  local: [],
+  global: [],
+  on(kind, fn) {
+    this.local.push([kind, fn]);
+  },
+  always(kind, fn) {
+    this.global.push([kind, fn]);
+  },
+  emit(kind, data) {
+    for (const [name, fn] of [...this.global, ...this.local]) if (name === kind) fn(data);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Shell and navigation.
+// ---------------------------------------------------------------------------
+function chrome() {
+  const button = (tab) => h("button", { class: "tab", "data-tab": tab.id, onclick: () => goTab(tab.id) },
+    h("span", { class: "tab-icon" }, icon(tab.icon), h("i", { class: "tab-badge", hidden: true })), h("span", {}, t("tab_" + tab.id)));
+  fill($("#rail"), h("div", { class: "rail-brand" }, icon("cat"), h("span", {}, "Michiflin ", h("b", {}, "AI"))), ...TABS.map(button));
+  fill($("#tabs"), ...TABS.filter((tab) => tab.id !== "settings").map(button));
+  fill($("#back"), icon("back"));
+  $("#back").setAttribute("aria-label", t("back"));
+  $("#back").onclick = back;
+  fill($("#gear"), icon("settings"));
+  $("#gear").setAttribute("aria-label", t("tab_settings"));
+  $("#gear").onclick = () => goTab("settings");
+  $("#activity").onclick = pendingSheet;
+  activity();
+  jobBadge();
+}
+
+// Navigation counts distinguish locally pending work from unread results. Home
+// summarizes the other tabs; opening Home does not mark their results as read.
+const badgeCounts = {};
+function pendingTarget(meta) {
+  const ctx = meta.ctx || {};
+  if (meta.op === "ask" && ctx.space) return { category: "ai", view: "chat", target: { view: "chat", params: { space: ctx.space } } };
+  if (meta.op === "image") return { category: "ai", view: ctx.chatImage ? "chat" : "images",
+    target: ctx.chatImage ? { view: "chat", params: { space: ctx.space } } : { view: "images", params: {} } };
+  if (meta.op === "code") return { category: "ai", view: "coder", target: { view: "coder", params: {} } };
+  if (["view-result", "translate-result", "weather-result"].includes(ctx.kind) && ctx.target) return { category: ctx.category, view: ctx.target.view, target: ctx.target };
+  return null; // health/automatic updates are not user-facing tasks
+}
+function notificationCounts() {
+  const counts = Object.fromEntries(TABS.map(({ id }) => [id, { pending: 0, unread: 0 }]));
+  for (const item of store.get("notices", [])) {
+    if (item.unread && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
+  }
+  for (const meta of Object.values(bridge.pending())) {
+    const target = pendingTarget(meta);
+    if (target && counts[target.category]) counts[target.category].pending += 1;
+  }
+  counts.downloads.pending += cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
+  for (const id of ["ai", "web", "apps", "downloads", "settings"]) {
+    counts.home.pending += counts[id].pending;
+    counts.home.unread += counts[id].unread;
+  }
+  return counts;
+}
+function countLabel(base, count) {
+  return `${base} · ${t("notification_counts", { pending: count.pending, unread: count.unread })}`;
+}
+function jobBadge() {
+  const counts = notificationCounts();
+  document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
+    const id = tab.dataset.tab, count = counts[id] || { pending: 0, unread: 0 };
+    const total = count.pending + count.unread, node = $(".tab-badge", tab);
+    if (!node) return;
+    node.hidden = total === 0;
+    node.textContent = total > 99 ? "99+" : String(total);
+    const previous = badgeCounts[id];
+    if (previous !== undefined && total > previous) {
+      node.classList.remove("pop"); void node.offsetWidth; node.classList.add("pop");
+    }
+    tab.setAttribute("aria-label", total ? countLabel(t("tab_" + id), count) : t("tab_" + id));
+  });
+  Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.pending + value.unread])));
+  bus.emit("badges");
+}
+
+function goTab(tab) {
+  trail = [];
+  current = { view: tab, params: {} };
+  store.set("tab", tab);
+  render();
+}
+
+function go(view, params = {}) {
+  trail.push({ ...current, scroll: $("#view").scrollTop });
+  current = { view, params };
+  render();
+}
+
+function swap(view, params = {}) {
+  current = { view, params };
+  render();
+}
+
+function back() {
+  const previous = trail.pop();
+  current = previous || { view: VIEWS[current.view].tab || "home", params: {} };
+  render(previous ? previous.scroll : 0);
+}
+
+function render(scroll = 0) {
+  FileKitUI.stop();
+  if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
+  const definition = VIEWS[current.view];
+  bus.local = [];
+  $("#title").textContent = definition.title(current.params);
+  $("#back").hidden = trail.length === 0;
+  const tab = definition.tab || current.view;
+  document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("on", node.dataset.tab === tab));
+  $("#gear").classList.toggle("on", tab === "settings");
+  const main = $("#view");
+  main.className = "view enter";
+  main.replaceChildren();
+  definition.render(main, current.params);
+  markVisibleNoticesRead();
+  main.scrollTop = scroll;
+  requestAnimationFrame(() => requestAnimationFrame(() => main.classList.remove("enter")));
+}
+
+function activity() {
+  const pending = Object.keys(bridge.pending()).length;
+  const node = $("#activity");
+  node.hidden = pending === 0;
+  fill(node, h("i", { class: "spinner" }), h("span", {}, String(pending)));
+  node.setAttribute("aria-label", t("pending_title"));
+}
+
+// Translated text with a live elapsed counter in place of {time}.
+function pendingState(meta) {
+  const [key, at, vars] = meta.ack ? ["pending_working", meta.ack, {}]
+    : meta.tries ? ["pending_retried", meta.sent, { n: meta.tries }]
+    : ["pending_sent", meta.ts, {}];
+  const [before, after = ""] = t(key, { ...vars, time: "\u0001" }).split("\u0001");
+  return [before, since(at / 1000), after];
+}
+
+function opLabel(op) {
+  const key = "op_" + op;
+  const text = t(key);
+  return text === key ? t("op_action") : text;
+}
+
+function pendingSheet() {
+  const pending = bridge.pending();
+  const rows = Object.entries(pending).sort((a, b) => b[1].ts - a[1].ts).map(([id, meta]) =>
+    h("div", { class: "list-row" },
+      h("i", { class: "spinner" }),
+      h("div", { class: "grow" }, h("b", {}, opLabel(meta.op)), h("small", { class: "muted" }, ...pendingState(meta))),
+      meta.p ? h("button", { class: "icon-btn tiny", title: t("retry"), "aria-label": t("retry"), onclick: () => { bridge.resend(id); toast(t("retry_sent"), "ok"); closeSheet(); } }, icon("refresh")) : null,
+      h("button", { class: "icon-btn tiny", title: t("cancel"), "aria-label": t("cancel"), onclick: () => { bridge.forget(id); closeSheet(); } }, icon("close"))));
+  openSheet(t("pending_title"), [
+    h("p", { class: "muted small" }, t("pending_hint")),
+    rows.length ? rows : h("p", { class: "empty" }, t("pending_none")),
+    syncTools(closeSheet),
+  ]);
+}
+
+// Repair tools: shown in the pending sheet and in Settings, so a stuck sync never needs a deleted chat.
+function syncTools(after = () => {}) {
+  return h("div", { class: "sync-tools" },
+    h("p", { class: "muted small" }, t("sync_hint")),
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn small", onclick: () => {
+        bridge.repair();
+        hello(true);
+        toast(t("sync_repaired"), "ok");
+        after();
+      } }, icon("refresh"), " ", t("sync_repair")),
+      h("button", { class: "btn ghost small", onclick: () => confirmBox(t("reinstall_title"), t("reinstall_body"), t("reinstall_go")).then((yes) => {
+        if (!yes) return;
+        bridge.call("reinstall").then(() => toast(t("reinstall_sent"), "ok")).catch((error) => toast(error.message, "bad"));
+        after();
+      }) }, icon("downloads"), " ", t("reinstall"))));
+}
+
+// ---------------------------------------------------------------------------
+// Shared building blocks.
+// ---------------------------------------------------------------------------
+function section(title, ...children) {
+  return h("section", { class: "section" }, title ? h("h3", { class: "section-title" }, title) : null, ...children);
+}
+
+function card(...children) {
+  return h("div", { class: "card" }, ...children);
+}
+
+function empty(text, name = "info") {
+  return h("div", { class: "empty" }, icon(name, "big"), h("p", {}, text));
+}
+
+function loading(text) {
+  return h("div", { class: "loading" }, h("i", { class: "spinner" }), h("span", {}, text || t("waiting")), since(now()),
+    h("small", { class: "muted" }, t("waiting_hint")));
+}
+
+function failure(message, retry) {
+  return h("div", { class: "failure" }, icon("alert"), h("p", {}, message), retry ? h("button", { class: "btn small", onclick: retry }, icon("refresh"), t("retry")) : null);
+}
+
+function iconButton(name, label, onclick, extra = "") {
+  return h("button", { class: `icon-btn ${extra}`, "aria-label": label, title: label, onclick }, icon(name));
+}
+
+function headRow(title, ...tools) {
+  return h("div", { class: "head-row" }, h("h3", { class: "section-title" }, title), h("div", { class: "row" }, ...tools));
+}
+
+function bar(value, total, extra = "") {
+  const ratio = total > 0 ? Math.min(1, value / total) : 0;
+  return h("div", { class: `bar ${extra}` }, h("i", { style: `width:${(ratio * 100).toFixed(1)}%` }));
+}
+
+function field(props) {
+  return h("input", Object.assign({ class: "input", autocomplete: "off", autocapitalize: "off", spellcheck: false }, props));
+}
+
+function select(value, options, onchange) {
+  return h("select", { class: "input", onchange: (event) => onchange(event.target.value) },
+    options.map(([key, label]) => h("option", { value: key, selected: key === value }, label)));
+}
+
+function segmented(value, options, onchange) {
+  const root = h("div", { class: "segmented", role: "tablist" });
+  options.forEach(([key, label, iconName]) => add(root, h("button", {
+    class: key === value ? "on" : "", role: "tab", "aria-selected": String(key === value),
+    onclick: () => {
+      root.querySelectorAll("button").forEach((node) => {
+        const selected = node.dataset.key === key;
+        node.classList.toggle("on", selected);
+        node.setAttribute("aria-selected", String(selected));
+      });
+      onchange(key);
+    },
+    "data-key": key,
+  }, iconName ? icon(iconName) : null, label)));
+  return root;
+}
+
+function autosize(area) {
+  const fit = () => {
+    area.style.height = "auto";
+    area.style.height = `${Math.min(area.scrollHeight, 180)}px`;
+  };
+  area.addEventListener("input", fit);
+  requestAnimationFrame(fit);
+  return area;
+}
+
+function isUrl(text) {
+  return /^(https?:\/\/)?([\w-]+\.)+[a-z]{2,}(\/\S*)?$/i.test(text.trim()) && !/\s/.test(text.trim());
+}
+
+function normalUrl(text) {
+  const value = text.trim();
+  return /^https?:\/\//i.test(value) ? value : `https://${value}`;
+}
+
+function looksLikeWebAddress(text) {
+  const value = text.trim();
+  if (!value || /\s/.test(value)) return false;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+    || /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:[/?#].*)?$/i.test(value);
+}
+
+function openLiveAddress(value, move = go) {
+  const raw = value.trim();
+  const url = normalUrl(raw);
+  try {
+    if (url.length > 4096 || (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) && !/^https:\/\//i.test(raw))) throw new Error("bad_url");
+    liveSite(url);
+  } catch (error) {
+    toast(t("live_bad_url"), "bad");
+    return false;
+  }
+  move("live_web", { name: t("live_title"), url });
+  return true;
+}
+
+function liveAddressAllowed(value) {
+  try { if (typeof value !== "string" || value.length > 4096) return false; liveSite(value); return true; }
+  catch (error) { return false; }
+}
+
+function remember(key, value, limit = 8) {
+  const list = store.get(key, []).filter((item) => JSON.stringify(item) !== JSON.stringify(value));
+  list.unshift(value);
+  store.set(key, list.slice(0, limit));
+}
+
+// Request with in-memory reuse, so going back does not cost another e-mail.
+async function fetchView(target, op, args, draw, options = {}) {
+  const key = op + JSON.stringify(args);
+  const reportable = ["search", "music_search", "tool"].includes(op);
+  const saved = reportable && savedResult(key);
+  const inMemory = reportable ? resultMemoHas(key) : memo.has(key);
+  const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
+  if (!options.fresh && saved && saved.error) {
+    fill(target, failure(saved.error, retry));
+    return;
+  }
+  if (!options.fresh && (inMemory || saved)) {
+    draw(inMemory ? memo.get(key) : saved.data);
+    if (reportable) target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+      h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
+    return;
+  }
+  fill(target, loading(options.label));
+  if (reportable && resultPending(key)) {
+    bus.on("result:" + key, (result) => {
+      if (!target.isConnected) return;
+      if (result.error) fill(target, failure(result.error, retry)); else draw(result.data);
+    });
+    return;
+  }
+  try {
+    const label = op === "tool" ? (options.noticeLabel || "notification_tool") : op === "music_search" ? "notification_music" :
+      current.view === "news" ? "notification_news" : "notification_search";
+    const data = reportable ? await bridge.request(op, args, resultContext(key, label)).promise : await bridge.call(op, args);
+    if (!reportable) memo.set(key, data);
+    if (target.isConnected) draw(data);
+  } catch (error) {
+    if (target.isConnected && !error.cancelled) fill(target, failure(error.message, retry));
+  }
+}
+
+function samePlace(target) {
+  if (!target || target.view !== current.view) return false;
+  return JSON.stringify(target.params || {}) === JSON.stringify(current.params || {});
+}
+function visiblePlace(target) {
+  return document.visibilityState !== "hidden" && samePlace(target);
+}
+function markVisibleNoticesRead() {
+  if (document.visibilityState === "hidden") return;
+  const list = store.get("notices", []);
+  let changed = false;
+  for (const item of list) {
+    if (item.unread && ((item.target && samePlace(item.target)) || (!item.target && current.view === "home"))) {
+      item.unread = false; changed = true;
+    }
+  }
+  if (changed) { store.set("notices", list); bus.emit("notices"); }
+}
+function notice(text, kind = "info", options = {}) {
+  const code = /^(?:collaboration|local-ai)-[0-9]+$/.test(options.code || "") ? options.code : "";
+  const seen = store.get("noticeCodes", []);
+  if (code && seen.includes(code)) return;
+  const list = store.get("notices", []);
+  const target = options.target || null;
+  const visible = target ? visiblePlace(target) : document.visibilityState !== "hidden" && current.view === "home";
+  list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text), kind,
+    category: options.category || "home", target, cacheKey: options.cacheKey || "", unread: !visible });
+  if (store.set("notices", list.slice(0, 30)) && code) store.set("noticeCodes", [...seen, code].slice(-20));
+  bus.emit("notices");
+}
+
+// An accented shortcut opens its latest unread result (or its pending view)
+// rather than an empty tool. An expired cache never triggers a repeat.
+function openNotice(item) {
+  if (item.cacheKey && !resultMemoHas(item.cacheKey) && !savedResult(item.cacheKey)) {
+    const list = store.get("notices", []);
+    const found = list.find((entry) => entry.id === item.id);
+    if (found) { found.unread = false; store.set("notices", list); bus.emit("notices"); }
+    toast(t("notification_expired"), "bad"); return;
+  }
+  go(item.target.view, item.target.params || {});
+}
+function shortcutMatch(view, fallback, target) {
+  if (!target || target.view !== view) return false;
+  if (view !== "chat") return true;
+  const space = (target.params || {}).space, wanted = fallback.space;
+  return ["agent", "smart_agent"].includes(wanted) ? ["agent", "smart_agent"].includes(space) : space === wanted;
+}
+function shortcutCount(view, fallback = {}) {
+  const matches = (target) => shortcutMatch(view, fallback, target);
+  return {
+    unread: store.get("notices", []).filter((item) => item.unread && matches(item.target)).length,
+    pending: Object.values(bridge.pending()).map(pendingTarget).filter((item) => item && matches(item.target)).length,
+  };
+}
+function openNotifiedView(view, fallback = {}) {
+  const matches = (target) => shortcutMatch(view, fallback, target);
+  const item = store.get("notices", []).find((entry) => entry.unread && matches(entry.target));
+  if (item) { openNotice(item); return; }
+  const pending = Object.values(bridge.pending()).map(pendingTarget).find((entry) => entry && matches(entry.target));
+  if (pending) go(pending.target.view, pending.target.params || {});
+  else go(view, fallback);
+}
+
+// A bounded, local-only result cache lets a deliberately requested web or
+// YouTube search finish after navigation/reopen without silently repeating it.
+const RESULT_CACHE_KEY = "resultCache";
+const RESULT_CACHE_SECONDS = 12 * 3600;
+const resultMemoTimes = new Map();
+function resultMemoHas(key) {
+  const at = resultMemoTimes.get(key);
+  if (at && now() - at >= RESULT_CACHE_SECONDS) {
+    resultMemoTimes.delete(key); memo.delete(key); return false;
+  }
+  return memo.has(key);
+}
+function savedResults() {
+  const value = store.get(RESULT_CACHE_KEY, {});
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const keep = Object.fromEntries(Object.entries(value).filter(([, entry]) => entry && now() - Number(entry.at || 0) < RESULT_CACHE_SECONDS));
+  if (Object.keys(keep).length !== Object.keys(value).length) store.set(RESULT_CACHE_KEY, keep);
+  return keep;
+}
+function pruneSavedResults() {
+  const records = savedResults(), last = store.get("tool.last", null);
+  if (last && last.key && !records[last.key] && !resultPending(last.key)) store.del("tool.last");
+}
+function savedResult(key) {
+  const record = savedResults()[key];
+  return record && now() - Number(record.at || 0) < RESULT_CACHE_SECONDS ? record : null;
+}
+function saveResult(key, data, error = "") {
+  try {
+    const safeError = error ? plain(String(error)).slice(0, 5000) : "";
+    const body = JSON.stringify(error ? safeError : data);
+    if (!body || new Blob([body]).size > 180000) return false;
+    const records = savedResults();
+    // Put the new entry first so equal timestamps cannot evict the just-arrived result.
+    const ordered = [[key, { at: now(), data, error: safeError }], ...Object.entries(records).filter(([old]) => old !== key)];
+    const keep = Object.fromEntries(ordered.filter(([, value]) => value && now() - Number(value.at || 0) < RESULT_CACHE_SECONDS)
+      .sort((a, b) => Number(b[1].at) - Number(a[1].at)).slice(0, 6));
+    return store.set(RESULT_CACHE_KEY, keep);
+  } catch (error) { return false; }
+}
+function resultPending(key) {
+  return Object.values(bridge.pending()).some((meta) => meta.ctx && meta.ctx.kind === "view-result" && meta.ctx.key === key);
+}
+function resultContext(key, label) {
+  const definition = VIEWS[current.view];
+  return { kind: "view-result", key, target: { view: current.view, params: { ...current.params } },
+    category: definition.tab || current.view, label };
+}
+function receiveViewResult(data, error, ctx) {
+  if (!ctx || ctx.kind !== "view-result" || !ctx.key || !ctx.target) return;
+  if (error) { memo.delete(ctx.key); resultMemoTimes.delete(ctx.key); saveResult(ctx.key, null, error); }
+  else {
+    resultMemoTimes.delete(ctx.key);
+    if (resultMemoTimes.size >= 6) { const oldest = resultMemoTimes.keys().next().value; resultMemoTimes.delete(oldest); memo.delete(oldest); }
+    memo.set(ctx.key, data); resultMemoTimes.set(ctx.key, now()); saveResult(ctx.key, data);
+  }
+  if (!visiblePlace(ctx.target)) {
+    if (error) {
+      const view = ctx.target.view;
+      const utility = view === "tools" && UTILITIES.find((item) => item[0] === ctx.target.params?.tool);
+      const name = utility ? `${t("tile_tools")} · ${t(utility[2])}` :
+        t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools" })[view] || "tab_web");
+      notice(`${name} · ${t("notification_query_failed")}`, "bad", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
+    } else notice(t(ctx.label), "ok", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
+  }
+  bus.emit("result:" + ctx.key, { data, error });
+}
+for (const op of ["search", "youtube_search", "music_search", "tool"]) bridge.handlers[op] = receiveViewResult;
+bridge.handlers.translate = (data, error, ctx, rid) => {
+  if (!ctx || ctx.kind !== "translate-result" || store.get("tr.latest", "") !== rid) return;
+  store.del("tr.latest");
+  const record = { data, error: error || "", at: now() };
+  store.set("tr.result", record);
+  bus.emit("translate_result", record);
+  if (!visiblePlace(ctx.target)) notice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+};
+bridge.handlers.weather = (data, error, ctx, rid) => {
+  if (!ctx || ctx.kind !== "weather-result" || store.get("weather.latest", "") !== rid) return;
+  store.del("weather.latest");
+  if (error) store.set("weather.error", error);
+  else { store.del("weather.error"); saveManualWeather(data); }
+  bus.emit("weather_result", { data, error });
+  if (!visiblePlace(ctx.target)) notice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+};
+bus.always("notices", jobBadge);
+bridge.watchers.add(jobBadge);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markVisibleNoticesRead(); });
+
+// ---------------------------------------------------------------------------
+// Bot replies: tap commands become buttons, links open in the reader.
+// ---------------------------------------------------------------------------
+function contextHelp(text) {
+  return h("details", { class: "context-help" },
+    h("summary", {}, icon("info"), h("span", {}, t("context_help")), icon("down", "caret")),
+    h("p", { class: "muted small" }, text));
+}
+
+function actionLabel(action) {
+  const quality = action.a && action.a[1] && /^\d+$/.test(action.a[1]) ? action.a[1] : "";
+  const unit = action.k === "video" ? "p" : action.k === "audio" ? " kbps" : "";
+  const base = has("act_" + action.k) ? t("act_" + action.k) : action.t;
+  if (action.k === "resend" && action.a && action.a[1]) return `${base} ${action.a[1]}`;
+  if (action.k === "more" && action.a && action.a[1]) return t("act_page", { n: action.a[1] });
+  return quality ? `${base} ${quality}${unit}` : base;
+}
+
+async function runCommand(text, button) {
+  if (button) button.classList.add("busy");
+  try {
+    const reply = await bridge.call("command", { text });
+    if (reply.jobs) setJobs(reply.jobs);
+    if (reply.page) {
+      memo.set("read" + JSON.stringify({ url: reply.page.url, page: reply.page.page }), reply.page);
+      go("reader", { url: reply.page.url, page: reply.page.page });
+    } else {
+      replySheet(reply);
+    }
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  } finally {
+    if (button) button.classList.remove("busy");
+  }
+}
+
+function hooksFor(actions = []) {
+  const known = new Map(actions.map((action) => [action.t, action]));
+  return {
+    link: (url) => go("reader", { url }),
+    command: (token) => {
+      const action = known.get(token);
+      if (!action) return h("code", {}, token);
+      const button = h("button", { class: "chip action", onclick: () => runCommand(token, button) }, actionLabel(action));
+      return button;
+    },
+  };
+}
+
+function replyBody(reply) {
+  const parts = [];
+  if (reply.text) parts.push(rich(reply.text, hooksFor(reply.actions)));
+  if (reply.files && reply.files.length) parts.push(h("p", { class: "note" }, icon("chat"), t("files_in_chat", { n: reply.files.length })));
+  return parts;
+}
+
+function replySheet(reply) {
+  openSheet(t("reply"), replyBody(reply).length ? replyBody(reply) : h("p", { class: "muted" }, t("done")));
+}
+
+// ---------------------------------------------------------------------------
+// Data from the bot.
+// ---------------------------------------------------------------------------
+function setJobs(jobs) {
+  cache.jobs = jobs;
+  saveCache();
+  jobBadge();
+  bus.emit("jobs");
+}
+
+function upsertJob(job) {
+  const jobs = cache.jobs.filter((item) => item.id !== job.id);
+  jobs.push(job);
+  jobs.sort((a, b) => Number(a.id) - Number(b.id));
+  setJobs(jobs.slice(-25));
+}
+
+let syncing = null;
+
+function hello(force = false, quiet = false) {
+  if (!force && cache.at && now() - cache.at < 900 && cache.lang === lang()) return Promise.resolve();
+  syncing = syncing || sync(force, quiet).finally(() => { syncing = null; });
+  return syncing;
+}
+
+async function sync(force, quiet = false) {
+  try {
+    const data = await bridge.call("hello");
+    if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
+    Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
+      jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
+    saveCache();
+    rateDerivedApproved = data.rates_derived_allowed === true;
+    if (data.rates_summary && data.rates_summary.rates) {
+      const currentRates = store.get("rates", null);
+      if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) store.set("rates", data.rates_summary);
+    }
+    if (data.weather_home) saveWeatherHome(data.weather_home);
+    bus.emit("rates");
+    jobBadge();
+    ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
+  } catch (error) {
+    if (force && !quiet && !error.cancelled) toast(error.message, "bad");
+  }
+}
+
+bridge.pushes.notice = (data) => { if (data) notice(lang() === "en" ? data.en : data.es, data.kind, { code: data.code }); };
+bridge.pushes.maintenance = (data) => {
+  if (data && cache.maintenance_notice && Number(data.revision || 0) < Number(cache.maintenance_notice.revision || 0)) return;
+  cache.maintenance_notice = data || null;
+  saveCache();
+  bus.emit("maintenance");
+  if (data && data.active) notice(lang() === "en" ? data.en : data.es, "warn");
+};
+
+bridge.pushes.job = (job) => {
+  const previous = cache.jobs.find((item) => item.id === job.id);
+  upsertJob(job);
+  if (!previous || previous.status !== job.status) {
+    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok", { category: "downloads", target: { view: "downloads", params: {} } });
+    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad", { category: "downloads", target: { view: "downloads", params: {} } });
+  }
+};
+
+bridge.watchers.add(activity);
+
+// ---------------------------------------------------------------------------
+// Home.
+// ---------------------------------------------------------------------------
+const TILES = [
+  ["ai", "tile_agent", "chat", { space: "agent" }],
+  ["image", "tile_images", "images"],
+  ["youtube", "tile_youtube", "youtube"],
+  ["audio", "tile_music", "music"],
+  ["translate", "tile_translate", "translate"],
+  ["rates", "tile_rates", "rates"],
+  ["weather", "tile_weather", "weather"],
+  ["news", "tile_news", "news"],
+  ["tools", "tile_tools", "tools"],
+  ["health", "tile_health", "health"],
+  ["notes", "tile_notes", "notes"],
+];
+
+function tiles(extra = [], omit = []) {
+  const list = [...TILES, ...extra].filter(([name]) => !omit.includes(name));
+  const root = h("div", { class: "tiles" });
+  const buttons = list.map(([name, label, view, params]) => {
+    const count = h("i", { class: "tile-badge", hidden: true });
+    const button = h("button", { class: `tile tile-${name}`, onclick: () => openNotifiedView(view, params || {}) },
+      h("span", { class: "tile-icon" }, icon(name)), h("span", { class: "tile-label" }, t(label)), count);
+    return { button, count, view, label, params: params || {} };
+  });
+  add(root, buttons.map((entry) => entry.button));
+  const draw = () => {
+    for (const entry of buttons) {
+      const count = shortcutCount(entry.view, entry.params);
+      const total = count.pending + count.unread;
+      entry.count.hidden = !total; entry.count.textContent = total > 99 ? "99+" : String(total);
+      entry.button.setAttribute("aria-label", total ? countLabel(t(entry.label), count) : t(entry.label));
+    }
+  };
+  bus.on("badges", draw); draw();
+  return root;
+}
+
+function greeting() {
+  const hour = new Date().getHours();
+  return t(hour < 5 ? "greet_late" : hour < 12 ? "greet_morning" : hour < 19 ? "greet_afternoon" : "greet_evening");
+}
+
+function greetingLine() {
+  const hour = new Date().getHours();
+  return t(hour < 5 ? "home_sub_late" : hour < 12 ? "home_sub_morning" : hour < 19 ? "home_sub" : "home_sub_evening");
+}
+
+function statusChips() {
+  if (!cache.health) return [h("span", { class: "chip" }, h("i", { class: "spinner" }), t("connecting"))];
+  const active = cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
+  return [
+    h("span", { class: "chip" }, icon("clock"), t("restart_in"), " ", until(cache.health.restart, t("restarting"))),
+    h("button", { class: "chip", onclick: () => goTab("downloads") }, icon("downloads"), t("active_jobs", { n: active })),
+    h("span", { class: "chip subtle" }, icon("refresh"), t("updated"), " ", since(cache.at)),
+  ];
+}
+
+function searchBox(initial = {}, replace = false) {
+  let engine = searchEngine(initial.engine || prefs.engine);
+  let mode = ["standard", "advanced"].includes(initial.mode || prefs.searchMode) ? (initial.mode || prefs.searchMode) : "standard";
+  const input = field({ type: "search", placeholder: t("search_placeholder"), value: initial.q || "", enterkeyhint: "search" });
+  const submit = () => {
+    const q = input.value.trim();
+    if (!q) return;
+    const move = replace ? swap : go;
+    if (looksLikeWebAddress(q)) { openLiveAddress(q, move); return; }
+    remember("recent", { q, engine, mode });
+    move("results", { q, engine, mode });
+  };
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+  const searchModes = segmented(mode, [["standard", t("search_standard_short"), "search"],
+    ["advanced", t("search_advanced_short"), "bolt"]], (value) => { mode = value; prefs.searchMode = value; savePrefs(); });
+  searchModes.setAttribute("aria-label", t("search_choose_mode"));
+  const sources = segmented(engine, [["web", t("engine_web"), "web"], ["news", t("engine_news"), "news"],
+    ["wiki", t("engine_wiki"), "book"]], (value) => { engine = value; });
+  sources.setAttribute("aria-label", t("search_engine"));
+  return h("div", { class: "searchbox" },
+    h("div", { class: "search-field" }, icon("search"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+    h("div", { class: "search-selectors" },
+      h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_choose_mode")), searchModes),
+      h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_engine")), sources)),
+    contextHelp(t("search_mode_info")));
+}
+
+function noticeList() {
+  const box = h("div", { class: "card list" });
+  const draw = () => {
+    const list = store.get("notices", []);
+    fill(box, ...(list.length ? list.map((item) => {
+      const open = item.target && VIEWS[item.target.view] ? () => openNotice(item) : null;
+      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread ? "unread" : ""}`,
+        onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
+        icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
+        h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)), open ? icon("next") : null);
+    }) : [h("p", { class: "empty small" }, t("notices_none"))]));
+  };
+  bus.on("notices", draw);
+  draw();
+  return box;
+}
+
+// An old local cache cannot grant permission in a new miniapp session.
+let rateDerivedApproved = false;
+let sharedRateRefresh = null;
+
+function refreshSharedRates() {
+  if (sharedRateRefresh) return sharedRateRefresh;
+  sharedRateRefresh = bridge.call("rates").then((data) => {
+    rateDerivedApproved = data.derived_allowed === true;
+    store.set("rates", data);
+    bus.emit("rates");
+    return data;
+  }).catch((error) => {
+    const saved = store.get("rates", null);
+    if (saved && saved.rates) {
+      store.set("rates", { ...saved, stale: true });
+      bus.emit("rates");
+    }
+    throw error;
+  }).finally(() => { sharedRateRefresh = null; });
+  return sharedRateRefresh;
+}
+
+function watchVisibleRates(element) {
+  let nextAttempt = 0;
+  const check = async () => {
+    if (!element.isConnected) return;
+    const saved = store.get("rates", null);
+    const age = saved ? now() - Number(saved.at || 0) : Infinity;
+    const interval = Math.max(120, Number((saved || {}).refresh_seconds || 300));
+    if (document.visibilityState !== "hidden" && age >= interval && now() >= nextAttempt) {
+      nextAttempt = now() + interval;  // back off even when the bridge or API fails
+      try {
+        const result = await refreshSharedRates();
+        nextAttempt = now() + Math.max(interval, Number(result.retry_after || 0));
+      } catch (_error) { /* last saved rate remains explicitly marked */ }
+    }
+    if (element.isConnected) setTimeout(check, 30000);
+  };
+  setTimeout(check, 8000);
+}
+
+// Per-person bot snapshot plus an offline device copy.
+function weatherHome() {
+  const saved = store.get("weatherHome", null);
+  return saved && typeof saved === "object" ? saved : { city: t("default_city"), auto: false, last: null, next_at: 0, interval: 21600 };
+}
+
+function validWeatherLast(last) {
+  return !!(last && last.data && last.data.place && last.data.current && Number(last.at) > 0);
+}
+
+function saveWeatherHome(data) {
+  if (!data || typeof data !== "object" || typeof data.city !== "string") return;
+  const old = weatherHome();
+  if (validWeatherLast(old.last) && old.last.local_only &&
+      (!validWeatherLast(data.last) || Number(old.last.at) > Number(data.last.at))) data = { ...data, last: old.last };
+  store.set("weatherHome", data);
+  bus.emit("weather_home");
+}
+
+function saveManualWeather(data) {
+  if (!data || !data.place || !data.current) return;
+  const { saved_at, saved_on_bot, ...snapshot } = data;
+  const home = weatherHome();
+  home.last = { at: Number(saved_at) || now(), data: snapshot, local_only: saved_on_bot !== true };
+  store.set("weatherHome", home);
+  bus.emit("weather_home");
+}
+
+function watchHomeWeather(element) {
+  const check = () => {
+    if (!element.isConnected) return;
+    const saved = weatherHome();
+    const due = Number(saved.next_at) || 0;
+    const lastAttempt = Number(store.get("weatherHomeSyncAt", 0)) || 0;
+    // Only retrieve the saved snapshot; the bot does the bounded API refresh.
+    if (saved.auto === true && document.visibilityState !== "hidden" && now() >= due + 90 && now() - lastAttempt >= 21600) {
+      store.set("weatherHomeSyncAt", now());
+      hello(true, true);
+    }
+    if (element.isConnected) setTimeout(check, 60000);
+  };
+  setTimeout(check, 90000);
+}
+
+function homeWeatherBanner() {
+  const saved = weatherHome();
+  const last = validWeatherLast(saved.last) ? saved.last : null;
+  const data = last && last.data;
+  const currentWeather = data && data.current;
+  const old = last && now() - Number(last.at) > 1.2 * Math.max(21600, Number(saved.interval) || 0);
+  return h("button", { class: "weather-banner", onclick: () => go("weather") },
+    h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("weather"), t("home_banner_weather")),
+      h("span", { class: "rate-banner-brand" }, "Open-Meteo", icon("next"))),
+    data ? h("div", { class: "weather-banner-body" }, icon(weatherIcon(currentWeather.code, currentWeather.is_day), "weather-banner-icon"),
+      h("div", { class: "weather-banner-copy" }, h("small", {}, data.place.label),
+        h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, weatherDescription(currentWeather))))) :
+      h("div", { class: "weather-banner-copy" }, h("b", {}, saved.city), h("small", {}, t("weather_banner_empty"))),
+    h("span", { class: "rate-banner-foot" }, last ? [t(old ? "weather_banner_old" : "weather_banner_saved"), " · ", fmtTime(last.at)] : t("weather_source")));
+}
+
+function homeRatesBanner() {
+  const data = store.get("rates", null);
+  const valid = data && data.rates && typeof data.rates === "object";
+  const stale = valid && (data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300));
+  const picks = valid ? ["USD", Number(data.rates.EUR) > 0 ? "EUR" : "ECU", "MLC"].filter((code) => Number(data.rates[code]) > 0) : [];
+  return h("button", { class: `rate-banner${stale ? " is-stale" : ""}`, onclick: () => go("rates") },
+    h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
+      h("span", { class: "rate-banner-brand" }, "elTOQUE · ", t("rates_open_tool"), icon("next"))),
+    picks.length ? h("div", { class: "rate-banner-values" }, picks.map((code) =>
+      h("span", {}, h("small", {}, rateDisplayCode(code)), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
+      h("span", { class: "rate-banner-empty" }, t("rates_banner_empty")),
+    h("span", { class: "rate-banner-foot" }, valid ? [t(stale ? "rates_saved_status" : "rates_live_status"), " · ", fmtTime(data.at), " · ", since(data.at)] : t("rates_banner_sub")));
+}
+
+function homeCarousel() {
+  const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
+  const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
+  const slides = [
+    () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
+      h("div", { class: "hero-art" }, icon("cat"))),
+    homeRatesBanner,
+    homeWeatherBanner,
+  ];
+  let active = 0;
+  const dots = labels.map((key, index) => h("button", { class: "home-banner-dot", type: "button", "aria-label": t(key),
+    title: t(key), onclick: () => { active = index; draw(); } }));
+  const root = h("section", { class: "home-carousel", "aria-label": t("home_banners") }, slot,
+    h("div", { class: "home-banner-controls", role: "group", "aria-label": t("home_banners") }, dots));
+  const draw = () => {
+    fill(slot, slides[active]());
+    dots.forEach((dot, index) => {
+      dot.classList.toggle("on", index === active);
+      if (index === active) dot.setAttribute("aria-current", "true");
+      else dot.removeAttribute("aria-current");
+    });
+  };
+  const refresh = () => { if (!slot.contains(document.activeElement)) draw(); };
+  ["hello", "rates", "weather_home"].forEach((kind) => bus.on(kind, refresh));
+  const rotate = () => {
+    if (!root.isConnected) return;
+    const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!reduced && document.visibilityState !== "hidden" && !root.contains(document.activeElement)) {
+      active = (active + 1) % slides.length;
+      draw();
+    }
+    if (root.isConnected) setTimeout(rotate, 8000);
+  };
+  draw();
+  setTimeout(rotate, 8000);
+  watchVisibleRates(root);
+  watchHomeWeather(root);
+  return root;
+}
+
+VIEWS.home = {
+  title: () => "Michiflin AI",
+  render(main) {
+    const status = h("div", { class: "chips" });
+    const advisory = h("div");
+    const drawStatus = () => fill(status, ...statusChips());
+    const drawAdvisory = () => {
+      const item = cache.maintenance_notice;
+      fill(advisory, item && item.active ? h("p", { class: "note warn", role: "status" }, icon("info"),
+        h("span", { class: "grow" }, (lang() === "en" ? item.en : item.es) + " " + t("maintenance_queue_active"))) : null);
+    };
+    ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
+    ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
+    drawStatus(); drawAdvisory();
+    add(main,
+      homeCarousel(), status, advisory, searchBox(),
+      section(t("shortcuts"), tiles([], ["health", "rates"])),
+      section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })),
+        contextHelp(t("notification_privacy")), noticeList()),
+      h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
+        h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
+  },
+};
+
+const HELP = [["how", "info"], ["rates", "rates"], ["ai", "ai"], ["coder", "code"], ["web", "web"], ["downloads", "downloads"], ["join", "join"], ["save", "bolt"], ["privacy", "shield"]];
+
+VIEWS.help = {
+  tab: "home",
+  title: () => t("help_title"),
+  render(main) {
+    add(main, h("button", { class: "btn primary wide", onclick: () => onboarding(true) }, icon("cat"), " ", t("tour_again")));
+    add(main, ...HELP.map(([key, name]) => h("details", { class: "card help", open: key === "how" },
+      h("summary", {}, icon(name), h("b", {}, t(`help_${key}_t`)), icon("down", "caret")),
+      rich(t(`help_${key}_b`), hooksFor()))));
+  },
+};
+
+// ---------------------------------------------------------------------------
+// AI.
+// ---------------------------------------------------------------------------
+function modelInfo(key) {
+  for (const provider of (cache.models && cache.models.providers) || []) {
+    const model = provider.models.find((item) => item.key === key);
+    if (model) return { provider, model };
+  }
+  return null;
+}
+
+function spaceTitle(space) {
+  if (space === "agent" || space === "smart_agent") return t("agent");
+  if (space === "auto") return t("auto");
+  const info = modelInfo(space);
+  return info ? info.model.title : space.split(":").pop();
+}
+
+function spaceCard(name, title, hint, onclick) {
+  return h("button", { class: "card space-card", onclick }, h("span", { class: "space-icon" }, icon(name)),
+    h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), icon("next"));
+}
+function notifiedSpaceCard(name, title, hint, view, params = {}) {
+  const marker = h("span", { class: "space-badge", hidden: true });
+  const button = h("button", { class: "card space-card", onclick: () => openNotifiedView(view, params) },
+    h("span", { class: "space-icon" }, icon(name)), h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), marker, icon("next"));
+  const draw = () => {
+    const count = shortcutCount(view, params), total = count.pending + count.unread;
+    marker.hidden = !total; marker.textContent = total > 99 ? "99+" : String(total);
+    button.setAttribute("aria-label", total ? countLabel(title, count) : title);
+  };
+  bus.on("badges", draw); draw();
+  return button;
+}
+
+function role(name) {
+  return has("role_" + name) ? t("role_" + name) : name;
+}
+
+const REASONS = { auth: "reason_auth", model: "reason_model", quota: "reason_quota", busy: "reason_busy", connection: "reason_connection", response: "reason_response" };
+
+// Broken for the day: rejected key or a model no longer offered for free.
+function modelBroken(model, provider) {
+  return (provider && provider.cooldown > now() && provider.reason === "auth") || (model.cooldown > now() && model.reason === "model");
+}
+
+function modelState(model, provider) {
+  if (provider && provider.cooldown > now() && provider.reason === "auth") return h("span", { class: "chip bad" }, icon("alert"), t("reason_auth"));
+  if (model.cooldown > now() && model.reason === "model") return h("span", { class: "chip bad" }, icon("alert"), t("reason_model"));
+  if (model.cooldown > now()) {
+    return h("span", { class: "chip warn" }, icon("clock"), REASONS[model.reason] ? t(REASONS[model.reason]) + " · " : "", until(model.cooldown, t("available")));
+  }
+  if (provider && provider.cooldown > now()) return h("span", { class: "chip warn" }, icon("clock"),
+    REASONS[provider.reason] ? t(REASONS[provider.reason]) + " · " : "", until(provider.cooldown, t("available")));
+  if (model.local_available === false) return h("span", { class: "chip warn" }, t("model_locally_paused"));
+  if (provider && provider.personal) return h("span", { class: "chip warn" }, t("personal_model_badge"));
+  if (model.remaining) return h("span", { class: "chip" }, t("limit_left", { n: model.remaining[0], m: model.remaining[1] }));
+  return h("span", { class: "chip" }, t("uses_left", { n: Math.max(0, model.daily - model.used) }));
+}
+
+async function pinProvider(key) {
+  try {
+    cache.settings = await bridge.call("settings", { pin: key });
+    cache.models.pin = key;
+    saveCache();
+    bus.emit("models");
+    toast(key ? t("pinned") : t("unpinned"), "ok");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  }
+}
+
+function modelCount(count) {
+  return t(count === 1 ? "model_count_one" : "model_count", { n: count });
+}
+
+function modelCategory(model) {
+  const roles = model.roles || [];
+  for (const key of ["vision", "code", "reason", "long", "fast", "chat"]) if (roles.includes(key)) return key;
+  return "chat";
+}
+
+// Count registered provider routes, not independent models or vendor balances.
+// A shared provider quota is counted once; image limits are listed separately.
+function modelOverviewData(data) {
+  const result = { used: 0, left: 0, known: 0, active: 0, paused: 0, providers: [] };
+  for (const provider of data.providers || []) {
+    const models = provider.models || [];
+    const used = Math.max(0, Number(provider.used) || 0);
+    const limit = Math.max(0, Number(provider.daily) || 0);
+    let left = null;
+    if (limit) {
+      if (provider.shared_limit || provider.personal) left = Math.max(0, limit - used);
+      else left = models.reduce((sum, model) => sum + Math.max(0, (Number(model.daily) || 0) - (Number(model.used) || 0)), 0);
+      result.left += left; result.known += 1;
+    }
+    result.used += used;
+    for (const model of models) {
+      const locallyBlocked = model.local_available === false || provider.cooldown > now() || model.cooldown > now()
+        || (model.local_available === undefined && ((model.daily > 0 && model.used >= model.daily)
+            || (provider.shared_limit && provider.daily > 0 && provider.used >= provider.daily)));
+      if (locallyBlocked) result.paused += 1; else result.active += 1;
+    }
+    result.providers.push({ name: provider.name, used, limit, left });
+  }
+  return result;
+}
+
+function modelOverview() {
+  const box = h("div", { class: "model-overview" });
+  const draw = () => {
+    const data = cache.models;
+    if (!data) return fill(box, h("p", { class: "muted small" }, t("models_none")));
+    const stats = modelOverviewData(data);
+    const stat = (label, value, tone) => h("div", { class: `overview-stat ${tone}` }, h("span", {}, t(label)), h("strong", {}, value === null ? "—" : fmtNumber(value)));
+    const rows = stats.providers.map((p) => h("div", { class: "overview-row" }, h("b", {}, p.name), h("span", {},
+      p.left === null ? t("stats_unknown", { used: fmtNumber(p.used) }) :
+        t("stats_provider_line", { used: fmtNumber(p.used), left: fmtNumber(p.left), limit: fmtNumber(p.limit) }))));
+    const images = (data.images || []).map((source) => {
+      const used = fmtNumber(source.used || 0), attempts = fmtNumber(source.attempts || 0);
+      const vars = { used, attempts, left: fmtNumber(Math.max(0, source.daily - (source.attempts || 0))), limit: fmtNumber(source.daily || 0) };
+      const label = source.personal ? (source.attempts != null ? t(source.daily > 0 ? "stats_image_personal" : "stats_image_personal_unknown", vars) : t("stats_image_personal_missing", vars)) :
+        Number(source.daily) > 0 ? t("stats_provider_line", { used, left: fmtNumber(Math.max(0, source.daily - (source.used || 0))), limit: fmtNumber(source.daily) }) :
+          t("stats_unknown", { used });
+      return h("div", { class: "overview-row" }, h("b", {}, source.label), h("span", {}, label));
+    });
+    const personal = cache.quota && ["ask", "image", "code"].map((kind) => {
+      const q = cache.quota[kind];
+      if (!q) return null;
+      const vars = { name: t("stats_personal_" + kind), used: fmtNumber(q.used || 0), left: fmtNumber(quotaLeft(kind) || 0), limit: fmtNumber(q.limit || 0) };
+      return h("div", { class: "overview-row" }, h("span", {}, t(q.limit ? "stats_personal_line" : "stats_personal_unknown", vars)));
+    });
+    fill(box,
+      h("div", { class: "overview-head" }, h("span", { class: "overview-icon" }, icon("ai")),
+        h("div", { class: "grow" }, h("b", {}, t("stats_title")), h("small", {}, t("stats_subtitle"))),
+        h("small", { class: "overview-time" }, data.now ? t("stats_updated", { time: fmtTime(Number(data.now) > 1e11 ? data.now / 1000 : data.now) }) : "")),
+      h("div", { class: "overview-grid" }, stat("stats_used", stats.used, "used"), stat("stats_left", stats.known ? stats.left : null, "left"),
+        stat("stats_active", stats.active, "active"), stat("stats_paused", stats.paused, "paused")),
+      h("p", { class: "overview-hint" }, t("stats_hint")),
+      h("details", { class: "overview-details" }, h("summary", {}, icon("health"), h("b", { class: "grow" }, t("stats_details")), icon("down", "caret")),
+        h("div", { class: "overview-rows" }, rows, images.length ? h("h4", {}, t("stats_images")) : null, images,
+          personal ? h("h4", {}, t("stats_personal")) : null, personal)));
+  };
+  bus.on("models", draw); bus.on("quota", draw); draw();
+  return box;
+}
+
+function modelSections() {
+  const data = cache.models;
+  if (!data) return [empty(t("models_none"), "ai")];
+  const out = [h("p", { class: "muted small" }, icon("clock"), t("quota_reset"), " ", until(data.reset, t("now"))),
+    contextHelp(t("local_limits_note"))];
+  for (const provider of data.providers || []) {
+    const pinned = data.pin === provider.key;
+    const groups = new Map();
+    for (const model of provider.models || []) {
+      const key = modelCategory(model);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(model);
+    }
+    const categories = [...groups.entries()].map(([name, models]) => h("details", { class: "model-category" },
+      h("summary", {}, h("b", {}, role(name)), h("small", { class: "muted" }, modelCount(models.length)), icon("down", "caret")),
+      h("div", { class: "model-cards" }, models.map((model) =>
+        h("button", { class: "model-choice" + (modelBroken(model, provider) || model.local_available === false || provider.cooldown > now() ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
+          brandMark(brandOf(model, provider)),
+          h("span", { class: "grow" }, h("b", {}, model.title), h("span", { class: "roles" }, (model.roles || []).map((item) => h("span", { class: "tag" }, role(item))), model.manual ? h("span", { class: "tag" }, t("model_manual")) : null)),
+          modelState(model, provider), icon("next"))))));
+    out.push(h("details", { class: "card provider-card" },
+      h("summary", { class: "provider-head" }, brandMark(brandOf(null, provider)),
+        h("span", { class: "grow" }, h("b", {}, provider.name), h("small", { class: "muted" }, modelCount((provider.models || []).length))),
+        icon("down", "caret")),
+      h("div", { class: "provider-body stack" },
+        h("div", { class: "row between wrap" }, h("small", { class: "muted" }, provider.personal ?
+          (provider.daily ? t("personal_attempts_limit", { n: provider.used, m: provider.daily }) : t("personal_attempts", { n: provider.used })) :
+          t("local_used_of", { n: provider.used, m: provider.daily })),
+          provider.personal ? null : iconButton("pin", pinned ? t("unpin") : t("pin"), () => pinProvider(pinned ? "" : provider.key), pinned ? "on" : "")),
+        !provider.personal || provider.daily ? bar(provider.used, provider.daily) : null, categories)));
+  }
+  return out;
+}
+
+async function refreshModels(button) {
+  button.classList.add("busy");
+  try {
+    cache.models = await bridge.call("models");
+    saveCache();
+    bus.emit("models");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  } finally {
+    button.classList.remove("busy");
+  }
+}
+
+VIEWS.ai = {
+  title: () => t("tab_ai"),
+  render(main) {
+    const list = h("div", { class: "stack" });
+    const draw = () => fill(list, ...modelSections());
+    bus.on("models", draw);
+    draw();
+    const refresh = iconButton("refresh", t("refresh"), () => refreshModels(refresh));
+    add(main, 
+      h("div", { class: "stack" },
+        notifiedSpaceCard("bolt", t("agent"), t("agent_unified_hint"), "chat", {
+          space: prefs.agentMode === "smart_agent" ? "smart_agent" : "agent"
+        }),
+        (store.get("chat.auto", []) || []).length ? notifiedSpaceCard("clock", t("agent_legacy"), t("agent_legacy_hint"), "chat", { space: "auto" }) : null,
+        notifiedSpaceCard("code", t("coder"), t("coder_hint"), "coder"),
+        notifiedSpaceCard("image", t("tile_images"), t("images_hint"), "images"),
+        spaceCard("shield", t("personal_title"), t("personal_short"), () => go("personal_ai")),
+        quotaNote(), contextHelp(t("collaboration_safety"))),
+      section(null, headRow(t("models"), refresh), modelOverview(), list));
+  },
+};
+
+// Personal API keys are encrypted in the app before any durable WebXDC update.
+// Only the sealed envelope is given to bridge.request and its pending store.
+function bytes64(buffer) {
+  let binary = "";
+  for (const byte of new Uint8Array(buffer)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+function unbytes64(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+}
+async function sealPersonal(values, handshake) {
+  if (!window.isSecureContext || !window.crypto || !crypto.subtle) throw new Error(t("personal_crypto"));
+  if (!handshake || handshake.algorithm !== "RSA-OAEP-256+A256GCM") throw new Error(t("personal_crypto"));
+  const publicKey = await crypto.subtle.importKey("spki", unbytes64(handshake.public_key),
+    { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  const aes = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const payload = new TextEncoder().encode(JSON.stringify({ ...values, challenge: handshake.challenge }));
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv,
+    additionalData: new TextEncoder().encode("michiflin-personal-ai-v1") }, aes, payload);
+  const raw = await crypto.subtle.exportKey("raw", aes);
+  const wrapped = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, raw);
+  return { key: bytes64(wrapped), iv: bytes64(iv), data: bytes64(encrypted) };
+}
+
+async function reloadPersonalModels() {
+  cache.models = await bridge.call("models");
+  saveCache(); bus.emit("models");
+}
+
+VIEWS.personal_ai = {
+  tab: "ai",
+  title: () => t("personal_title"),
+  render(main) {
+    const holder = h("div", { class: "stack personal-providers" }, loading());
+    const form = h("div", { class: "card stack" });
+    const name = field({ placeholder: t("personal_name"), maxlength: 48 });
+    const base = field({ type: "url", placeholder: "https://api.example.com/v1", maxlength: 1000 });
+    const key = field({ type: "password", placeholder: t("personal_key"), maxlength: 1024, autocomplete: "new-password" });
+    const daily = field({ type: "number", min: 0, max: 100000, value: "0" });
+    let protocol = "auto";
+    const kind = select(protocol, [["auto", t("personal_auto")], ["openai", "OpenAI-compatible"],
+      ["gemini", "Gemini"], ["anthropic", "Anthropic"]], (value) => { protocol = value; });
+    const addButton = h("button", { class: "btn primary", onclick: async () => {
+      if (!base.value.trim() || !key.value) return toast(t("personal_required"), "bad");
+      if (!window.isSecureContext || !window.crypto || !crypto.subtle) return toast(t("personal_crypto"), "bad");
+      const confirmed = await confirmBox(t("personal_confirm_title"), t("personal_confirm_body"), t("confirm"));
+      if (!confirmed) return;
+      addButton.disabled = true;
+      try {
+        const handshake = await bridge.call("personal_ai", { do: "handshake" });
+        const sealed = await sealPersonal({ name: name.value.trim(), base: base.value.trim(), key: key.value,
+          kind: protocol, daily: Number(daily.value || 0) }, handshake);
+        key.value = "";
+        const response = await bridge.call("personal_ai", { do: "add", sealed });
+        name.value = ""; base.value = "";
+        draw(response.providers || []);
+        await reloadPersonalModels();
+        toast(response.discovery === "unsupported" ? t("personal_manual_hint") : t("personal_discovered"), "ok");
+      } catch (error) { key.value = ""; if (!error.cancelled) toast(error.message, "bad"); }
+      finally { addButton.disabled = false; }
+    } }, icon("plus"), t("personal_add"));
+    add(form, h("label", { class: "stack small" }, t("personal_name"), name),
+      h("label", { class: "stack small" }, t("personal_url"), base),
+      h("label", { class: "stack small" }, t("personal_protocol"), kind),
+      h("label", { class: "stack small" }, t("personal_key"), key),
+      h("label", { class: "stack small" }, t("personal_daily"), daily), addButton);
+
+    const perform = async (args, button) => {
+      if (button) button.disabled = true;
+      try {
+        const data = await bridge.call("personal_ai", args);
+        draw(data.providers || []);
+        await reloadPersonalModels();
+        toast(t("done"), "ok");
+      } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+      finally { if (button) button.disabled = false; }
+    };
+    const providerCard = (provider) => {
+      const label = field({ value: provider.name || "", maxlength: 48 });
+      const limit = field({ type: "number", min: 0, max: 100000, value: String(provider.daily || 0) });
+      const details = h("div", { class: "stack" });
+      let chosen = provider.models && provider.models.length ? provider.models[0].id : "";
+      const drawModel = () => {
+        const selected = (provider.models || []).find((model) => model.id === chosen);
+        const custom = field({ placeholder: t("personal_model_id"), maxlength: 120, value: selected ? selected.id : "" });
+        const chatMode = h("input", { type: "checkbox", checked: selected ? !!selected.chat : true });
+        const vision = h("input", { type: "checkbox", checked: selected ? !!selected.vision : false });
+        const picture = h("input", { type: "checkbox", checked: selected ? !!selected.image : false,
+          disabled: provider.kind === "anthropic" });
+        const saveModel = h("button", { class: "btn ghost", onclick: () => perform({ do: "configure", provider: provider.id,
+          model: custom.value.trim(), chat: chatMode.checked, vision: vision.checked, image: picture.checked }, saveModel) },
+        icon("check"), t("personal_save_model"));
+        const options = [["", t("personal_new_model")], ...(provider.models || []).map((m) => [m.id, m.title || m.id])];
+        const picker = select(chosen, options, (value) => { chosen = value; drawModel(); });
+        fill(details, h("p", { class: "muted small" }, t("personal_capability_hint")), picker,
+          h("label", { class: "stack small" }, t("personal_model_id"), custom),
+          h("label", { class: "row" }, chatMode, t("personal_chat")),
+          h("label", { class: "row" }, vision, t("personal_vision")),
+          h("label", { class: "row" }, picture, t("personal_image")),
+          selected ? h("small", { class: "muted" }, selected.source === "manual" ? t("personal_source_manual") :
+            selected.source === "metadata" ? t("personal_source_metadata") : t("personal_source_inferred")) : null,
+          saveModel);
+      };
+      drawModel();
+      const save = h("button", { class: "btn ghost", onclick: () => perform({ do: "edit", provider: provider.id,
+        name: label.value.trim(), daily: Number(limit.value || 0) }, save) }, icon("check"), t("personal_save"));
+      const refresh = h("button", { class: "btn ghost", onclick: () => perform({ do: "refresh", provider: provider.id }, refresh) },
+        icon("refresh"), t("personal_refresh"));
+      const remove = h("button", { class: "btn ghost danger-text", onclick: async () => {
+        if (await confirmBox(t("personal_remove"), t("personal_remove_body"), t("delete")))
+          await perform({ do: "remove", provider: provider.id }, remove);
+      } }, icon("trash"), t("personal_remove"));
+      return h("div", { class: "card stack" }, h("b", {}, provider.name), h("small", { class: "muted" }, provider.base, " · ", provider.kind),
+        h("small", { class: "muted" }, provider.daily ? t("personal_attempts_limit", { n: provider.attempts, m: provider.daily }) :
+          t("personal_attempts", { n: provider.attempts })),
+        h("label", { class: "stack small" }, t("personal_name"), label),
+        h("label", { class: "stack small" }, t("personal_daily"), limit),
+        h("div", { class: "row wrap" }, save, refresh, remove),
+        h("details", { class: "personal-models" }, h("summary", {}, t("personal_models", { n: (provider.models || []).length })), details));
+    };
+    function draw(providers) {
+      if (!holder.isConnected) return;
+      fill(holder, ...(providers.length ? providers.map(providerCard) : [empty(t("personal_none"), "shield")]));
+    }
+    add(main, h("p", { class: "note warn" }, icon("shield"), h("span", { class: "grow" }, t("personal_security"))),
+      h("p", { class: "muted small" }, t("personal_limits")), section(t("personal_add"), form),
+      section(t("personal_yours"), holder));
+    bridge.call("personal_ai", { do: "status" }).then((data) => draw(data.providers || []))
+      .catch((error) => { if (holder.isConnected && !error.cancelled) fill(holder, failure(error.message, () => go("personal_ai"))); });
+  },
+};
+
+function messages(space, settled = true) {
+  const list = store.get("chat." + space, []);
+  const pending = bridge.pending();
+  for (const item of list) {
+    if (settled && item.pending && !pending[item.rid]) {
+      item.pending = false;
+      item.error = t("no_answer");
+    }
+  }
+  return list;
+}
+
+function saveMessages(space, list) {
+  store.set("chat." + space, list.slice(-80));
+  bus.emit("chat:" + space);
+}
+
+const attachments = new Map(); // message time -> attachment, kept in memory for retries only
+
+function ask(space, text, file = null, options = {}) {
+  const list = messages(space);
+  // Stay within the 128 KB WebXDC update limit, especially with a large attachment.
+  const history = [];
+  {
+    const prior = list.filter((item) => !item.pending && !item.error && (item.text || item.file)).slice(-12);
+    const overhead = new Blob([JSON.stringify({ space, text, file })]).size + 4000;
+    let budget = Math.min(30000, Math.max(0, 124000 - overhead));
+    for (const item of prior.reverse()) {
+      const content = (item.file ? `${item.text}\n[${item.file.name}]`.trim() : item.text).slice(0, 6000);
+      const turn = [item.role, content];
+      const size = new Blob([JSON.stringify(turn)]).size;
+      if (size > budget) break;
+      history.unshift(turn);
+      budget -= size;
+    }
+  }
+  const args = { space, text, history };
+  if (space === "smart_agent" && prefs.agentModel && !options.automaticModel) args.agent_model = prefs.agentModel;
+  if (file) args.file = { name: file.name, mime: file.mime, b64: file.b64 };
+  const { id } = bridge.request("ask", args, { space });
+  if (!id) return false;
+  const ts = now();
+  if (file) attachments.set(ts, file);
+  list.push({ role: "user", text, ts, file: file ? { name: file.name, size: file.size, kind: file.kind } : null },
+    { role: "assistant", text: "", ts, rid: id, pending: true });
+  saveMessages(space, list);
+  return true;
+}
+
+const ATTACH_MAX = 88000; // base64 grows it to ~117 KB; one webxdc update holds 128 KB
+const DOC_FILE = /\.(txt|md|rst|csv|tsv|json|xml|ya?ml|html?|log|srt|vtt|ini|toml|sql|sh|py|js|ts|css|c|cc|cpp|h|java|kt|go|rs|rb|php|docx|xlsx|pptx|odt|ods|odp|epub|rtf|pdf)$/i;
+const AUDIO_TYPES = { mp3: "audio/mpeg", m4a: "audio/mp4", aac: "audio/aac", ogg: "audio/ogg", opus: "audio/ogg", wav: "audio/wav", flac: "audio/flac" };
+
+function spaceAccepts(space) {
+  if (space === "agent") return [];
+  if (space === "auto" || space === "smart_agent") {
+    const info = space === "smart_agent" && prefs.agentModel ? modelInfo(prefs.agentModel) : null;
+    return info && info.model.accepts ? info.model.accepts : ["document", "image"];
+  }
+  const info = modelInfo(space);
+  return info && info.model.accepts ? info.model.accepts : ["document", "image", "pdf", "audio"]; // unknown yet: the bot decides
+}
+
+async function shrinkImage(file, limit) {
+  const url = URL.createObjectURL(file);
+  try {
+    const picture = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("image"));
+      element.src = url;
+    });
+    let side = 1280;
+    let quality = 0.82;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const scale = Math.min(1, side / Math.max(picture.naturalWidth, picture.naturalHeight));
+      const canvas = h("canvas", { width: Math.max(1, Math.round(picture.naturalWidth * scale)), height: Math.max(1, Math.round(picture.naturalHeight * scale)) });
+      canvas.getContext("2d").drawImage(picture, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (blob && blob.size <= limit) return blob;
+      if (quality > 0.5) quality -= 0.12;
+      else side = Math.round(side * 0.75);
+    }
+    throw new Error("size");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function prepareAttachment(file, accepts) {
+  const extension = extOf(file.name);
+  const type = file.type || AUDIO_TYPES[extension] || (extension === "pdf" ? "application/pdf" : "");
+  if (type.startsWith("image/")) {
+    if (!accepts.includes("image")) throw new Error(t("attach_no_image"));
+    const blob = await shrinkImage(file, ATTACH_MAX - 2000);
+    return { name: file.name.replace(/\.[^.]+$/, "") + ".jpg", mime: "image/jpeg", size: blob.size, kind: "image", b64: await blobToBase64(blob) };
+  }
+  const audio = type.startsWith("audio/");
+  if (audio && !accepts.includes("audio")) throw new Error(t("attach_no_audio"));
+  if (!audio && !DOC_FILE.test(file.name) && !type.startsWith("text/")) throw new Error(t("attach_type"));
+  if (file.size > ATTACH_MAX) throw new Error(t("attach_big", { size: fmtSize(ATTACH_MAX) }));
+  return { name: file.name, mime: type || "application/octet-stream", size: file.size, kind: audio ? "audio" : "document", b64: await blobToBase64(file) };
+}
+
+function attachmentLine(file) {
+  return h("div", { class: "attach-line" }, icon(file.kind === "image" ? "image" : file.kind === "audio" ? "audio" : "file"),
+    h("span", { class: "clamp1" }, file.name), h("small", { class: "muted" }, fmtSize(file.size)));
+}
+
+bridge.handlers.ask = (data, error, ctx, rid) => {
+  const list = messages(ctx.space, false);
+  const item = list.find((entry) => entry.rid === rid);
+  if (!item) return;
+  Object.assign(item, { pending: false, ts: now() });
+  if (error) {
+    item.error = error;
+  } else {
+    Object.assign(item, { text: data.text, actions: data.actions || [], sig: data.sig || "", files: (data.files || []).length });
+    if (data.models) {
+      cache.models = data.models;
+      saveCache();
+      bus.emit("models");
+    }
+    if (data.jobs) setJobs(data.jobs);
+  }
+  saveMessages(ctx.space, list);
+  const target = { view: "chat", params: { space: ctx.space } };
+  if (!visiblePlace(target)) notice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target });
+};
+
+function spaceMeta(space) {
+  if (space === "agent") return [h("span", { class: "chip ok" }, icon("bolt"), t("no_quota")), h("span", { class: "chip subtle" }, t("agent_meta"))];
+  if (space === "smart_agent") return [h("span", { class: "chip" }, icon("ai"), t("smart_agent_meta")), quotaChip("ask")];
+  if (space === "auto") return [h("span", { class: "chip" }, icon("ai"), t("auto_meta")), quotaChip("ask")];
+  const info = modelInfo(space);
+  if (!info) return [h("span", { class: "chip warn" }, t("model_unknown"))];
+  const { model, provider } = info;
+  const chips = [provider.personal ? null : h("span", { class: "chip" }, t("uses_left_of", { n: Math.max(0, model.daily - model.used), m: model.daily })), modelState(model, provider), quotaChip("ask")];
+  if (provider.cooldown > now() && provider.reason !== "auth") {
+    chips.push(h("span", { class: "chip warn" }, provider.name, " · ", REASONS[provider.reason] ? t(REASONS[provider.reason]) + " · " : "", until(provider.cooldown, t("available"))));
+  }
+  chips.push(h("span", { class: "chip subtle" }, icon("clock"), t("quota_reset"), " ", until(cache.models.reset, t("now"))));
+  return chips;
+}
+
+function bubble(space, item, list) {
+  if (item.role === "user") return h("div", { class: "bubble me" }, item.file ? attachmentLine(item.file) : null,
+    item.text ? h("div", { class: "bubble-text" }, item.text) : null,
+    item.text ? h("div", { class: "bubble-foot" }, iconButton("copy", t("copy"), () => copyText(item.text), "tiny")) : null);
+  if (item.pending) {
+    return h("div", { class: "bubble bot pending" }, h("span", { class: "dots" }, h("i"), h("i"), h("i")),
+      h("small", { class: "muted" }, t("thinking"), " ", since(item.ts)),
+      h("button", { class: "link small", onclick: () => { bridge.forget(item.rid); saveMessages(space, list.filter((entry) => entry !== item)); } }, t("cancel")));
+  }
+  if (item.error) {
+    const index = list.indexOf(item);
+    const question = list.slice(0, index).reverse().find((entry) => entry.role === "user");
+    const retryFile = () => {
+      const file = attachments.get(question.ts) || null;
+      if (question.file && !file) { toast(t("retry_attachment_missing"), "bad"); return undefined; }
+      return file;
+    };
+    const retry = () => {
+      const file = retryFile();
+      if (file === undefined) return;
+      saveMessages(space, list.filter((entry) => entry !== item && entry !== question));
+      if (item.imageRequest) createChatImage(space, question.text);
+      else ask(space, question.text, file);
+    };
+    const automatic = () => {
+      const file = retryFile();
+      if (file === undefined) return;
+      if (ask("smart_agent", question.text, file, { automaticModel: true })) go("chat", { space: "smart_agent" });
+    };
+    return h("div", { class: "bubble bot error" }, icon("alert"), h("span", { class: "grow" }, item.error),
+      question ? h("div", { class: "error-actions" },
+        h("button", { class: "btn small ghost", onclick: retry }, icon("refresh"), t("retry")),
+        space !== "auto" && space !== "agent" ? h("button", { class: "btn small ghost", onclick: automatic }, icon("ai"), t("use_auto")) : null) : null);
+  }
+  const picture = item.imageId ? h("div", { class: "chat-image" }, h("small", { class: "muted" }, t("image_loading"))) : null;
+  if (picture) media.get(item.imageId).then((image) => {
+    if (!picture.isConnected) return;
+    if (!image) { fill(picture, h("small", { class: "muted" }, t("image_missing"))); return; }
+    const scroller = picture.closest(".view");
+    const follow = scroller && scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140;
+    const img = h("img", { src: `data:${image.mime};base64,${image.b64}`, alt: image.prompt });
+    img.addEventListener("load", () => {
+      if (follow && scroller.isConnected) scroller.scrollTop = scroller.scrollHeight;
+    });
+    fill(picture, h("button", { class: "chat-image-button", onclick: () => imageViewer(image) }, img));
+  }).catch(() => fill(picture, h("small", { class: "muted" }, t("image_missing"))));
+  return h("div", { class: "bubble bot" }, picture,
+    replyBody({ text: item.text, actions: item.actions, files: item.files ? new Array(item.files) : [] }),
+    h("div", { class: "bubble-foot" }, item.sig ? h("small", { class: "muted" }, item.sig) : h("small", { class: "muted" }, fmtTime(item.ts)),
+      iconButton("copy", t("copy"), () => copyText(item.text), "tiny")));
+}
+
+function chatIntro(space, send) {
+  const keys = space === "agent" ? ["sugg_agent_1", "sugg_agent_2", "sugg_agent_3", "sugg_agent_4"] : ["sugg_ai_1", "sugg_ai_2", "sugg_ai_3"];
+  const info = modelInfo(space);
+  const brand = info ? brandOf(info.model, info.provider) : "";
+  return h("div", { class: "intro" }, brand ? brandMark(brand, "big") : icon(space === "agent" ? "bolt" : "ai", "big"),
+    h("p", {}, t(space === "agent" ? "intro_agent" : space === "smart_agent" ? "smart_agent_intro" : "intro_ai")),
+    h("div", { class: "chips center" }, keys.map((key) => h("button", { class: "chip", onclick: () => send(t(key)) }, t(key)))));
+}
+
+VIEWS.chat = {
+  tab: "ai",
+  title: (params) => spaceTitle(params.space),
+  render(main, { space }) {
+    main.classList.add("chat-view");
+    const meta = h("div", { class: "chips chat-meta" });
+    const list = h("div", { class: "messages" });
+    const area = autosize(h("textarea", { class: "input", rows: 1, maxlength: "6000", placeholder: t("ask_placeholder"), enterkeyhint: "send" }));
+    const tray = h("div", { class: "attach-tray" });
+    let attached = null;
+    const drawTray = () => fill(tray, attached ? h("div", { class: "attach-chip" }, attachmentLine(attached),
+      iconButton("close", t("remove"), () => { attached = null; drawTray(); }, "tiny")) : null);
+    const attach = async () => {
+      const [file] = await pickFiles(false);
+      if (!file) return;
+      try {
+        attached = await prepareAttachment(file, spaceAccepts(space));
+        drawTray();
+      } catch (error) {
+        toast(error.message === "size" || error.message === "image" ? t("attach_image_fail") : error.message, "bad");
+      }
+    };
+    const submit = (text) => {
+      const value = (text || area.value).trim();
+      if (!value && !attached) return;
+      if (!ask(space, value, attached)) return;
+      area.value = "";
+      area.dispatchEvent(new Event("input"));
+      attached = null;
+      drawTray();
+    };
+    area.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey && !TOUCH) {
+        event.preventDefault();
+        submit();
+      }
+    });
+    const drawMeta = () => fill(meta, ...spaceMeta(space), iconButton("trash", t("clear_chat"), async () => {
+      if (await confirmBox(t("clear_chat"), t("clear_chat_q"), t("clear"))) saveMessages(space, []);
+    }, "tiny"));
+    const drawList = () => {
+      const items = messages(space);
+      fill(list, ...(items.length ? items.map((item) => bubble(space, item, items)) : [chatIntro(space, submit)]));
+      // An empty conversation should open at the mode selector, not scrolled
+      // past it; existing/new messages still open at the latest response.
+      if (items.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
+    };
+    bus.on("models", drawMeta);
+    bus.on("quota", drawMeta);
+    bus.on("chat:" + space, drawList);
+    const agentPicker = h("div", { class: "stack" });
+    const drawAgentPicker = () => {
+      if (space !== "smart_agent") return;
+      const providerList = (cache.models && cache.models.providers) || [];
+      const selected = modelInfo(prefs.agentModel || "");
+      const selectedTitle = selected ? `${selected.model.title} · ${selected.provider.name}` : (prefs.agentModel ? t("coder_model_unavailable") : t("model_select_auto"));
+      const pick = (value) => { prefs.agentModel = value; savePrefs(); drawAgentPicker(); };
+      const providers = providerList.map((provider) => {
+        const options = (provider.models || []).filter((model) => (model.roles || []).includes("chat") && !modelBroken(model, provider));
+        if (!options.length) return null;
+        const groups = new Map();
+        for (const model of options) {
+          const category = modelCategory(model);
+          if (!groups.has(category)) groups.set(category, []);
+          groups.get(category).push(model);
+        }
+        return h("details", { class: "agent-provider" },
+          h("summary", {}, brandMark(brandOf(null, provider)), h("b", { class: "grow" }, provider.name), icon("down", "caret")),
+          [...groups.entries()].map(([category, models]) => h("details", { class: "model-category" },
+            h("summary", {}, h("span", { class: "grow" }, role(category)), icon("down", "caret")),
+            models.map((model) => h("button", { class: "model-choice", "aria-pressed": String(prefs.agentModel === model.key), onclick: () => pick(model.key) },
+              brandMark(brandOf(model, provider)), h("span", { class: "grow" }, model.title), prefs.agentModel === model.key ? icon("check") : null)))));
+      });
+      fill(agentPicker, h("details", { class: "agent-picker" },
+        h("summary", {}, icon("ai"), h("span", { class: "grow" }, h("b", {}, t("agent_model_select")), h("small", { class: "muted" }, selectedTitle)), icon("down", "caret")),
+        h("div", { class: "picker-body stack" },
+          h("button", { class: "model-choice", "aria-pressed": String(!prefs.agentModel), onclick: () => pick("") },
+            icon("swap"), h("span", { class: "grow" }, h("b", {}, t("model_select_auto")), h("small", { class: "muted" }, t("agent_model_auto_hint"))),
+            !prefs.agentModel ? icon("check") : null), providers)),
+        prefs.agentModel && prefs.agentModel.startsWith("personal-") ? contextHelp(t("agent_personal_cost")) : null);
+    };
+    bus.on("models", drawAgentPicker); drawAgentPicker();
+    const isAgent = space === "agent" || space === "smart_agent";
+    const mode = isAgent ? h("div", { class: "stack agent-mode" },
+      h("small", { class: "muted" }, t("agent_mode")),
+      segmented(space, [["agent", t("agent_mode_free")], ["smart_agent", t("agent_mode_ai")]], (value) => {
+        if (value === space) return;
+        prefs.agentMode = value;
+        savePrefs();
+        swap("chat", { space: value });
+      })) : null;
+    // The compact mode bar remains visible while scrolling; the potentially
+    // tall model selector and help scroll normally, so they cannot cover chat.
+    const modeOptions = isAgent ? h("div", { class: "stack agent-options" },
+      contextHelp(t("agent_mode_privacy") + (space === "smart_agent" ? " " + t("agent_attach_direct") : "")),
+      space === "smart_agent" ? agentPicker : null) : null;
+    const imageAction = space !== "agent" ? h("button", {
+      class: "chip action chat-image-action", title: t("chat_image_note"), onclick: () => {
+        const prompt = area.value.trim();
+        if (!prompt) { toast(t("chat_image_empty")); return; }
+        if (attached) { toast(t("chat_image_no_attach"), "bad"); return; }
+        if (createChatImage(space, prompt)) { area.value = ""; area.dispatchEvent(new Event("input")); }
+      },
+    }, icon("image"), t("chat_image_button")) : null;
+    add(main, mode, modeOptions, meta, list, h("div", { class: "composer-wrap" }, tray, imageAction, h("div", { class: "composer" },
+      space !== "agent" ? iconButton("clip", t("attach_hint"), attach, "attach-btn") : null,
+      area, h("button", { class: "btn primary round", "aria-label": t("send"), onclick: () => submit() }, icon("send")))));
+    drawMeta();
+    drawList();
+  },
+};
+
+// ---------------------------------------------------------------------------
+// AI images: kept on the device (IndexedDB), exportable to a chat or the gallery.
+// ---------------------------------------------------------------------------
+function imageSourceLabel(key) {
+  const found = ((cache.models && cache.models.images) || []).find((source) => source.key === key);
+  return found ? found.label : t("img_auto");
+}
+
+function imageFamily(source) {
+  if (source.personal) return t("img_family_personal");
+  const name = `${source.key || ""} ${source.label || ""}`.toLowerCase();
+  if (/flux/.test(name)) return "FLUX";
+  if (/sdxl|stable.diffusion|dreamshaper|juggernaut|albedo/.test(name)) return "Stable Diffusion";
+  if (/z.?image/.test(name)) return "Z-Image";
+  return t("img_family_other");
+}
+
+function createImage(prompt, model = prefs.imageModel || "") {
+  const { id } = bridge.request("image", { prompt, model }, { prompt });
+  if (!id) return false;
+  const list = store.get("img.pending", []);
+  list.unshift({ rid: id, prompt, model, ts: now() });
+  store.set("img.pending", list);
+  bus.emit("images");
+  return true;
+}
+
+function createChatImage(space, prompt) {
+  const model = prefs.imageModel || "";
+  const { id } = bridge.request("image", { prompt, model }, { prompt, space, chatImage: true });
+  if (!id) return false;
+  const ts = now();
+  const list = messages(space);
+  list.push({ role: "user", text: prompt, ts }, { role: "assistant", text: "", ts, rid: id, pending: true, imageRequest: true });
+  saveMessages(space, list);
+  const pending = store.get("img.pending", []);
+  pending.unshift({ rid: id, prompt, model, ts });
+  store.set("img.pending", pending);
+  bus.emit("images");
+  return true;
+}
+
+bridge.handlers.image = async (data, error, ctx, rid) => {
+  store.set("img.pending", store.get("img.pending", []).filter((item) => item.rid !== rid));
+  let persisted = true;
+  if (!error) {
+    persisted = await media.put({ id: rid, prompt: data.prompt, source: data.source, model: data.model || "", mime: data.mime, b64: data.b64, ts: now() });
+    if (!persisted) notice(t("image_memory_only"), "bad");
+  }
+  const chatImage = !!(ctx && ctx.chatImage && ctx.space);
+  if (chatImage) {
+    const list = messages(ctx.space, false);
+    const item = list.find((entry) => entry.rid === rid);
+    if (item) {
+      item.pending = false;
+      item.ts = now();
+      if (error) item.error = error;
+      else {
+        Object.assign(item, { imageId: rid, text: t("chat_image_source", { source: data.source }) +
+          (persisted ? "" : `\n\n${t("image_memory_only")}`), sig: data.source });
+      }
+      saveMessages(ctx.space, list);
+    }
+  }
+  if (chatImage) {
+    const target = { view: "chat", params: { space: ctx.space } };
+    if (!visiblePlace(target)) notice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target });
+  }
+  if (error) {
+    if (!chatImage) notice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} } });
+  } else {
+    if (data.models) {
+      cache.models = data.models;
+      saveCache();
+      bus.emit("models");
+    }
+    if (!chatImage && !visiblePlace({ view: "images", params: {} })) notice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} } });
+  }
+  bus.emit("images");
+};
+
+function imageViewer(item) {
+  const blob = () => base64ToBlob(item.b64, item.mime);
+  openSheet(t("image"), [
+    h("img", { class: "viewer", src: `data:${item.mime};base64,${item.b64}`, alt: item.prompt }),
+    h("p", {}, item.prompt),
+    h("p", { class: "muted small" }, `${item.source} · ${fmtTime(item.ts)} · ${fmtSize(item.b64.length * 0.75)}`),
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn primary", onclick: () => exportSheet(blob(), `${niceName(item.prompt, "michiflin-" + item.id)}.jpg`, item.prompt) }, icon("share"), t("export")),
+      h("button", { class: "btn ghost", onclick: () => { closeSheet(); createImage(item.prompt, item.model || ""); } }, icon("refresh"), t("again")),
+      h("button", { class: "btn ghost", onclick: () => copyText(item.prompt) }, icon("copy"), t("copy_prompt")),
+      h("button", { class: "btn ghost danger-text", onclick: async () => { await media.remove(item.id); closeSheet(); bus.emit("images"); } }, icon("trash"), t("delete"))),
+  ]);
+}
+
+VIEWS.images = {
+  tab: "ai",
+  title: () => t("tile_images"),
+  render(main) {
+    const area = autosize(h("textarea", { class: "input", rows: 2, placeholder: t("images_placeholder") }));
+    const quotas = h("div", { class: "chips" });
+    const waiting = h("div", { class: "stack" });
+    const gallery = h("div", { class: "gallery" });
+    const drawQuotas = () => {
+      const list = (cache.models && cache.models.images) || [];
+      if (prefs.imageModel && !list.some((source) => source.key === prefs.imageModel)) prefs.imageModel = "";
+      const pick = (key) => { prefs.imageModel = key; savePrefs(); drawQuotas(); if (key.startsWith("horde:")) toast(t("img_horde_slow")); };
+      const groups = new Map();
+      for (const source of list) {
+        const provider = source.key.split(":")[0];
+        if (!groups.has(provider)) groups.set(provider, []);
+        groups.get(provider).push(source);
+      }
+      fill(quotas, quotaChip("image"),
+        h("p", { class: "small muted wide" }, t("image_selection", { name: imageSourceLabel(prefs.imageModel || "") })),
+        h("button", { class: "model-choice wide", "aria-pressed": String(!prefs.imageModel), onclick: () => pick("") }, icon("swap"),
+          h("span", { class: "grow" }, t("img_auto")), !prefs.imageModel ? icon("check") : null),
+        [...groups.entries()].map(([provider, sources]) => {
+          const families = new Map();
+          for (const source of sources) {
+            const family = imageFamily(source);
+            if (!families.has(family)) families.set(family, []);
+            families.get(family).push(source);
+          }
+          const providerNames = { cf: "Cloudflare", hf: "Hugging Face", ovh: "OVHcloud", horde: "AI Horde", pollinations: "Pollinations" };
+          const providerName = providerNames[provider] || (sources[0].personal ? String(sources[0].label || "").split(" · ")[0] : provider.toUpperCase());
+          return h("details", { class: "card image-provider wide" },
+            h("summary", {}, icon("image"), h("b", { class: "grow" }, providerName), h("small", { class: "muted" }, modelCount(sources.length)), icon("down", "caret")),
+            h("div", { class: "provider-body stack" }, [...families.entries()].map(([family, options]) =>
+              h("details", { class: "image-family" },
+                h("summary", {}, h("b", { class: "grow" }, family), h("small", { class: "muted" }, modelCount(options.length)), icon("down", "caret")),
+                h("div", { class: "model-cards" }, options.map((source) => {
+                  const resting = source.cooldown > now();
+                  return h("button", { class: "model-choice", "aria-pressed": String(prefs.imageModel === source.key),
+                    onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
+                    icon("image"), h("span", { class: "grow" }, h("b", {}, source.label), h("small", { class: "muted" }, resting ? t("img_resting", { time: fmtTime(source.cooldown) }) :
+                      (source.personal ? t("personal_model_badge") : t("local_used_of", { n: source.used, m: source.daily })))), prefs.imageModel === source.key ? icon("check") : null);
+                }))))));
+        }),
+        ...(() => { const spent = list.find((source) => source.key.startsWith("cf:") && source.reason === "quota" && source.cooldown > now());
+          return spent ? [contextHelp(t("img_cf_spent", { time: fmtTime(spent.cooldown) }))] : []; })());
+    };
+    const draw = async () => {
+      const pending = bridge.pending();
+      const list = store.get("img.pending", []).filter((item) => pending[item.rid]);
+      store.set("img.pending", list);
+      fill(waiting, ...list.map((item) => h("div", { class: "card row" }, h("i", { class: "spinner" }),
+        h("span", { class: "grow" }, h("span", { class: "clamp" }, item.prompt), h("small", { class: "muted" }, imageSourceLabel(item.model || ""))), since(item.ts))));
+      const items = await media.all();
+      fill(gallery, ...(items.length ? items.map((item) => h("button", { class: "thumb", onclick: () => imageViewer(item) },
+        h("img", { src: `data:${item.mime};base64,${item.b64}`, alt: item.prompt, loading: "lazy" }))) : [empty(t("images_none"), "image")]));
+    };
+    bus.on("images", draw);
+    bus.on("models", drawQuotas);
+    bus.on("quota", drawQuotas);
+    add(main, contextHelp(t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
+      const prompt = area.value.trim();
+      if (prompt && createImage(prompt)) area.value = "";
+    } }, icon("image"), t("generate")))), section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
+    drawQuotas();
+    draw();
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Web: search, reader and page actions.
+// ---------------------------------------------------------------------------
+function formatLabel(format) {
+  if (format === "segments") return t("fmt_segments");
+  return format && format !== "raw" ? format.toUpperCase() : "";
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch (error) {
+    return url;
+  }
+}
+
+async function runAction(kind, url, quality = 0, outputFormat = "") {
+  try {
+    const before = new Set(cache.jobs.map((job) => job.id));
+    const reply = await bridge.call("action", { kind, url, quality, audio_format: kind === "audio" ? outputFormat : "", video_format: kind === "video" ? outputFormat : "" });
+    if (reply.jobs) setJobs(reply.jobs);
+    const added = (reply.jobs || []).find((job) => !before.has(job.id));
+    if (added) toast(t("queued_ok", { name: plain(added.title) }), "ok");
+    else if (reply.files && reply.files.length) toast(t("check_chat"), "ok");
+    else if (reply.text) replySheet(reply);
+    else toast(t("done"), "ok");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  }
+}
+
+function qualitySheet(kind, url) {
+  const options = kind === "video" ? [144, 240, 360, 480, 720, 1080, 1440, 2160] : [32, 48, 64, 96, 128, 160, 192, 224, 256, 320];
+  const settingKey = kind === "video" ? "video_height" : "audio_kbps";
+  const items = cache.settings ? cache.settings.flatMap((group) => group.items) : [];
+  const row = items.find((item) => item.key === settingKey);
+  let chosen = row ? Number(row.value) : (kind === "video" ? 360 : 96);
+  if (!options.includes(chosen)) chosen = kind === "video" ? 360 : 96;
+  const formatRow = items.find((item) => item.key === "audio_format");
+  let format = kind === "video" ? "mp4" : (formatRow && ["mp3", "m4a", "opus"].includes(formatRow.value) ? formatRow.value : "mp3");
+  const chips = h("div", { class: "chips" });
+  const draw = () => fill(chips, ...options.map((value) => h("button", {
+    class: `chip big ${value === chosen ? "on" : ""}`,
+    "aria-pressed": String(value === chosen),
+    onclick: () => { chosen = value; draw(); },
+  }, `${value}${kind === "video" ? "p" : " kbps"}`)));
+  draw();
+  openSheet(t(kind === "video" ? "pick_video" : "pick_audio"), [
+    h("p", { class: "muted small" }, t(kind === "video" ? "video_quality_note" : "audio_quality_note")),
+    h("div", { class: "stack" }, h("b", {}, t("audio_format_label")),
+      segmented(format, kind === "audio" ? [["mp3", "MP3"], ["m4a", "M4A"], ["opus", "OPUS"]] :
+        [["mp4", "MP4"], ["mkv", "MKV"], ["webm", "WebM"]], (value) => { format = value; })),
+    h("b", {}, t("quality_label")), chips,
+    h("button", { class: "btn primary wide", onclick: () => { closeSheet(); runAction(kind, url, chosen, format); } },
+      icon("downloads"), t("start_download")),
+  ]);
+}
+
+function actionBar(url, isMedia) {
+  const chip = (name, label, onclick) => h("button", { class: "chip action", onclick }, icon(name), label);
+  return h("div", { class: "chips actions-bar" },
+    isMedia ? chip("video", t("act_video"), () => qualitySheet("video", url)) : null,
+    isMedia ? chip("audio", t("act_audio"), () => qualitySheet("audio", url)) : null,
+    isMedia ? chip("subtitles", t("act_transcript"), () => go("transcript", { url })) : null,
+    chip("pdf", "PDF", () => runAction("pdf", url)),
+    chip("camera", t("act_capture"), () => runAction("capture", url)),
+    chip("downloads", t("act_download"), () => runAction("download", url)),
+    chip("copy", t("copy_link"), () => copyText(url)));
+}
+
+function resultCard(item) {
+  return h("article", { class: "card result" },
+    h("button", { class: "result-main", onclick: () => go("reader", { url: item.url }) },
+      h("small", { class: "muted" }, [item.source || hostOf(item.url), item.date].filter(Boolean).join(" · ")),
+      h("b", {}, plain(item.title)),
+      item.snippet ? h("p", { class: "clamp" }, plain(item.snippet)) : null),
+    h("div", { class: "result-tools" },
+      liveAddressAllowed(item.url) ? h("button", { class: "btn small ghost result-live", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")) : null,
+      iconButton("pdf", "PDF", () => runAction("pdf", item.url), "tiny"),
+      iconButton("camera", t("act_capture"), () => runAction("capture", item.url), "tiny"),
+      iconButton("copy", t("copy_link"), () => copyText(item.url), "tiny")));
+}
+
+function resultList(data) {
+  if (!data.results.length) return [empty(t("no_results"), "search")];
+  return data.results.map(resultCard);
+}
+
+function liveAddressBox() {
+  const input = field({ type: "url", inputmode: "url", maxlength: "4096", enterkeyhint: "go",
+    placeholder: t("live_entry_placeholder"), "aria-label": t("live_entry_label") });
+  const open = () => { if (input.value.trim()) openLiveAddress(input.value); };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); open(); }
+  });
+  return h("div", { class: "live-entry" },
+    h("p", { class: "muted small" }, t("live_entry_hint")),
+    h("div", { class: "search-field live-entry-field" }, icon("link"), input,
+      h("button", { class: "btn primary small", onclick: open }, t("live_open"))));
+}
+
+VIEWS.web = {
+  title: () => t("tab_web"),
+  render(main) {
+    add(main, section(t("web_search_title"), searchBox()),
+      section(t("live_entry_title"), liveAddressBox()));
+  },
+};
+
+VIEWS.results = {
+  tab: "web",
+  title: (params) => params.q,
+  render(main, params) {
+    const box = h("div", { class: "stack" });
+    const engine = searchEngine(params.engine);
+    add(main, searchBox({ ...params, engine }, true), box);
+    fetchView(box, "search", { q: params.q, engine, mode: params.mode }, (data) => fill(box,
+      data.mode === "advanced" ? h("p", { class: "note" }, icon("bolt"), data.left ? t("mode_left", { n: data.left }) : t("mode_empty")) : null,
+      ...resultList(data)), { label: t("searching") });
+  },
+};
+
+function openHref(href) {
+  if (!href || href.startsWith("#")) return;
+  if (href.startsWith("mailto:")) {
+    const body = mailBody(href).trim();
+    if (body.startsWith("/")) runCommand(body);
+    else if (body) go("reader", { url: normalUrl(body) });
+    return;
+  }
+  if (/^https?:\/\//i.test(href)) go("reader", { url: href });
+}
+
+function drawPage(box, data, params) {
+  if (data.file) {
+    fill(box, card(h("div", { class: "row" }, icon("file", "big"), h("b", {}, t("file_link"))), replyBody(data),
+      h("button", { class: "btn primary", onclick: () => goTab("downloads") }, icon("downloads"), t("tab_downloads"))));
+    return;
+  }
+  remember("visited", { url: data.url, title: plain(data.title) || hostOf(data.url), ts: now() }, 15);
+  const page = data.page || 1;
+  const pager = data.pages > 1 ? h("div", { class: "pager" },
+    h("button", { class: "btn ghost", disabled: page <= 1, onclick: () => swap("reader", { url: params.url, page: page - 1 }) }, icon("back"), t("previous")),
+    h("span", { class: "muted" }, t("page_of", { n: page, m: data.pages })),
+    h("button", { class: "btn ghost", disabled: page >= data.pages, onclick: () => swap("reader", { url: params.url, page: page + 1 }) }, t("next"), icon("next"))) : null;
+  fill(box, 
+    h("header", { class: "page-head" }, h("small", { class: "muted" }, hostOf(data.url)), h("h2", {}, plain(data.title))),
+    actionBar(data.url, data.media),
+    data.nav && data.nav.length ? h("details", { class: "card nav" }, h("summary", {}, icon("apps"), t("sections"), icon("down", "caret")),
+      h("div", { class: "chips" }, data.nav.map(([label, target]) => h("button", { class: "chip", onclick: () => go("reader", { url: target }) }, plain(label))))) : null,
+    sanitize(data.html, { href: openHref }),
+    pager);
+}
+
+VIEWS.reader = {
+  tab: "web",
+  title: (params) => hostOf(params.url),
+  render(main, params) {
+    const box = h("div", { class: "reader" });
+    add(main, box);
+    fetchView(box, "read", { url: params.url, page: params.page || 1 }, (data) => drawPage(box, data, params), { label: t("loading_page") });
+  },
+};
+
+VIEWS.transcript = {
+  tab: "apps",
+  title: () => t("act_transcript"),
+  render(main, params) {
+    const box = h("div", { class: "stack" });
+    add(main, box);
+    fetchView(box, "action", { kind: "transcript", url: params.url }, (data) => {
+      const name = `${plain(data.title).replace(/[\\/:*?"<>|]+/g, "").slice(0, 60) || "transcript"}.txt`;
+      fill(box, 
+        h("header", { class: "page-head" }, h("small", { class: "muted" }, hostOf(params.url)), h("h2", {}, plain(data.title))),
+        h("div", { class: "row wrap" },
+          h("button", { class: "btn ghost", onclick: () => copyText(data.text) }, icon("copy"), t("copy")),
+          h("button", { class: "btn ghost", onclick: () => exportSheet(new Blob([data.text], { type: "text/plain" }), name) }, icon("share"), t("export"))),
+        h("div", { class: "card prose" }, data.text.split(/\n{2,}/).map((block) => h("p", {}, block))));
+    }, { label: t("loading_transcript") });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Mini apps.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// YouTube and music. Search results are not a guarantee that a download is allowed or accessible.
+// ---------------------------------------------------------------------------
+function youtubeUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    return ["http:", "https:"].includes(new URL(value).protocol) &&
+      (host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com"));
+  } catch (error) { return false; }
+}
+
+function youtubeCard(item, audioOnly = false) {
+  return h("article", { class: "card video" },
+    h("div", { class: "video-art" }, icon(audioOnly ? "audio" : "youtube")),
+    h("div", { class: "video-body" }, h("b", {}, plain(item.title)),
+      h("small", { class: "muted" }, [item.source || "YouTube", item.snippet, item.date].filter(Boolean).join(" · ")),
+      h("div", { class: "chips" },
+        !audioOnly ? h("button", { class: "chip action", onclick: () => qualitySheet("video", item.url) }, icon("video"), t("act_video")) : null,
+        h("button", { class: "chip action", onclick: () => qualitySheet("audio", item.url) }, icon("audio"), t("act_audio")),
+        h("button", { class: "chip action", onclick: () => runAction("info", item.url) }, icon("info"), t("media_inspect")),
+        !audioOnly ? h("button", { class: "chip action", onclick: () => go("transcript", { url: item.url }) }, icon("subtitles"), t("act_transcript")) : null,
+        h("button", { class: "chip action", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")))));
+}
+
+function youtubePages(box, query, audioOnly = false) {
+  const results = h("div", { class: "stack" });
+  const controls = h("div", { class: "stack" });
+  const seen = new Set();
+  let page = 1, busy = false;
+  fill(box, results, controls);
+  const load = async (fresh = false) => {
+    if (busy || !box.isConnected) return;
+    if (fresh) { page = 1; seen.clear(); fill(results); }
+    busy = true;
+    fill(controls, loading(t("searching")));
+    try {
+      const args = { q: query, page }, key = "youtube_search" + JSON.stringify(args);
+      const saved = savedResult(key);
+      if (!fresh && saved && saved.error) {
+        fill(controls, failure(saved.error, () => load(true)));
+        return;
+      }
+      const inMemory = resultMemoHas(key);
+      const reused = !fresh && (inMemory || !!saved);
+      if (!reused && resultPending(key)) {
+        bus.on("result:" + key, () => { if (box.isConnected) { busy = false; load(); } });
+        return;
+      }
+      const data = reused ? (inMemory ? memo.get(key) : saved.data) :
+        await bridge.request("youtube_search", args, resultContext(key, audioOnly ? "notification_music" : "notification_youtube")).promise;
+      if (!box.isConnected) return;
+      if (reused && page === 1) add(results, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+        h("button", { class: "btn ghost small", onclick: () => load(true) }, t("result_refresh"))));
+      const items = (data.results || []).filter((item) => youtubeUrl(item.url) && !seen.has(item.url));
+      for (const item of items) { seen.add(item.url); add(results, youtubeCard(item, audioOnly)); }
+      page += 1;
+      fill(controls,
+        data.more ? h("button", { class: "btn ghost wide", onclick: () => load() }, icon("down"), t("youtube_more")) : null,
+        data.limited ? h("p", { class: "muted small" }, t("youtube_limit")) : null,
+        !seen.size && !data.more ? empty(t("no_results"), "search") : null);
+    } catch (error) {
+      if (box.isConnected && !error.cancelled) fill(controls, failure(error.message, () => load(true)));
+    } finally { busy = false; }
+  };
+  load();
+}
+
+VIEWS.youtube = {
+  tab: "apps", title: () => "YouTube",
+  render(main, params) {
+    const input = field({ type: "search", placeholder: t("youtube_placeholder"), value: params.q || "", enterkeyhint: "search" });
+    const submit = () => {
+      const q = input.value.trim();
+      if (!q) return;
+      if (looksLikeWebAddress(q)) {
+        const url = normalUrl(q);
+        if (!youtubeUrl(url)) { toast(t("youtube_only"), "bad"); return; }
+        openSheet(t("video_link"), [h("p", { class: "muted small" }, t("media_rights_note")), youtubeCard({ title: q, url, source: "YouTube" })]);
+      } else swap("youtube", { q });
+    };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+    const box = h("div", { class: "stack" });
+    add(main, h("div", { class: "search-field" }, icon("youtube"), input,
+      h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+      h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
+    if (params.q) youtubePages(box, params.q);
+    else add(box, empty(t("youtube_hint"), "youtube"));
+  },
+};
+
+VIEWS.music = {
+  tab: "apps", title: () => t("tile_music"),
+  render(main, params) {
+    const provider = params.provider === "archive" ? "archive" : "youtube";
+    const input = field({ type: "search", placeholder: t("music_placeholder"), value: params.q || "", enterkeyhint: "search" });
+    const submit = () => { const q = input.value.trim(); if (q) swap("music", { q, provider }); };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
+    const box = h("div", { class: "stack" });
+    add(main, segmented(provider, [["youtube", "YouTube"], ["archive", "Internet Archive"]], (value) => swap("music", { q: input.value.trim(), provider: value })),
+      h("div", { class: "search-field" }, icon("audio"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+      h("p", { class: "note" }, icon("info"), t(provider === "youtube" ? "media_rights_note" : "music_archive_note")), box);
+    if (!params.q) { add(box, empty(t("music_hint"), "audio")); return; }
+    if (provider === "youtube") {
+      youtubePages(box, params.q + " music", true);
+    } else {
+      fetchView(box, "music_search", { q: params.q }, (data) => fill(box, ...((data.results || []).length ? data.results.map((item) =>
+        h("button", { class: "card space-card", onclick: () => go("music_item", { id: item.id }) }, icon("audio"),
+          h("span", { class: "grow" }, h("b", {}, item.title), h("small", { class: "muted" }, [item.creator, "Internet Archive"].filter(Boolean).join(" · "))), icon("next")))
+        : [empty(t("no_results"), "search")])), { label: t("searching") });
+    }
+  },
+};
+
+VIEWS.music_item = {
+  tab: "apps", title: () => t("music_files_title"),
+  render(main, params) {
+    const box = h("div", { class: "stack" }); add(main, box);
+    fetchView(box, "music_item", { id: params.id }, (data) => fill(box,
+      h("h2", {}, data.title), h("p", { class: "muted small" }, data.creator || "Internet Archive"),
+      h("p", { class: "note" }, icon("info"), t("music_license_note"), " ", data.license || data.rights || t("music_no_license")),
+      h("p", { class: "muted small" }, t("music_files_hint")),
+      ...(data.files.length ? data.files.map((file) => h("article", { class: "card row music-file" },
+        h("div", { class: "grow" }, h("b", {}, file.title), h("small", { class: "muted" },
+          [file.format, file.bitrate || "", file.size ? fmtSize(file.size) : ""].filter(Boolean).join(" · "))),
+        h("button", { class: "btn primary small", onclick: () => runAction("download", file.url) }, icon("downloads"), t("download_original"))))
+        : [empty(t("music_no_files"), "audio")]),
+      data.more ? h("p", { class: "muted small" }, t("music_more_files")) : null,
+      h("button", { class: "btn ghost", onclick: () => openLiveAddress(data.page) }, icon("web"), t("music_open_source"))
+    ), { label: t("loading_page") });
+  },
+};
+
+VIEWS.apps = {
+  title: () => t("tab_apps"),
+  render(main) {
+    add(main, tiles(cache.admin ? [["shield", "tile_admin", "admin"]] : []), h("p", { class: "note" }, icon("info"), t("apps_hint")));
+  },
+};
+
+function toolResult(box, name, arg) {
+  const args = { name, arg }, key = "tool" + JSON.stringify(args);
+  // Track the specific tool request so multiple unread results open the right one.
+  if (current.view === "tools") current.params = { tool: name, arg };
+  store.set("tool.last", { name, args, key });
+  const definition = UTILITIES.find((item) => item[0] === name);
+  const noticeLabel = definition ? `${t("notification_tool")} · ${t(definition[2])}` : "notification_tool";
+  fetchView(box, "tool", args, (data) => fill(box, card(rich(data.text, hooksFor()))), { fresh: true, noticeLabel });
+}
+
+function askBox({ placeholder, value = "", onsubmit, iconName = "search", label }) {
+  const input = field({ type: "text", placeholder, value, enterkeyhint: "go" });
+  const submit = () => input.value.trim() && onsubmit(input.value.trim());
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      submit();
+    }
+  });
+  return h("div", { class: "search-field" }, icon(iconName), input, h("button", { class: "btn primary small", onclick: submit }, label || t("go")));
+}
+
+// Source keys and observations remain unchanged. ECU is displayed as EUR;
+// elTOQUE's table marks BTC and USDT (TRC20) per USD in the crypto, not per coin.
+function rateUnit(_data, code) {
+  if (["BTC", "USDT", "USDT_TRC20"].includes(code)) return "usd_crypto";
+  if (["USD", "EUR", "ECU", "MLC", "TRX", "CAD", "MXN", "CUP"].includes(code)) return "unit";
+  return "unknown"; // do not extrapolate to future, undocumented suffixes
+}
+
+function rateDisplayCode(code) {
+  return ({ ECU: "EUR", USDT_TRC20: "USDT (TRC20)" })[code] || code;
+}
+
+function rateAmountLabel(data, code) {
+  const shown = rateDisplayCode(code);
+  return rateUnit(data, code) === "usd_crypto" ? t("rates_crypto_amount", { code: shown }) : shown;
+}
+
+function fmtRate(value) {
+  return Number(value).toLocaleString(lang(), { maximumFractionDigits: 20 });
+}
+
+function rateLabel(data, code) {
+  const kind = rateUnit(data, code), shown = rateDisplayCode(code);
+  if (kind === "usd_crypto") return t("rates_crypto_unit", { code: shown });
+  if (kind === "unknown") return t("rates_unknown_unit", { code: shown });
+  return `1 ${shown}`;
+}
+
+function rateHistory() {
+  const container = h("div", { class: "stack" });
+  let history = store.get("rates.history", null);
+  let code = "USD";
+  let days = "7";
+  const body = h("div", { class: "stack" });
+  const draw = () => {
+    if (!history || !Array.isArray(history.history) || !history.history.length) {
+      fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return;
+    }
+    const codes = [...new Set(history.history.flatMap((point) => Object.keys(point.rates || {})))];
+    if (!codes.includes(code)) code = codes[0] || "USD";
+    const points = history.history.filter((point) => Number.isFinite(Number(point.rates && point.rates[code])) && Number(point.rates[code]) > 0)
+      .map((point) => ({ date: point.date, value: Number(point.rates[code]), queried_at: point.queried_at }));
+    if (!points.length) { fill(body, h("p", { class: "muted small" }, t("history_no_data"))); return; }
+    const vals = points.map((point) => point.value);
+    const min = Math.min(...vals), max = Math.max(...vals), span = max - min || 1;
+    const chart = h("div", { class: "rate-chart" + (points.length <= 7 ? " chart-short" : ""), role: "img", "aria-label": t("history_chart", { code: rateDisplayCode(code) }) },
+      points.map((point) => h("div", { class: "chart-day", title: `${point.date}: ${fmtRate(point.value)} CUP` },
+        h("span", { class: "chart-value" }, fmtRate(point.value)),
+        h("span", { class: "chart-bar", style: `height:${30 + 70 * (point.value - min) / span}%` }),
+        h("small", {}, point.date.slice(5)))));
+    let scenario = null;
+    const consecutive = points.length >= 5 && points.every((point, index) => !index ||
+      (Date.parse(point.date + "T00:00:00Z") - Date.parse(points[index - 1].date + "T00:00:00Z")) === 86400000);
+    if (rateDerivedApproved && history.derived_allowed === true && consecutive && history.complete && !history.stale && rateUnit(history, code) !== "unknown") {
+      const n = points.length, meanX = (n - 1) / 2, meanY = vals.reduce((a, b) => a + b, 0) / n;
+      const numerator = vals.reduce((sum, value, i) => sum + (i - meanX) * (value - meanY), 0);
+      const denominator = vals.reduce((sum, _value, i) => sum + (i - meanX) ** 2, 0);
+      const estimated = vals[n - 1] + (numerator / denominator) * 3;
+      if (Number.isFinite(estimated) && estimated > 0) scenario = estimated;
+    }
+    const details = h("details", { class: "rate-history-table" },
+      h("summary", {}, t("history_table"), icon("down", "caret")),
+      h("div", { class: "history-rows" },
+        h("div", { class: "history-row heading" }, h("span", {}, t("history_date")), h("span", {}, t("history_value"))),
+        points.map((point) => h("div", { class: "history-row" }, h("span", {}, point.date),
+          h("b", {}, `${fmtRate(point.value)} CUP`)))));
+    fill(body,
+      h("div", { class: "row between wrap" }, h("b", {}, t("history_chart", { code: rateDisplayCode(code) })),
+        select(code, codes.map((item) => [item, rateDisplayCode(item)]), (value) => { code = value; draw(); })),
+      h("small", { class: "muted" }, rateLabel(history, code)),
+      chart, h("small", { class: "muted" }, t("history_scale")),
+      points.length > 7 ? h("small", { class: "muted" }, t("history_scroll")) : null,
+      !history.complete ? h("p", { class: "note warn" }, icon("alert"), t("history_incomplete"),
+        history.error === "rate_limit" ? " " + t("history_limited") : "") : null,
+      history.stale ? h("p", { class: "note warn" }, icon("clock"), t("history_saved")) : null,
+      details, h("small", { class: "muted" }, t("history_source")),
+      rateDerivedApproved && history.derived_allowed === true ? h("div", { class: "scenario" }, h("b", {}, t("history_forecast")),
+        scenario == null ? h("p", { class: "muted small" }, t(rateUnit(history, code) === "unknown" ? "history_unit_unknown" : "history_insufficient")) :
+          h("p", {}, h("strong", {}, `≈ ${fmtNumber(scenario, 0)} CUP / ${rateLabel(history, code)}`)),
+        h("small", { class: "muted" }, t("history_estimate"))) :
+        h("p", { class: "note" }, icon("info"), t("rates_derived_disabled")));
+  };
+  const load = async () => {
+    loadButton.disabled = true;
+    fill(body, loading());
+    try {
+      history = await bridge.call("rates", { history: true, days: Number(days) });
+      rateDerivedApproved = history.derived_allowed === true;
+      store.set("rates.history", history);
+      bus.emit("rates");
+      if (body.isConnected) draw();
+    } catch (error) {
+      if (!error.cancelled && body.isConnected) {
+        if (history && history.history && history.history.length) {
+          history = { ...history, stale: true };
+          store.set("rates.history", history);
+          draw();
+          toast(error.message, "bad");
+        } else fill(body, failure(error.message));
+      }
+    } finally { loadButton.disabled = false; }
+  };
+  const loadButton = h("button", { class: "btn primary small", onclick: load }, icon("refresh"), t("history_load"));
+  add(container, contextHelp(t("history_notice")),
+    h("div", { class: "row wrap" }, select(days, [["7", t("history_7")], ["14", t("history_14")], ["30", t("history_30")]], (value) => { days = value; }), loadButton), body,
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn ghost small", onclick: () => openLiveAddress("https://eltoque.com/tasas-de-cambio-cuba") }, icon("web"), t("history_official")),
+      h("button", { class: "btn ghost small", onclick: () => copyText("https://eltoque.com/tasas-de-cambio-cuba") }, icon("copy"), t("rates_copy_source"))),
+    h("small", { class: "rate-source-url" }, "https://eltoque.com/tasas-de-cambio-cuba"));
+  bus.on("rates", () => { if (body.isConnected) draw(); });
+  draw();
+  return container;
+}
+
+VIEWS.rates = {
+  tab: "apps",
+  title: () => t("tile_rates"),
+  render(main) {
+    const saved = store.get("rates", null);
+    const board = h("div", { class: "stack" });
+    const result = h("div", { class: "convert-out" });
+    const derivedNotice = h("p", { class: "note", hidden: true }, icon("info"), t("rates_derived_disabled"));
+    let amount = store.get("rates.amount", "100");
+    let code = store.get("rates.code", "USD");
+    let toCup = store.get("rates.toCup", true);
+    const convert = () => {
+      const data = store.get("rates", null);
+      if (!rateDerivedApproved || !data || data.derived_allowed !== true || data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300)
+          || !data.rates || rateUnit(data, code) === "unknown" || !(Number(data.rates[code]) > 0)) {
+        result.textContent = ""; return;
+      }
+      const value = Number(String(amount).replace(",", "."));
+      if (!Number.isFinite(value) || value < 0) { result.textContent = ""; return; }
+      const out = toCup ? value * data.rates[code] : value / data.rates[code];
+      if (!Number.isFinite(out)) { result.textContent = ""; return; }
+      const denomination = rateAmountLabel(data, code);
+      fill(result, h("b", {}, `${fmtNumber(value, 2)} ${toCup ? denomination : "CUP"}`), " ≈ ", h("b", { class: "accent" }, `${fmtNumber(out, 2)} ${toCup ? "CUP" : denomination}`));
+      store.set("rates.amount", amount); store.set("rates.code", code); store.set("rates.toCup", toCup);
+    };
+    const codes = h("div", { class: "row" });
+    const amountInput = field({ type: "number", inputmode: "decimal", min: "0", value: amount, oninput: (event) => { amount = event.target.value; convert(); } });
+    const swapButton = iconButton("swap", t("swap"), () => { toCup = !toCup; convert(); });
+    const draw = (data) => {
+      if (!data || !data.rates) return;
+      const order = ["USD", "EUR", "ECU", "MLC", "CAD", "MXN", "ZELLE", "CLA", "BTC", "USDT_TRC20", "TRX"];
+      const entries = Object.entries(data.rates).filter(([_name, value]) => Number.isFinite(Number(value)) && Number(value) > 0)
+        .sort(([a], [b]) => (order.indexOf(a) < 0 ? 999 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 999 : order.indexOf(b)) || a.localeCompare(b));
+      const convertible = entries.filter(([name]) => rateUnit(data, name) !== "unknown");
+      const stale = !!data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300);
+      fill(board,
+        h("div", { class: "rates-summary" },
+          h("div", { class: "row between wrap" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
+            h("span", { class: `rate-status ${stale ? "stale" : "fresh"}` }, h("i"), t(stale ? "rates_saved_status" : "rates_live_status"))),
+          h("strong", {}, "elTOQUE"),
+          h("small", {}, t("rates_consulted"), " ", fmtTime(data.at), " · ", since(data.at), " · ", data.source || "elTOQUE"),
+          h("p", {}, t("rates_reference_note"))),
+        stale ? h("p", { class: "note warn", role: "status" }, icon("alert"), t("rates_saved_warning")) : null,
+        h("div", { class: "rate-grid" }, entries.map(([name, value]) => h("div", { class: "card rate" }, h("small", { class: "muted" }, rateLabel(data, name)),
+          h("b", {}, fmtRate(value)), h("small", { class: "muted" }, "CUP")))),
+        h("p", { class: "muted small" }, icon("clock"), t("rates_poll_hint", { minutes: Math.round(Number(data.refresh_seconds || 300) / 60) })));
+      if (!convertible.some(([name]) => name === code)) code = convertible.length ? convertible[0][0] : "";
+      const allowed = rateDerivedApproved && data.derived_allowed === true && !stale;
+      amountInput.disabled = !allowed || !convertible.length;
+      swapButton.disabled = !allowed || !convertible.length;
+      derivedNotice.hidden = allowed;
+      if (!allowed) fill(derivedNotice, icon("info"), t(data.derived_allowed === true && stale ? "rates_calc_stale" : "rates_derived_disabled"));
+      fill(codes, allowed && convertible.length ? select(code, convertible.map(([name]) => [name, rateAmountLabel(data, name)]), (value) => { code = value; convert(); }) :
+        allowed ? h("small", { class: "muted" }, t("rates_no_convertible")) : null);
+      convert();
+    };
+    const refresh = async (button) => {
+      if (button) button.classList.add("busy");
+      if (!store.get("rates", null)) fill(board, loading());
+      try {
+        const data = await refreshSharedRates();
+        if (board.isConnected) draw(data);
+      } catch (error) {
+        if (!error.cancelled) {
+          toast(error.message, "bad");
+          if (board.isConnected && !store.get("rates", null)) fill(board, failure(error.message, () => refresh()));
+        }
+      } finally { if (button) button.classList.remove("busy"); }
+    };
+    const refreshButton = iconButton("refresh", t("refresh"), () => refresh(refreshButton));
+    const methodology = "https://eltoque.com/metodologia-de-la-tasa-representativa-del-mercado-informal-de-eltoque";
+    const about = h("details", { class: "card rate-about" },
+      h("summary", {}, icon("info"), h("b", {}, t("rates_about_title")), icon("down", "caret")),
+      h("div", { class: "stack" }, h("p", {}, t("rates_about_offers")), h("p", {}, t("rates_about_crypto")),
+        h("p", {}, t("rates_about_api")), h("p", {}, t("rates_about_time")), h("b", {}, t("rates_about_sources")),
+        h("div", { class: "row wrap" },
+          h("button", { class: "btn ghost small", onclick: () => openLiveAddress(methodology) }, icon("web"), t("rates_open_source")),
+          h("button", { class: "btn ghost small", onclick: () => copyText(methodology) }, icon("copy"), t("rates_copy_source"))),
+        h("small", { class: "rate-source-url" }, methodology)));
+    bus.on("rates", () => { const data = store.get("rates", null); if (board.isConnected && data) draw(data); });
+    add(main, headRow(t("rates_title"), refreshButton), board,
+      section(t("converter"), card(derivedNotice, h("div", { class: "row convert-row" }, amountInput, codes, swapButton), result,
+        h("p", { class: "muted small" }, t("rates_calc_note")))),
+      section(t("history_title"), card(rateHistory())), about);
+    if (saved) draw(saved);
+    if (!saved || now() - saved.at > Number(saved.refresh_seconds || 300)) refresh();
+    watchVisibleRates(board);
+  },
+};
+
+function weatherIcon(code, isDay = 1) {
+  code = Number(code);
+  if (code === 0 || code === 1) return isDay ? "sun" : "moon";
+  if (code === 45 || code === 48) return "cloudfog";
+  if (code >= 95) return "cloudstorm";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "cloudsnow";
+  if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return "cloudrain";
+  return "weather";
+}
+
+function weatherValue(value, suffix = "") {
+  return value === null || value === undefined ? "—" : `${fmtNumber(value, 1)}${suffix}`;
+}
+
+// Saved forecasts remain readable in either language, even offline. Older
+// snapshots may contain only one description and keep that as a safe fallback.
+function weatherDescription(item) {
+  const descriptions = item && item.descriptions;
+  const translated = descriptions && descriptions[lang()];
+  return typeof translated === "string" && translated ? translated : String((item && item.description) || "");
+}
+
+VIEWS.weather = {
+  tab: "apps",
+  title: () => t("tile_weather"),
+  render(main) {
+    const box = h("div", { class: "stack weather-result" });
+    const settings = h("div", { class: "card stack weather-settings" });
+    const savedCities = store.get("cities", [t("default_city")]);
+    const cities = Array.isArray(savedCities) && savedCities.length ? savedCities : [t("default_city")];
+    let sequence = 0;
+    const drawSettings = () => {
+      const home = weatherHome();
+      const toggle = h("button", { class: "btn small", type: "button" }, t(home.auto ? "weather_auto_disable" : "weather_auto_enable"));
+      toggle.addEventListener("click", async () => {
+        toggle.disabled = true;
+        try {
+          const result = await bridge.call("weather_settings", { do: "auto", on: !home.auto });
+          saveWeatherHome(result);
+          toast(t("weather_setting_saved"), "ok");
+        } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+        finally { toggle.disabled = false; }
+      });
+      fill(settings, h("div", { class: "row between wrap" },
+        h("div", { class: "stack grow" }, h("b", {}, t("weather_default_city", { city: home.city })),
+          h("small", { class: "muted" }, t(home.auto ? "weather_auto_on" : "weather_auto_off"))), toggle),
+        h("small", { class: "muted" }, t("weather_auto_detail")), h("small", { class: "muted" }, t("weather_privacy")));
+    };
+    const draw = (data) => {
+      const current = data.current || {};
+      const candidates = data.candidates || [];
+      const home = weatherHome();
+      const last = validWeatherLast(home.last) && home.last.data.query === data.query &&
+        Number(home.last.data.place.id) === Number(data.place.id) ? home.last : null;
+      const isDefault = home.city === data.query && Number(home.place_id) === Number(data.place.id);
+      const chooseDefault = h("button", { class: "btn small", type: "button", disabled: isDefault || !!(last && last.local_only) },
+        t(isDefault ? "weather_is_default" : "weather_use_default"));
+      chooseDefault.addEventListener("click", async () => {
+        chooseDefault.disabled = true;
+        try {
+          const result = await bridge.call("weather_settings", { do: "use_last", city: data.query, place_id: Number(data.place.id) });
+          saveWeatherHome(result);
+          if (box.isConnected) draw(data);
+          toast(t("weather_default_saved"), "ok");
+        } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+        finally { chooseDefault.disabled = false; }
+      });
+      const daily = (data.days || []).map((day) => {
+        const date = new Date(day.date + "T12:00:00");
+        return h("div", { class: "weather-day" },
+          h("small", {}, Number.isNaN(date.getTime()) ? day.date : date.toLocaleDateString(lang(), { weekday: "short", day: "numeric" })),
+          icon(weatherIcon(day.code)), h("small", { class: "weather-desc" }, weatherDescription(day)),
+          h("b", {}, `${weatherValue(day.high, "°")} / ${weatherValue(day.low, "°")}`),
+          h("small", {}, `${weatherValue(day.rain, "%")} ${t("weather_rain")}`));
+      });
+      fill(box,
+        candidates.length > 1 ? h("label", { class: "stack small" }, t("weather_places"),
+          select(String(data.place.id), candidates.map((item) => [String(item.id), item.label]), (value) => run(data.query, Number(value))),
+          h("small", { class: "muted" }, t("weather_choose"))) : null,
+        h("div", { class: "weather-hero" },
+          h("div", { class: "weather-sky" }, icon(weatherIcon(current.code, current.is_day), "weather-art")),
+          h("div", { class: "weather-place" }, h("small", {}, data.place.label),
+            h("div", { class: "weather-temp" }, weatherValue(current.temp, "°")),
+            h("b", {}, weatherDescription(current)), h("small", {}, `${t("weather_feels")} ${weatherValue(current.feels, "°C")}`)),
+          h("div", { class: "weather-stats" },
+            h("span", {}, icon("drop"), h("small", {}, t("weather_humidity")), h("b", {}, weatherValue(current.humidity, "%"))),
+            h("span", {}, icon("wind"), h("small", {}, t("weather_wind")), h("b", {}, weatherValue(current.wind, " km/h"))),
+            h("span", {}, icon("cloudrain"), h("small", {}, t("weather_rain")), h("b", {}, weatherValue(current.precipitation, " mm"))))),
+        h("small", { class: "muted" }, t("weather_observed", { time: `${data.as_of || "—"}${data.timezone ? " · " + data.timezone : ""}` })),
+        last ? h("small", { class: "muted" }, t("weather_banner_saved"), " · ", fmtTime(last.at)) : null,
+        last && last.local_only ? h("p", { class: "note warn", role: "status" }, t("weather_local_only")) : null,
+        chooseDefault,
+        daily.length ? section(t("weather_forecast"), h("div", { class: "weather-days" }, daily)) : null,
+        h("small", { class: "muted" }, t("weather_source")));
+    };
+    const run = async (city, placeId = 0) => {
+      const ticket = ++sequence;
+      remember("cities", city, 6);
+      fill(box, loading());
+      try {
+        const request = bridge.request("weather", { city, place_id: placeId },
+          { kind: "weather-result", category: "apps", target: { view: "weather", params: {} } });
+        if (!request.id) throw new Error(t("request_big"));
+        store.set("weather.latest", request.id);
+        const data = await request.promise;
+        if (box.isConnected && ticket === sequence) draw(data);
+      } catch (error) {
+        if (box.isConnected && ticket === sequence && !error.cancelled) {
+          const last = weatherHome().last;
+          if (validWeatherLast(last)) {
+            draw(last.data);
+            box.prepend(h("p", { class: "note warn", role: "status" }, error.message));
+          } else fill(box, failure(error.message, () => run(city, placeId)));
+        }
+      }
+    };
+    bus.on("weather_result", ({ data, error }) => {
+      if (!box.isConnected) return;
+      if (error) {
+        const last = weatherHome().last;
+        if (validWeatherLast(last)) { draw(last.data); box.prepend(h("p", { class: "note warn", role: "status" }, error)); }
+        else fill(box, failure(error));
+      } else if (data) draw(data);
+    });
+    bus.on("weather_home", () => {
+      drawSettings();
+      const last = weatherHome().last;
+      if (!sequence && validWeatherLast(last)) draw(last.data);
+    });
+    drawSettings();
+    add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather", label: t("weather_find") }),
+      h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box, settings);
+    const last = weatherHome().last;
+    if (validWeatherLast(last)) draw(last.data);
+    else add(box, empty(t("weather_none"), "weather"));
+    const previousError = store.get("weather.error", "");
+    if (previousError) box.prepend(h("p", { class: "note warn", role: "status" }, previousError));
+    const pendingWeather = store.get("weather.latest", "");
+    if (pendingWeather && bridge.pending()[pendingWeather]) box.prepend(loading(t("searching")));
+  },
+};
+
+const TOPICS = ["topic_cuba", "topic_world", "topic_tech", "topic_sports", "topic_economy", "topic_science"];
+
+VIEWS.news = {
+  tab: "apps",
+  title: () => t("tile_news"),
+  render(main, params) {
+    const box = h("div", { class: "stack" });
+    const run = (q) => swap("news", { q });
+    add(main, askBox({ placeholder: t("news_placeholder"), value: params.q || "", onsubmit: run, iconName: "news" }),
+      h("div", { class: "chips" }, TOPICS.map((key) => h("button", { class: `chip ${params.q === t(key) ? "on" : ""}`, onclick: () => run(t(key)) }, t(key)))), box);
+    const q = params.q || t("topic_cuba");
+    fetchView(box, "search", { q, engine: "news" }, (data) => fill(box, ...resultList(data)), { label: t("searching") });
+  },
+};
+
+const LANGS = ["es", "en", "pt", "fr", "it", "de", "ru", "zh-CN", "ja", "ko", "ar", "hi", "tr", "nl", "pl", "uk", "sv", "el", "he", "ca", "ro", "vi", "id"];
+
+function langName(code) {
+  try {
+    const names = new Intl.DisplayNames([lang()], { type: "language" });
+    const name = names.of(code);
+    return name.charAt(0).toLocaleUpperCase(lang()) + name.slice(1);
+  } catch (error) {
+    return code.toUpperCase();
+  }
+}
+
+VIEWS.translate = {
+  tab: "apps",
+  title: () => t("tile_translate"),
+  render(main) {
+    let source = store.get("tr.source", "auto");
+    let target = store.get("tr.target", lang() === "es" ? "en" : "es");
+    const area = autosize(h("textarea", { class: "input", rows: 4, placeholder: t("translate_placeholder"), value: store.get("tr.text", "") }));
+    const output = h("div", { class: "card translation" }, h("p", { class: "muted" }, t("translate_hint")));
+    const pickers = h("div", { class: "row lang-row" });
+    const drawPickers = () => fill(pickers, 
+      select(source, [["auto", t("detect")], ...LANGS.map((code) => [code, langName(code)])], (value) => { source = value; store.set("tr.source", value); }),
+      iconButton("swap", t("swap"), () => {
+        if (source === "auto") return;
+        [source, target] = [target, source];
+        store.set("tr.source", source);
+        store.set("tr.target", target);
+        drawPickers();
+      }),
+      select(target, LANGS.map((code) => [code, langName(code)]), (value) => { target = value; store.set("tr.target", value); }));
+    const showTranslation = (record) => {
+      if (!record) return;
+      if (record.error) { fill(output, failure(record.error)); return; }
+      const data = record.data;
+      if (!data) return;
+      fill(output, h("p", { class: "translated" }, data.text),
+        data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
+        h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
+          iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
+    };
+    const run = async (button) => {
+      const text = area.value.trim();
+      if (!text) return;
+      if (text.length > 4500) { toast(t("translate_limit"), "bad"); return; }
+      if (button.disabled) return;
+      store.set("tr.text", text);
+      button.disabled = true;
+      button.classList.add("busy");
+      fill(output, loading(t("translating")));
+      try {
+        const request = bridge.request("translate", { text, source, target },
+          { kind: "translate-result", category: "apps", target: { view: "translate", params: {} } });
+        if (!request.id) throw new Error(t("request_big"));
+        store.set("tr.latest", request.id);
+        const data = await request.promise;
+        if (output.isConnected) showTranslation({ data });
+      } catch (error) {
+        if (!error.cancelled) fill(output, failure(error.message));
+      } finally {
+        button.disabled = false;
+        button.classList.remove("busy");
+      }
+    };
+    const button = h("button", { class: "btn primary", onclick: () => run(button) }, icon("translate"), t("translate"));
+    bus.on("translate_result", (record) => {
+      if (!output.isConnected) return;
+      button.disabled = false; button.classList.remove("busy"); showTranslation(record);
+    });
+    drawPickers();
+    const pendingTranslation = store.get("tr.latest", "");
+    if (pendingTranslation && bridge.pending()[pendingTranslation]) {
+      button.disabled = true; button.classList.add("busy"); fill(output, loading(t("translating")));
+    } else showTranslation(store.get("tr.result", null));
+    add(main, card(pickers, area, h("div", { class: "row between" }, h("small", { class: "muted" }, t("translate_note")), button)), contextHelp(t("translate_privacy") + " " + t("translate_limit")), output);
+  },
+};
+
+const UTILITIES = [["convert", "tools", "util_convert", "util_convert_hint"], ["time", "clock", "util_time", "util_time_hint"], ["calc", "tools", "util_calc", "util_calc_hint"]];
+
+VIEWS.tools = {
+  tab: "apps",
+  title: () => t("tile_tools"),
+  render(main, params) {
+    const args = params.tool && typeof params.arg === "string" ? { name: params.tool, arg: params.arg } : null;
+    const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
+    add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
+      const box = h("div");
+      if (last && last.name === name && last.args && (resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
+        fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
+      }
+      return h("details", { class: "card utility-card", open: !!(last && last.name === name) }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
+        h("small", { class: "muted" }, t(hint))), icon("down", "caret")),
+        h("div", { class: "utility-body stack" }, askBox({ placeholder: t(hint), onsubmit: (value) => toolResult(box, name, value), iconName }), box));
+    }));
+  },
+};
+
+async function resend(id, part) {
+  try {
+    const reply = await bridge.call("queue", { do: "resend", id, part });
+    setJobs(reply.jobs);
+    toast(reply.message || t("done"), "ok");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Downloads.
+// ---------------------------------------------------------------------------
+const FINAL = ["done", "failed", "cancelled"];
+
+async function queueOp(action, id, button) {
+  if (button) button.classList.add("busy");
+  try {
+    const reply = await bridge.call("queue", { do: action, id });
+    setJobs(reply.jobs);
+    if (reply.message) toast(reply.message, "ok");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+  } finally {
+    if (button) button.classList.remove("busy");
+  }
+}
+
+function resendSheet(job) {
+  openSheet(t("act_resend"), [h("p", { class: "muted small" }, t("resend_hint")),
+    h("div", { class: "chips" }, Array.from({ length: job.parts }, (unused, index) =>
+      h("button", { class: "chip big", onclick: () => { closeSheet(); resend(job.id, index + 1); } }, String(index + 1))))]);
+}
+
+function jobCard(job) {
+  const maintenancePause = !!(cache.maintenance_notice && cache.maintenance_notice.active && !FINAL.includes(job.status));
+  const tool = (name, label, action) => {
+    const button = h("button", { class: "chip action", onclick: () => queueOp(action, job.id, button) }, icon(name), label);
+    return button;
+  };
+  const hasBytes = ["queued", "downloading", "packing"].includes(job.status) && job.size && (job.done || job.status === "downloading");
+  const progress = hasBytes ? [bar(job.done, job.size), h("small", { class: "muted" }, `${fmtSize(job.done)} / ${fmtSize(job.size)}`)]
+    : job.status === "sending" && job.parts ? [bar(job.delivered, job.parts), h("small", { class: "muted" }, t("parts_sent", { n: job.delivered, m: job.parts }))]
+      : job.status === "queued" || job.status === "packing" ? [bar(0, 0, "indeterminate")] : [];
+  const meta = [job.size ? fmtSize(job.size) : "", job.parts > 1 ? t("parts_n", { n: job.parts }) : "", job.parts > 1 ? formatLabel(job.format) : "", fmtTime(job.created)];
+  return h("article", { class: `card job ${job.status}` },
+    h("div", { class: "row" }, h("span", { class: "job-icon" }, icon(job.kind === "video" ? "video" : job.kind === "audio" ? "audio" : "file")),
+      h("div", { class: "grow" }, h("b", { class: "clamp" }, plain(job.title)), h("small", { class: "muted" }, meta.filter(Boolean).join(" · "))),
+      h("span", { class: `status s-${(maintenancePause || (job.hold && !FINAL.includes(job.status))) ? "paused" : job.status}` },
+        maintenancePause ? t("status_maintenance") : job.hold && !FINAL.includes(job.status) ? t("status_paused") : t("status_" + job.status))),
+    ...progress,
+    job.error ? h("p", { class: "note bad" }, icon("alert"), plain(job.error)) : null,
+    job.warning ? h("p", { class: "note warn" }, icon("info"), plain(job.warning)) : null,
+    h("div", { class: "chips" },
+      !maintenancePause && !FINAL.includes(job.status) ? (job.hold ? tool("play", t("resume"), "resume") : tool("pause", t("pause"), "pause")) : null,
+      !maintenancePause && !FINAL.includes(job.status) ? tool("close", t("cancel"), "cancel") : null,
+      job.status === "failed" || job.status === "cancelled" ? tool("refresh", t("retry"), "retry") : null,
+      job.status === "done" && job.parts > 0 ? h("button", { class: "chip action", onclick: () => resendSheet(job) }, icon("send"), t("act_resend")) : null,
+      ["ready", "done"].includes(job.status) && job.parts > 0 ? h("button", { class: "chip action", onclick: () => go("downloads", { section: "kit", jobId: String(job.id), jobName: niceName(job.title, `Descarga ${job.id}`) }) }, icon("folder"), t("kit_import_job")) : null,
+      job.status === "done" && job.parts > 1 && job.format === "raw" ? h("button", { class: "chip action", onclick: () => go("downloads", { section: "kit", openJoin: true }) }, icon("join"), t("tile_join")) : null));
+}
+
+function downloadPanel(main) {
+    const input = field({ type: "url", placeholder: t("download_placeholder"), enterkeyhint: "go" });
+    const list = h("div", { class: "stack" });
+    const url = () => {
+      const value = input.value.trim();
+      if (!isUrl(value)) {
+        toast(t("invalid_url"), "bad");
+        return "";
+      }
+      return normalUrl(value);
+    };
+    const start = (kind) => () => {
+      const target = url();
+      if (!target) return;
+      if (kind === "video" || kind === "audio") qualitySheet(kind, target);
+      else runAction(kind, target);
+    };
+    const draw = () => {
+      const jobs = cache.jobs.slice().reverse();
+      fill(list, ...(jobs.length ? jobs.map(jobCard) : [empty(t("jobs_none"), "downloads")]));
+    };
+    const refresh = iconButton("refresh", t("refresh"), () => queueOp("", "", refresh));
+    add(main, 
+      card(h("div", { class: "search-field" }, icon("link"), input),
+        h("div", { class: "chips" },
+          h("button", { class: "chip action", onclick: start("download") }, icon("file"), t("dl_file")),
+          h("button", { class: "chip action", onclick: start("video") }, icon("video"), t("act_video")),
+          h("button", { class: "chip action", onclick: start("audio") }, icon("audio"), t("act_audio")),
+          h("button", { class: "chip action", onclick: start("info") }, icon("info"), t("act_info")))),
+      section(null, headRow(t("queue"), refresh, iconButton("trash", t("clear_done"), () => queueOp("clear", ""))), list),
+      h("p", { class: "note" }, icon("info"), t("downloads_hint")));
+    draw();
+    return draw;
+}
+
+VIEWS.downloads = {
+  title: () => t("tab_downloads"),
+  render(main, params) {
+    const body = h("div", { class: "stack" });
+    const chosen = ["links", "kit"].includes(params.section) ? params.section : "downloads";
+    let pendingJob = { ...(params.jobId ? { jobId: params.jobId, jobName: params.jobName } : {}), openJoin: !!params.openJoin };
+    let drawJobs = null;
+    ["jobs", "maintenance"].forEach((kind) => bus.on(kind, () => { if (drawJobs) drawJobs(); }));
+    const draw = (which) => {
+      FileKitUI.stop();
+      const kitOptions = which === "kit" ? pendingJob : {};
+      if (which === "kit") pendingJob = {};
+      current.params = { section: which };
+      drawJobs = null;
+      fill(body);
+      if (which === "links") VIEWS.links.render(body);
+      else if (which === "kit") FileKitUI.render(body, kitOptions);
+      else drawJobs = downloadPanel(body);
+    };
+    add(main, segmented(chosen, [["downloads", t("downloads_section"), "downloads"], ["kit", t("kit_title"), "folder"], ["links", t("links_section"), "links"]], draw), body);
+    draw(chosen);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Settings, health and administration.
+// ---------------------------------------------------------------------------
+async function saveSetting(key, value, row) {
+  row.classList.add("saving");
+  try {
+    cache.settings = await bridge.call("settings", { set: { [key]: value } });
+    saveCache();
+    toast(t("saved"), "ok");
+  } catch (error) {
+    if (!error.cancelled) toast(error.message, "bad");
+    bus.emit("settings");
+  } finally {
+    row.classList.remove("saving");
+  }
+}
+
+function settingRow(item) {
+  const row = h("label", { class: "setting" }, h("span", { class: "grow" }, item.label));
+  let control;
+  if (item.kind === "choice") {
+    control = select(item.value, item.choices.map((choice) => [choice.v, choice.l]), (value) => saveSetting(item.key, value, row));
+  } else {
+    control = field({ type: item.kind === "number" ? "number" : "text", value: item.value, min: item.min, max: item.max, inputmode: item.kind === "number" ? "numeric" : null,
+      onchange: (event) => saveSetting(item.key, event.target.value.trim(), row) });
+  }
+  add(row, control, h("i", { class: "spinner" }));
+  return row;
+}
+
+function botSettings() {
+  const box = h("div", { class: "stack" });
+  const draw = () => {
+    if (!cache.settings || cache.lang !== lang()) {
+      fill(box, loading());
+      return;
+    }
+    const reset = async () => {
+      if (!(await confirmBox(t("settings_reset"), t("settings_reset_q"), t("settings_reset_do")))) return;
+      try {
+        cache.settings = await bridge.call("settings", { reset: true });
+        saveCache();
+        toast(t("done"), "ok");
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+      bus.emit("settings");
+    };
+    fill(box, contextHelp(t(cache.admin ? "settings_admin" : "settings_own")),
+      ...cache.settings.map((group) => h("details", { class: "card settings-group" },
+        h("summary", {}, icon("settings"), h("b", { class: "grow" }, group.title), icon("down", "caret")),
+        group.shared ? contextHelp(t("settings_shared")) : null,
+        h("div", { class: "settings" }, group.items.map(settingRow)))),
+      cache.admin ? null : h("button", { class: "list-row", onclick: reset }, icon("refresh"), h("span", { class: "grow" }, t("settings_reset")), icon("next")));
+  };
+  bus.on("settings", draw);
+  draw();
+  if (cache.lang !== lang()) hello(true);
+  return box;
+}
+
+function clearKeys(prefix) {
+  Object.keys(localStorage).filter((key) => key.startsWith("mf." + prefix)).forEach((key) => localStorage.removeItem(key));
+}
+
+VIEWS.settings = {
+  title: () => t("tab_settings"),
+  render(main) {
+    const appRow = (label, control) => h("div", { class: "setting" }, h("span", { class: "grow" }, label), control);
+    const wipe = (title, work) => h("button", { class: "list-row", onclick: async () => {
+      if (await confirmBox(title, t("wipe_q"), t("delete"))) {
+        await work();
+        toast(t("done"), "ok");
+      }
+    } }, icon("trash"), h("span", { class: "grow" }, title), icon("next"));
+    const modes = h("div", { class: "mode-grid" });
+    add(main, 
+      section(t("set_app"), h("div", { class: "card settings" },
+        appRow(t("set_language"), select(prefs.lang, [["auto", t("lang_auto")], ["es", "Español"], ["en", "English"]], (value) => {
+          prefs.lang = value;
+          savePrefs();
+          applyLook();
+          chrome();
+          render();
+        })),
+        appRow(t("set_theme"), segmented(prefs.theme, [["system", t("theme_system")], ["light", t("theme_light")], ["dark", t("theme_dark")]], (value) => {
+          prefs.theme = value;
+          savePrefs();
+          applyLook();
+        })),
+        appRow(t("set_engine"), select(searchEngine(prefs.engine), ENGINES.map((key) => [key, t("engine_" + key)]), (value) => {
+          prefs.engine = value;
+          savePrefs();
+        })))),
+      section(t("set_modes"), contextHelp(t("set_modes_hint")), modes),
+      botSettings(),
+      section(t("more"), h("div", { class: "card list" },
+        cache.admin ? h("button", { class: "list-row", onclick: () => go("admin") }, icon("shield"), h("span", { class: "grow" }, t("tile_admin")), icon("next")) : null,
+        h("button", { class: "list-row", onclick: () => go("help") }, icon("help"), h("span", { class: "grow" }, t("help_title")), icon("next")),
+        h("button", { class: "list-row", onclick: () => hello(true) }, icon("refresh"), h("span", { class: "grow" }, t("sync")), icon("next")))),
+      section(t("sync_title"), h("div", { class: "card" }, syncTools())),
+      section(t("set_data"), h("div", { class: "card list" },
+        wipe(t("wipe_chats"), () => clearKeys("chat.")),
+        wipe(t("wipe_images"), () => media.clear()),
+        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); memo.clear(); bus.emit("notices"); }))),
+      section(t("about_title"), card(
+        h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
+        h("p", { class: "muted small" }, t("about_body")),
+        h("button", { class: "btn ghost", onclick: () => openLiveAddress("https://github.com/YosvanyAlain/michiflin-ai") }, icon("web"), t("about_repository")),
+        h("details", { class: "context-help" }, h("summary", {}, icon("user"), h("span", {}, t("about_collaborate")), icon("down", "caret")),
+          h("p", { class: "muted small" }, t("about_support"))))));
+    modeControl(modes, "nauta_strict", t("tile_nauta"), "nauta");
+    modeControl(modes, "kill_switch", t("tile_killswitch"), "killswitch");
+  },
+};
+
+function healthCards(data) {
+  const tile = (name, label, value, extra = "") => h("div", { class: `card stat ${extra}` }, icon(name), h("small", { class: "muted" }, label), h("b", {}, value));
+  const capped = data.cap_mb > 0;
+  return [
+    h("div", { class: "rate-grid" },
+      tile("clock", t("restart_in"), until(data.restart, t("restarting"))),
+      tile("health", t("uptime"), fmtDuration(data.uptime)),
+      tile("downloads", t("active"), String(data.active)),
+      tile("file", t("queue_size"), fmtSize(data.queue_bytes)),
+      tile("downloads", t("disk_free"), fmtSize(data.disk_free), data.disk_free < 2 * 1024 ** 3 ? "warn" : ""),
+      tile("send", t("sent_you"), capped ? `${fmtSize(data.sent)} / ${data.cap_mb} MB` : fmtSize(data.sent))),
+    capped ? bar(data.sent, data.cap_mb * 1024 * 1024) : null,
+    section(t("services"), h("div", { class: "card list" },
+      ...[["ffmpeg", "ffmpeg"], ["7z", "7-Zip"], ["browser", t("svc_browser")], ["media", t("svc_media")]].map(([key, label]) =>
+        h("div", { class: "list-row" }, icon(data.tools[key] ? "check" : "alert", data.tools[key] ? "ok" : "bad"), h("span", { class: "grow" }, label),
+          h("small", { class: "muted" }, data.tools[key] ? t("svc_ok") : t("svc_missing")))),
+      h("div", { class: "list-row" }, icon("search"), h("span", { class: "grow" }, t("svc_search")),
+        h("small", { class: "muted" }, data.search.you ? t("used_of", { n: data.search.used, m: data.search.daily }) : t("svc_free"))))),
+    h("p", { class: "muted small" }, t("health_note")),
+  ];
+}
+
+VIEWS.health = {
+  tab: "apps",
+  title: () => t("tile_health"),
+  render(main) {
+    const box = h("div", { class: "stack" });
+    const summary = h("div", { class: "status-summary" });
+    const draw = () => fill(box, ...(cache.health ? healthCards(cache.health) : [loading()]));
+    const drawSummary = () => fetchView(summary, "estado", {}, (data) => fill(summary,
+      h("div", { class: "card status-brief" }, h("span", { class: "mode-icon status-color" }, icon("status")),
+        h("div", { class: "grow" }, h("b", {}, t("estado_title")), h("p", { role: "status" }, data[lang()] || data.es || "—")))), { fresh: true });
+    const refresh = iconButton("refresh", t("refresh"), async () => {
+      refresh.classList.add("busy");
+      drawSummary();
+      try {
+        cache.health = await bridge.call("health");
+        saveCache();
+        draw();
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      } finally {
+        refresh.classList.remove("busy");
+      }
+    });
+    bus.on("health", draw);
+    add(main, headRow(cache.version ? `Michiflin AI ${cache.version}` : "Michiflin AI", refresh), summary, box);
+    drawSummary();
+    draw();
+  },
+};
+
+async function adminOp(box, args, confirmText) {
+  if (confirmText && !(await confirmBox(t("tile_admin"), confirmText, t("confirm")))) return;
+  try {
+    const data = await bridge.call("admin", args);
+    memo.set("admin{}", data);
+    if (box.isConnected) drawAdmin(box, data);
+    if (data.message) toast(data.message, "ok");
+  } catch (error) {
+    // Administration actions can have taken effect even if the reply was lost.
+    if (box.isConnected && !error.cancelled) fill(box, failure(error.message, () => adminOp(box, {})));
+  }
+}
+
+const rate = (bytes) => `${fmtSize(bytes || 0)}/s`;
+const mbit = (bytes) => `${Math.round(((bytes || 0) * 8) / 1e6)} Mbit/s`;
+
+function statTile(name, label, value, sub = "", level = "") {
+  return h("div", { class: `card stat ${level}` }, icon(name), h("small", { class: "muted" }, label), h("b", {}, value), sub ? h("small", { class: "muted sub" }, sub) : null);
+}
+
+function perfSection(perf) {
+  const memoryUsed = perf.memory.total - perf.memory.available;
+  const diskUsedShare = perf.disk.total ? perf.disk.used / perf.disk.total : 0;
+  const cores = perf.cpu.cores || 1;
+  return section(t("perf_title"),
+    h("div", { class: "rate-grid" },
+      statTile("bolt", t("perf_cpu"), `${perf.cpu.percent}%`, t("perf_load", { a: perf.cpu.load[0], b: perf.cpu.load[1], n: cores }),
+        perf.cpu.percent > 85 ? "bad" : perf.cpu.percent > 60 ? "warn" : ""),
+      statTile("health", t("perf_ram"), `${fmtSize(memoryUsed)} / ${fmtSize(perf.memory.total)}`, t("perf_bot_ram", { size: fmtSize(perf.memory.bot) }),
+        perf.memory.available < perf.memory.total * 0.1 ? "bad" : perf.memory.available < perf.memory.total * 0.25 ? "warn" : ""),
+      statTile("downloads", t("perf_disk"), t("perf_free", { size: fmtSize(perf.disk.free) }), t("perf_jobs_disk", { size: fmtSize(perf.disk.jobs), total: fmtSize(perf.disk.total) }),
+        perf.disk.free < 2 * 1024 ** 3 ? "bad" : diskUsedShare > 0.8 ? "warn" : ""),
+      statTile("web", t("perf_net"), `↓ ${rate(perf.network.rx_rate)}`, `↑ ${rate(perf.network.tx_rate)}`),
+      statTile("clock", t("perf_latency"), perf.latency.quick.n ? `${perf.latency.quick.median} s` : "—",
+        perf.latency.work.n ? t("perf_work", { m: perf.latency.work.median, p: perf.latency.work.p90 }) : t("perf_no_work"),
+        perf.latency.quick.median > 20 ? "warn" : ""),
+      statTile("rates", t("perf_queue"), t("perf_queue_v", { q: perf.queue.queued, d: perf.queue.downloading, s: perf.queue.sending }),
+        perf.queue.paused ? t("perf_paused") : t("perf_workers", { n: perf.queue.workers }), perf.queue.paused ? "warn" : "")),
+    h("div", { class: "card kv" },
+      h("span", {}, t("perf_threads")), h("span", {}, String(perf.process.threads)),
+      h("span", {}, t("uptime")), h("span", {}, fmtDuration(perf.process.uptime)),
+      h("span", {}, t("perf_requests")), h("span", {}, t("perf_requests_v", { n: perf.latency.total, e: perf.latency.errors })),
+      h("span", {}, t("sent_day")), h("span", {}, fmtSize(perf.queue.sent)),
+      h("span", {}, t("queue_size")), h("span", {}, fmtSize(perf.queue.bytes)),
+      h("span", {}, t("perf_traffic")), h("span", {}, `↓ ${fmtSize(perf.network.rx)} · ↑ ${fmtSize(perf.network.tx)}`)));
+}
+
+function hostSection(perf) {
+  const host = perf.host;
+  const rows = [
+    [t("host_provider"), host.provider], [t("host_system"), host.os], [t("host_cpu"), `${perf.cpu.model} · ${perf.cpu.cores} ${t("host_cores")}`],
+    [t("host_kernel"), `${host.kernel} · ${host.arch} · Python ${host.python}`], [t("host_runner"), host.runner],
+    [t("host_run"), host.run ? `#${host.number || "?"} · ${host.run}${host.attempt && host.attempt !== "1" ? ` · ${t("host_attempt", { n: host.attempt })}` : ""}` : ""],
+    [t("host_started"), fmtTime(host.started)], [t("restart_in"), until(host.ends, t("restarting"))],
+    [t("host_version"), host.sha ? (host.outdated ? t("host_outdated", { sha: host.sha, latest: host.latest }) : t("host_current", { sha: host.sha })) : ""],
+  ].filter(([, value]) => value);
+  return section(t("host_title"), h("div", { class: "card kv" }, ...rows.flatMap(([label, value]) => [h("span", {}, label), h("span", {}, value)])),
+    host.outdated ? h("p", { class: "note warn" }, icon("refresh"), t("host_update_note")) : null);
+}
+
+function benchSection(box, perf) {
+  const result = perf.bench || {};
+  const button = h("button", { class: "btn primary wide", onclick: () => {
+    button.classList.add("busy");
+    button.disabled = true;
+    adminOp(box, { do: "bench" });
+  } }, icon("bolt"), " ", t("bench_run"));
+  const rows = result.at ? [
+    [t("bench_cpu1"), rate(result.cpu.single)], [t("bench_cpun", { n: result.cpu.cores }), `${rate(result.cpu.multi)} · ×${result.cpu.scale}`],
+    [t("bench_memory"), rate(result.memory)],
+    [t("bench_disk"), result.disk.skipped ? t("bench_skipped") : `${t("bench_write")} ${rate(result.disk.write)} · ${t("bench_read")} ${rate(result.disk.read)}`],
+    [t("bench_net"), result.network.down ? `${mbit(result.network.down)} · ${result.network.latency} ms` : t("bench_failed")],
+    [t("bench_core"), result.core.rpc ? `${result.core.rpc} ms · ${t("bench_save", { ms: result.core.save })}` : "—"],
+    [t("bench_when"), `${fmtTime(result.at)} · ${result.seconds} s`],
+  ] : [];
+  return section(t("bench_title"), h("p", { class: "muted small" }, t("bench_hint")), button,
+    rows.length ? h("div", { class: "card kv" }, ...rows.flatMap(([label, value]) => [h("span", {}, label), h("span", {}, value)])) : null);
+}
+
+function usageSection(box, usage, privateMode = false, preserveHistory = false) {
+  const rows = usage.people.map((person) => {
+    const limited = usage.limited.includes(person.address);
+    return h("div", { class: "share" },
+      h("div", { class: "row" }, icon("user"), h("b", { class: "grow clamp1" }, person.address),
+        person.heavy ? h("span", { class: "badge bad" }, t("usage_heavy")) : null,
+        person.over ? h("span", { class: "badge" }, t("usage_over")) : null,
+        limited ? h("span", { class: "badge" }, t("usage_limited")) : null),
+      bar(person.share * 1000, 1000),
+      h("small", { class: "muted" }, t("usage_line", { share: Math.round(person.share * 100), size: fmtSize(person.bytes), n: person.requests, ai: person.ai, img: person.images || 0, code: person.code || 0, jobs: person.jobs, today: fmtSize(person.today) })),
+      person.admin || privateMode ? null : h("div", { class: "chips" },
+        h("button", { class: "chip action", onclick: () => adminOp(box, { do: limited ? "unlimit" : "limit", address: person.address }, limited ? "" : t("usage_limit_q", { address: person.address })) },
+          icon(limited ? "play" : "pause"), limited ? t("usage_unlimit") : t("usage_limit"))));
+  });
+  return section(privateMode ? t("usage_private_title", { n: usage.days }) : t("usage_title", { n: usage.days }),
+    h("p", { class: "muted small" }, t(privateMode ? "usage_private_hint" : "usage_hint")),
+    h("div", { class: "card" }, rows.length ? rows : h("p", { class: "empty small" }, t("usage_none"))),
+    h("div", { class: "card list" },
+      privateMode ? null : h("div", { class: "list-row" }, icon("downloads"), h("span", { class: "grow" }, t("usage_rules", { n: usage.max_jobs, mb: usage.budget_mb ? `${usage.budget_mb} MB` : t("usage_no_quota") })),
+        h("button", { class: "btn small ghost", onclick: () => goTab("settings") }, t("usage_change"))),
+      usage.ai && !privateMode ? h("div", { class: "list-row" }, icon("ai"), h("span", { class: "grow" }, t("usage_ai_rules", {
+        ask: usage.ai.ask || "∞", image: usage.ai.image || "∞", code: usage.ai.code || "∞", reserve: usage.ai.reserve, left: usage.ai.left }))) : null,
+      h("label", { class: "setting" }, h("span", { class: "grow" }, t("usage_pause_all")),
+        h("input", { type: "checkbox", class: "switch", checked: usage.paused, onchange: (event) => adminOp(box, { do: "pause_queue", value: event.target.checked }) })),
+      h("button", { class: "list-row", onclick: () => adminOp(box, { do: "reset_usage" }, t(privateMode || preserveHistory ? "usage_private_reset_q" : "usage_reset_q")) }, icon("trash"), h("span", { class: "grow" }, t(privateMode || preserveHistory ? "usage_private_reset" : "usage_reset")))));
+}
+
+function logSection(box, data) {
+  const entries = Array.isArray(data.log_entries) ? data.log_entries : (data.logs || []).map((message) => ({
+    message, level: "WARNING", last: 0, count: 1, detail: ""
+  })).reverse();
+  const rows = h("div", { class: "log-list" });
+  const draw = (filter) => {
+    const shown = entries.filter((entry) => filter === "all" || (filter === "errors" ? entry.level === "ERROR" || entry.level === "CRITICAL" : entry.level === "WARNING"));
+    fill(rows, ...(shown.length ? shown.map((entry) => h("details", { class: "log-entry" },
+      h("summary", {}, h("span", { class: `log-level ${entry.level === "WARNING" ? "warn" : "bad"}` }, entry.level),
+        h("span", { class: "grow clamp1" }, entry.message),
+        entry.count > 1 ? h("span", { class: "log-count" }, `×${entry.count}`) : null,
+        icon("down", "caret")),
+      h("small", { class: "muted" }, [entry.last ? fmtTime(entry.last) : "", entry.logger || ""].filter(Boolean).join(" · ")),
+      h("pre", { class: "logs" }, [entry.message, entry.detail].filter(Boolean).join("\n\n")))) : [h("p", { class: "empty small" }, t("admin_no_logs"))]));
+  };
+  draw("all");
+  return section(t("admin_logs"), h("p", { class: "muted small" }, t("admin_logs_hint")),
+    h("div", { class: "row wrap log-tools" },
+      segmented("all", [["all", t("admin_logs_all")], ["errors", t("admin_logs_errors")], ["warnings", t("admin_logs_warnings")]], draw),
+      h("button", { class: "btn small ghost", onclick: () => adminOp(box, { do: "clear_logs" }, t("admin_logs_clear_q")) }, icon("trash"), t("admin_logs_clear"))),
+    rows);
+}
+
+function ownerAccessSection(box, data) {
+  if (typeof data.owner_only !== "boolean") return null;  // compatible with an older backend
+  let minutes = data.invite_auto_access ? "-1" : "60";
+  const options = [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
+    ["1440", t("owner_24h")], ["0", t("owner_manual")]];
+  if (data.invite_auto_access) options.push(["-1", t("owner_invite_manual")]);
+  const durations = select(minutes, options, (value) => { minutes = value; });
+  const change = async (enabled) => {
+    const question = enabled ? "owner_close_q" : data.invite_auto_access ? "owner_invite_open_q" : "owner_open_q";
+    if (!(await confirmBox(t("owner_control"), t(question), t("confirm")))) return;
+    button.disabled = true;
+    try {
+      const updated = await bridge.call("owner_only", { enabled, minutes: Number(minutes), nonce: data.control_nonce || "" });
+      memo.set("admin{}", updated);
+      if (box.isConnected) drawAdmin(box, updated);
+      toast(t(enabled ? "owner_on" : data.invite_auto_access ? "owner_invite_off" : "owner_off"), "ok");
+    } catch (error) {
+      // A lost reply may still mean the mode changed: hide stale controls until refreshed.
+      if (box.isConnected && !error.cancelled) fill(box, failure(error.message, () => adminOp(box, {})));
+    }
+  };
+  const button = h("button", { class: `btn ${data.owner_only ? "primary" : "ghost"} wide`, disabled: data.maintenance && data.owner_only,
+    onclick: () => change(!data.owner_only) }, icon(data.owner_only ? "user" : "shield"), t(data.owner_only ? "owner_open" : "owner_close"));
+  const card = h("div", { class: "card stack owner-access" },
+    h("b", {}, t(data.maintenance ? "owner_maintenance_title" : (data.owner_only ? "owner_on" : data.invite_auto_access ? "owner_invite_off" : "owner_off"))),
+    h("p", { class: "muted small" }, t(data.maintenance ? "owner_maintenance" : data.invite_auto_access ? "owner_invite_hint" : "owner_hint")),
+    !data.owner_only ? h("p", { class: "note" }, icon("clock"), data.owner_only_expires
+      ? t("owner_until", { when: new Date(data.owner_only_expires * 1000).toLocaleString() }) : t(data.invite_persistent_open ? "owner_invite_until_closed" : "owner_until_restart")) : null,
+    data.owner_only && !data.maintenance ? h("label", { class: "stack small" }, t("owner_duration"), durations) : null,
+    button);
+  clearTimeout(box._ownerAccessTimer);
+  if (!data.owner_only && data.owner_only_expires) {
+    // Use the server's remaining interval, not an assumed-synchronized device clock.
+    if (!data._accessReceivedAt) data._accessReceivedAt = Date.now();
+    const remaining = data.server_now
+      ? (data.owner_only_expires - data.server_now) * 1000 - (Date.now() - data._accessReceivedAt)
+      : data.owner_only_expires * 1000 - Date.now();
+    const delay = Math.max(1000, Math.min(2147483647, remaining + 100));
+    box._ownerAccessTimer = setTimeout(async () => {
+      if (!box.isConnected) return;
+      fill(box, h("p", { class: "muted" }, t("owner_checking")));
+      try {
+        const updated = await bridge.call("owner_only", {});
+        memo.set("admin{}", updated);
+        if (box.isConnected) drawAdmin(box, updated);
+      } catch (error) {
+        if (box.isConnected) fill(box, failure(error.message, () => adminOp(box, {})));
+      }
+    }, delay);
+  }
+  return section(t("owner_control"), card);
+}
+
+function singleGuestSection(box, data) {
+  if (data.invite_auto_access || data.owner_only !== true || data.maintenance || !data.control_nonce) return null;
+  const address = field({ type: "email", placeholder: t("admin_address"), "aria-label": t("admin_address") });
+  let minutes = "60";
+  const duration = select(minutes, [["15", t("owner_15m")], ["60", t("owner_1h")], ["240", t("owner_4h")],
+    ["1440", t("owner_24h")], ["0", t("owner_manual")]], (value) => { minutes = value; });
+  const approve = () => {
+    const value = address.value.trim();
+    if (!value) return;
+    adminOp(box, { do: "allow_one", address: value, minutes: Number(minutes), nonce: data.control_nonce },
+      t("admin_quick_guest_q", { address: value, duration: duration.selectedOptions[0].textContent }));
+  };
+  return section(t("admin_quick_guest_title"), h("div", { class: "card stack single-guest" },
+    h("p", { class: "muted small" }, t("admin_quick_guest_hint")), address,
+    h("label", { class: "stack small" }, t("owner_duration"), duration),
+    h("button", { class: "btn primary", onclick: approve }, icon("plus"), t("admin_quick_guest_button"))));
+}
+
+function maintenanceSection(snapshot) {
+  const holder = h("div", { class: "card stack maintenance-settings" });
+  const draw = (data) => {
+    const es = field({ type: "text", maxlength: 280, value: data.es || "", "aria-label": t("maintenance_es") });
+    const en = field({ type: "text", maxlength: 280, value: data.en || "", "aria-label": t("maintenance_en") });
+    const active = h("input", { type: "checkbox", class: "switch", checked: !!data.active });
+    let durationChanged = false;
+    const minutes = field({ type: "number", inputmode: "numeric", min: "0", max: "525600", step: "1", value: data.expires ? String(Math.max(1, Math.ceil((data.expires - now()) / 60))) : "0",
+      "aria-label": t("maintenance_duration"), oninput: () => { durationChanged = true; } });
+    const save = h("button", { class: "btn primary", onclick: async () => {
+      save.disabled = true;
+      try {
+        const duration = Number(minutes.value);
+        if (!Number.isInteger(duration) || duration < 0 || duration > 525600 || minutes.value.trim() === "") { toast(t("maintenance_invalid_duration"), "bad"); return; }
+        const change = { active: active.checked, es: es.value.trim(), en: en.value.trim() };
+        if (durationChanged || !data.active || !active.checked) change.minutes = duration;
+        const result = await bridge.call("maintenance_notice", change);
+        cache.maintenance_notice = result.notice; saveCache(); bus.emit("maintenance");
+        toast(result.profile_updated ? t("done") : t("maintenance_profile_error"), result.profile_updated ? "ok" : "bad");
+      } catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+      finally { save.disabled = false; }
+    } }, icon("check"), t("maintenance_save"));
+    fill(holder, contextHelp(t("maintenance_hint")),
+      h("label", { class: "setting" }, h("span", { class: "grow" }, t("maintenance_active")), active),
+      data.active && data.expires ? h("small", { class: "muted" }, t("maintenance_until", { when: new Date(data.expires * 1000).toLocaleString() })) : null,
+      h("label", { class: "stack small" }, t("maintenance_duration"), minutes),
+      h("small", { class: "muted" }, t("maintenance_duration_hint")),
+      h("label", { class: "stack small" }, t("maintenance_es"), es),
+      h("label", { class: "stack small" }, t("maintenance_en"), en), save);
+  };
+  if (snapshot && typeof snapshot.active === "boolean") draw(snapshot);
+  else fill(holder, h("p", { class: "muted small" }, t("maintenance_no_snapshot")),
+    h("button", { class: "btn ghost", onclick: async () => {
+      try { const data = await bridge.call("maintenance_notice"); if (holder.isConnected) draw(data.notice); }
+      catch (error) { if (!error.cancelled) toast(error.message, "bad"); }
+    } }, icon("refresh"), t("mode_refresh")));
+  return section(t("maintenance_title"), holder);
+}
+
+function drawAdmin(box, data) {
+  const address = field({ type: "email", placeholder: t("admin_address") });
+  const person = (entry, ...tools) => h("div", { class: "list-row" }, icon("user"),
+    h("span", { class: "grow" }, h("b", { class: "clamp1" }, entry.address), entry.sub ? h("small", { class: "muted" }, entry.sub) : null), ...tools);
+  fill(box,
+    headRow(t("admin_live"), iconButton("refresh", t("refresh"), () => adminOp(box, {}))),
+    ownerAccessSection(box, data),
+    singleGuestSection(box, data),
+    maintenanceSection(data.maintenance_notice || cache.maintenance_notice),
+    data.perf ? perfSection(data.perf) : null,
+    data.usage ? usageSection(box, data.usage, data.private_mode, data.preserve_history) : null,
+    data.perf ? hostSection(data.perf) : null,
+    data.perf ? benchSection(box, data.perf) : null,
+    section(t(data.private_mode ? "admin_owner" : "admin_users"),
+      data.private_mode ? h("p", { class: "note" }, icon("shield"), t(data.invite_auto_access ? "admin_invite_private_note" : "admin_private_note")) : null,
+      data.email_key_recovery ? h("p", { class: "note warn", role: "status" }, icon("alert"), t(data.invite_auto_access ? "admin_invite_recovery_warning" : "admin_email_recovery_warning")) : null,
+      h("div", { class: "card list" },
+        data.users.filter((user) => !data.private_mode || user.active).map((user) => person({ address: user.address, sub: user.admin ? "" : user.last ? t("admin_last", { when: fmtTime(user.last) }) : "" },
+          data.private_mode && !user.active ? h("span", { class: "badge" }, t("admin_inactive"))
+            : user.admin ? h("span", { class: "badge" }, t("admin_role"))
+              : data.private_mode ? null : iconButton("close", t("admin_remove"), () => adminOp(box, { do: "remove", address: user.address }, t("admin_remove_q", { address: user.address })), "tiny"))),
+        data.private_mode || data.invite_auto_access ? null : h("div", { class: "row add-row" }, address, h("button", { class: "btn primary small", onclick: () => address.value.trim() && adminOp(box, { do: "allow", address: address.value.trim() }, t("admin_grant_q", { address: address.value.trim() })) }, icon("plus"), t("admin_allow"))))),
+    section(t("admin_attempts"), data.attempts.length ? h("div", { class: "card list" }, data.attempts.map((item) =>
+      person({ address: item.address, sub: `${t("admin_tries", { n: item.count })} · ${fmtTime(item.last)}` },
+        data.invite_auto_access ? null : data.private_mode ? (data.owner_only && !data.maintenance && data.control_nonce
+          ? iconButton("check", t("admin_quick_guest_button"), () => adminOp(box,
+            { do: "allow_one", address: item.address, minutes: 60, nonce: data.control_nonce }, t("admin_quick_guest_q", { address: item.address, duration: t("owner_1h") })), "tiny")
+          : h("button", { class: "btn small ghost", disabled: true, title: t("admin_private_no_grant"), "aria-label": t("admin_private_no_grant") }, icon("shield"), t("admin_allow")))
+          : iconButton("check", t("admin_allow"), () => adminOp(box, { do: "allow", address: item.address }, t("admin_grant_q", { address: item.address })), "tiny"),
+        iconButton("ban", t("admin_block"), () => adminOp(box, { do: "block", address: item.address }), "tiny")))) : h("p", { class: "empty small" }, t("admin_no_attempts"))),
+    !data.private_mode && data.blocked.length ? section(t("admin_blocked"), h("div", { class: "card list" }, data.blocked.map((item) =>
+      person({ address: item }, data.private_mode ? null : h("button", { class: "btn small ghost", onclick: () => adminOp(box, { do: "allow", address: item }, t(data.invite_auto_access ? "admin_invite_unblock_q" : "admin_grant_q", { address: item })) }, t("admin_unblock")))))) : null,
+    section(t("admin_controls"), h("div", { class: "card list" },
+      h("label", { class: "setting" }, h("span", { class: "grow" }, t("admin_alerts")),
+        h("input", { type: "checkbox", class: "switch", checked: data.alerts, onchange: (event) => adminOp(box, { do: "alerts", value: event.target.checked }) })),
+      h("button", { class: "list-row", onclick: () => adminOp(box, { do: "purge" }, t(data.private_mode || data.preserve_history ? "admin_purge_private_q" : "admin_purge_q")) }, icon("trash"), h("span", { class: "grow" }, t("admin_purge"))),
+      h("button", { class: "list-row danger-text", onclick: () => adminOp(box, { do: "restart" }, t("admin_restart_q")) }, icon("refresh"), h("span", { class: "grow" }, t("admin_restart"))))),
+    logSection(box, data));
+}
+
+VIEWS.admin = {
+  tab: "apps",
+  title: () => t("tile_admin"),
+  render(main) {
+    const box = h("div", { class: "stack" });
+    add(main, box);
+    fetchView(box, "admin", {}, (data) => drawAdmin(box, data), { fresh: true });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// B1: Notes / recuérdamelo
+// ---------------------------------------------------------------------------
+VIEWS.notes = {
+  tab: "apps",
+  title: () => t("tile_notes"),
+  render(main) {
+    const input = field({ type: "text", placeholder: t("nota_placeholder"), "aria-label": t("nota_placeholder"), enterkeyhint: "go" });
+    const list = h("div", { class: "stack" });
+    const onAdd = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      try {
+        await bridge.call("notas", { do: "add", text });
+        input.value = "";
+        load();
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+    };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); onAdd(); } });
+    const load = async () => {
+      try {
+        const data = await bridge.call("notas", { do: "list" });
+        fill(list, ...(data.notes && data.notes.length ? data.notes.map((n) =>
+          h("div", { class: "list-row note-row" }, h("span", { class: "grow note-text" }, n.text),
+            h("small", { class: "muted" }, fmtTime(n.ts)),
+            iconButton("close", t("delete"), () => {
+              bridge.call("notas", { do: "delete", id: n.id }).then(() => { toast(t("nota_deleted"), "ok"); load(); }).catch((e) => { if (!e.cancelled) toast(e.message, "bad"); });
+            }, "tiny"))) : [empty(t("nota_empty"), "notes")]));
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+    };
+    const cardEl = card(h("div", { class: "search-field" }, icon("notes"), input,
+      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("nota_save"))));
+    add(main, cardEl, section(null, list));
+    load();
+  },
+};
+
+// ---------------------------------------------------------------------------
+// B2: Cola de enlaces "más tarde"
+// ---------------------------------------------------------------------------
+VIEWS.links = {
+  tab: "downloads",
+  title: () => t("tile_links"),
+  render(main) {
+    const input = field({ type: "url", placeholder: t("download_placeholder"), enterkeyhint: "go" });
+    const list = h("div", { class: "stack" });
+    const onAdd = async () => {
+      const url = normalUrl(input.value.trim());
+      if (!isUrl(url)) { toast(t("invalid_url"), "bad"); return; }
+      try {
+        await bridge.call("enlaces", { do: "add", url });
+        input.value = "";
+        load();
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+    };
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); onAdd(); } });
+    const load = async () => {
+      try {
+        const data = await bridge.call("enlaces", { do: "list" });
+        fill(list, ...(data.links && data.links.length ? data.links.map((l) =>
+          h("div", { class: "card saved-link" },
+            h("div", { class: "row" }, icon("link"), h("span", { class: "grow" },
+              h("b", { class: "clamp1" }, l.title && l.title !== l.url ? l.title : hostOf(l.url)),
+              h("small", { class: "muted" }, `${hostOf(l.url)} · ${fmtTime(l.ts)}`)),
+            iconButton("close", t("delete"), () => {
+              bridge.call("enlaces", { do: "delete", id: l.id }).then(() => load()).catch((e) => { if (!e.cancelled) toast(e.message, "bad"); });
+            }, "tiny")),
+            h("small", { class: "muted saved-url" }, l.url),
+            h("div", { class: "chips actions-bar" },
+              h("button", { class: "chip action", onclick: () => go("reader", { url: l.url }) }, icon("web"), t("saved_open")),
+              h("button", { class: "chip action", onclick: () => runAction("capture", l.url) }, icon("camera"), t("act_capture")),
+              h("button", { class: "chip action", onclick: () => runAction("download", l.url) }, icon("downloads"), t("act_download")),
+              h("button", { class: "chip action", onclick: () => copyText(l.url) }, icon("copy"), t("copy_link"))))) : [empty(t("link_empty"), "link")]));
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+    };
+    const processNext = async () => {
+      try {
+        const data = await bridge.call("enlaces", { do: "next" });
+        if (data.empty) { toast(t("link_no_pending"), "bad"); return; }
+        go("reader", { url: data.link.url });
+      } catch (error) {
+        if (!error.cancelled) toast(error.message, "bad");
+      }
+    };
+    const cardEl = card(h("div", { class: "search-field" }, icon("link"), input,
+      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("done"))));
+    add(main, cardEl,
+      h("button", { class: "btn primary wide", onclick: processNext }, icon("play"), t("link_open_next")),
+      h("p", { class: "note" }, icon("info"), t("saved_public_hint")), section(null, list));
+    load();
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Nauta and the kill switch: wait for authoritative state before enabling controls.
+// ---------------------------------------------------------------------------
+function modeControl(main, op, title, prefix) {
+  const box = h("div", { class: "stack" });
+  add(main, box);
+  const draw = (data) => {
+    if (!data || typeof data.active !== "boolean") {
+      fill(box, h("div", { class: "card" }, h("p", { class: "muted small" }, t("mode_snapshot_pending")),
+        h("button", { class: "btn ghost small", onclick: load }, icon("refresh"), t("mode_refresh"))));
+      return;
+    }
+    const active = data.active;
+    const toggle = h("button", { class: `btn ${active ? "primary" : "ghost"}`, "aria-pressed": String(active), onclick: async () => {
+      toggle.disabled = true;
+      try {
+        const updated = await bridge.call(op, { value: !active });
+        cache.modes = cache.modes || {}; cache.modes[op] = updated; saveCache();
+        if (box.isConnected) draw(updated);
+      } catch (error) {
+        // A lost reply may have applied the change: hide stale state until user checks.
+        if (cache.modes) delete cache.modes[op]; saveCache();
+        if (box.isConnected && !error.cancelled) fill(box, failure(error.message, load));
+      }
+    } }, icon(active ? "pause" : "play"), t(active ? "mode_disable" : "mode_enable"));
+    const mode = op === "nauta_strict" ? "nauta" : "killswitch";
+    fill(box, h("div", { class: `card mode-card mode-${mode}` },
+      h("div", { class: "mode-heading" }, h("span", { class: `mode-icon ${mode}-color` }, icon(mode)), h("h2", {}, title)),
+      h("p", { role: "status" }, t(prefix + (active ? "_on" : "_off"))),
+      op === "nauta_strict" && data.part_mb != null ? h("p", { class: "muted" }, t("nauta_part", { mb: data.part_mb })) : null,
+      h("small", { class: "muted" }, t("mode_snapshot_hint")), toggle));
+  };
+  const load = async () => {
+    fill(box, loading());
+    try {
+      // This read-only check happens only after the user explicitly asks.
+      const data = await bridge.call(op, {});
+      cache.modes = cache.modes || {}; cache.modes[op] = data; saveCache();
+      if (box.isConnected) draw(data);
+    } catch (error) { if (box.isConnected && !error.cancelled) fill(box, failure(error.message, load)); }
+  };
+  bus.on("hello", () => { if (box.isConnected) draw(cache.modes && cache.modes[op]); });
+  draw(cache.modes && cache.modes[op]);
+}
+
+VIEWS.nauta_strict = {
+  tab: "settings",
+  title: () => t("tile_nauta"),
+  render(main) { modeControl(main, "nauta_strict", t("tile_nauta"), "nauta"); },
+};
+
+VIEWS.kill_switch = {
+  tab: "settings",
+  title: () => t("tile_killswitch"),
+  render(main) { modeControl(main, "kill_switch", t("tile_killswitch"), "killswitch"); },
+};
+
+VIEWS.estado = {
+  tab: "apps",
+  title: () => t("estado_title"),
+  render(main) {
+    const box = h("div", { class: "stack" });
+    add(main, box);
+    fetchView(box, "estado", {}, (data) => fill(box, card(h("h2", {}, t("estado_title")),
+      h("p", { role: "status" }, data[lang()] || data.es || "—"))), { fresh: true });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// First-run introduction: the app is the whole bot.
+// ---------------------------------------------------------------------------
+const INTRO = [["cat", "tour_1"], ["apps", "tour_2"], ["send", "tour_3"], ["downloads", "tour_4"], ["help", "tour_5"]];
+
+function onboarding(force = false) {
+  if (!force && store.get("tour_done", false)) return;
+  document.querySelectorAll(".intro-overlay").forEach((node) => node.remove());
+  let step = 0;
+  const finish = () => {
+    store.set("tour_done", true);
+    overlay.classList.add("gone");
+    setTimeout(() => overlay.remove(), 300);
+  };
+  const body = h("div", { class: "intro-card", role: "dialog", "aria-modal": "true" });
+  const overlay = h("div", { class: "intro-overlay" }, body);
+  const draw = () => {
+    const [name, key] = INTRO[step];
+    const last = step === INTRO.length - 1;
+    fill(body,
+      h("div", { class: "intro-icon" }, icon(name)),
+      h("h2", {}, t(key + "_t")),
+      h("p", {}, t(key + "_b")),
+      h("div", { class: "intro-dots" }, ...INTRO.map((unused, index) => h("i", { class: index === step ? "on" : "" }))),
+      h("div", { class: "row end" },
+        last ? null : h("button", { class: "btn ghost", onclick: finish }, t("tour_skip")),
+        step ? h("button", { class: "btn ghost", onclick: () => { step -= 1; draw(); } }, t("back")) : null,
+        h("button", { class: "btn primary", onclick: () => { if (last) finish(); else { step += 1; draw(); } } }, last ? t("tour_start") : t("tour_next"))));
+  };
+  draw();
+  document.body.append(overlay);
+}
+
+// ---------------------------------------------------------------------------
+// Start.
+// ---------------------------------------------------------------------------
+// The splash stays long enough to be seen and to cover the first paint of the home screen.
+const SPLASH_MIN = 2600;
+const SPLASH_MAX = 6000;
+
+function boot() {
+  applyLook();
+  chrome();
+  pruneSavedResults();
+  setInterval(pruneSavedResults, 3600000);
+  const splash = $("#splash");
+  const started = performance.now();
+  let gone = false;
+  const hide = () => {
+    if (gone || !splash) return;
+    gone = true;
+    setTimeout(() => {
+      splash.classList.add("gone");
+      setTimeout(() => splash.remove(), 800);
+      onboarding();
+    }, Math.max(0, SPLASH_MIN - (performance.now() - started)));
+  };
+  setTimeout(hide, SPLASH_MAX);
+  if (!window.webxdc) {
+    fill($("#view"), failure(t("no_webxdc")));
+    hide();
+    return;
+  }
+  render();
+  Promise.resolve(window.webxdc.setUpdateListener((update) => bridge.receive(update), bridge.startSerial())).then(() => {
+    bus.emit("images");
+    const first = hello(true); // refresh the process session even if the visible snapshot is cached
+    bridge.watchExpiry();
+    // With a cached snapshot the home is already complete; the very first open waits for its sync (up to SPLASH_MAX).
+    if (cache.at) hide();
+    else Promise.resolve(first).finally(hide);
+  });
+}
+
+boot();

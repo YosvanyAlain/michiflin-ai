@@ -41,7 +41,7 @@ def test_model_overview_counts_local_limits_without_double_counting(engine, widt
         assert "no saldo ni facturación" in board.inner_text()
         page.locator(".provider-card summary").first.click()
         page.locator(".model-category summary").first.click()
-        assert page.locator(".model-choice .brand-monogram").count() >= 1
+        assert page.locator(".model-choice .brand-official img").count() >= 3
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
         screenshot_if_requested(page, "premium-stats-mobile")
         assert errors == []
@@ -69,7 +69,7 @@ def test_ai_pending_and_unread_badges_open_actual_chat_and_clear(engine):
         page.locator("#view .composer button.primary").click()
         page.locator('.tab[data-tab="apps"]:visible').click()
         ai_tab = page.locator('.tab[data-tab="ai"]:visible')
-        assert "1 en curso" in ai_tab.get_attribute("aria-label")
+        assert ai_tab.locator(".tab-badge").is_hidden()
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
         assert "1 sin leer" in ai_tab.get_attribute("aria-label")
         page.locator('.tab[data-tab="home"]:visible').click()
@@ -98,7 +98,7 @@ def test_search_survives_navigation_and_lost_waiter_without_repeating(target):
         page.evaluate("""op => { const m = Object.entries(bridge.pending()).find(([,v])=>v.op===op); bridge.waiting.delete(m[0]); }""", op)
         page.locator('.tab[data-tab="home"]:visible').click()
         tab = page.locator(f'.tab[data-tab="{section}"]:visible')
-        assert "1 en curso" in tab.get_attribute("aria-label")
+        assert tab.locator(".tab-badge").is_hidden()
         page.wait_for_function("name => store.get('notices',[]).some(x=>x.unread && x.text.includes(name))", arg=notice_text)
         assert "1 sin leer" in tab.get_attribute("aria-label")
         page.locator("button.notice").filter(has_text=notice_text).first.click()
@@ -405,7 +405,7 @@ def test_badged_shortcut_returns_to_pending_result_without_an_extra_request(feat
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').tap()
         shortcut = page.locator(f".tile-{feature}").first
-        assert "1 en curso" in shortcut.get_attribute("aria-label")
+        assert shortcut.locator(".tile-badge").is_hidden()
         shortcut.tap()
         assert page.evaluate("current.view") == feature
         if feature == "translate":
@@ -513,7 +513,7 @@ def test_coder_and_images_have_navigable_pending_and_unread_cards(feature):
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="ai"]:visible').tap()
         card = page.locator("button.space-card").filter(has_text=label).first
-        assert "1 en curso" in card.get_attribute("aria-label")
+        assert card.locator(".space-badge").is_hidden()
         page.wait_for_function("feature => store.get('notices',[]).some(n=>n.unread && n.target?.view===feature)", arg=feature)
         assert "1 sin leer" in card.get_attribute("aria-label")
         card.tap()

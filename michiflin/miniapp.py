@@ -86,11 +86,14 @@ def app_build() -> str:
 
 
 def compatible_build(entry: dict[str, Any]) -> bool:
-    """Admit only this package and the two exact previously tested builds."""
+    """Admit only this package and the exact previously tested builds."""
     value = entry.get("build")
     if not isinstance(value, str) or not value:
         return False
     if value == app_build():
+        return True
+    latest = app_compat.latest_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if latest and value == latest:
         return True
     recent = app_compat.recent_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if recent and value == recent:
@@ -102,8 +105,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
+    latest = app_compat.latest_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     recent = app_compat.recent_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
-    return bool(isinstance(value, str) and value and (value == app_build() or (recent and value == recent)))
+    return bool(isinstance(value, str) and value and (value == app_build() or (latest and value == latest) or (recent and value == recent)))
 
 
 def build() -> Path:

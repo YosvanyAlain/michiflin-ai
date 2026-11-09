@@ -43,7 +43,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 | **Web** | Resultados del buscador elegido, lector, historial, PDF, captura y descarga |
 | **Apps** | YouTube, traductor, tasa, clima, noticias, utilidades, estado y administración |
 | **Descargas** | Cola, enlaces guardados y kit integrado: copias locales, servidor temporal, selección, acciones masivas, comprimidos y unión |
-| **Ajustes** | Idioma, tema, buscador, modo Nauta, Kill switch, ajustes del bot y borrado de datos del dispositivo |
+| **Ajustes** | Idioma, apariencia, estilo visual y acento; buscador, modo Nauta, Kill switch y ajustes del bot |
 
 <p align="center">
   <img src="docs/media/es/ai.png" width="200" alt="Espacios de IA">
@@ -51,6 +51,10 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/apps.png" width="200" alt="Apps">
   <img src="docs/media/es/settings.png" width="200" alt="Ajustes">
 </p>
+
+En **Ajustes** puedes elegir Michiflin, Material You, Pixel Art u Océano, además de claro, oscuro o sistema y varios acentos. Material You es una inspiración: no extrae los colores del dispositivo. Los banners respetan la preferencia de movimiento reducido; el clima usa la observación guardada de Open-Meteo sin consultas adicionales para animarlo.
+
+Los indicadores de pestañas y accesos señalan respuestas o errores recibidos mientras no estabas viendo su resultado, no consultas solo iniciadas. El progreso de la cola es independiente. Son avisos dentro de la miniapp, no notificaciones del sistema; los resultados caducados no se consultan de nuevo a escondidas.
 
 ## Descargas y kit de archivos
 
@@ -83,7 +87,7 @@ El administrador puede revocar o bloquear una cuenta sin borrar su historial. Un
 
 ## Seguridad y pausa
 
-El dueño puede activar **Mantenimiento y aviso** en Administración, personalizar el aviso en español e inglés, elegir una duración de hasta un año o finalizarlo manualmente. Está desactivado por defecto y solo se modifica al guardar explícitamente. Las tareas se detienen de forma cooperativa; las personas autorizadas ven el aviso al interactuar, sin envíos masivos, y la cola puede continuar, sin cambiar permisos ni pausas individuales. Una solicitud, cobro o entrega ya iniciados pueden terminar. Al abrir una miniapp anterior, el bot puede ofrecer la versión actual en respuesta a esa interacción, sin enviarla en masa al reiniciar. Se conserva la anterior, aunque quede invalidada: su almacenamiento es independiente y todavía no se ha demostrado la migración de proyectos.
+El dueño puede activar **Mantenimiento y aviso** en Administración, personalizar el aviso en español e inglés, elegir una duración de hasta un año o finalizarlo manualmente. Está desactivado por defecto y solo se modifica al guardar explícitamente. Las tareas se detienen de forma cooperativa; las personas autorizadas ven el aviso al interactuar, sin envíos masivos, y la cola puede continuar, sin cambiar permisos ni pausas individuales. Una solicitud, cobro o entrega ya iniciados pueden terminar. Abrir una instancia anterior no envía automáticamente otra. Si necesitas una actualización y está disponible, solicítala y confírmala en Ajustes → Sincronización. Algunas versiones anteriores exactas siguen siendo compatibles; las desconocidas se rechazan. Conserva la anterior hasta comprobar sus datos: el almacenamiento es independiente y la migración no está demostrada.
 
 En **Ajustes → Kill switch** o con `/kill_switch sí|no` se bloquean nuevas solicitudes y se interrumpen cooperativamente descargas y empaquetado; los trabajos quedan en cola. Al desactivar, la cola puede continuar, pero hay que repetir las consultas de IA/agente interrumpidas. No se puede retirar una petición ya enviada a un proveedor, una lectura de red puede tardar hasta su timeout y una parte que ya entra en la entrega a Delta Chat puede llegar. Se registra la intención de envío y, ante una entrega incierta, se pausa en vez de reenviar a ciegas. Una copia de seguridad desactualizada o una interrupción del transporte impiden garantizar ausencia absoluta de duplicados: revisa el chat antes de repetir. No se purga el buzón de salida ni el estado histórico automáticamente.
 
