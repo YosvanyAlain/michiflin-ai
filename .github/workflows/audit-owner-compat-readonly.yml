@@ -6,6 +6,7 @@ permissions:
   contents: read
 jobs:
   app-metadata-only:
+    if: ${{ false }} # one read-only check was dispatched; keep disabled
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
