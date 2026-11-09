@@ -1,0 +1,24 @@
+name: Read-only owner app compatibility audit
+on:
+  push:
+    branches: [audit-owner-app-compat-readonly-20261109]
+permissions:
+  contents: read
+jobs:
+  app-metadata-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'requests>=2.31,<3' 'cryptography>=44,<47'
+      - name: Verify two encrypted backups and compare only owner app version metadata
+        env:
+          STATE_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+          STATE_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+          STATE_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
+          OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+          BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+        run: python .github/scripts/audit_owner_compat.py
