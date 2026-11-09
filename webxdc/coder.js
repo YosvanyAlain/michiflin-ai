@@ -115,6 +115,8 @@ bridge.handlers.code = (data, error, ctx, rid) => {
     toast(error, "bad");
   }
   coder.set(project);
+  const target = { view: "coder", params: {} };
+  if (!visiblePlace(target)) notice(t("notification_coder"), error ? "bad" : "ok", { category: "ai", target });
 };
 
 function coderModels() {
@@ -435,7 +437,7 @@ VIEWS.coder = {
     bus.on("coder", draw);
     bus.on("models", drawPicker);
     bus.on("quota", drawPicker);
-    add(main, body, card(area, pickRow, h("small", { class: "muted block" }, t("coder_privacy")), h("div", { class: "row end" },
+    add(main, body, contextHelp(t("collaboration_safety")), card(area, pickRow, h("small", { class: "muted block" }, t("coder_privacy")), h("div", { class: "row end" },
       h("button", { class: "btn primary", onclick: send }, icon("send"), " ", t("coder_send")))));
     drawPicker();
     draw();

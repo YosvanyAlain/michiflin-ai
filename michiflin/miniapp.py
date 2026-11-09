@@ -86,14 +86,24 @@ def app_build() -> str:
 
 
 def compatible_build(entry: dict[str, Any]) -> bool:
-    """Admit only this package or the exact tested 618c355 protocol build."""
+    """Admit only this package and the two exact previously tested builds."""
     value = entry.get("build")
     if not isinstance(value, str) or not value:
         return False
     if value == app_build():
         return True
-    old = app_compat.previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
-    return bool(old and value == old)
+    recent = app_compat.recent_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if recent and value == recent:
+        return True
+    previous = app_compat.previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    return bool(previous and value == previous)
+
+
+def discloses_infobars(entry: dict[str, Any]) -> bool:
+    """Only packages with the specific graphical-browser warning can hide it."""
+    value = entry.get("build")
+    recent = app_compat.recent_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    return bool(isinstance(value, str) and value and (value == app_build() or (recent and value == recent)))
 
 
 def build() -> Path:
@@ -968,43 +978,65 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         _local_ai_disclosure(instance_id)
 
 
-_local_ai_disclosed: dict[int, bool] = {}
+_local_ai_disclosed: dict[int, str] = {}
+# A disclosure handoff and its durable marker must not race with another hello
+# or a change in collaboration state. This lock is independent of answer work.
+_disclosure_lock = threading.Lock()
 
 
 def _local_ai_disclosure(instance_id: int) -> None:
-    """Inform only an app that just interacted; never send or replace an app."""
-    from . import local_ai
+    """Hand off each relevant revision once per instance where possible.
+
+    The marker is saved only after status handoff and is backed up with state.
+    A handoff is not proof that a device displayed it; sending and persisting
+    cannot be made atomic, and restoring an older backup may repeat a notice.
+    """
+    from . import collab_agent, local_ai
     if not local_ai.configured() or maintenance.silent_active():
         return
-    with _answers_lock:
-        if instance_id in _local_ai_disclosed:
+    with _disclosure_lock:
+        collaboration = collab_agent.notice_for_instance(instance_id)
+        revision = "collaboration-1" if collaboration else "local-ai-1"
+        with state.lock:
+            entry = _instance(instance_id)
+            already = bool(entry and entry.get("local_ai_disclosure") == revision)
+        if already or _local_ai_disclosed.get(instance_id) == revision:
             return
-        if len(_local_ai_disclosed) >= 4096:
-            _local_ai_disclosed.pop(next(iter(_local_ai_disclosed)))
-        _local_ai_disclosed[instance_id] = True
-    from . import collab_agent
-    if collab_agent.notice_for_instance(instance_id):
-        spanish = ("Esta app conserva etiquetas anteriores. La colaboración autorizada puede consultar APIs, "
-                   "incluidas las personales con posibles cargos, y compartir archivos: hasta 16 operaciones externas por proyecto. "
-                   "Para una tarea sin APIs escribe «solo local». Para empezar otro proyecto escribe «nuevo proyecto:». "
-                   "El límite se comparte entre el agente y Programador; tras una recuperación, lo no usado puede considerarse gastado. "
-                   "Una investigación web cuenta como una operación y puede abrir varias páginas. Las búsquedas usan fuentes externas.")
-        english = ("This app retains older labels. Authorized collaboration may use APIs, including personal ones that may "
-                   "incur charges, and share files: up to 16 external operations per project. Write ‘local only’ for a task without APIs. "
-                   "Start another project with ‘new project:’. The limit is shared by agent and Coder; after recovery, unused calls may be counted as spent. "
-                   "One web research operation may open several pages. Searches use external sources.")
-    else:
-        spanish = "En esta prueba, el modo sin cuota puede usar IA local para conversar y programar, aunque algunas etiquetas antiguas indiquen lo contrario. Las búsquedas consultan fuentes externas."
-        english = "In this test, no-quota mode may use local AI for chat and code, even if some older labels say otherwise. One web research operation may open several pages. Searches use external sources."
-    sent = False
-    try:
+        if collaboration:
+            spanish = ("La colaboración autorizada puede consultar APIs, incluidas las personales con posibles cargos, "
+                       "y compartir archivos: hasta 16 operaciones externas por proyecto. Para una tarea sin APIs escribe «solo local». "
+                       "Para empezar otro proyecto escribe «nuevo proyecto:». El límite se comparte entre el agente y Programador; "
+                       "tras una recuperación, lo no usado puede considerarse gastado. Una investigación web cuenta como una operación "
+                       "y puede abrir varias páginas. Las búsquedas usan fuentes externas.")
+            english = ("Authorized collaboration may use APIs, including personal ones that may incur charges, and share files: "
+                       "up to 16 external operations per project. Write ‘local only’ for a task without APIs. Start another project "
+                       "with ‘new project:’. The limit is shared by agent and Coder; after recovery, unused calls may be counted as spent. "
+                       "One web research operation may open several pages. Searches use external sources.")
+        else:
+            spanish = "El modo sin cuota puede usar IA local para conversar y programar. Las búsquedas consultan fuentes externas."
+            english = "No-quota mode may use local AI for chat and code. Searches use external sources."
         sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {
-            "kind": "info", "es": spanish, "en": english,
+            "kind": "info", "code": revision, "es": spanish, "en": english,
         }})
-    finally:
         if not sent:
-            with _answers_lock:
-                _local_ai_disclosed.pop(instance_id, None)
+            return
+        with state.lock:
+            entry = _instance(instance_id)
+            if entry is not None:
+                previous = entry.get("local_ai_disclosure")
+                entry["local_ai_disclosure"] = revision
+                try:
+                    state.save()
+                except (OSError, ValueError, TypeError):
+                    if previous is None:
+                        entry.pop("local_ai_disclosure", None)
+                    else:
+                        entry["local_ai_disclosure"] = previous
+                    log.warning("could not save local AI disclosure marker", exc_info=True)
+        # Even if writing the marker failed, avoid repeated pushes until restart.
+        if instance_id not in _local_ai_disclosed and len(_local_ai_disclosed) >= 4096:
+            _local_ai_disclosed.pop(next(iter(_local_ai_disclosed)))
+        _local_ai_disclosed[instance_id] = revision
 
 
 def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") -> int:
@@ -1241,12 +1273,14 @@ def models_view() -> dict[str, Any]:
                            "daily": model.daily, "remaining": list(remaining) if remaining else None,
                            "cooldown": state.cooldown_until(model.key), "reason": state.cooldown_reason(model.key),
                            "health": ai.model_status(model.key), "id": model.model, "accepts": ai.accepts(model), "manual": model.weight <= 0,
-                           "personal": item.personal})
+                           "local_available": ai.available(model), "personal": item.personal})
         providers.append({"key": item.key, "name": item.name, "daily": item.daily or sum(model.daily for model in item.models),
                           "used": personal_ai.attempts(item.key) if item.personal else sum(state.usage_today(model.key) for model in item.models),
-                          "personal": item.personal, "cooldown": state.cooldown_until(item.key),
+                          "personal": item.personal, "shared_limit": bool(item.daily), "cooldown": state.cooldown_until(item.key),
                           "reason": state.cooldown_reason(item.key), "models": models})
     sources = [{"key": source.key, "label": source.label, "daily": source.daily, "used": state.usage_today(source.key),
+                # Personal image and chat requests share the provider's attempt budget.
+                "attempts": personal_ai.attempts(source.key.split(":", 1)[0]) if source.personal else None,
                 "personal": source.personal, "cooldown": state.cooldown_until(source.key), "reason": state.cooldown_reason(source.key)} for source in images.sources()]
     return {"now": time.time(), "reset": _next_reset(), "providers": providers, "images": sources, "pin": state.setting("ai_pin")}
 

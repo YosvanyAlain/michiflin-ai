@@ -19,6 +19,7 @@ const context = {
   VIEWS: {},
   t: (key) => key,
   toast(text) { notices.push(text); },
+  visiblePlace: () => true, // this unit fixture models the coder view in the foreground
   now: () => 1,
   h: () => ({}),
   openSheet() {},

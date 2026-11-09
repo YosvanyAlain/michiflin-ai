@@ -1,2 +1,5 @@
 # PDF files are binary even when their compressed streams start with ASCII.
 *.pdf binary
+# Shipped WebXDC sources are cryptographic reference bytes, not reformatted code.
+michiflin/compat/58a0657/* -text -whitespace
+michiflin/compat/618c355/* -text -whitespace

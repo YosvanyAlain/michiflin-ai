@@ -347,11 +347,11 @@ class Session:
                     and not state.work_interrupted(self.owner, self.generation))
 
     def _hide_infobars(self) -> bool:
-        # Only the new package discloses that additional browser warnings may
-        # be hidden. A compatible old package must keep those warnings visible.
+        # The current and exact 58a0657 package disclose hidden infobars;
+        # the older 618c355 package does not and keeps the warnings visible.
         from . import miniapp
         identity = _authorized(self.instance)
-        return bool(identity and identity[1] == self.owner and identity[0].get("build") == miniapp.app_build())
+        return bool(identity and identity[1] == self.owner and miniapp.discloses_infobars(identity[0]))
 
     def _exchange(self, process: sandbox.BrowserProcess, reader: io.BufferedReader, value: dict[str, Any], timeout: float) -> dict[str, Any]:
         worker = process.process

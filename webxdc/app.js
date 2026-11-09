@@ -79,7 +79,7 @@ const bus = {
 // ---------------------------------------------------------------------------
 function chrome() {
   const button = (tab) => h("button", { class: "tab", "data-tab": tab.id, onclick: () => goTab(tab.id) },
-    h("span", { class: "tab-icon" }, icon(tab.icon), tab.id === "downloads" ? h("i", { class: "tab-badge", hidden: true }) : null), h("span", {}, t("tab_" + tab.id)));
+    h("span", { class: "tab-icon" }, icon(tab.icon), h("i", { class: "tab-badge", hidden: true })), h("span", {}, t("tab_" + tab.id)));
   fill($("#rail"), h("div", { class: "rail-brand" }, icon("cat"), h("span", {}, "Michiflin ", h("b", {}, "AI"))), ...TABS.map(button));
   fill($("#tabs"), ...TABS.filter((tab) => tab.id !== "settings").map(button));
   fill($("#back"), icon("back"));
@@ -93,21 +93,53 @@ function chrome() {
   jobBadge();
 }
 
-// Count of downloads still in progress on the Downloads tab, so a started download is easy to find.
-let badgeCount = -1;
+// Navigation counts distinguish locally pending work from unread results. Home
+// summarizes the other tabs; opening Home does not mark their results as read.
+const badgeCounts = {};
+function pendingTarget(meta) {
+  const ctx = meta.ctx || {};
+  if (meta.op === "ask" && ctx.space) return { category: "ai", view: "chat", target: { view: "chat", params: { space: ctx.space } } };
+  if (meta.op === "image") return { category: "ai", view: ctx.chatImage ? "chat" : "images",
+    target: ctx.chatImage ? { view: "chat", params: { space: ctx.space } } : { view: "images", params: {} } };
+  if (meta.op === "code") return { category: "ai", view: "coder", target: { view: "coder", params: {} } };
+  if (["view-result", "translate-result", "weather-result"].includes(ctx.kind) && ctx.target) return { category: ctx.category, view: ctx.target.view, target: ctx.target };
+  return null; // health/automatic updates are not user-facing tasks
+}
+function notificationCounts() {
+  const counts = Object.fromEntries(TABS.map(({ id }) => [id, { pending: 0, unread: 0 }]));
+  for (const item of store.get("notices", [])) {
+    if (item.unread && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
+  }
+  for (const meta of Object.values(bridge.pending())) {
+    const target = pendingTarget(meta);
+    if (target && counts[target.category]) counts[target.category].pending += 1;
+  }
+  counts.downloads.pending += cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
+  for (const id of ["ai", "web", "apps", "downloads", "settings"]) {
+    counts.home.pending += counts[id].pending;
+    counts.home.unread += counts[id].unread;
+  }
+  return counts;
+}
+function countLabel(base, count) {
+  return `${base} · ${t("notification_counts", { pending: count.pending, unread: count.unread })}`;
+}
 function jobBadge() {
-  const count = cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
-  document.querySelectorAll(".tab-badge").forEach((node) => {
-    node.hidden = count === 0;
-    node.textContent = count > 99 ? "99+" : String(count);
-    if (count > badgeCount && badgeCount >= 0) {
-      node.classList.remove("pop");
-      void node.offsetWidth;
-      node.classList.add("pop");
+  const counts = notificationCounts();
+  document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
+    const id = tab.dataset.tab, count = counts[id] || { pending: 0, unread: 0 };
+    const total = count.pending + count.unread, node = $(".tab-badge", tab);
+    if (!node) return;
+    node.hidden = total === 0;
+    node.textContent = total > 99 ? "99+" : String(total);
+    const previous = badgeCounts[id];
+    if (previous !== undefined && total > previous) {
+      node.classList.remove("pop"); void node.offsetWidth; node.classList.add("pop");
     }
-    node.closest(".tab").setAttribute("aria-label", count ? `${t("tab_downloads")} · ${t("downloads_active", { n: count })}` : t("tab_downloads"));
+    tab.setAttribute("aria-label", total ? countLabel(t("tab_" + id), count) : t("tab_" + id));
   });
-  badgeCount = count;
+  Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.pending + value.unread])));
+  bus.emit("badges");
 }
 
 function goTab(tab) {
@@ -148,6 +180,7 @@ function render(scroll = 0) {
   main.className = "view enter";
   main.replaceChildren();
   definition.render(main, current.params);
+  markVisibleNoticesRead();
   main.scrollTop = scroll;
   requestAnimationFrame(() => requestAnimationFrame(() => main.classList.remove("enter")));
 }
@@ -325,26 +358,190 @@ function remember(key, value, limit = 8) {
 // Request with in-memory reuse, so going back does not cost another e-mail.
 async function fetchView(target, op, args, draw, options = {}) {
   const key = op + JSON.stringify(args);
-  if (memo.has(key) && !options.fresh) {
-    draw(memo.get(key));
+  const reportable = ["search", "music_search", "tool"].includes(op);
+  const saved = reportable && savedResult(key);
+  const inMemory = reportable ? resultMemoHas(key) : memo.has(key);
+  const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
+  if (!options.fresh && saved && saved.error) {
+    fill(target, failure(saved.error, retry));
+    return;
+  }
+  if (!options.fresh && (inMemory || saved)) {
+    draw(inMemory ? memo.get(key) : saved.data);
+    if (reportable) target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+      h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
     return;
   }
   fill(target, loading(options.label));
+  if (reportable && resultPending(key)) {
+    bus.on("result:" + key, (result) => {
+      if (!target.isConnected) return;
+      if (result.error) fill(target, failure(result.error, retry)); else draw(result.data);
+    });
+    return;
+  }
   try {
-    const data = await bridge.call(op, args);
-    memo.set(key, data);
+    const label = op === "tool" ? (options.noticeLabel || "notification_tool") : op === "music_search" ? "notification_music" :
+      current.view === "news" ? "notification_news" : "notification_search";
+    const data = reportable ? await bridge.request(op, args, resultContext(key, label)).promise : await bridge.call(op, args);
+    if (!reportable) memo.set(key, data);
     if (target.isConnected) draw(data);
   } catch (error) {
-    if (target.isConnected && !error.cancelled) fill(target, failure(error.message, () => fetchView(target, op, args, draw, { ...options, fresh: true })));
+    if (target.isConnected && !error.cancelled) fill(target, failure(error.message, retry));
   }
 }
 
-function notice(text, kind = "info") {
+function samePlace(target) {
+  if (!target || target.view !== current.view) return false;
+  return JSON.stringify(target.params || {}) === JSON.stringify(current.params || {});
+}
+function visiblePlace(target) {
+  return document.visibilityState !== "hidden" && samePlace(target);
+}
+function markVisibleNoticesRead() {
+  if (document.visibilityState === "hidden") return;
   const list = store.get("notices", []);
-  list.unshift({ id: Date.now(), ts: now(), text: plain(text), kind });
-  store.set("notices", list.slice(0, 30));
+  let changed = false;
+  for (const item of list) {
+    if (item.unread && ((item.target && samePlace(item.target)) || (!item.target && current.view === "home"))) {
+      item.unread = false; changed = true;
+    }
+  }
+  if (changed) { store.set("notices", list); bus.emit("notices"); }
+}
+function notice(text, kind = "info", options = {}) {
+  const code = /^(?:collaboration|local-ai)-[0-9]+$/.test(options.code || "") ? options.code : "";
+  const seen = store.get("noticeCodes", []);
+  if (code && seen.includes(code)) return;
+  const list = store.get("notices", []);
+  const target = options.target || null;
+  const visible = target ? visiblePlace(target) : document.visibilityState !== "hidden" && current.view === "home";
+  list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text), kind,
+    category: options.category || "home", target, cacheKey: options.cacheKey || "", unread: !visible });
+  if (store.set("notices", list.slice(0, 30)) && code) store.set("noticeCodes", [...seen, code].slice(-20));
   bus.emit("notices");
 }
+
+// An accented shortcut opens its latest unread result (or its pending view)
+// rather than an empty tool. An expired cache never triggers a repeat.
+function openNotice(item) {
+  if (item.cacheKey && !resultMemoHas(item.cacheKey) && !savedResult(item.cacheKey)) {
+    const list = store.get("notices", []);
+    const found = list.find((entry) => entry.id === item.id);
+    if (found) { found.unread = false; store.set("notices", list); bus.emit("notices"); }
+    toast(t("notification_expired"), "bad"); return;
+  }
+  go(item.target.view, item.target.params || {});
+}
+function shortcutMatch(view, fallback, target) {
+  if (!target || target.view !== view) return false;
+  if (view !== "chat") return true;
+  const space = (target.params || {}).space, wanted = fallback.space;
+  return ["agent", "smart_agent"].includes(wanted) ? ["agent", "smart_agent"].includes(space) : space === wanted;
+}
+function shortcutCount(view, fallback = {}) {
+  const matches = (target) => shortcutMatch(view, fallback, target);
+  return {
+    unread: store.get("notices", []).filter((item) => item.unread && matches(item.target)).length,
+    pending: Object.values(bridge.pending()).map(pendingTarget).filter((item) => item && matches(item.target)).length,
+  };
+}
+function openNotifiedView(view, fallback = {}) {
+  const matches = (target) => shortcutMatch(view, fallback, target);
+  const item = store.get("notices", []).find((entry) => entry.unread && matches(entry.target));
+  if (item) { openNotice(item); return; }
+  const pending = Object.values(bridge.pending()).map(pendingTarget).find((entry) => entry && matches(entry.target));
+  if (pending) go(pending.target.view, pending.target.params || {});
+  else go(view, fallback);
+}
+
+// A bounded, local-only result cache lets a deliberately requested web or
+// YouTube search finish after navigation/reopen without silently repeating it.
+const RESULT_CACHE_KEY = "resultCache";
+const RESULT_CACHE_SECONDS = 12 * 3600;
+const resultMemoTimes = new Map();
+function resultMemoHas(key) {
+  const at = resultMemoTimes.get(key);
+  if (at && now() - at >= RESULT_CACHE_SECONDS) {
+    resultMemoTimes.delete(key); memo.delete(key); return false;
+  }
+  return memo.has(key);
+}
+function savedResults() {
+  const value = store.get(RESULT_CACHE_KEY, {});
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const keep = Object.fromEntries(Object.entries(value).filter(([, entry]) => entry && now() - Number(entry.at || 0) < RESULT_CACHE_SECONDS));
+  if (Object.keys(keep).length !== Object.keys(value).length) store.set(RESULT_CACHE_KEY, keep);
+  return keep;
+}
+function pruneSavedResults() {
+  const records = savedResults(), last = store.get("tool.last", null);
+  if (last && last.key && !records[last.key] && !resultPending(last.key)) store.del("tool.last");
+}
+function savedResult(key) {
+  const record = savedResults()[key];
+  return record && now() - Number(record.at || 0) < RESULT_CACHE_SECONDS ? record : null;
+}
+function saveResult(key, data, error = "") {
+  try {
+    const safeError = error ? plain(String(error)).slice(0, 5000) : "";
+    const body = JSON.stringify(error ? safeError : data);
+    if (!body || new Blob([body]).size > 180000) return false;
+    const records = savedResults();
+    // Put the new entry first so equal timestamps cannot evict the just-arrived result.
+    const ordered = [[key, { at: now(), data, error: safeError }], ...Object.entries(records).filter(([old]) => old !== key)];
+    const keep = Object.fromEntries(ordered.filter(([, value]) => value && now() - Number(value.at || 0) < RESULT_CACHE_SECONDS)
+      .sort((a, b) => Number(b[1].at) - Number(a[1].at)).slice(0, 6));
+    return store.set(RESULT_CACHE_KEY, keep);
+  } catch (error) { return false; }
+}
+function resultPending(key) {
+  return Object.values(bridge.pending()).some((meta) => meta.ctx && meta.ctx.kind === "view-result" && meta.ctx.key === key);
+}
+function resultContext(key, label) {
+  const definition = VIEWS[current.view];
+  return { kind: "view-result", key, target: { view: current.view, params: { ...current.params } },
+    category: definition.tab || current.view, label };
+}
+function receiveViewResult(data, error, ctx) {
+  if (!ctx || ctx.kind !== "view-result" || !ctx.key || !ctx.target) return;
+  if (error) { memo.delete(ctx.key); resultMemoTimes.delete(ctx.key); saveResult(ctx.key, null, error); }
+  else {
+    resultMemoTimes.delete(ctx.key);
+    if (resultMemoTimes.size >= 6) { const oldest = resultMemoTimes.keys().next().value; resultMemoTimes.delete(oldest); memo.delete(oldest); }
+    memo.set(ctx.key, data); resultMemoTimes.set(ctx.key, now()); saveResult(ctx.key, data);
+  }
+  if (!visiblePlace(ctx.target)) {
+    if (error) {
+      const view = ctx.target.view;
+      const utility = view === "tools" && UTILITIES.find((item) => item[0] === ctx.target.params?.tool);
+      const name = utility ? `${t("tile_tools")} · ${t(utility[2])}` :
+        t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools" })[view] || "tab_web");
+      notice(`${name} · ${t("notification_query_failed")}`, "bad", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
+    } else notice(t(ctx.label), "ok", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
+  }
+  bus.emit("result:" + ctx.key, { data, error });
+}
+for (const op of ["search", "youtube_search", "music_search", "tool"]) bridge.handlers[op] = receiveViewResult;
+bridge.handlers.translate = (data, error, ctx, rid) => {
+  if (!ctx || ctx.kind !== "translate-result" || store.get("tr.latest", "") !== rid) return;
+  store.del("tr.latest");
+  const record = { data, error: error || "", at: now() };
+  store.set("tr.result", record);
+  bus.emit("translate_result", record);
+  if (!visiblePlace(ctx.target)) notice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+};
+bridge.handlers.weather = (data, error, ctx, rid) => {
+  if (!ctx || ctx.kind !== "weather-result" || store.get("weather.latest", "") !== rid) return;
+  store.del("weather.latest");
+  if (error) store.set("weather.error", error);
+  else { store.del("weather.error"); saveManualWeather(data); }
+  bus.emit("weather_result", { data, error });
+  if (!visiblePlace(ctx.target)) notice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+};
+bus.always("notices", jobBadge);
+bridge.watchers.add(jobBadge);
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") markVisibleNoticesRead(); });
 
 // ---------------------------------------------------------------------------
 // Bot replies: tap commands become buttons, links open in the reader.
@@ -452,7 +649,7 @@ async function sync(force, quiet = false) {
   }
 }
 
-bridge.pushes.notice = (data) => notice(lang() === "en" ? data.en : data.es, data.kind);
+bridge.pushes.notice = (data) => { if (data) notice(lang() === "en" ? data.en : data.es, data.kind, { code: data.code }); };
 bridge.pushes.maintenance = (data) => {
   if (data && cache.maintenance_notice && Number(data.revision || 0) < Number(cache.maintenance_notice.revision || 0)) return;
   cache.maintenance_notice = data || null;
@@ -465,8 +662,8 @@ bridge.pushes.job = (job) => {
   const previous = cache.jobs.find((item) => item.id === job.id);
   upsertJob(job);
   if (!previous || previous.status !== job.status) {
-    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok");
-    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad");
+    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok", { category: "downloads", target: { view: "downloads", params: {} } });
+    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad", { category: "downloads", target: { view: "downloads", params: {} } });
   }
 };
 
@@ -491,9 +688,24 @@ const TILES = [
 
 function tiles(extra = [], omit = []) {
   const list = [...TILES, ...extra].filter(([name]) => !omit.includes(name));
-  return h("div", { class: "tiles" }, list.map(([name, label, view, params]) =>
-    h("button", { class: `tile tile-${name}`, onclick: () => go(view, params || {}) },
-      h("span", { class: "tile-icon" }, icon(name)), h("span", { class: "tile-label" }, t(label)))));
+  const root = h("div", { class: "tiles" });
+  const buttons = list.map(([name, label, view, params]) => {
+    const count = h("i", { class: "tile-badge", hidden: true });
+    const button = h("button", { class: `tile tile-${name}`, onclick: () => openNotifiedView(view, params || {}) },
+      h("span", { class: "tile-icon" }, icon(name)), h("span", { class: "tile-label" }, t(label)), count);
+    return { button, count, view, label, params: params || {} };
+  });
+  add(root, buttons.map((entry) => entry.button));
+  const draw = () => {
+    for (const entry of buttons) {
+      const count = shortcutCount(entry.view, entry.params);
+      const total = count.pending + count.unread;
+      entry.count.hidden = !total; entry.count.textContent = total > 99 ? "99+" : String(total);
+      entry.button.setAttribute("aria-label", total ? countLabel(t(entry.label), count) : t(entry.label));
+    }
+  };
+  bus.on("badges", draw); draw();
+  return root;
 }
 
 function greeting() {
@@ -547,9 +759,13 @@ function noticeList() {
   const box = h("div", { class: "card list" });
   const draw = () => {
     const list = store.get("notices", []);
-    fill(box, ...(list.length ? list.slice(0, 8).map((item) =>
-      h("div", { class: `list-row notice ${item.kind}` }, icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
-        h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)))) : [h("p", { class: "empty small" }, t("notices_none"))]));
+    fill(box, ...(list.length ? list.map((item) => {
+      const open = item.target && VIEWS[item.target.view] ? () => openNotice(item) : null;
+      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread ? "unread" : ""}`,
+        onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
+        icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
+        h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)), open ? icon("next") : null);
+    }) : [h("p", { class: "empty small" }, t("notices_none"))]));
   };
   bus.on("notices", draw);
   draw();
@@ -728,7 +944,8 @@ VIEWS.home = {
     add(main,
       homeCarousel(), status, advisory, searchBox(),
       section(t("shortcuts"), tiles([], ["health", "rates"])),
-      section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })), noticeList()),
+      section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })),
+        contextHelp(t("notification_privacy")), noticeList()),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
   },
@@ -765,9 +982,21 @@ function spaceTitle(space) {
   return info ? info.model.title : space.split(":").pop();
 }
 
-function spaceCard(name, title, hint, onclick, badge) {
+function spaceCard(name, title, hint, onclick) {
   return h("button", { class: "card space-card", onclick }, h("span", { class: "space-icon" }, icon(name)),
-    h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), badge ? h("span", { class: "badge ok" }, badge) : icon("next"));
+    h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), icon("next"));
+}
+function notifiedSpaceCard(name, title, hint, view, params = {}) {
+  const marker = h("span", { class: "space-badge", hidden: true });
+  const button = h("button", { class: "card space-card", onclick: () => openNotifiedView(view, params) },
+    h("span", { class: "space-icon" }, icon(name)), h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), marker, icon("next"));
+  const draw = () => {
+    const count = shortcutCount(view, params), total = count.pending + count.unread;
+    marker.hidden = !total; marker.textContent = total > 99 ? "99+" : String(total);
+    button.setAttribute("aria-label", total ? countLabel(title, count) : title);
+  };
+  bus.on("badges", draw); draw();
+  return button;
 }
 
 function role(name) {
@@ -787,6 +1016,9 @@ function modelState(model, provider) {
   if (model.cooldown > now()) {
     return h("span", { class: "chip warn" }, icon("clock"), REASONS[model.reason] ? t(REASONS[model.reason]) + " · " : "", until(model.cooldown, t("available")));
   }
+  if (provider && provider.cooldown > now()) return h("span", { class: "chip warn" }, icon("clock"),
+    REASONS[provider.reason] ? t(REASONS[provider.reason]) + " · " : "", until(provider.cooldown, t("available")));
+  if (model.local_available === false) return h("span", { class: "chip warn" }, t("model_locally_paused"));
   if (provider && provider.personal) return h("span", { class: "chip warn" }, t("personal_model_badge"));
   if (model.remaining) return h("span", { class: "chip" }, t("limit_left", { n: model.remaining[0], m: model.remaining[1] }));
   return h("span", { class: "chip" }, t("uses_left", { n: Math.max(0, model.daily - model.used) }));
@@ -814,6 +1046,71 @@ function modelCategory(model) {
   return "chat";
 }
 
+// Count registered provider routes, not independent models or vendor balances.
+// A shared provider quota is counted once; image limits are listed separately.
+function modelOverviewData(data) {
+  const result = { used: 0, left: 0, known: 0, active: 0, paused: 0, providers: [] };
+  for (const provider of data.providers || []) {
+    const models = provider.models || [];
+    const used = Math.max(0, Number(provider.used) || 0);
+    const limit = Math.max(0, Number(provider.daily) || 0);
+    let left = null;
+    if (limit) {
+      if (provider.shared_limit || provider.personal) left = Math.max(0, limit - used);
+      else left = models.reduce((sum, model) => sum + Math.max(0, (Number(model.daily) || 0) - (Number(model.used) || 0)), 0);
+      result.left += left; result.known += 1;
+    }
+    result.used += used;
+    for (const model of models) {
+      const locallyBlocked = model.local_available === false || provider.cooldown > now() || model.cooldown > now()
+        || (model.local_available === undefined && ((model.daily > 0 && model.used >= model.daily)
+            || (provider.shared_limit && provider.daily > 0 && provider.used >= provider.daily)));
+      if (locallyBlocked) result.paused += 1; else result.active += 1;
+    }
+    result.providers.push({ name: provider.name, used, limit, left });
+  }
+  return result;
+}
+
+function modelOverview() {
+  const box = h("div", { class: "model-overview" });
+  const draw = () => {
+    const data = cache.models;
+    if (!data) return fill(box, h("p", { class: "muted small" }, t("models_none")));
+    const stats = modelOverviewData(data);
+    const stat = (label, value, tone) => h("div", { class: `overview-stat ${tone}` }, h("span", {}, t(label)), h("strong", {}, value === null ? "—" : fmtNumber(value)));
+    const rows = stats.providers.map((p) => h("div", { class: "overview-row" }, h("b", {}, p.name), h("span", {},
+      p.left === null ? t("stats_unknown", { used: fmtNumber(p.used) }) :
+        t("stats_provider_line", { used: fmtNumber(p.used), left: fmtNumber(p.left), limit: fmtNumber(p.limit) }))));
+    const images = (data.images || []).map((source) => {
+      const used = fmtNumber(source.used || 0), attempts = fmtNumber(source.attempts || 0);
+      const vars = { used, attempts, left: fmtNumber(Math.max(0, source.daily - (source.attempts || 0))), limit: fmtNumber(source.daily || 0) };
+      const label = source.personal ? (source.attempts != null ? t(source.daily > 0 ? "stats_image_personal" : "stats_image_personal_unknown", vars) : t("stats_image_personal_missing", vars)) :
+        Number(source.daily) > 0 ? t("stats_provider_line", { used, left: fmtNumber(Math.max(0, source.daily - (source.used || 0))), limit: fmtNumber(source.daily) }) :
+          t("stats_unknown", { used });
+      return h("div", { class: "overview-row" }, h("b", {}, source.label), h("span", {}, label));
+    });
+    const personal = cache.quota && ["ask", "image", "code"].map((kind) => {
+      const q = cache.quota[kind];
+      if (!q) return null;
+      const vars = { name: t("stats_personal_" + kind), used: fmtNumber(q.used || 0), left: fmtNumber(quotaLeft(kind) || 0), limit: fmtNumber(q.limit || 0) };
+      return h("div", { class: "overview-row" }, h("span", {}, t(q.limit ? "stats_personal_line" : "stats_personal_unknown", vars)));
+    });
+    fill(box,
+      h("div", { class: "overview-head" }, h("span", { class: "overview-icon" }, icon("ai")),
+        h("div", { class: "grow" }, h("b", {}, t("stats_title")), h("small", {}, t("stats_subtitle"))),
+        h("small", { class: "overview-time" }, data.now ? t("stats_updated", { time: fmtTime(Number(data.now) > 1e11 ? data.now / 1000 : data.now) }) : "")),
+      h("div", { class: "overview-grid" }, stat("stats_used", stats.used, "used"), stat("stats_left", stats.known ? stats.left : null, "left"),
+        stat("stats_active", stats.active, "active"), stat("stats_paused", stats.paused, "paused")),
+      h("p", { class: "overview-hint" }, t("stats_hint")),
+      h("details", { class: "overview-details" }, h("summary", {}, icon("health"), h("b", { class: "grow" }, t("stats_details")), icon("down", "caret")),
+        h("div", { class: "overview-rows" }, rows, images.length ? h("h4", {}, t("stats_images")) : null, images,
+          personal ? h("h4", {}, t("stats_personal")) : null, personal)));
+  };
+  bus.on("models", draw); bus.on("quota", draw); draw();
+  return box;
+}
+
 function modelSections() {
   const data = cache.models;
   if (!data) return [empty(t("models_none"), "ai")];
@@ -830,9 +1127,9 @@ function modelSections() {
     const categories = [...groups.entries()].map(([name, models]) => h("details", { class: "model-category" },
       h("summary", {}, h("b", {}, role(name)), h("small", { class: "muted" }, modelCount(models.length)), icon("down", "caret")),
       h("div", { class: "model-cards" }, models.map((model) =>
-        h("button", { class: "model-choice" + (modelBroken(model, provider) ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
+        h("button", { class: "model-choice" + (modelBroken(model, provider) || model.local_available === false || provider.cooldown > now() ? " off" : ""), onclick: () => go("chat", { space: model.key }) },
           brandMark(brandOf(model, provider)),
-          h("span", { class: "grow" }, h("b", {}, model.title), h("span", { class: "roles" }, (model.roles || []).map((item) => h("span", { class: "tag" }, role(item))))),
+          h("span", { class: "grow" }, h("b", {}, model.title), h("span", { class: "roles" }, (model.roles || []).map((item) => h("span", { class: "tag" }, role(item))), model.manual ? h("span", { class: "tag" }, t("model_manual")) : null)),
           modelState(model, provider), icon("next"))))));
     out.push(h("details", { class: "card provider-card" },
       h("summary", { class: "provider-head" }, brandMark(brandOf(null, provider)),
@@ -871,15 +1168,15 @@ VIEWS.ai = {
     const refresh = iconButton("refresh", t("refresh"), () => refreshModels(refresh));
     add(main, 
       h("div", { class: "stack" },
-        spaceCard("bolt", t("agent"), t("agent_unified_hint"), () => go("chat", {
+        notifiedSpaceCard("bolt", t("agent"), t("agent_unified_hint"), "chat", {
           space: prefs.agentMode === "smart_agent" ? "smart_agent" : "agent"
-        })),
-        (store.get("chat.auto", []) || []).length ? spaceCard("clock", t("agent_legacy"), t("agent_legacy_hint"), () => go("chat", { space: "auto" })) : null,
-        spaceCard("code", t("coder"), t("coder_hint"), () => go("coder")),
-        spaceCard("image", t("tile_images"), t("images_hint"), () => go("images")),
+        }),
+        (store.get("chat.auto", []) || []).length ? notifiedSpaceCard("clock", t("agent_legacy"), t("agent_legacy_hint"), "chat", { space: "auto" }) : null,
+        notifiedSpaceCard("code", t("coder"), t("coder_hint"), "coder"),
+        notifiedSpaceCard("image", t("tile_images"), t("images_hint"), "images"),
         spaceCard("shield", t("personal_title"), t("personal_short"), () => go("personal_ai")),
-        quotaNote()),
-      section(null, headRow(t("models"), refresh), list));
+        quotaNote(), contextHelp(t("collaboration_safety"))),
+      section(null, headRow(t("models"), refresh), modelOverview(), list));
   },
 };
 
@@ -1143,7 +1440,8 @@ bridge.handlers.ask = (data, error, ctx, rid) => {
     if (data.jobs) setJobs(data.jobs);
   }
   saveMessages(ctx.space, list);
-  if (current.view !== "chat" || current.params.space !== ctx.space) notice(t("notice_answer", { name: spaceTitle(ctx.space) }));
+  const target = { view: "chat", params: { space: ctx.space } };
+  if (!visiblePlace(target)) notice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target });
 };
 
 function spaceMeta(space) {
@@ -1398,15 +1696,19 @@ bridge.handlers.image = async (data, error, ctx, rid) => {
       saveMessages(ctx.space, list);
     }
   }
+  if (chatImage) {
+    const target = { view: "chat", params: { space: ctx.space } };
+    if (!visiblePlace(target)) notice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target });
+  }
   if (error) {
-    if (!chatImage) notice(t("image_failed", { error }), "bad");
+    if (!chatImage) notice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} } });
   } else {
     if (data.models) {
       cache.models = data.models;
       saveCache();
       bus.emit("models");
     }
-    if (!chatImage && current.view !== "images") notice(t("image_ready"), "ok");
+    if (!chatImage && !visiblePlace({ view: "images", params: {} })) notice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} } });
   }
   bus.emit("images");
 };
@@ -1709,22 +2011,38 @@ function youtubePages(box, query, audioOnly = false) {
   const seen = new Set();
   let page = 1, busy = false;
   fill(box, results, controls);
-  const load = async () => {
+  const load = async (fresh = false) => {
     if (busy || !box.isConnected) return;
+    if (fresh) { page = 1; seen.clear(); fill(results); }
     busy = true;
     fill(controls, loading(t("searching")));
     try {
-      const data = await bridge.call("youtube_search", { q: query, page });
+      const args = { q: query, page }, key = "youtube_search" + JSON.stringify(args);
+      const saved = savedResult(key);
+      if (!fresh && saved && saved.error) {
+        fill(controls, failure(saved.error, () => load(true)));
+        return;
+      }
+      const inMemory = resultMemoHas(key);
+      const reused = !fresh && (inMemory || !!saved);
+      if (!reused && resultPending(key)) {
+        bus.on("result:" + key, () => { if (box.isConnected) { busy = false; load(); } });
+        return;
+      }
+      const data = reused ? (inMemory ? memo.get(key) : saved.data) :
+        await bridge.request("youtube_search", args, resultContext(key, audioOnly ? "notification_music" : "notification_youtube")).promise;
       if (!box.isConnected) return;
+      if (reused && page === 1) add(results, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+        h("button", { class: "btn ghost small", onclick: () => load(true) }, t("result_refresh"))));
       const items = (data.results || []).filter((item) => youtubeUrl(item.url) && !seen.has(item.url));
       for (const item of items) { seen.add(item.url); add(results, youtubeCard(item, audioOnly)); }
       page += 1;
       fill(controls,
-        data.more ? h("button", { class: "btn ghost wide", onclick: load }, icon("down"), t("youtube_more")) : null,
+        data.more ? h("button", { class: "btn ghost wide", onclick: () => load() }, icon("down"), t("youtube_more")) : null,
         data.limited ? h("p", { class: "muted small" }, t("youtube_limit")) : null,
-        !results.childElementCount && !data.more ? empty(t("no_results"), "search") : null);
+        !seen.size && !data.more ? empty(t("no_results"), "search") : null);
     } catch (error) {
-      if (box.isConnected && !error.cancelled) fill(controls, failure(error.message, load));
+      if (box.isConnected && !error.cancelled) fill(controls, failure(error.message, () => load(true)));
     } finally { busy = false; }
   };
   load();
@@ -1803,7 +2121,13 @@ VIEWS.apps = {
 };
 
 function toolResult(box, name, arg) {
-  fetchView(box, "tool", { name, arg }, (data) => fill(box, card(rich(data.text, hooksFor()))), { fresh: true });
+  const args = { name, arg }, key = "tool" + JSON.stringify(args);
+  // Track the specific tool request so multiple unread results open the right one.
+  if (current.view === "tools") current.params = { tool: name, arg };
+  store.set("tool.last", { name, args, key });
+  const definition = UTILITIES.find((item) => item[0] === name);
+  const noticeLabel = definition ? `${t("notification_tool")} · ${t(definition[2])}` : "notification_tool";
+  fetchView(box, "tool", args, (data) => fill(box, card(rich(data.text, hooksFor()))), { fresh: true, noticeLabel });
 }
 
 function askBox({ placeholder, value = "", onsubmit, iconName = "search", label }) {
@@ -2122,8 +2446,11 @@ VIEWS.weather = {
       remember("cities", city, 6);
       fill(box, loading());
       try {
-        const data = await bridge.call("weather", { city, place_id: placeId });
-        if (ticket === sequence) saveManualWeather(data);
+        const request = bridge.request("weather", { city, place_id: placeId },
+          { kind: "weather-result", category: "apps", target: { view: "weather", params: {} } });
+        if (!request.id) throw new Error(t("request_big"));
+        store.set("weather.latest", request.id);
+        const data = await request.promise;
         if (box.isConnected && ticket === sequence) draw(data);
       } catch (error) {
         if (box.isConnected && ticket === sequence && !error.cancelled) {
@@ -2135,6 +2462,14 @@ VIEWS.weather = {
         }
       }
     };
+    bus.on("weather_result", ({ data, error }) => {
+      if (!box.isConnected) return;
+      if (error) {
+        const last = weatherHome().last;
+        if (validWeatherLast(last)) { draw(last.data); box.prepend(h("p", { class: "note warn", role: "status" }, error)); }
+        else fill(box, failure(error));
+      } else if (data) draw(data);
+    });
     bus.on("weather_home", () => {
       drawSettings();
       const last = weatherHome().last;
@@ -2146,6 +2481,10 @@ VIEWS.weather = {
     const last = weatherHome().last;
     if (validWeatherLast(last)) draw(last.data);
     else add(box, empty(t("weather_none"), "weather"));
+    const previousError = store.get("weather.error", "");
+    if (previousError) box.prepend(h("p", { class: "note warn", role: "status" }, previousError));
+    const pendingWeather = store.get("weather.latest", "");
+    if (pendingWeather && bridge.pending()[pendingWeather]) box.prepend(loading(t("searching")));
   },
 };
 
@@ -2195,6 +2534,16 @@ VIEWS.translate = {
         drawPickers();
       }),
       select(target, LANGS.map((code) => [code, langName(code)]), (value) => { target = value; store.set("tr.target", value); }));
+    const showTranslation = (record) => {
+      if (!record) return;
+      if (record.error) { fill(output, failure(record.error)); return; }
+      const data = record.data;
+      if (!data) return;
+      fill(output, h("p", { class: "translated" }, data.text),
+        data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
+        h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
+          iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
+    };
     const run = async (button) => {
       const text = area.value.trim();
       if (!text) return;
@@ -2205,11 +2554,12 @@ VIEWS.translate = {
       button.classList.add("busy");
       fill(output, loading(t("translating")));
       try {
-        const data = await bridge.call("translate", { text, source, target });
-        fill(output, h("p", { class: "translated" }, data.text),
-          data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
-          h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
-            iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
+        const request = bridge.request("translate", { text, source, target },
+          { kind: "translate-result", category: "apps", target: { view: "translate", params: {} } });
+        if (!request.id) throw new Error(t("request_big"));
+        store.set("tr.latest", request.id);
+        const data = await request.promise;
+        if (output.isConnected) showTranslation({ data });
       } catch (error) {
         if (!error.cancelled) fill(output, failure(error.message));
       } finally {
@@ -2218,7 +2568,15 @@ VIEWS.translate = {
       }
     };
     const button = h("button", { class: "btn primary", onclick: () => run(button) }, icon("translate"), t("translate"));
+    bus.on("translate_result", (record) => {
+      if (!output.isConnected) return;
+      button.disabled = false; button.classList.remove("busy"); showTranslation(record);
+    });
     drawPickers();
+    const pendingTranslation = store.get("tr.latest", "");
+    if (pendingTranslation && bridge.pending()[pendingTranslation]) {
+      button.disabled = true; button.classList.add("busy"); fill(output, loading(t("translating")));
+    } else showTranslation(store.get("tr.result", null));
     add(main, card(pickers, area, h("div", { class: "row between" }, h("small", { class: "muted" }, t("translate_note")), button)), contextHelp(t("translate_privacy") + " " + t("translate_limit")), output);
   },
 };
@@ -2228,10 +2586,15 @@ const UTILITIES = [["convert", "tools", "util_convert", "util_convert_hint"], ["
 VIEWS.tools = {
   tab: "apps",
   title: () => t("tile_tools"),
-  render(main) {
+  render(main, params) {
+    const args = params.tool && typeof params.arg === "string" ? { name: params.tool, arg: params.arg } : null;
+    const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
     add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
       const box = h("div");
-      return h("details", { class: "card utility-card" }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
+      if (last && last.name === name && last.args && (resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
+        fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
+      }
+      return h("details", { class: "card utility-card", open: !!(last && last.name === name) }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
         h("small", { class: "muted" }, t(hint))), icon("down", "caret")),
         h("div", { class: "utility-body stack" }, askBox({ placeholder: t(hint), onsubmit: (value) => toolResult(box, name, value), iconName }), box));
     }));
@@ -2463,7 +2826,7 @@ VIEWS.settings = {
       section(t("set_data"), h("div", { class: "card list" },
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
         wipe(t("wipe_images"), () => media.clear()),
-        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); memo.clear(); }))),
+        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); memo.clear(); bus.emit("notices"); }))),
       section(t("about_title"), card(
         h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
@@ -3028,6 +3391,8 @@ const SPLASH_MAX = 6000;
 function boot() {
   applyLook();
   chrome();
+  pruneSavedResults();
+  setInterval(pruneSavedResults, 3600000);
   const splash = $("#splash");
   const started = performance.now();
   let gone = false;

@@ -31,9 +31,9 @@ BRIDGE = r"""
       { v: "360", l: "360p" }, { v: "720", l: "720p" }
     ] }
   ] }];
-  const models = { now: Date.now(), reset: Date.now() + 86400000, providers: [], images: [], pin: "" };
+  const models = { now: Date.now() / 1000, reset: Date.now() / 1000 + 86400, providers: [], images: [], pin: "" };
   const health = {
-    version: "browser-smoke", now: Date.now(), uptime: 60, restart: Date.now() + 86400000,
+    version: "browser-smoke", now: Date.now() / 1000, uptime: 60, restart: Date.now() / 1000 + 86400,
     active: 0, queue_bytes: 0, disk_free: 10000000000, sent: 0, cap_mb: 0,
     search: { you: false, used: 0, daily: 0 },
     tools: { ffmpeg: true, "7z": true, browser: true, media: true }
@@ -119,6 +119,8 @@ BRIDGE = r"""
       case "translate": return { text: "translated smoke test", detected: "en" };
       case "tool": return { text: "smoke test result" };
       case "ask": return window.__fixtureAskResult || { text: "SIMULATED agent answer [S1]", sig: "Mock model" };
+      case "code": return { files:[{path:"synthetic.txt",text:"synthetic"}], project_complete:true, model_confirmed:true,
+        summary:"Proyecto sintético listo", steps:[], name:"Synthetic" };
       case "queue": return { jobs: [] };
       case "action": return { title: "Smoke test", text: "smoke test result" };
       default: return {};
@@ -183,16 +185,20 @@ BRIDGE = r"""
 @contextmanager
 def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False,
                     real_filekit: bool = False, engine: str = "chromium", touch: bool = False,
-                    legacy_package: bool = False, delivery_handler=None):
+                    legacy_package: bool | str = False, delivery_handler=None):
     """Fake Delta bridge; optionally connect UI to Python handlers, never a live bot."""
     from michiflin import app_compat
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
         root = Path(temporary)
-        if legacy_package and not app_compat.previous_build("fixture-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES):
-            raise ValueError("the previous package could not be verified")
+        is_recent = legacy_package == "recent"
+        if legacy_package:
+            build = app_compat.recent_build if is_recent else app_compat.previous_build
+            if not build("fixture-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES):
+                raise ValueError("the previous package could not be verified")
         for name in miniapp.APP_FILES:
             (root / name).parent.mkdir(parents=True, exist_ok=True)
-            source = app_compat._PREVIOUS if legacy_package and name in app_compat._REPLACED else miniapp.APP_DIR
+            archive, replaced = (app_compat._RECENT, app_compat._RECENT_REPLACED) if is_recent else (app_compat._PREVIOUS, app_compat._REPLACED)
+            source = archive if legacy_package and name in replaced else miniapp.APP_DIR
             shutil.copy2(source / name, root / name)
         (root / "webxdc.js").write_text(BRIDGE, encoding="utf-8")
 
@@ -917,7 +923,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             with self.subTest(language=language), browser_fixture(language, viewport) as (page, errors):
                 page.locator('.tab[data-tab="ai"]:visible').click()
                 page.get_by_text("Agente" if language == "es" else "Agent", exact=True).first.click()
-                self.assertTrue(page.get_by_role("tab", name="Sin cuota de modelos" if language == "es" else "No model quota").is_visible())
+                self.assertTrue(page.get_by_role("tab", name="Herramientas / IA local" if language == "es" else "Tools / local AI").is_visible())
                 page.locator("#view textarea").fill("free-mode question")
                 page.locator("#view .composer button.primary").click()
                 page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
@@ -933,7 +939,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.get_by_text("SIMULATED agent answer [S1]").wait_for(state="visible")
                 sent = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'ask').at(-1).payload.args.space")
                 self.assertEqual(sent, "smart_agent")
-                page.get_by_role("tab", name="Sin cuota de modelos" if language == "es" else "No model quota").click()
+                page.get_by_role("tab", name="Herramientas / IA local" if language == "es" else "Tools / local AI").click()
                 self.assertTrue(page.get_by_text("free-mode question").is_visible())
                 self.assertEqual(page.get_by_text("Weather in Havana").count(), 0)
 
