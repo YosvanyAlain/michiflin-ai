@@ -1,12 +1,11 @@
 name: Read-only owner app compatibility audit
 on:
   push:
-    branches: [audit-owner-app-compat-readonly-20261109]
+    branches: [audit-owner-final-readonly-20261109]
 permissions:
   contents: read
 jobs:
   app-metadata-only:
-    if: ${{ false }} # correction was dispatched once; keep disabled
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
