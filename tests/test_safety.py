@@ -104,7 +104,7 @@ class SafetyTests(unittest.TestCase):
                 miniapp.send_app(91, "en", address=OWNER)
             self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104})
             miniapp.replace_app(101, 91, "en", OWNER)
-            miniapp.op_reinstall(91, {}, "en")
+            miniapp.op_reinstall(91, {"_app_instance_id": 101}, "en")
             self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104, 105, 106})
             delete.assert_not_called()
         # A temporary RPC outage is not evidence of a deleted message.
@@ -112,7 +112,7 @@ class SafetyTests(unittest.TestCase):
             self.assertEqual(miniapp.latest_instance(91), 0)
         self.assertEqual(miniapp.instance_ids(), {101, 102, 103, 104, 105, 106})
 
-    def test_upgrade_is_not_repeated_after_restart_or_window_expiry(self) -> None:
+    def test_only_explicit_reinstall_creates_one_new_app_without_deleting_old(self) -> None:
         old = {"chat": 92, "addr": OWNER, "build": "old", "access_session": access.session_stamp(OWNER)}
         state.data["apps"]["150"] = old
         miniapp._upgraded.clear()
@@ -121,11 +121,10 @@ class SafetyTests(unittest.TestCase):
               mock.patch.object(chat, "send", return_value=151) as send,
               mock.patch("michiflin.live_web._identity", return_value=(old, OWNER)),
               mock.patch.object(chat, "delete_for_all") as delete):
-            miniapp._maybe_upgrade(150, old, "en")
+            miniapp.op_reinstall(92, {"_app_instance_id": 150}, "en")
+            miniapp.op_reinstall(92, {"_app_instance_id": 150}, "en")
             self.assertIn("150", state.data["apps"])
             self.assertIn("151", state.data["apps"])
-            miniapp._upgraded.clear()  # simulate a new bot session, not a new build
-            miniapp._maybe_upgrade(150, old, "en")
             send.assert_called_once()
             delete.assert_not_called()
 
@@ -193,9 +192,13 @@ class SafetyTests(unittest.TestCase):
             miniapp.handle(123, old_entry, {"id": "stale", "op": "health", "lang": "en"})
             rpc.assert_not_called()
             respond.assert_not_called()
+        # Regranting access must neither revive the old instance nor create a
+        # replacement automatically. The recipient must decide deliberately.
+        chat.set_sender(OLD)
         with mock.patch.object(miniapp, "send_app") as send_app:
             miniapp.welcome(91, "en")
-            send_app.assert_called_once()  # authorized guest needs a fresh instance
+            send_app.assert_not_called()
+        self.assertEqual(state.data["apps"]["123"], old_entry)
         new_entry = dict(old_entry, access_session=access.session_stamp(OLD))
         self.assertFalse(access.bound_allowed(old_entry))
         self.assertTrue(access.bound_allowed(new_entry))

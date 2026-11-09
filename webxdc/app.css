@@ -665,11 +665,14 @@ details[open] .caret { transform: rotate(180deg); }
 .live-brief { margin: 0; }
 .live-privacy summary { cursor: pointer; color: var(--accent-strong); font-size: 13px; font-weight: 650; }
 .live-navigation { gap: 6px; }
-.live-screen-box { width: 100%; max-width: 480px; max-height: 76vh; margin: 10px auto; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: #fff; overscroll-behavior: contain; }
+.live-screen-box { width: 100%; max-width: 480px; margin: 10px auto; overflow: visible; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+/* At 100% the outer app must scroll naturally: a nested, capped scroller
+   traps the bottom of the frame on short phones. Pan locally only when zoomed. */
+.live-screen-box.live-zoomed { max-height: 76vh; overflow: auto; overscroll-behavior: contain; }
 .live-screen-box[hidden], .live-screen[hidden] { display: none; }
-.live-screen { display: block; width: 100%; max-width: none; height: auto; margin: 0; cursor: crosshair; }
-.live-screen.live-drag-active { touch-action: none; user-select: none; cursor: grab; }
-.live-gesture { flex: 1 0 100%; font-size: 13px; }
+.live-screen { display: block; width: 100%; max-width: none; height: auto; margin: 0; border-radius: 10px; cursor: crosshair; }
+.live-screen.live-drag-active, .live-screen.live-scroll-active { touch-action: none; user-select: none; cursor: grab; }
+.live-gesture { flex: 0 1 auto; font-size: 12.5px; }
 .live-gesture input { flex: 0 0 auto; }
 .live-traffic { display: block; overflow-wrap: anywhere; }
 .live-traffic[hidden] { display: none; }

@@ -147,7 +147,7 @@ def notice_for_instance(instance_id: int) -> bool:
         from . import live_web, miniapp
         identity = live_web._identity(instance_id)
         return bool(identity and identity[1] == str(config.OWNER_ADDRESS or "").strip().casefold()
-                    and identity[0].get("build") == miniapp.app_build())
+                    and miniapp.compatible_build(identity[0]))
     except Exception:
         return False
 

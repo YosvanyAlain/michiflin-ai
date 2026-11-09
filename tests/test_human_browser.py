@@ -38,6 +38,21 @@ class HumanBrowserUnitTests(unittest.TestCase):
                 sandbox.BrowserProcess("human_browser_worker.py")
             launch.assert_not_called()
 
+    def test_scroll_targets_the_human_pointer_and_validates_before_moving(self):
+        with mock.patch.object(human, "_xdotool") as pointer:
+            human._scroll({"amount": 240, "x": 100, "y": 500})
+            self.assertEqual(pointer.call_args_list, [mock.call("mousemove", "200", "1000"),
+                                                      mock.call("click", "--repeat", "3", "--delay", "30", "5")])
+        with mock.patch.object(human, "_xdotool") as pointer:
+            human._scroll({"amount": -600})  # compatibility with older miniapps
+            pointer.assert_called_once_with("click", "--repeat", "7", "--delay", "30", "4")
+        for bad in ({"amount": 240, "x": 10}, {"amount": 240, "x": 480, "y": 3},
+                    {"amount": 240, "x": True, "y": 3}, {"amount": "240", "x": 2, "y": 3}):
+            with self.subTest(request=bad), mock.patch.object(human, "_xdotool") as pointer:
+                with self.assertRaises(ValueError):
+                    human._scroll(bad)
+                pointer.assert_not_called()
+
     def test_gesture_validation_happens_before_pointer_down(self):
         samples = [None, [], [{"x": 1, "y": 2, "ms": 0}],
                    [{"x": 1, "y": 2, "ms": 1}, {"x": 1, "y": 2, "ms": 2}],
@@ -73,6 +88,87 @@ class HumanBrowserUnitTests(unittest.TestCase):
         keys.assert_called_once_with("key", "--clearmodifiers", "ctrl+v")
         stop.assert_called_once_with(owner)
 
+    def test_clipboard_reader_never_puts_selection_in_arguments(self):
+        address = b"https://fixture.example/?q=synthetic-secret"
+        result = subprocess.CompletedProcess([], 0, stdout=address)
+        with mock.patch.object(human.subprocess, "run", return_value=result) as run:
+            self.assertEqual(human._read_clipboard(), address)
+        self.assertNotIn(address.decode(), repr(run.call_args))
+        self.assertEqual(run.call_args.kwargs["timeout"], 3)
+
+    def test_prepared_address_accepts_only_safe_browser_normalizations(self):
+        equivalent = [
+            ("https://fixture.example", b"https://fixture.example/"),
+            ("https://FIXTURE.EXAMPLE:443?q=hello%20world", b"https://fixture.example/?q=hello%20world"),
+            ("https://fixture.example/caf\u00e9?q=pi\u00f1a", b"https://fixture.example/caf%C3%A9?q=pi%C3%B1a"),
+            ("https://fixture.example/a%2fb", b"https://fixture.example/a%2Fb"),
+        ]
+        for original, copied in equivalent:
+            with self.subTest(original=original):
+                self.assertTrue(human._prepared_address_matches(original, copied))
+        different = [
+            ("https://fixture.example/?q=one", b"https://fixture.example/?q=two"),
+            ("https://fixture.example/a%2Fb", b"https://fixture.example/a/b"),
+            ("https://fixture.example/", b"https://attacker.example/"),
+            ("https://fixture.example/", b"http://fixture.example/"),
+            ("https://fixture.example/", b"https://fixture.example/?"),
+            ("https://fixture.example/", b"https://fixture.example/#"),
+            ("https://fixture.example/", b"\xff"),
+        ]
+        for original, copied in different:
+            with self.subTest(original=original, copied=copied):
+                self.assertFalse(human._prepared_address_matches(original, copied))
+
+    def test_initial_address_is_verified_before_one_navigation(self):
+        url = "https://fixture.example/caf%C3%A9?q=synthetic"
+        with mock.patch.object(human, "_focused_window", return_value="10"), \
+             mock.patch.object(human, "_xdotool") as keys, \
+             mock.patch.object(human, "_paste") as paste, \
+             mock.patch.object(human, "_read_clipboard", side_effect=[b"", url.encode()]), \
+             mock.patch.object(human, "_clear_clipboard") as clear, \
+             mock.patch.object(human.time, "sleep"):
+            human._open_initial_address(url, "10")
+        self.assertEqual(paste.call_count, 2)  # preparation, not navigation
+        self.assertEqual(clear.call_count, 4)
+        self.assertEqual(keys.call_args_list.count(mock.call("key", "--clearmodifiers", "Return")), 1)
+        self.assertNotIn(url, repr(keys.call_args_list))
+
+    def test_initial_address_fails_closed_without_submitting_if_unverified(self):
+        url = "https://fixture.example/?token=synthetic"
+        with mock.patch.object(human, "_focused_window", return_value="10"), \
+             mock.patch.object(human, "_xdotool") as keys, \
+             mock.patch.object(human, "_paste") as paste, \
+             mock.patch.object(human, "_read_clipboard", return_value=b"about:blank"), \
+             mock.patch.object(human, "_clear_clipboard") as clear, \
+             mock.patch.object(human.time, "sleep"), self.assertRaisesRegex(ValueError, "address_unready"):
+            human._open_initial_address(url, "10")
+        self.assertEqual(paste.call_count, 6)
+        self.assertEqual(clear.call_count, 12)
+        self.assertNotIn(mock.call("key", "--clearmodifiers", "Return"), keys.call_args_list)
+        self.assertNotIn(url, repr(keys.call_args_list))
+
+    def test_initial_address_rejects_controls_before_any_keyboard_or_clipboard(self):
+        with mock.patch.object(human, "_xdotool") as keys, \
+             mock.patch.object(human, "_paste") as paste, \
+             mock.patch.object(human, "_focused_window") as focus, \
+             self.assertRaisesRegex(ValueError, "address_unready"):
+            human._open_initial_address("https://fixture.example/?q=a\nb", "10")
+        keys.assert_not_called()
+        paste.assert_not_called()
+        focus.assert_not_called()
+
+    def test_initial_address_clears_clipboard_and_does_not_submit_if_focus_changes(self):
+        url = "https://fixture.example/"
+        with mock.patch.object(human, "_focused_window", side_effect=["10", "10", "20"]), \
+             mock.patch.object(human, "_xdotool") as keys, \
+             mock.patch.object(human, "_paste"), \
+             mock.patch.object(human, "_read_clipboard", return_value=url.encode()), \
+             mock.patch.object(human, "_clear_clipboard") as clear, \
+             mock.patch.object(human.time, "sleep"), self.assertRaisesRegex(ValueError, "focus"):
+            human._open_initial_address(url, "10")
+        self.assertEqual(clear.call_count, 2)
+        self.assertNotIn(mock.call("key", "--clearmodifiers", "Return"), keys.call_args_list)
+
     def test_root_focus_is_restored_only_for_one_unambiguous_browser(self):
         with mock.patch.object(human, "_focused_window", side_effect=["543", "10"]), \
              mock.patch.object(human, "_visible_windows", return_value=["10"]), \
@@ -99,6 +195,115 @@ class HumanBrowserUnitTests(unittest.TestCase):
 
 @unittest.skipUnless(os.getenv("MICHIFLIN_SANDBOX_TESTS") == "1", "requires isolated Linux namespaces and a graphical Chromium")
 class HumanBrowserSandboxTests(unittest.TestCase):
+    def test_targeted_scroll_in_both_real_isolated_browsers(self):
+        """Wheel a nested panel at the chosen point, then return it to the top."""
+        if not all(shutil.which(name) for name in ("Xvfb", "xdotool", "xclip", "openssl")):
+            self.skipTest("graphical test dependencies missing")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cert, key = root / "certificate.pem", root / "key.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", str(key), "-out", str(cert),
+                            "-days", "1", "-nodes", "-subj", "/CN=fixture.example"],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=25)
+            events = []
+            ready, scrolled, at_top = threading.Event(), threading.Event(), threading.Event()
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path.startswith("/event?"):
+                        event = parse_qs(urlsplit(self.path).query)
+                        events.append(event)
+                        if "ready" in event:
+                            ready.set()
+                        if "panel" in event:
+                            scrolled.set()
+                            if event.get("panel") == ["right"] and float(event["top"][0]) == 0:
+                                at_top.set()
+                        body, kind = b"OK", "text/plain"
+                    else:
+                        body = b'''<!doctype html><html><body style="margin:0">
+                          <div id="left" style="position:absolute;left:10px;top:10px;width:200px;height:320px;overflow:auto">
+                            <div style="height:2000px;background:repeating-linear-gradient(red 0 200px,blue 200px 400px)"></div></div>
+                          <div id="right" style="position:absolute;left:260px;top:10px;width:200px;height:320px;overflow:auto">
+                            <div style="height:2000px;background:repeating-linear-gradient(red 0 200px,blue 200px 400px)"></div></div>
+                          <script>for(const name of ['left','right']){const el=document.getElementById(name);
+                            el.addEventListener('scroll',()=>fetch('/event?panel='+name+'&top='+el.scrollTop));}
+                            fetch('/event?ready=1');</script></body></html>'''
+                        kind = "text/html"
+                    self.send_response(200); self.send_header("Content-Type", kind)
+                    self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+
+                def log_message(self, *_args):
+                    pass
+
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); tls.load_cert_chain(str(cert), str(key))
+            server.socket = tls.wrap_socket(server.socket, server_side=True)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            original_copy = sandbox.shutil.copyfile
+
+            def connect(host, port, upstream=None):
+                if host == "fixture.example" and port == 443 and upstream is None:
+                    return socket.create_connection(("127.0.0.1", server.server_port), timeout=5)
+                raise egress.EgressError("fixture_offline")
+
+            def copy_with_test_tls_exception(src, dst, *args, **kwargs):
+                name = Path(src).name
+                if name in {"remote_worker.py", "human_browser_worker.py"}:
+                    text = Path(src).read_text(encoding="utf-8")
+                    if name == "remote_worker.py":
+                        needle, replacement = '"device_scale_factor": 2,', '"device_scale_factor": 2, "ignore_https_errors": True,'
+                    else:
+                        needle, replacement = 'args = [binary, "--no-sandbox",', 'args = [binary, "--ignore-certificate-errors", "--no-sandbox",'
+                    self.assertIn(needle, text)
+                    Path(dst).write_text(text.replace(needle, replacement, 1), encoding="utf-8")
+                    return dst
+                return original_copy(src, dst, *args, **kwargs)
+
+            def exchange(process, payload):
+                process.stdin.write((json.dumps(payload) + "\n").encode()); process.stdin.flush()
+                self.assertTrue(select.select([process.stdout], [], [], 50)[0], "worker timed out")
+                return json.loads(process.stdout.readline(3_000_001))
+
+            try:
+                with mock.patch.object(config, "WEB_PROXY", ""), mock.patch.object(config, "MEDIA_PROXY", ""), \
+                     mock.patch.object(egress, "_connect", side_effect=connect), \
+                     mock.patch.object(sandbox.shutil, "copyfile", side_effect=copy_with_test_tls_exception):
+                    for worker_name in ("remote_worker.py", "human_browser_worker.py"):
+                        with self.subTest(worker=worker_name):
+                            events.clear(); ready.clear(); scrolled.clear(); at_top.clear()
+                            with sandbox.BrowserProcess(worker_name) as worker:
+                                first = exchange(worker.process, {"url": "https://fixture.example/", "detail": "economy", "hide_infobars": True})
+                                self.assertEqual(first["kind"], "frame")
+                                self.assertTrue(ready.wait(12), "fixture did not load")
+                                # First put the pointer in the left panel. The next
+                                # wheel action must move it to the right panel.
+                                self.assertEqual(exchange(worker.process, {"action": "click", "x": 50, "y": 180, "seq": 1})["kind"], "frame")
+                                down = exchange(worker.process, {"action": "scroll", "x": 350, "y": 180, "amount": 240, "seq": 2})
+                                self.assertEqual(down["kind"], "frame")
+                                if os.getenv("MICHIFLIN_DEBUG_FRAMES"):
+                                    (Path(os.environ["MICHIFLIN_DEBUG_FRAMES"]) / (worker_name + "-first.jpg")).write_bytes(base64.b64decode(first["image"]))
+                                    (Path(os.environ["MICHIFLIN_DEBUG_FRAMES"]) / (worker_name + "-down.jpg")).write_bytes(base64.b64decode(down["image"]))
+                                self.assertTrue(scrolled.wait(5), "target did not scroll")
+                                right = [float(e["top"][0]) for e in events if e.get("panel") == ["right"]]
+                                self.assertTrue(right and max(right) > 0, "right panel stayed at the top")
+                                self.assertFalse(any(e.get("panel") == ["left"] for e in events), "wrong panel scrolled")
+                                before = Image.open(io.BytesIO(base64.b64decode(first["image"]))).convert("RGB")
+                                after = Image.open(io.BytesIO(base64.b64decode(down["image"]))).convert("RGB")
+                                changed = sum(
+                                    sum(abs(a-b) for a, b in zip(before.getpixel((350, y)), after.getpixel((350, y)))) > 100
+                                    for y in range(100, 300, 10)
+                                )
+                                self.assertGreater(changed, 1, "frame did not show the scroll")
+                                scrolled.clear()
+                                up = exchange(worker.process, {"action": "scroll", "x": 350, "y": 180, "amount": -240, "seq": 3})
+                                self.assertEqual(up["kind"], "frame")
+                                self.assertTrue(scrolled.wait(5))
+                                self.assertTrue(at_top.wait(5), "right panel did not return to the top")
+                                self.assertEqual(exchange(worker.process, {"action": "close", "seq": 4})["kind"], "closed")
+            finally:
+                server.shutdown(); server.server_close()
+
     def test_graphical_browser_interaction_and_tls_fail_closed(self):
         if not all(shutil.which(name) for name in ("Xvfb", "xdotool", "xclip", "openssl")):
             self.skipTest("graphical test dependencies missing")
@@ -167,6 +372,24 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                     needle = 'args = [binary, "--no-sandbox",'
                     self.assertIn(needle, text)
                     text = text.replace(needle, 'args = [binary, "--ignore-certificate-errors", "--no-sandbox",', 1)
+                    # Simulate an address bar that did not accept the first
+                    # preparation. No navigation should occur until verified.
+                    marker = "def _read_clipboard() -> bytes:\n"
+                    self.assertIn(marker, text)
+                    text = text.replace(marker, "_fixture_reads = 0\n\n" + marker +
+                                        "    global _fixture_reads\n    _fixture_reads += 1\n"
+                                        "    if _fixture_reads == 1:\n        return b''\n", 1)
+                    initial = '_open_initial_address(str(initial["url"]), main_window)'
+                    self.assertIn(initial, text)
+                    text = text.replace(initial, initial + "\n            if _read_clipboard():\n"
+                                        "                raise ValueError('fixture_clipboard_not_cleared')", 1)
+                    catch = ('except Exception:\n            # Do not submit an unverified address or expose it in the error.\n'
+                             '            emit({"kind": "error", "error": "human_address_unready"})')
+                    diagnostic = ('except Exception as exc:\n'
+                                  '            emit({"kind": "error", "error": "human_address_unready", '
+                                  '"fixture_error": str(exc) if isinstance(exc, ValueError) else type(exc).__name__})')
+                    self.assertIn(catch, text)
+                    text = text.replace(catch, diagnostic, 1)
                     Path(dst).write_text(text, encoding="utf-8")
                     return dst
                 return original_copy(src, dst, *args, **kwargs)
@@ -217,19 +440,25 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                     with mock.patch.object(sandbox.shutil, "copyfile", side_effect=copy_with_test_tls_exception), \
                          sandbox.BrowserProcess("human_browser_worker.py") as worker:
                         process = worker.process
-                        first = exchange(process, {"url": "https://fixture.example/", "detail": "sharp"})
-                        self.assertEqual(first["kind"], "frame")
+                        first = exchange(process, {"url": "https://fixture.example?probe=%C3%B1%20one", "detail": "sharp", "hide_infobars": True})
+                        self.assertEqual(first["kind"], "frame", f"initial fixture status: {first.get('fixture_error', first.get('error', ''))}")
                         self.assertTrue(page_loaded.wait(12))
+                        self.assertEqual(seen.count("/?probe=%C3%B1%20one"), 1, "initial preparation repeated navigation")
                         children = descendants(process.pid)
-                        chrome_pids = []
+                        chrome_pids, chrome_main = [], []
                         for pid in children:
                             try:
                                 argv = (Path("/proc") / str(pid) / "cmdline").read_bytes()
                             except OSError:
                                 continue
                             if b"--user-data-dir=/tmp/human-browser-profile" in argv:
+                                self.assertNotIn(b"fixture.example", argv, "address leaked in browser argv")
                                 chrome_pids.append(pid)
+                                if b"--type=" not in argv:
+                                    chrome_main.append(argv)
                         self.assertTrue(chrome_pids, "isolated graphical browser is not running")
+                        self.assertTrue(chrome_main and all(b"--disable-infobars" in argv for argv in chrome_main),
+                                        "current app's explicit infobar setting was not applied")
                         mountinfo = (Path("/proc") / str(chrome_pids[0]) / "mountinfo").read_text()
                         self.assertTrue(any(line.split()[4] == "/tmp" and " - tmpfs " in line for line in mountinfo.splitlines()),
                                         "graphical profile is not on the isolated tmpfs")
@@ -298,6 +527,17 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                     with sandbox.BrowserProcess("human_browser_worker.py") as worker:
                         first = exchange(worker.process, {"url": "https://fixture.example/", "detail": "economy"})
                         self.assertEqual(first["kind"], "frame")
+                        argv_values = []
+                        for pid in descendants(worker.process.pid):
+                            try:
+                                argv = (Path("/proc") / str(pid) / "cmdline").read_bytes()
+                            except OSError:
+                                continue
+                            if b"--user-data-dir=/tmp/human-browser-profile" in argv:
+                                argv_values.append(argv)
+                        self.assertTrue(argv_values)
+                        self.assertTrue(all(b"--disable-infobars" not in argv for argv in argv_values),
+                                        "older app's warning was hidden")
                         self.assertFalse(page_loaded.wait(3), "original worker accepted invalid certificate")
                         # Closing the last GUI window ends the session cleanly.
                         self.assertEqual(exchange(worker.process, {"action": "key", "key": "CloseWindow", "seq": 1})["kind"], "closed")

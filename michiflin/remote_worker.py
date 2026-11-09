@@ -68,6 +68,19 @@ def frame(page: Any, detail: str = "sharp") -> dict[str, Any]:
     return {"kind": "error", "error": "frame_too_large"}
 
 
+def scroll_pointer(page: Any, request: dict[str, Any]) -> None:
+    """Scroll at the person's target; never synthesize a click while scrolling."""
+    amount = request.get("amount")
+    if type(amount) is not int or amount not in {-600, -240, 240, 600}:
+        raise ValueError("scroll")
+    if "x" in request or "y" in request:
+        x, y = request.get("x"), request.get("y")
+        if type(x) is not int or type(y) is not int or not 0 <= x < WIDTH or not 0 <= y < HEIGHT:
+            raise ValueError("coordinates")
+        page.mouse.move(x, y)
+    page.mouse.wheel(0, amount)
+
+
 def drag_pointer(page: Any, points: Any) -> None:
     """Replay one human-recorded gesture; never create or solve a challenge.
 
@@ -188,10 +201,7 @@ def main() -> int:
                             raise ValueError("key")
                         page.keyboard.press(key)
                     elif action == "scroll":
-                        amount = int(request.get("amount", 0))
-                        if amount not in {-600, -240, 240, 600}:
-                            raise ValueError("scroll")
-                        page.mouse.wheel(0, amount)
+                        scroll_pointer(page, request)
                     elif action == "back":
                         page.go_back(wait_until="domcontentloaded", timeout=15_000)
                     elif action == "forward":

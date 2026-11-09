@@ -6,6 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest import mock
 
 import pytest
 
@@ -141,6 +142,35 @@ def test_invitee_rekey_requires_a_new_securejoin_and_invalidates_old_instance():
     assert not access.bound_allowed({"addr": ALICE, "chat": 21, "access_session": old})
     assert access.bound_allowed({"addr": ALICE, "chat": 21, "access_session": new})
     assert identity_guard.authorized_chat(rpc, 1, 21, ALICE)
+
+
+def test_regrant_and_restart_never_send_duplicate_or_reactivate_old_app(monkeypatch):
+    rpc = Rpc()
+    assert community.admit_from_securejoin(rpc, 1, 15)
+    old_stamp = access.session_stamp(ALICE)
+    entry = {"chat": 21, "addr": ALICE, "epoch": config.BOT_EPOCH,
+             "access_session": old_stamp, "serial": 0, "build": "synthetic-build"}
+    state.data["apps"]["101"] = entry
+    original = copy.deepcopy(entry)
+    assert community.revoke(ALICE)
+    assert community.admit_from_securejoin(rpc, 1, 15)
+    assert access.session_stamp(ALICE) != old_stamp and not access.bound_allowed(entry)
+
+    monkeypatch.setattr(chat, "ready", lambda: True)
+    monkeypatch.setattr(miniapp, "_pointed", {})
+    monkeypatch.setattr(miniapp, "send_app", send_app := mock.Mock())
+    monkeypatch.setattr(chat, "send", send_text := mock.Mock(return_value=202))
+    monkeypatch.setattr(chat, "rpc", read_updates := mock.Mock())
+    bot = SimpleNamespace(rpc=rpc)
+    assert app._welcome(bot, 1, 15)  # repeated secure-join event
+    app._bootstrap_invitees(bot, 1)  # automatic restart recovery
+    miniapp.point_to_app(21, "es")  # an ordinary message from this guest
+    miniapp.on_status_update(101)  # old updates must remain unread
+    send_app.assert_not_called()
+    read_updates.assert_not_called()
+    assert send_text.call_count == 1 and not send_text.call_args.kwargs.get("viewtype")
+    assert "/app" not in send_text.call_args.args[1]
+    assert state.data["apps"] == {"101": original} and not access.bound_allowed(entry)
 
 
 def test_failed_checkpoint_rolls_back_grant_and_retry_works(monkeypatch):

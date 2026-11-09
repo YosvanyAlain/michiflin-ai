@@ -48,7 +48,6 @@ class HandoverSafety(unittest.TestCase):
              mock.patch.object(miniapp, "send_app") as send, \
              mock.patch.object(miniapp, "replace_app") as replace:
             miniapp.welcome(10, "es")
-            miniapp._maybe_upgrade(100, {"chat": 10}, "es")
             app._bootstrap_invitees(None, 0)
             app._bootstrap_verified_owner(None, 0)
             app._bootstrap_email_recovery(None, 0)

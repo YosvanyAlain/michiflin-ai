@@ -29,7 +29,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, answer_inline, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
@@ -53,7 +53,7 @@ _dispatch_pending: dict[str, tuple[str, str]] = {}  # ticket -> (lane, person)
 _LANE_LIMITS = {"normal": 64, "owner": 16, "owner_work": 32, "pause": 32}
 _PERSON_LIMITS = {"normal": 8, "owner": 16, "owner_work": 32, "pause": 2}
 _instance_locks: dict[int, threading.Lock] = {}
-# Welcome, recovery and interaction-triggered upgrade must decide and hand off together.
+# Welcome and explicitly requested recovery must decide and hand off together.
 _upgrade_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
 # Exact pending pages stay only in process memory, isolated by app, grant and recipient.
@@ -83,6 +83,17 @@ def app_build() -> str:
     for name in APP_FILES:
         digest.update(name.encode() + (APP_DIR / name).read_bytes())
     return digest.hexdigest()[:10]
+
+
+def compatible_build(entry: dict[str, Any]) -> bool:
+    """Admit only this package or the exact tested 618c355 protocol build."""
+    value = entry.get("build")
+    if not isinstance(value, str) or not value:
+        return False
+    if value == app_build():
+        return True
+    old = app_compat.previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    return bool(old and value == old)
 
 
 def build() -> Path:
@@ -205,18 +216,23 @@ def point_to_app(chat_id: int, locale: str) -> None:
     """Point at an app, or deliver one only when no current binding is known."""
     with _upgrade_lock:
         msg_id = latest_instance(chat_id)
-        if not msg_id:
-            current_build = app_build()
-            entries = _bound_apps(chat_id)
-            if not ((maintenance.silent() and entries) or any(entry.get("build") == current_build for entry in entries)):
-                send_app(chat_id, locale)
-                return
+        bound = _bound_apps(chat_id)
+        known = _registered_app_for_sender(chat_id)
+        if not msg_id and not bound and not known:
+            # First delivery only. An earlier registration, even one whose
+            # access was revoked, cannot justify an automatic replacement.
+            send_app(chat_id, locale)
+            return
     if time.time() - _pointed.get(chat_id, 0) < 180:
         return
     _pointed[chat_id] = time.time()
     if msg_id:
         text = tr(locale, "Michiflin funciona dentro de la mini app de este chat: ábrela con «Iniciar» y pide ahí lo que necesites.",
                   "Michiflin works inside the mini app in this chat: open it with “Start” and ask for what you need there.")
+    elif known and not bound:
+        # A new grant must not revive an old app or replay its requests.
+        text = tr(locale, "Hay una miniapp anterior registrada en este chat, pero su acceso previo no se ha reactivado. No envié otra automáticamente; si necesitas una nueva, consulta al propietario.",
+                  "An earlier mini app is registered in this chat, but its previous access was not reactivated. I did not send another automatically; if you need a new one, ask the owner.")
     else:
         # An RPC failure is not proof the previous message disappeared.
         # Keep the existing instance instead of automatically creating another.
@@ -230,21 +246,11 @@ def welcome(chat_id: int, locale: str) -> None:
     if maintenance.silent_active():
         return
     with _upgrade_lock:
-        entries = _bound_apps(chat_id)
-        if maintenance.silent() and entries:
-            return  # preserve the recipient's existing instance
-        current_build = app_build()
-        now = time.time()
-        for entry in entries:
-            if entry.get("build") == current_build:
-                # Old records may have a pending second-language flag from the
-                # previous release. Keep the record but never send that message.
-                return
-            try:
-                if now - float(entry.get("sent", 0)) < 600:
-                    return
-            except (TypeError, ValueError):
-                pass
+        # A new build, a repeated secure-join, or a renewed grant is not
+        # permission to create another app. A historical registration blocks
+        # delivery but does not itself grant the old instance any access.
+        if _bound_apps(chat_id) or _registered_app_for_sender(chat_id):
+            return
         if locale in {"es", "en"}:
             send_app(chat_id, locale)
         else:
@@ -252,7 +258,7 @@ def welcome(chat_id: int, locale: str) -> None:
 
 
 def _instance(msg_id: int) -> dict[str, Any] | None:
-    """Known instance registered by this deployment. Foreign epochs are dead; older builds can still hello to upgrade."""
+    """Known instance of this deployment; old builds can sync and request an update explicitly."""
     entry = _apps().get(str(msg_id))
     if entry is None:
         return None
@@ -281,6 +287,29 @@ def _bound_apps(chat_id: int) -> list[dict[str, Any]]:
                 continue
             entries.append(dict(entry))
     return entries
+
+
+def _registered_app_for_sender(chat_id: int) -> bool:
+    """Detect an earlier app without authorizing it or reading its messages.
+
+    The chat, deployment epoch and recipient must match. An unknown recipient
+    is treated conservatively: it blocks automatic delivery, never grants access.
+    Different recipients or deployments do not suppress a legitimate first app.
+    """
+    recipient = str(chat.sender() or "").strip().casefold()
+    with state.lock:
+        for key, entry in _apps().items():
+            if not str(key).isdigit() or not isinstance(entry, dict):
+                continue
+            try:
+                if int(entry.get("chat") or 0) != chat_id or _instance(int(key)) is None:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            address = str(entry.get("addr") or "").strip().casefold()
+            if not recipient or not address or address == recipient:
+                return True
+    return False
 
 
 def observed_locale(chat_id: int) -> str:
@@ -516,7 +545,7 @@ def on_status_update(msg_id: int) -> None:
                 if payload.get("t") == "req_chunk":
                     address = str(entry.get("addr", "")).strip().lower()
                     if (not address or not admin.is_allowed(address) or not config.service_access_allowed(address)
-                            or entry.get("build") != app_build()):
+                            or not compatible_build(entry)):
                         continue
                     payload = _request_piece(entry, payload)
                 if isinstance(payload, dict) and payload.get("t") == "req":
@@ -797,10 +826,17 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     if not kill_safe and (was_killed or state.work_interrupted(address, generation)):
         reply(None, maintenance_message(locale) if state.maintenance_interrupted(generation) else kill_message(locale))
         return
-    # Older packages may only run hello so the bot can replace them; other ops stay blocked.
-    if entry.get("build") != app_build() and op not in {"hello", "health"}:
-        reply(None, tr(locale, "Esta mini app ya no es válida. Abre la versión nueva del chat.",
-                                           "This mini app is no longer valid. Open the new version from the chat."))
+    # The exact preceding protocol-compatible build can keep working without
+    # creating a new app. Unknown older packages retain only explicit recovery
+    # and essential owner controls; all identity and grant checks still apply.
+    recovery_control = (config.is_owner_admin(address) and (
+        op in {"owner_only", "maintenance_notice", "kill_switch", "nauta_strict"}
+        or (op == "admin" and args.get("do", "") in
+            {"", "allow_one", "allow", "remove", "block", "alerts", "pause_queue", "limit", "unlimit"})))
+    if not compatible_build(entry) and op not in {"hello", "health", "reinstall"} and not recovery_control:
+        reply(None, tr(locale,
+            "Esta mini app ya no es válida para esta operación. Si deseas instalar la nueva versión, ve a Ajustes → Sincronización → Pedir app nueva; esta se conserva.",
+            "This mini app is no longer valid for this operation. To install the new version, go to Settings → Sync → Get a new app; this one is kept."))
         return
     admin.seen(address)
     if function is None:
@@ -822,11 +858,14 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         actual_args.pop("_local_scope", None)
         actual_args.pop("_collab_scope", None)  # never trust a client-supplied project identity
         actual_args.pop("_collab_task", None)
+        actual_args.pop("_app_instance_id", None)
+        if op == "reinstall":
+            actual_args["_app_instance_id"] = instance_id  # verified server context, never from the app
         inline_key: tuple[int, str, str] | None = None
         if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
             from . import live_web
             identity = live_web._identity(instance_id)
-            secure = bool(identity and identity[1] == address and entry.get("build") == app_build())
+            secure = bool(identity and identity[1] == address and compatible_build(entry))
             state.set_personal_ai_secure(secure)
             requested = op == "personal_ai" or any(str(args.get(name) or "").startswith("personal-")
                                                    for name in ("space", "model", "agent_model"))
@@ -927,7 +966,6 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
             usage.note(address, requests=1)
     if op == "hello" and access.bound_allowed(entry) and admin.is_allowed(address):
         _local_ai_disclosure(instance_id)
-        _maybe_upgrade(instance_id, entry, locale)
 
 
 _local_ai_disclosed: dict[int, bool] = {}
@@ -967,23 +1005,6 @@ def _local_ai_disclosure(instance_id: int) -> None:
         if not sent:
             with _answers_lock:
                 _local_ai_disclosed.pop(instance_id, None)
-
-
-def _maybe_upgrade(instance_id: int, entry: dict[str, Any], locale: str) -> None:
-    """Offer one new instance per build, without deleting any previous instance."""
-    if maintenance.silent():
-        return  # quiet handover never creates a second app automatically
-    current_build = app_build()
-    if entry.get("build") == current_build:
-        return
-    chat_id = int(entry["chat"])
-    with _upgrade_lock:
-        already_sent = any(other.get("build") == current_build for other in _bound_apps(chat_id))
-        marker = (chat_id, current_build)
-        if already_sent or time.time() - _upgraded.get(marker, 0.0) < UPGRADE_GAP:
-            return
-        if replace_app(instance_id, chat_id, locale, str(entry.get("addr", ""))):
-            _upgraded[marker] = time.time()
 
 
 def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") -> int:
@@ -1346,14 +1367,26 @@ def op_repair(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("reinstall")
 def op_reinstall(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    """Send a fresh app but keep all older instances and their local data."""
-    with state.lock:
-        old = [(int(key), str(entry.get("addr", ""))) for key, entry in _apps().items() if int(entry["chat"]) == chat_id
-               and access.bound_allowed(entry)]
-    new_id = send_app(chat_id, locale, updated=True, address=old[0][1] if old else "")
-    if not new_id:
-        raise AppError(tr(locale, "No pude enviar la app nueva. Inténtalo otra vez.", "Could not send the new app. Please try again."))
-    _upgraded[chat_id] = time.time()
+    """A deliberate request sends one new app; existing instances are untouched."""
+    try:
+        instance_id = int(args.get("_app_instance_id") or 0)
+    except (TypeError, ValueError):
+        instance_id = 0
+    if instance_id <= 0:
+        raise AppError(tr(locale, "No pude verificar la app que solicitó la actualización.",
+                          "Could not verify the app requesting the update."))
+    address = chat.sender()
+    marker = (chat_id, app_build())
+    with _upgrade_lock:
+        # A double tap must not send two copies. Each later, explicit recovery
+        # remains possible after the guard expires.
+        if time.time() - _upgraded.get(marker, 0.0) < UPGRADE_GAP:
+            return {"sent": True, "already": True}
+        new_id = replace_app(instance_id, chat_id, locale, address)
+        if not new_id:
+            raise AppError(tr(locale, "No pude enviar la app nueva. Inténtalo otra vez.",
+                              "Could not send the new app. Please try again."))
+        _upgraded[marker] = time.time()
     return {"sent": True}
 
 
