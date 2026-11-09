@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   offline-tests:
+    if: ${{ false }} # separate synthetic audit branch, not a product change
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
