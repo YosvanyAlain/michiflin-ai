@@ -34,6 +34,13 @@ def exchange(process, payload):
     return json.loads(process.stdout.readline(3_000_001))
 
 
+def test_playwright_has_indexeddb_session_export():
+    # A deployment must not report a saved session while omitting IndexedDB.
+    from inspect import signature
+    from playwright.sync_api import BrowserContext
+    assert "indexed_db" in signature(BrowserContext.storage_state).parameters
+
+
 def test_graphical_saved_bridge_keeps_legacy_and_temporary_modes_distinct(monkeypatch):
     old = live_web.Session(1, "a" * 32, "alice@example.org", "host:fixture.example", "https://fixture.example/", browser="controlled")
     temp = live_web.Session(2, "b" * 32, "alice@example.org", "host:fixture.example", "https://fixture.example/", browser="human")
