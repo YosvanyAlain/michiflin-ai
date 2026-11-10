@@ -301,7 +301,8 @@ def test_previous_compatibility_fails_closed_when_snapshot_or_other_asset_change
     assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == ""
 
 
-def test_compatible_previous_app_keeps_normal_work_without_sending_a_new_app(app_state, monkeypatch):
+@pytest.mark.parametrize("build_fn", ["previous_build", "recent_build", "latest_build", "published_build"])
+def test_compatible_previous_app_keeps_normal_work_without_sending_a_new_app(app_state, monkeypatch, build_fn):
     from concurrent.futures import Future
 
     class Immediate:
@@ -313,7 +314,8 @@ def test_compatible_previous_app_keeps_normal_work_without_sending_a_new_app(app
                 future.set_exception(exc)
             return future
 
-    previous = app_compat.previous_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    previous = getattr(app_compat, build_fn)("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    assert previous
     app_state["build"] = previous
     monkeypatch.setattr(miniapp, "_workers", Immediate())
     monkeypatch.setattr(miniapp, "respond", mock.Mock())

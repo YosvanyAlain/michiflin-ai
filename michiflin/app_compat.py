@@ -15,6 +15,8 @@ _RECENT = Path(__file__).resolve().parent / "compat" / "58a0657"
 _RECENT_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _LATEST = Path(__file__).resolve().parent / "compat" / "582d273"
 _LATEST_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_PUBLISHED = Path(__file__).resolve().parent / "compat" / "e8a104c"
+_PUBLISHED_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
@@ -48,3 +50,8 @@ def recent_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
 def latest_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """The exact 582d273 package, or empty when it cannot be verified."""
     return _pinned_build(epoch, app_dir, files, _LATEST, _LATEST_REPLACED)
+
+
+def published_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """The exact e8a104c package, or empty when it cannot be verified."""
+    return _pinned_build(epoch, app_dir, files, _PUBLISHED, _PUBLISHED_REPLACED)

@@ -50,7 +50,7 @@ The bot sends a WebXDC app bound to the authorized chat. The interface exchanges
 
 The app follows the device language (Spanish or English) and light/dark preference unless changed. Settings offers Michiflin, Material You-inspired, Pixel Art and Ocean styles, plus independent accent colors. Material You is an inspiration, not automatic system-color extraction. Decorations respect reduced motion and weather scenes use the existing saved Open-Meteo observation without new weather requests.
 
-Tab and shortcut badges count replies or errors received away from their relevant view, not requests merely in progress; queue progress remains separate. These are local app indicators, not operating-system notifications. Some results are cached briefly and an expired result is never silently requested again.
+Tab and shortcut badges count replies or errors received away from their relevant view, not requests merely in progress; queue progress remains separate. Tapping a badged tab opens its newest unread result; **View unread replies** or **Home → Notices** provide access to the others. Up to six search or utility results are kept for 12 hours (at most 180 kB each) if local storage allows it. Missing or expired results are reported without repeating the request. The latest translation and weather, plus bounded image-error and download-status details, are also kept locally. Image errors include the submitted prompt and can be dismissed in the view or cleared with images or history in Settings. These indicators are not operating-system notifications; storage can fail and each mini-app instance is independent.
 
 ## Chat usage
 
