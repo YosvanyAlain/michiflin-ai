@@ -18,6 +18,11 @@ const memo = new Map();
 const VIEWS = {};
 let current = { view: TABS.some((tab) => tab.id === store.get("tab")) ? store.get("tab") : "home", params: {} };
 let trail = [];
+// A notice must never turn a missing cached result into another request.
+let openingNoticeKey = "";
+// Image results are loaded asynchronously from IndexedDB; do not acknowledge
+// their notices until the gallery (or an explicit missing-result message) exists.
+let imagesReadyToAcknowledge = false;
 
 function saveCache() {
   store.set("cache", cache);
@@ -146,6 +151,12 @@ function goTab(tab) {
   trail = [];
   current = { view: tab, params: {} };
   store.set("tab", tab);
+  // Home remains the overview of all notices. In another section, open the
+  // newest unread result in that section rather than stranding its badge on
+  // the section's empty landing page. Other unread notices remain available.
+  const item = tab === "home" ? null : store.get("notices", []).find((entry) =>
+    entry.unread && (entry.category || "home") === tab && entry.target);
+  if (item && openNotice(item, tab)) return;
   render();
 }
 
@@ -179,8 +190,23 @@ function render(scroll = 0) {
   const main = $("#view");
   main.className = "view enter";
   main.replaceChildren();
-  definition.render(main, current.params);
+  if (current.view === "images") imagesReadyToAcknowledge = false;
+  try { definition.render(main, current.params); }
+  finally { openingNoticeKey = ""; }
   markVisibleNoticesRead();
+  // The category badge can represent several different results. Offer an
+  // explicit way to open the next one without clearing the others.
+  if (tab !== "home") {
+    const next = h("button", { class: "btn ghost small pending-notices", hidden: true, onclick: () => goTab(tab) });
+    const drawNext = () => {
+      const count = store.get("notices", []).filter((item) => item.unread && (item.category || "home") === tab && item.target).length;
+      next.hidden = count === 0;
+      if (count) fill(next, icon("bell"), t("notification_next", { n: count }));
+    };
+    bus.on("notices", drawNext);
+    drawNext();
+    main.prepend(next);
+  }
   main.scrollTop = scroll;
   requestAnimationFrame(() => requestAnimationFrame(() => main.classList.remove("enter")));
 }
@@ -355,10 +381,19 @@ function remember(key, value, limit = 8) {
   store.set(key, list.slice(0, limit));
 }
 
+// Keep results for different views separate even when they happen to use the
+// same provider query (for example YouTube and YouTube Music).
+function resultKey(op, args, view = current.view) {
+  const legacy = op + JSON.stringify(args);
+  if (!["search", "youtube_search", "music_search"].includes(op)) return legacy;
+  return JSON.stringify(["view-result-v2", view, op, args]);
+}
+
 // Request with in-memory reuse, so going back does not cost another e-mail.
 async function fetchView(target, op, args, draw, options = {}) {
-  const key = op + JSON.stringify(args);
   const reportable = ["search", "music_search", "tool"].includes(op);
+  const legacy = op + JSON.stringify(args);
+  const key = reportable && openingNoticeKey !== legacy ? resultKey(op, args) : legacy;
   const saved = reportable && savedResult(key);
   const inMemory = reportable ? resultMemoHas(key) : memo.has(key);
   const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
@@ -371,6 +406,9 @@ async function fetchView(target, op, args, draw, options = {}) {
     if (reportable) target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
       h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
     return;
+  }
+  if (reportable && !options.fresh && openingNoticeKey === key && !resultPending(key)) {
+    fill(target, failure(t("notification_expired"))); return;
   }
   fill(target, loading(options.label));
   if (reportable && resultPending(key)) {
@@ -399,15 +437,20 @@ function samePlace(target) {
     return ((target.params || {}).section || "downloads") === ((current.params || {}).section || "downloads");
   return JSON.stringify(target.params || {}) === JSON.stringify(current.params || {});
 }
+function resultsVisible() {
+  // A visible WebView can still be covered by its splash or introduction.
+  return document.visibilityState !== "hidden" && !$("#splash") && !$(".intro-overlay");
+}
 function visiblePlace(target) {
-  return document.visibilityState !== "hidden" && samePlace(target);
+  return resultsVisible() && samePlace(target);
 }
 function markVisibleNoticesRead() {
-  if (document.visibilityState === "hidden") return;
+  if (!resultsVisible()) return;
   const list = store.get("notices", []);
   let changed = false;
   for (const item of list) {
-    if (item.unread && ((item.target && samePlace(item.target)) || (!item.target && current.view === "home"))) {
+    const imageReady = !(item.target && item.target.view === "images") || imagesReadyToAcknowledge;
+    if (item.unread && imageReady && ((item.target && samePlace(item.target)) || (!item.target && current.view === "home"))) {
       item.unread = false; changed = true;
     }
   }
@@ -419,23 +462,62 @@ function notice(text, kind = "info", options = {}) {
   if (code && seen.includes(code)) return;
   const list = store.get("notices", []);
   const target = options.target || null;
-  const visible = target ? visiblePlace(target) : document.visibilityState !== "hidden" && current.view === "home";
-  list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text), kind,
-    category: options.category || "home", target, cacheKey: options.cacheKey || "", unread: !visible });
-  if (store.set("notices", list.slice(0, 30)) && code) store.set("noticeCodes", [...seen, code].slice(-20));
+  const visible = target ? visiblePlace(target) : resultsVisible() && current.view === "home";
+  const job = options.job ? { id: String(options.job.id), status: options.job.status,
+    title: plain(options.job.title).slice(0, 500), error: plain(options.job.error).slice(0, 5000),
+    warning: plain(options.job.warning).slice(0, 5000) } : null;
+  list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text).slice(0, 5000), kind,
+    category: options.category || "home", target, cacheKey: options.cacheKey || "", imageId: options.imageId || "",
+    messageId: options.messageId || "", job, unread: !visible });
+  // Retain every unread notice while storage permits; trim only older read
+  // history. If device storage is full, store.set reports that explicitly.
+  let readKept = 0;
+  const keep = list.filter((item) => item.unread || readKept++ < 30);
+  if (store.set("notices", keep) && code) store.set("noticeCodes", [...seen, code].slice(-20));
   bus.emit("notices");
+}
+
+// Older notices did not store the YouTube page in their destination, but the
+// exact page is recoverable from their saved cache key without a new request.
+function normalizePagedNotice(item) {
+  const target = item && item.target, params = target && target.params;
+  if (!target || !["youtube", "music"].includes(target.view) || (params && params.resultPage) ||
+      typeof item.cacheKey !== "string" || !item.cacheKey.startsWith("youtube_search{")) return item;
+  try {
+    const args = JSON.parse(item.cacheKey.slice("youtube_search".length));
+    if (!Number.isSafeInteger(args.page) || args.page < 1) return item;
+    const normalized = { ...item, target: { ...target, params: { ...(params || {}), resultPage: args.page } } };
+    const list = store.get("notices", []), index = list.findIndex((entry) => entry.id === item.id);
+    if (index >= 0) { list[index] = normalized; store.set("notices", list); }
+    return normalized;
+  } catch (error) { return item; }
 }
 
 // An accented shortcut opens its latest unread result (or its pending view)
 // rather than an empty tool. An expired cache never triggers a repeat.
-function openNotice(item) {
-  if (item.cacheKey && !resultMemoHas(item.cacheKey) && !savedResult(item.cacheKey)) {
+function openNotice(item, rootTab = "") {
+  if (!item) return false;
+  item = normalizePagedNotice(item);
+  const target = item.target;
+  const definition = target && Object.prototype.hasOwnProperty.call(VIEWS, target.view) ? VIEWS[target.view] : null;
+  const valid = definition && typeof definition.render === "function" && (!rootTab || (definition.tab || target.view) === rootTab);
+  const available = !item.cacheKey || resultMemoHas(item.cacheKey) || savedResult(item.cacheKey);
+  if (!valid || !available) {
+    // Keep an unavailable notice unread until its warning can actually be seen.
+    if (!resultsVisible()) return false;
     const list = store.get("notices", []);
     const found = list.find((entry) => entry.id === item.id);
     if (found) { found.unread = false; store.set("notices", list); bus.emit("notices"); }
-    toast(t("notification_expired"), "bad"); return;
+    toast(t("notification_expired"), "bad"); return false;
   }
-  go(item.target.view, item.target.params || {});
+  openingNoticeKey = item.cacheKey || "";
+  if (rootTab) {
+    const params = target.params || {};
+    if (target.view !== rootTab || Object.keys(params).length) trail.push({ view: rootTab, params: {}, scroll: 0 });
+    current = { view: target.view, params };
+    render();
+  } else go(target.view, target.params || {});
+  return true;
 }
 function shortcutMatch(view, fallback, target) {
   if (!target || target.view !== view) return false;
@@ -671,8 +753,8 @@ bridge.pushes.job = (job) => {
   const previous = cache.jobs.find((item) => item.id === job.id);
   upsertJob(job);
   if (!previous || previous.status !== job.status) {
-    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok", { category: "downloads", target: { view: "downloads", params: {} } });
-    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad", { category: "downloads", target: { view: "downloads", params: {} } });
+    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok", { category: "downloads", target: { view: "downloads", params: {} }, job });
+    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad", { category: "downloads", target: { view: "downloads", params: {} }, job });
   }
 };
 
@@ -1492,7 +1574,7 @@ bridge.handlers.ask = (data, error, ctx, rid) => {
   }
   saveMessages(ctx.space, list);
   const target = { view: "chat", params: { space: ctx.space } };
-  if (!visiblePlace(target)) notice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target });
+  if (!visiblePlace(target)) notice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target, messageId: rid });
 };
 
 function spaceMeta(space) {
@@ -1613,10 +1695,14 @@ VIEWS.chat = {
     }, "tiny"));
     const drawList = () => {
       const items = messages(space);
-      fill(list, ...(items.length ? items.map((item) => bubble(space, item, items)) : [chatIntro(space, submit)]));
+      const ids = new Set(items.map((item) => item.rid));
+      const missing = store.get("notices", []).filter((item) => item.unread && item.messageId && !ids.has(item.messageId) &&
+        item.target && item.target.view === "chat" && (item.target.params || {}).space === space);
+      fill(list, ...(items.length ? items.map((item) => bubble(space, item, items)) : [chatIntro(space, submit)]),
+        ...missing.map((item) => h("p", { class: "note warn", role: "status" }, item.text, " · ", t("notification_expired"))));
       // An empty conversation should open at the mode selector, not scrolled
       // past it; existing/new messages still open at the latest response.
-      if (items.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
+      if (items.length || missing.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
     };
     bus.on("models", drawMeta);
     bus.on("quota", drawMeta);
@@ -1686,6 +1772,25 @@ VIEWS.chat = {
 // ---------------------------------------------------------------------------
 // AI images: kept on the device (IndexedDB), exportable to a chat or the gallery.
 // ---------------------------------------------------------------------------
+const imageFailureMemory = [];
+function imageFailures() {
+  const saved = store.get("img.errors", []);
+  const combined = [...imageFailureMemory, ...(Array.isArray(saved) ? saved : [])];
+  const seen = new Set();
+  return combined.filter((item) => item && item.id && !seen.has(item.id) && seen.add(item.id)).slice(0, 30);
+}
+function rememberImageFailure(id, prompt, error) {
+  imageFailureMemory.unshift({ id, prompt: plain(prompt || "").slice(0, 2000), error: plain(String(error)).slice(0, 5000), ts: now() });
+  imageFailureMemory.splice(30);
+  store.set("img.errors", imageFailures());
+}
+function forgetImageFailure(id) {
+  const remaining = imageFailures().filter((item) => item.id !== id);
+  imageFailureMemory.splice(0, imageFailureMemory.length, ...remaining);
+  store.set("img.errors", remaining);
+  bus.emit("images");
+}
+
 function imageSourceLabel(key) {
   const found = ((cache.models && cache.models.images) || []).find((source) => source.key === key);
   return found ? found.label : t("img_auto");
@@ -1726,7 +1831,9 @@ function createChatImage(space, prompt) {
 }
 
 bridge.handlers.image = async (data, error, ctx, rid) => {
-  store.set("img.pending", store.get("img.pending", []).filter((item) => item.rid !== rid));
+  const pending = store.get("img.pending", []);
+  const request = pending.find((item) => item.rid === rid);
+  store.set("img.pending", pending.filter((item) => item.rid !== rid));
   let persisted = true;
   if (!error) {
     persisted = await media.put({ id: rid, prompt: data.prompt, source: data.source, model: data.model || "", mime: data.mime, b64: data.b64, ts: now() });
@@ -1749,17 +1856,20 @@ bridge.handlers.image = async (data, error, ctx, rid) => {
   }
   if (chatImage) {
     const target = { view: "chat", params: { space: ctx.space } };
-    if (!visiblePlace(target)) notice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target });
+    if (!visiblePlace(target)) notice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target, messageId: rid });
   }
   if (error) {
-    if (!chatImage) notice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} } });
+    if (!chatImage) {
+      rememberImageFailure(rid, (ctx && ctx.prompt) || (request && request.prompt) || "", error);
+      notice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} }, imageId: rid });
+    }
   } else {
     if (data.models) {
       cache.models = data.models;
       saveCache();
       bus.emit("models");
     }
-    if (!chatImage && !visiblePlace({ view: "images", params: {} })) notice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} } });
+    if (!chatImage && !visiblePlace({ view: "images", params: {} })) notice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} }, imageId: rid });
   }
   bus.emit("images");
 };
@@ -1785,7 +1895,9 @@ VIEWS.images = {
     const area = autosize(h("textarea", { class: "input", rows: 2, placeholder: t("images_placeholder") }));
     const quotas = h("div", { class: "chips" });
     const waiting = h("div", { class: "stack" });
+    const failures = h("div", { class: "stack" });
     const gallery = h("div", { class: "gallery" });
+    let drawVersion = 0;
     const drawQuotas = () => {
       const list = (cache.models && cache.models.images) || [];
       if (prefs.imageModel && !list.some((source) => source.key === prefs.imageModel)) prefs.imageModel = "";
@@ -1826,14 +1938,26 @@ VIEWS.images = {
           return spent ? [contextHelp(t("img_cf_spent", { time: fmtTime(spent.cooldown) }))] : []; })());
     };
     const draw = async () => {
+      const version = ++drawVersion;
+      imagesReadyToAcknowledge = false;
       const pending = bridge.pending();
       const list = store.get("img.pending", []).filter((item) => pending[item.rid]);
       store.set("img.pending", list);
       fill(waiting, ...list.map((item) => h("div", { class: "card row" }, h("i", { class: "spinner" }),
         h("span", { class: "grow" }, h("span", { class: "clamp" }, item.prompt), h("small", { class: "muted" }, imageSourceLabel(item.model || ""))), since(item.ts))));
+      fill(failures, ...imageFailures().map((item) => h("article", { class: "card stack image-failure", role: "status" },
+        h("div", { class: "row" }, icon("alert"), h("p", { class: "grow" }, t("image_failed", { error: item.error })),
+          iconButton("close", t("close"), () => forgetImageFailure(item.id))),
+        item.prompt ? h("small", { class: "muted" }, item.prompt) : null)));
       const items = await media.all();
+      if (!gallery.isConnected || version !== drawVersion) return;
       fill(gallery, ...(items.length ? items.map((item) => h("button", { class: "thumb", onclick: () => imageViewer(item) },
         h("img", { src: `data:${item.mime};base64,${item.b64}`, alt: item.prompt, loading: "lazy" }))) : [empty(t("images_none"), "image")]));
+      const available = new Set([...imageFailures(), ...items].map((item) => item.id));
+      const missing = store.get("notices", []).filter((item) => item.unread && item.target && item.target.view === "images" && item.imageId && !available.has(item.imageId));
+      for (const item of missing) add(failures, h("p", { class: "note warn", role: "status" }, item.text, " · ", t("notification_expired")));
+      imagesReadyToAcknowledge = true;
+      markVisibleNoticesRead();
     };
     bus.on("images", draw);
     bus.on("models", drawQuotas);
@@ -1841,7 +1965,7 @@ VIEWS.images = {
     add(main, contextHelp(t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
       const prompt = area.value.trim();
       if (prompt && createImage(prompt)) area.value = "";
-    } }, icon("image"), t("generate")))), section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
+    } }, icon("image"), t("generate")))), failures, section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
     drawQuotas();
     draw();
   },
@@ -2056,19 +2180,23 @@ function youtubeCard(item, audioOnly = false) {
         h("button", { class: "chip action", onclick: () => openLiveAddress(item.url) }, icon("web"), t("live_result_open")))));
 }
 
-function youtubePages(box, query, audioOnly = false) {
+function youtubePages(box, query, audioOnly = false, startPage = 1) {
   const results = h("div", { class: "stack" });
   const controls = h("div", { class: "stack" });
   const seen = new Set();
-  let page = 1, busy = false;
+  let page = Number.isSafeInteger(Number(startPage)) && Number(startPage) > 0 ? Number(startPage) : 1;
+  let busy = false, first = true;
   fill(box, results, controls);
-  const load = async (fresh = false) => {
+  const load = async (fresh = false, restart = false) => {
     if (busy || !box.isConnected) return;
-    if (fresh) { page = 1; seen.clear(); fill(results); }
+    if (fresh) { if (restart) page = 1; first = true; seen.clear(); fill(results); }
+    // A notice for page N must reopen that actual page, not page 1.
+    current.params = { ...current.params, resultPage: page };
     busy = true;
     fill(controls, loading(t("searching")));
     try {
-      const args = { q: query, page }, key = "youtube_search" + JSON.stringify(args);
+      const args = { q: query, page }, legacy = "youtube_search" + JSON.stringify(args);
+      const key = openingNoticeKey === legacy ? legacy : resultKey("youtube_search", args);
       const saved = savedResult(key);
       if (!fresh && saved && saved.error) {
         fill(controls, failure(saved.error, () => load(true)));
@@ -2080,11 +2208,18 @@ function youtubePages(box, query, audioOnly = false) {
         bus.on("result:" + key, () => { if (box.isConnected) { busy = false; load(); } });
         return;
       }
+      if (!fresh && !reused && openingNoticeKey === key) {
+        fill(controls, failure(t("notification_expired"))); return;
+      }
       const data = reused ? (inMemory ? memo.get(key) : saved.data) :
         await bridge.request("youtube_search", args, resultContext(key, audioOnly ? "notification_music" : "notification_youtube")).promise;
       if (!box.isConnected) return;
-      if (reused && page === 1) add(results, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
-        h("button", { class: "btn ghost small", onclick: () => load(true) }, t("result_refresh"))));
+      if (reused && first) {
+        if (page > 1) add(results, h("p", { class: "note" }, t("result_page_restored", { n: page })));
+        add(results, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+          h("button", { class: "btn ghost small", onclick: () => load(true, true) }, t("result_refresh"))));
+      }
+      first = false;
       const items = (data.results || []).filter((item) => youtubeUrl(item.url) && !seen.has(item.url));
       for (const item of items) { seen.add(item.url); add(results, youtubeCard(item, audioOnly)); }
       page += 1;
@@ -2117,7 +2252,7 @@ VIEWS.youtube = {
     add(main, h("div", { class: "search-field" }, icon("youtube"), input,
       h("button", { class: "btn primary small", onclick: submit }, t("go"))),
       h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
-    if (params.q) youtubePages(box, params.q);
+    if (params.q) youtubePages(box, params.q, false, params.resultPage || 1);
     else add(box, empty(t("youtube_hint"), "youtube"));
   },
 };
@@ -2135,7 +2270,7 @@ VIEWS.music = {
       h("p", { class: "note" }, icon("info"), t(provider === "youtube" ? "media_rights_note" : "music_archive_note")), box);
     if (!params.q) { add(box, empty(t("music_hint"), "audio")); return; }
     if (provider === "youtube") {
-      youtubePages(box, params.q + " music", true);
+      youtubePages(box, params.q + " music", true, params.resultPage || 1);
     } else {
       fetchView(box, "music_search", { q: params.q }, (data) => fill(box, ...((data.results || []).length ? data.results.map((item) =>
         h("button", { class: "card space-card", onclick: () => go("music_item", { id: item.id }) }, icon("audio"),
@@ -2646,7 +2781,7 @@ VIEWS.tools = {
     const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
     add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
       const box = h("div");
-      if (last && last.name === name && last.args && (resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
+      if (last && last.name === name && last.args && (last.key === openingNoticeKey || resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
         fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
       }
       return h("details", { class: "card utility-card", open: !!(last && last.name === name) }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
@@ -2735,10 +2870,25 @@ function downloadPanel(main) {
       if (kind === "video" || kind === "audio") qualitySheet(kind, target);
       else runAction(kind, target);
     };
+    // Keep a bounded status snapshot in each notice so an evicted job is not
+    // silently acknowledged without showing its outcome or explaining its loss.
+    const noticeSnapshots = new Map();
     const draw = () => {
       const jobs = cache.jobs.slice().reverse();
-      fill(list, ...(jobs.length ? jobs.map(jobCard) : [empty(t("jobs_none"), "downloads")]));
+      for (const item of store.get("notices", [])) {
+        if (!item.unread || !item.target || item.target.view !== "downloads" || ((item.target.params || {}).section || "downloads") !== "downloads") continue;
+        const snapshot = item.job;
+        const present = snapshot && jobs.some((job) => String(job.id) === snapshot.id && job.status === snapshot.status &&
+          (!snapshot.error || plain(job.error).slice(0, 5000) === snapshot.error));
+        if (!present) noticeSnapshots.set(item.id, item);
+      }
+      const archived = [...noticeSnapshots.values()].map((item) => h("article", { class: "card stack", role: "status" },
+        h("b", {}, item.text), item.job && item.job.error ? h("p", { class: "note bad" }, item.job.error) : null,
+        item.job && item.job.warning ? h("p", { class: "note warn" }, item.job.warning) : null,
+        h("small", { class: "muted" }, t("notification_job_missing"))));
+      fill(list, ...archived, ...(jobs.length ? jobs.map(jobCard) : archived.length ? [] : [empty(t("jobs_none"), "downloads")]));
     };
+    bus.on("notices", draw);
     const refresh = iconButton("refresh", t("refresh"), () => queueOp("", "", refresh));
     add(main, 
       card(h("div", { class: "search-field" }, icon("link"), input),
@@ -2897,8 +3047,8 @@ VIEWS.settings = {
       section(t("sync_title"), h("div", { class: "card" }, syncTools())),
       section(t("set_data"), h("div", { class: "card list" },
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
-        wipe(t("wipe_images"), () => media.clear()),
-        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); memo.clear(); bus.emit("notices"); }))),
+        wipe(t("wipe_images"), () => { imageFailureMemory.length = 0; store.del("img.errors"); return media.clear(); }),
+        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); bus.emit("notices"); }))),
       section(t("about_title"), card(
         h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
@@ -3432,7 +3582,7 @@ function onboarding(force = false) {
   const finish = () => {
     store.set("tour_done", true);
     overlay.classList.add("gone");
-    setTimeout(() => overlay.remove(), 300);
+    setTimeout(() => { overlay.remove(); markVisibleNoticesRead(); }, 300);
   };
   const body = h("div", { class: "intro-card", role: "dialog", "aria-modal": "true" });
   const overlay = h("div", { class: "intro-overlay" }, body);
@@ -3473,7 +3623,7 @@ function boot() {
     gone = true;
     setTimeout(() => {
       splash.classList.add("gone");
-      setTimeout(() => splash.remove(), 800);
+      setTimeout(() => { splash.remove(); markVisibleNoticesRead(); }, 800);
       onboarding();
     }, Math.max(0, SPLASH_MIN - (performance.now() - started)));
   };
@@ -3483,7 +3633,8 @@ function boot() {
     hide();
     return;
   }
-  render();
+  // Reopening the miniapp on a category should restore its unread result too.
+  goTab(current.view);
   Promise.resolve(window.webxdc.setUpdateListener((update) => bridge.receive(update), bridge.startSerial())).then(() => {
     bus.emit("images");
     const first = hello(true); // refresh the process session even if the visible snapshot is cached

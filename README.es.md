@@ -54,7 +54,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 
 En **Ajustes** puedes elegir Michiflin, Material You, Pixel Art u Océano, además de claro, oscuro o sistema y varios acentos. Material You es una inspiración: no extrae los colores del dispositivo. Los banners respetan la preferencia de movimiento reducido; el clima usa la observación guardada de Open-Meteo sin consultas adicionales para animarlo.
 
-Los indicadores de pestañas y accesos señalan respuestas o errores recibidos mientras no estabas viendo su resultado, no consultas solo iniciadas. El progreso de la cola es independiente. Son avisos dentro de la miniapp, no notificaciones del sistema; los resultados caducados no se consultan de nuevo a escondidas.
+Los indicadores de pestañas y accesos señalan respuestas o errores recibidos mientras no estabas viendo su resultado, no consultas solo iniciadas. El progreso de la cola es independiente. Al tocar una pestaña con avisos se abre el resultado no leído más reciente; si hay otros, **Ver respuestas pendientes** o **Inicio → Avisos** permiten abrirlos sin borrarlos. Hasta seis resultados de búsquedas o utilidades se conservan 12 horas (máximo 180 kB cada uno), si caben en el almacenamiento local. Si faltan o caducan, se informa sin repetir la consulta. También se guardan la última traducción, el clima y detalles acotados de fallos de imagen o de descargas. Los errores de imagen incluyen la descripción solicitada y pueden quitarse en la vista o al borrar imágenes o historial en Ajustes. Son avisos dentro de esa miniapp, no notificaciones del sistema; el almacenamiento puede fallar o ser independiente entre instancias.
 
 ## Descargas y kit de archivos
 
