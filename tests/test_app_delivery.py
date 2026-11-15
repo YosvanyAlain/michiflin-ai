@@ -264,6 +264,7 @@ def test_sweeper_reads_pending_updates_without_broadcasting_on_startup(app_state
     with pytest.raises(StopIteration):
         miniapp.sweep_forever()
     assert {call.args[0] for call in miniapp.on_status_update.call_args_list} == {100, 101}
+    miniapp.time.sleep.assert_called_once_with(15.0)  # local fallback cadence, not an extra message
     send.assert_not_called()
     replace.assert_not_called()
     push.assert_not_called()

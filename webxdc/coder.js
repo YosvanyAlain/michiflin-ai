@@ -82,7 +82,7 @@ function coderUndo() {
   toast(t("coder_undo_done"), "ok");
 }
 
-bridge.handlers.code = (data, error, ctx, rid) => {
+bridge.handlers.code = (data, error, ctx, rid, received = true) => {
   const project = coder.get();
   if (project.rid !== rid) return;
   project.rid = "";
@@ -116,7 +116,7 @@ bridge.handlers.code = (data, error, ctx, rid) => {
   }
   coder.set(project);
   const target = { view: "coder", params: {} };
-  if (!visiblePlace(target)) notice(t("notification_coder"), error ? "bad" : "ok", { category: "ai", target });
+  if (!visiblePlace(target)) resultNotice(t("notification_coder"), error ? "bad" : "ok", { category: "ai", target }, received);
 };
 
 function coderModels() {

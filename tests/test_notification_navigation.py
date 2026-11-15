@@ -409,3 +409,109 @@ def test_more_than_thirty_unread_notices_are_not_silently_discarded():
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.category==='ai').length") == 35
         assert page.evaluate("store.get('notices',[]).filter(n=>!n.unread).length") <= 30
         assert errors == []
+
+
+VIEW_REQUESTS = [
+    ('reader', 'read', {'url': 'https://example.test/article'}, 'Contenido sintético del lector', 'web'),
+    ('transcript', 'action', {'url': 'https://youtube.com/watch?v=fixture'}, 'smoke test result', 'apps'),
+    ('music_item', 'music_item', {'id': 'album-1'}, 'Jazz track', 'apps'),
+]
+
+
+@pytest.mark.parametrize('view,op,params,success,category', VIEW_REQUESTS)
+@pytest.mark.parametrize('failed', [False, True])
+def test_page_transcript_and_music_item_notify_and_reopen(view, op, params, success, category, failed):
+    with browser_fixture('es', {'width': 1280, 'height': 800}) as (page, errors):
+        page.wait_for_function('cache.at > 0')
+        page.evaluate('op => { window.__delay=700; if (op) window.__failNext[op]=1; }', op if failed else '')
+        page.evaluate('v => go(v.view,v.params)', {'view': view, 'params': params})
+        page.wait_for_function('op => window.__sentUpdates.some(x=>x.payload?.op===op)', arg=op)
+        page.locator('.tab[data-tab="home"]:visible').click()
+        assert page.locator(f'.tab[data-tab="{category}"]:visible .tab-badge').is_hidden()
+        page.wait_for_function('v => store.get("notices",[]).some(n=>n.unread&&n.target?.view===v)', arg=view, timeout=6000)
+        page.locator(f'.tab[data-tab="{category}"]:visible').click()
+        assert page.evaluate('current.view') == view
+        page.get_by_text('SIMULATED network uncertainty' if failed else success, exact=False).first.wait_for(state='visible')
+        page.wait_for_function('v => !store.get("notices",[]).some(n=>n.unread&&n.target?.view===v)', arg=view)
+        assert sent_count(page, op) == 1
+        assert errors == []
+
+
+@pytest.mark.parametrize('view,op,params,success,category', VIEW_REQUESTS)
+def test_returning_to_pending_page_does_not_repeat_request(view, op, params, success, category):
+    with browser_fixture('es', {'width': 1280, 'height': 800}) as (page, errors):
+        page.wait_for_function('cache.at > 0')
+        page.evaluate('window.__delay=900')
+        request = {'view': view, 'params': params}
+        page.evaluate('v => {go(v.view,v.params);goTab("home");go(v.view,v.params)}', request)
+        page.get_by_text(success, exact=False).first.wait_for(state='visible')
+        assert sent_count(page, op) == 1
+        assert not page.evaluate('v => store.get("notices",[]).some(n=>n.unread&&n.target?.view===v)', view)
+        assert errors == []
+
+
+def test_transcript_reply_after_reopening_is_delivered_without_resending():
+    with browser_fixture('es', {'width': 390, 'height': 844}, engine='webkit', touch=True) as (page, errors):
+        page.wait_for_function('cache.at > 0')
+        page.evaluate("""() => {window.__delay=60000;go('transcript',{url:'https://youtube.com/watch?v=fixture'});goTab('home')}""")
+        rid = page.evaluate("Object.entries(bridge.pending()).find(([,m])=>m.op==='action'&&m.ctx?.kind==='view-result')[0]")
+        page.reload()
+        page.wait_for_function('window.__listener && cache.at > 0')
+        assert page.evaluate('id => !!bridge.pending()[id]', rid)
+        page.evaluate("""id => window.__listener({serial:bridge.serial+1,payload:{t:'res',re:id,ok:true,
+          data:{title:'Transcripción sintética',text:'Texto recibido tras reabrir'}}})""", rid)
+        page.wait_for_function("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='transcript')")
+        page.locator('#splash').wait_for(state='detached', timeout=8000)
+        page.locator('.tab[data-tab="apps"]:visible').tap()
+        page.get_by_text('Texto recibido tras reabrir', exact=True).wait_for(state='visible')
+        assert sent_count(page, 'action') == 0
+        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='transcript')")
+        assert errors == []
+
+
+@pytest.mark.parametrize('view,op,category', [
+    ('results', 'search', 'web'), ('reader', 'read', 'web'),
+    ('transcript', 'action', 'apps'), ('music_item', 'music_item', 'apps'),
+    ('translate', 'translate', 'apps'), ('weather', 'weather', 'apps'),
+    ('chat', 'ask', 'ai'), ('images', 'image', 'ai'), ('coder', 'code', 'ai'),
+])
+def test_local_timeout_is_history_not_an_unread_reply(view, op, category):
+    with browser_fixture('es', {'width': 1280, 'height': 800}) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.evaluate('window.__delay=60000')
+        if view == 'results':
+            page.evaluate("go('results',{q:'sin respuesta',engine:'web',mode:'standard'})")
+        elif view == 'reader':
+            page.evaluate("go('reader',{url:'https://example.test/article'})")
+        elif view == 'transcript':
+            page.evaluate("go('transcript',{url:'https://youtube.com/watch?v=synthetic'})")
+        elif view == 'music_item':
+            page.evaluate("go('music_item',{id:'album-1'})")
+        elif view == 'chat':
+            page.evaluate("go('chat',{space:'agent'});ask('agent','Pregunta sintética')")
+        elif view == 'images':
+            page.evaluate("go('images');createImage('Imagen sintética')")
+        elif view == 'coder':
+            page.evaluate("go('coder');coderSend('Proyecto sintético')")
+        else:
+            page.evaluate('v=>go(v)', view)
+            if view == 'translate':
+                page.locator('#view textarea').fill('Hola')
+                page.get_by_role('button', name='Traducir', exact=True).click()
+            else:
+                page.locator('#view input').first.fill('Havana')
+                page.get_by_role('button', name='Consultar').first.click()
+        rid = page.evaluate('op=>Object.entries(bridge.pending()).find(([,m])=>m.op===op)[0]', op)
+        page.evaluate("goTab('home')")
+        # This exercises the same local settlement path used by timeout/repair,
+        # not an update from the messenger and not a second request.
+        page.evaluate("id=>bridge.settle({re:id,ok:false,error:t('no_answer')})", rid)
+        page.wait_for_function("v=>store.get('notices',[]).some(n=>n.target?.view===v && n.text===t('notification_local_wait_ended'))", arg=view)
+        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread)")
+        assert page.locator(f'.tab[data-tab="{category}"]:visible .tab-badge').is_hidden()
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
+        page.locator('button.notice').filter(has_text='La app dejó de esperar sin recibir respuesta').first.click()
+        assert page.evaluate('current.view') == view
+        page.locator('#view').get_by_text('No llegó respuesta.', exact=False).first.wait_for(state='visible')
+        assert sent_count(page, op) == 1
+        assert errors == []

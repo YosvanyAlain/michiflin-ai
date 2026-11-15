@@ -95,7 +95,7 @@ function brandMark(name, extra = "") {
     holder.appendChild(image);
   } else {
     holder.classList.add("brand-generic");
-    holder.innerHTML = `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS.ai}</svg>`;
+    holder.appendChild(icon("ai"));
   }
   return holder;
 }

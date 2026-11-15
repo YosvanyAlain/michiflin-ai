@@ -103,6 +103,8 @@ BRIDGE = r"""
         }
         return window.__weatherHome;
       case "search": return { engine: request.args.engine || "web", results: window.__searchResults || [] };
+      case "read": return { url: request.args.url, page: request.args.page || 1, pages: 1,
+        title: "Página sintética", html: "<p>Contenido sintético del lector</p>", nav: [], media: false };
       case "youtube_search": {
         const rows = window.__searchResults || [];
         const start = ((request.args.page || 1) - 1) * 15;
