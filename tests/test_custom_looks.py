@@ -66,13 +66,13 @@ def test_download_progress_is_visible_in_queue_but_not_a_reply_badge():
 
 
 @pytest.mark.parametrize("engine,width", [("chromium", 390), ("webkit", 320), ("chromium", 1280)])
-def test_four_styles_light_dark_accent_persist_and_fit(engine, width):
+def test_classic_styles_light_dark_accent_persist_and_fit(engine, width):
     with browser_fixture("es", {"width": width, "height": 844}, engine=engine, touch=width < 900) as (page, errors):
         page.wait_for_function("cache.at > 0")
         page.evaluate("go('settings')")
         styles = page.get_by_label("Estilo visual")
         accents = page.get_by_label("Color de acento")
-        assert styles.locator("option").count() == 4
+        assert styles.locator("option").count() == 14  # four classic looks and ten premium palettes
         assert accents.locator("option").count() == 5
         # Narrow iPhone screens must show the entire setting label, not hide it
         # underneath the system/light/dark segmented control.

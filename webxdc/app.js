@@ -3511,8 +3511,7 @@ VIEWS.settings = {
           savePrefs();
           applyLook();
         })),
-        appRow(t("set_style"), select(prefs.style, [["michiflin", t("style_michiflin")], ["material", t("style_material")],
-          ["pixel", t("style_pixel")], ["ocean", t("style_ocean")]], (value) => {
+        appRow(t("set_style"), select(prefs.style, VISUAL_STYLES.map((style) => [style, t("style_" + style)]), (value) => {
           prefs.style = value;
           savePrefs();
           applyLook();

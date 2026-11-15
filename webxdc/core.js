@@ -213,6 +213,11 @@ const store = {
   },
 };
 
+// One shared catalogue keeps the saved preference and the accessible selector in sync.
+const VISUAL_STYLES = Object.freeze([
+  "michiflin", "material", "pixel", "ocean", "pearl", "onyx", "emerald", "sapphire",
+  "amethyst", "ruby", "copper", "arctic", "mocha", "aurora"
+]);
 const prefs = Object.assign({ lang: "auto", theme: "system", style: "michiflin", accent: "style", engine: "web" }, store.get("prefs", {}));
 
 function savePrefs() {
@@ -239,7 +244,7 @@ function t(key, vars) {
 
 function applyLook() {
   document.documentElement.dataset.theme = ["system", "light", "dark"].includes(prefs.theme) ? prefs.theme : "system";
-  document.documentElement.dataset.style = ["michiflin", "material", "pixel", "ocean"].includes(prefs.style) ? prefs.style : "michiflin";
+  document.documentElement.dataset.style = VISUAL_STYLES.includes(prefs.style) ? prefs.style : "michiflin";
   document.documentElement.dataset.accent = ["style", "teal", "violet", "blue", "rose"].includes(prefs.accent) ? prefs.accent : "style";
   document.documentElement.lang = lang();
 }
