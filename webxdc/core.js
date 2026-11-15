@@ -198,17 +198,18 @@ const store = {
       return fallback;
     }
   },
-  set(key, value) {
+  set(key, value, quiet = false) {
     try {
       localStorage.setItem("mf." + key, JSON.stringify(value));
       return true;
     } catch (error) {
-      toast(t("storage_full"), "bad");
+      if (!quiet) toast(t("storage_full"), "bad");
       return false;
     }
   },
   del(key) {
-    localStorage.removeItem("mf." + key);
+    try { localStorage.removeItem("mf." + key); return true; }
+    catch (error) { toast(t("storage_full"), "bad"); return false; }
   },
 };
 
@@ -311,16 +312,21 @@ function toast(text, kind = "") {
   box.append(node);
   setTimeout(() => node.classList.add("out"), 3600);
   setTimeout(() => node.remove(), 4000);
+  return node;
 }
 
+let sheetRevision = 0;
 function closeSheet() {
-  const sheet = $("#sheet");
+  const sheet = $("#sheet"), revision = ++sheetRevision;
   sheet.classList.remove("open");
   setTimeout(() => {
+    // A newer sheet may already have replaced this one during its animation.
+    if (revision !== sheetRevision) return;
     sheet.hidden = true;
     fill(sheet);
-    // A sheet can cover Home's general notices; only check them after it closes.
-    if (typeof current !== "undefined" && current.view === "home" && typeof markVisibleNoticesRead === "function") markVisibleNoticesRead();
+    // Only acknowledge the current result after the sheet has really closed.
+    if (typeof revealVisibleNotices === "function") revealVisibleNotices();
+    else if (typeof markVisibleNoticesRead === "function") markVisibleNoticesRead();
   }, 220);
 }
 
@@ -329,13 +335,13 @@ document.addEventListener("keydown", (event) => {
 });
 
 function openSheet(title, body) {
-  const sheet = $("#sheet");
+  const sheet = $("#sheet"), revision = ++sheetRevision;
   const panel = h("div", { class: "sheet-panel", role: "dialog" },
     h("div", { class: "sheet-head" }, h("h2", {}, title), h("button", { class: "icon-btn", "aria-label": t("close"), onclick: closeSheet }, icon("close"))),
     h("div", { class: "sheet-body" }, body));
   fill(sheet, h("div", { class: "sheet-scrim", onclick: closeSheet }), panel);
   sheet.hidden = false;
-  requestAnimationFrame(() => sheet.classList.add("open"));
+  requestAnimationFrame(() => { if (revision === sheetRevision) sheet.classList.add("open"); });
   return panel;
 }
 
@@ -512,6 +518,10 @@ const bridge = {
   serial: store.get("serial", 0),
   waiting: new Map(),
   chunks: new Map(),
+  // Keep just identifiers for this opening. A failed cleanup can leave even
+  // an acknowledged entry in storage indefinitely, including past STALE_MS.
+  // Forgetting its tombstone would revive and possibly resend completed work.
+  finished: new Set(),
   handlers: {},
   pushes: {},
   watchers: new Set(),
@@ -521,17 +531,24 @@ const bridge = {
   pending() {
     const pending = store.get("pending", {});
     const limit = Date.now() - STALE_MS;
-    for (const [id, meta] of Object.entries(pending)) if (meta.ts < limit && !meta.ack) delete pending[id];
+    for (const [id, meta] of Object.entries(pending))
+      if (this.finished.has(id) || (meta.ts < limit && !meta.ack)) delete pending[id];
     return pending;
   },
-  save(pending) {
-    try {
-      store.set("pending", pending);
-    } catch (error) {
-      // storage full: keep the requests but drop their resend copies
-      for (const meta of Object.values(pending)) delete meta.p;
-      store.set("pending", pending);
+  save(pending, reportFailure = true) {
+    // A caller may hold an older snapshot while another reply is settled.
+    for (const id of Object.keys(pending)) if (this.finished.has(id)) delete pending[id];
+    if (store.set("pending", pending, true)) return true;
+    // store.set reports failure rather than throwing. Preserve the minimal
+    // request metadata, dropping optional resend copies to save space.
+    let removed = false;
+    for (const meta of Object.values(pending)) { if (meta.p) removed = true; delete meta.p; }
+    if (store.set("pending", pending, true)) {
+      if (removed) toast(t("storage_resend_limited"), "bad");
+      return true;
     }
+    if (reportFailure) toast(t("storage_full"), "bad");
+    return false;
   },
   // Lowest serial the listener must start from: chunks of an unfinished answer are replayed after a reopen.
   startSerial() {
@@ -550,14 +567,22 @@ const bridge = {
     // Bound the number of stored fragments and do not send an unusable partial request.
     const canSplit = chunkSize >= 1024 && Math.ceil(size * 4 / 3 / chunkSize) <= 12;
     if (size > maxUpdate && (op !== "code" || size > CODE_REQUEST_MAX || !canSplit)) {
-      toast(t("request_big"), "bad");
-      const promise = Promise.reject(new Error(t("request_big")));
+      const error = t("request_big");
+      toast(error, "bad");
+      const promise = Promise.reject(new Error(error));
       promise.catch(() => {});
-      return { id: null, promise };
+      return { id: null, promise, error };
     }
     const pending = this.pending();
     pending[id] = { op, ctx, ts: Date.now(), sent: Date.now(), tries: 0, ack: 0, p: size <= RESENDABLE ? payload : null };
-    this.save(pending);
+    // Never send a potentially chargeable operation if the app cannot retain
+    // even its minimal tracking metadata for a later response or reopen.
+    if (!this.save(pending, false)) {
+      const error = t("storage_request_unsent"), promise = Promise.reject(new Error(error));
+      toast(error, "bad");
+      promise.catch(() => {});
+      return { id: null, promise, error };
+    }
     const promise = new Promise((resolve, reject) => this.waiting.set(id, { resolve, reject }));
     promise.catch(() => {});
     if (size > maxUpdate) {
@@ -585,17 +610,19 @@ const bridge = {
   },
   resend(id, pending = this.pending()) {
     const meta = pending[id];
-    if (!meta || !meta.p) return false;
+    if (!meta || !meta.p || this.finished.has(id)) return false;
+    const payload = meta.p; // save() may remove the optional persisted copy
     meta.tries = (meta.tries || 0) + 1;
     meta.sent = Date.now();
-    this.save(pending);
+    if (!this.save(pending, false)) { toast(t("storage_retry_unsent"), "bad"); return false; }
     this.lastSentAt = Date.now();
-    window.webxdc.sendUpdate({ payload: Object.assign({}, meta.p, { retry: meta.tries }) }, "");
+    window.webxdc.sendUpdate({ payload: Object.assign({}, payload, { retry: meta.tries }) }, "");
     this.changed();
     return true;
   },
   forget(id) {
     const pending = this.pending();
+    this.finished.add(id);
     delete pending[id];
     this.save(pending);
     const waiter = this.waiting.get(id);
@@ -671,6 +698,7 @@ const bridge = {
     // negative or very old intervals, which are not useful measurements.
     if (received && group && Number.isFinite(observed) && observed >= 0 && observed <= STALE_MS)
       this.timings[group] = { op: meta.op, ms: observed, ok: !!answer.ok };
+    this.finished.add(answer.re);
     delete pending[answer.re];
     this.save(pending);
     this.chunks.delete(answer.re);

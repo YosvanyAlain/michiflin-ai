@@ -28,7 +28,7 @@ def test_two_chat_responses_are_not_both_marked_read_at_once(engine):
         page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='chat').length===2")
         page.locator('.tab[data-tab="ai"]:visible').click()
         page.get_by_text('Segunda respuesta sintética', exact=False).wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='chat').length") == 1
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='chat').length===1")
         assert page.evaluate("store.get('notices',[]).find(n=>n.unread&&n.target?.view==='chat').messageId") == rids[0]
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Primera respuesta sintética', exact=False).wait_for(state='visible')
@@ -79,14 +79,14 @@ def test_same_search_key_preserves_both_unread_snapshots_across_reopen():
         page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length===2")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Versión reciente', exact=True).wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length") == 1
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length===1")
         # Reopening must still recover the first snapshot without another search.
         page.evaluate("store.set('tab','apps')")
         page.reload()
         page.locator('#splash').wait_for(state='detached', timeout=8000)
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Versión anterior', exact=True).wait_for(state='visible', timeout=5000)
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
         assert count(page, 'search') == 0
         assert errors == []
 
@@ -99,10 +99,10 @@ def test_two_download_notices_are_opened_individually():
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='downloads').length") == 2
         page.locator('.tab[data-tab="downloads"]:visible').click()
         page.get_by_text('Error 12', exact=True).wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='downloads').length") == 1
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='downloads').length===1")
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Error 11', exact=True).wait_for(state='visible')
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='downloads')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='downloads')")
         assert count(page, 'queue') == 0
         assert errors == []
 
@@ -145,7 +145,7 @@ def test_error_snapshot_remains_visible_when_result_storage_fails(view, op, cate
         page.get_by_text('Respuesta posterior', exact=True).wait_for(state='visible')
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Error sintético anterior', exact=True).wait_for(state='visible')
-        assert not page.evaluate('v=>store.get("notices",[]).some(n=>n.unread&&n.target?.view===v)', view)
+        page.wait_for_function('v=>!store.get("notices",[]).some(n=>n.unread&&n.target?.view===v)', arg=view)
         assert count(page, op) == 2
         assert errors == []
 
@@ -226,6 +226,7 @@ def test_oversize_results_are_temporary_and_expire_without_a_new_request():
         assert page.evaluate('Object.keys(savedResults()).length') == 0
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Grande reciente', exact=True).wait_for(state='visible')
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length===1")
         assert count(page, 'search') == 2
         page.evaluate("store.set('tab','apps')")
         page.reload()
@@ -233,7 +234,7 @@ def test_oversize_results_are_temporary_and_expire_without_a_new_request():
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
         assert count(page, 'search') == 0
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
         assert errors == []
 
 
@@ -248,10 +249,10 @@ def test_seventh_result_evicts_only_oldest_and_reports_expiry():
         assert page.evaluate('resultMemoTimes.size') == 6
         page.evaluate("openNotice(store.get('notices',[]).find(n=>n.target?.params?.q==='consulta-0'))")
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length") == 6
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length===6")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Resultado 6', exact=True).wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length") == 5
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.target?.view==='results').length===5")
         assert count(page, 'search') == 7
         assert errors == []
 
@@ -275,6 +276,6 @@ def test_ambiguous_legacy_notices_do_not_show_the_wrong_reply():
         page.get_by_text('Resultado legado', exact=True).wait_for(state='visible')
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='results')")
         assert count(page, 'search') == 2
         assert errors == []

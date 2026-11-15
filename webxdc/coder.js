@@ -101,7 +101,7 @@ bridge.handlers.code = (data, error, ctx, rid, received = true) => {
     project.sig = data.sig || "";
     project.isolated = !!data.isolated;
     project.name = data.name || project.name || "";
-    project.turns.push({ role: "assistant", text: project.summary, ts: now() });
+    project.turns.push({ role: "assistant", text: project.summary, ts: now(), rid });
     if (data.models) {
       cache.models = data.models;
       saveCache();
@@ -111,12 +111,12 @@ bridge.handlers.code = (data, error, ctx, rid, received = true) => {
       (data.model_confirmed === true ? "coder_ready" : "coder_draft");
     toast(t(notice), notice === "coder_ready" ? "ok" : "bad");
   } else {
-    project.turns.push({ role: "assistant", text: error, error: true, ts: now() });
+    project.turns.push({ role: "assistant", text: error, error: true, ts: now(), rid });
     toast(error, "bad");
   }
   coder.set(project);
   const target = { view: "coder", params: {} };
-  if (!visiblePlace(target)) resultNotice(t("notification_coder"), error ? "bad" : "ok", { category: "ai", target }, received);
+  resultNotice(t("notification_coder"), error ? "bad" : "ok", { category: "ai", target, resultId: rid }, received);
 };
 
 function coderModels() {
@@ -402,10 +402,18 @@ VIEWS.coder = {
         h("div", { class: "chips" }, ...["coder_ex1", "coder_ex2", "coder_ex3"].map((key) =>
           h("button", { class: "chip", onclick: () => { area.value = t(key); area.dispatchEvent(new Event("input")); area.focus(); } }, t(key))))));
       }
-      if (project.turns.length) {
-        parts.push(section(t("coder_talk"), h("div", { class: "stack" }, ...project.turns.slice(-6).map((turn) =>
-          h("div", { class: `bubble ${turn.role === "user" ? "me" : ""} ${turn.error ? "error" : ""}` }, turn.role === "user" ? turn.text : rich(turn.text))))));
+      const selected = activeNoticeId && store.get("notices", []).find((item) => item.id === activeNoticeId && item.target?.view === "coder");
+      const wanted = selected && selected.resultId;
+      const selectedTurn = wanted && project.turns.find((turn) => turn.rid === wanted);
+      const recent = project.turns.slice(-6);
+      const turnNode = (turn) => h("div", { class: `bubble ${turn.role === "user" ? "me" : ""} ${turn.error ? "error" : ""}`,
+        "data-result-id": turn.rid || null }, turn.role === "user" ? turn.text : rich(turn.text));
+      if (selectedTurn && !recent.includes(selectedTurn)) {
+        parts.push(section(t("coder_talk"), h("p", { class: "note" }, t("coder_old_notice")), turnNode(selectedTurn)));
+      } else if (wanted && !selectedTurn) {
+        parts.push(h("p", { class: "note warn", role: "status", "data-notice-id": selected.id }, t("notification_expired")));
       }
+      if (recent.length) parts.push(section(t("coder_talk"), h("div", { class: "stack" }, ...recent.map(turnNode))));
       if (working) parts.push(card(h("div", { class: "row" }, h("i", { class: "spinner" }), h("span", { class: "grow" }, t("coder_working")), since(project.turns.length ? project.turns[project.turns.length - 1].ts : now())),
         h("small", { class: "muted" }, t("coder_working_hint"))));
       if (project.files.length) {

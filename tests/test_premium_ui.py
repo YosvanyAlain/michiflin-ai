@@ -77,6 +77,8 @@ def test_ai_pending_and_unread_badges_open_actual_chat_and_clear(engine):
         notice.click()
         assert page.evaluate("current.view") == "chat"
         assert "SIMULATED agent answer" in page.locator("#view").inner_text()
+        # A selected result is acknowledged only after focus and a visible paint.
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
         assert ai_tab.locator(".tab-badge").is_hidden()
         assert errors == []
 
@@ -104,6 +106,7 @@ def test_search_survives_navigation_and_lost_waiter_without_repeating(target):
         page.locator("button.notice").filter(has_text=notice_text).first.click()
         page.get_by_text("Resultado sintético", exact=True).first.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
+        page.wait_for_function("name=>!store.get('notices',[]).some(n=>n.unread && n.target?.view===name)", arg=target)
         assert tab.locator(".tab-badge").is_hidden()
         assert errors == []
 
@@ -119,7 +122,10 @@ def test_expired_search_notice_does_not_silently_repeat_the_request():
         page.locator("button.notice").filter(has_text="consulta web está lista").click()
         page.get_by_text("El resultado guardado ya no está disponible", exact=False).wait_for(state="visible")
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='search').length") == 1
-        assert page.evaluate("current.view") == "home"
+        # Expiration is now shown in the original destination, not merely as
+        # a transient toast over Home, and still must never relaunch a search.
+        assert page.evaluate("current.view") == "results"
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='results')")
         assert errors == []
 
 
@@ -413,7 +419,11 @@ def test_badged_shortcut_returns_to_pending_result_without_an_extra_request(feat
         result = page.locator(".weather-place").get_by_text(expected, exact=False) if feature == "weather" else page.get_by_text(expected, exact=False).first
         result.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
-        assert not page.evaluate("feature => store.get('notices',[]).some(n=>n.unread && n.target?.view===feature)", feature)
+        # Playwright's visible state does not imply that the result is inside
+        # the viewport; deliberately scroll any unread outcome into view.
+        page.evaluate("""feature=>{const n=store.get('notices',[]).find(x=>x.unread&&x.target?.view===feature);
+          const node=noticeNode(n);if(node)node.scrollIntoView({block:'center',behavior:'auto'});}""", feature)
+        page.wait_for_function("feature=>!store.get('notices',[]).some(n=>n.unread && n.target?.view===feature)", arg=feature)
         assert errors == []
 
 
@@ -496,7 +506,8 @@ def test_expired_badged_shortcut_warns_instead_of_repeating():
         }""")
         page.locator(".tile-youtube").first.tap()
         page.get_by_text("El resultado guardado ya no está disponible", exact=False).wait_for(state="visible")
-        assert page.evaluate("current.view") == "home"
+        assert page.evaluate("current.view") == "youtube"
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='youtube')")
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='youtube_search').length") == 1
         assert errors == []
 
@@ -523,7 +534,7 @@ def test_coder_and_images_have_navigable_pending_and_unread_cards(feature):
         else:
             page.locator('img[alt="Contenido sintético"]').wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
-        assert not page.evaluate("feature => store.get('notices',[]).some(n=>n.unread && n.target?.view===feature)", feature)
+        page.wait_for_function("feature=>!store.get('notices',[]).some(n=>n.unread && n.target?.view===feature)", arg=feature)
         assert errors == []
 
 
