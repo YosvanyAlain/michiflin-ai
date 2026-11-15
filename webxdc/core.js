@@ -319,6 +319,8 @@ function closeSheet() {
   setTimeout(() => {
     sheet.hidden = true;
     fill(sheet);
+    // A sheet can cover Home's general notices; only check them after it closes.
+    if (typeof current !== "undefined" && current.view === "home" && typeof markVisibleNoticesRead === "function") markVisibleNoticesRead();
   }, 220);
 }
 

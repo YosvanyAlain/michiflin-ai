@@ -405,9 +405,9 @@ def test_more_than_thirty_unread_notices_are_not_silently_discarded():
           {category:'ai',target:{view:'chat',params:{space:'fixture-'+i}}});}""")
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.category==='ai').length") == 35
         assert '35 sin leer' in page.locator('.tab[data-tab="ai"]:visible').get_attribute('aria-label')
-        page.evaluate("""() => {for(let i=0;i<40;i++) notice('Aviso local leído '+i,'info');}""")
+        page.evaluate("""() => {for(let i=0;i<40;i++) notice('Aviso local leído '+i,'info',{local:true});}""")
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.category==='ai').length") == 35
-        assert page.evaluate("store.get('notices',[]).filter(n=>!n.unread).length") <= 30
+        assert page.evaluate("store.get('notices',[]).filter(n=>!n.unread).length") == 30
         assert errors == []
 
 
@@ -514,4 +514,103 @@ def test_local_timeout_is_history_not_an_unread_reply(view, op, category):
         assert page.evaluate('current.view') == view
         page.locator('#view').get_by_text('No llegó respuesta.', exact=False).first.wait_for(state='visible')
         assert sent_count(page, op) == 1
+        assert errors == []
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_home_marks_only_general_notices_shown_in_the_viewport(engine):
+    with browser_fixture('es', {'width': 320, 'height': 568}, engine=engine, touch=True) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.locator('#splash').wait_for(state='detached', timeout=8000)
+        page.emulate_media(reduced_motion='reduce')
+        sent_before = page.evaluate('window.__sentUpdates.length')
+        page.evaluate("""() => {
+          goTab('ai');
+          for (const label of ['A', 'B', 'C']) notice('Aviso sintético ' + label, 'info');
+          goTab('home');
+        }""")
+        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&!n.target&&n.text.startsWith('Aviso sintético')).length") == 3
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '3'
+        # One row is almost entirely below the viewport: merely opening Home or
+        # clipping a small edge cannot count it as seen.
+        def show_fraction(fraction):
+            page.evaluate("""fraction => {
+              const root=document.querySelector('#view'), bounds=root.getBoundingClientRect();
+              const row=[...root.querySelectorAll('.notice')].find(e=>e.textContent.includes('Aviso sintético C'));
+              const rect=row.getBoundingClientRect();
+              root.scrollTop += rect.top - bounds.bottom + rect.height * fraction;
+            }""", fraction)
+
+        show_fraction(.2)
+        page.wait_for_timeout(120)
+        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&!n.target&&n.text.startsWith('Aviso sintético')).length") == 3
+        show_fraction(.7)
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso sintético C').unread")
+        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&!n.target&&n.text.startsWith('Aviso sintético')).map(n=>n.text)") == ['Aviso sintético B', 'Aviso sintético A']
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '2'
+        assert page.evaluate('window.__sentUpdates.length') == sent_before
+        assert errors == []
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_general_notice_arriving_on_home_stays_unread_until_seen(engine):
+    with browser_fixture('es', {'width': 320, 'height': 568}, engine=engine, touch=True) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.locator('#splash').wait_for(state='detached', timeout=8000)
+        page.emulate_media(reduced_motion='reduce')
+        page.evaluate("""() => { goTab('home'); notice('Aviso fuera de pantalla','info');
+          notice('Espera local','info',{local:true}); }""")
+        assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso fuera de pantalla').unread")
+        assert not page.evaluate("store.get('notices',[]).find(n=>n.text==='Espera local').unread")
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '1'
+        # Hiding the WebView must not acknowledge a row that scrolls into view.
+        page.evaluate("""() => {Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true});
+          document.dispatchEvent(new Event('visibilitychange'));}""")
+        page.locator('.notice').filter(has_text='Aviso fuera de pantalla').scroll_into_view_if_needed()
+        page.wait_for_timeout(120)
+        assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso fuera de pantalla').unread")
+        page.evaluate("""() => {Object.defineProperty(document,'visibilityState',{value:'visible',configurable:true});
+          document.dispatchEvent(new Event('visibilitychange'));}""")
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso fuera de pantalla').unread")
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
+        assert errors == []
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_general_notice_covered_by_sheet_is_read_after_closing_it(engine):
+    with browser_fixture('es', {'width': 320, 'height': 568}, engine=engine, touch=True) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.locator('#splash').wait_for(state='detached', timeout=8000)
+        page.emulate_media(reduced_motion='reduce')
+        page.evaluate("goTab('home');notice('Aviso de referencia','info')")
+        page.wait_for_timeout(400)
+        page.locator('.notice').filter(has_text='Aviso de referencia').scroll_into_view_if_needed()
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso de referencia').unread")
+        page.evaluate("openSheet('Panel sintético',[h('p',{},'Cubierto')]);notice('Aviso cubierto','info')")
+        # Put the notice in the viewport while the sheet still obscures it.
+        page.evaluate("""() => {const root=document.querySelector('#view'),box=root.getBoundingClientRect();
+          const row=[...root.querySelectorAll('.notice')].find(e=>e.textContent.includes('Aviso cubierto'));
+          const rect=row.getBoundingClientRect();root.scrollTop += rect.top-box.top-(box.height-rect.height)/2;}""")
+        page.wait_for_timeout(150)
+        assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
+        page.evaluate('closeSheet()')
+        page.wait_for_function("document.querySelector('#sheet').hidden && !store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
+        # A new general notice appearing in the part already on screen is read.
+        page.evaluate("notice('Aviso ya visible','info')")
+        assert not page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso ya visible').unread")
+        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
+        assert errors == []
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_general_notice_becomes_visible_after_resize(engine):
+    with browser_fixture('es', {'width': 320, 'height': 568}, engine=engine, touch=True) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.locator('#splash').wait_for(state='detached', timeout=8000)
+        page.emulate_media(reduced_motion='reduce')
+        page.evaluate("goTab('ai');notice('Aviso al cambiar tamaño','info');goTab('home')")
+        page.wait_for_timeout(400)
+        assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso al cambiar tamaño').unread")
+        page.set_viewport_size({'width': 320, 'height': 1600})
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso al cambiar tamaño').unread")
         assert errors == []
