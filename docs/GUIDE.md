@@ -40,7 +40,7 @@ Text written in the chat itself only gets a short reply pointing to the app. Fil
 - **Status chips:** time until the next server restart, items in the queue and the last update.
 - **Shortcuts:** the most used apps, one tap away.
 
-Appearance follows the device (light or dark) unless changed in Settings. Choose the Michiflin, Material You-inspired, Pixel Art or Ocean visual style and an independent accent. Material You does not automatically read the device's colors. Animated decorations respect reduced-motion settings, and the weather scene uses the saved observation without an extra query.
+Appearance follows the device (light or dark) unless changed in Settings. Choose one of 14 visual styles: Michiflin, Material You-inspired, Pixel Art, Ocean, Pearl, Onyx, Emerald, Sapphire, Amethyst, Ruby, Copper, Arctic, Mocha or Aurora. Light, dark and system modes and independent accents work with every style. Material You does not automatically read the device's colors. Animated decorations respect reduced-motion settings, and the weather scene uses the saved observation without an extra query.
 
 ## AI
 

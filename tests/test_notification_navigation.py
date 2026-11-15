@@ -17,15 +17,35 @@ def sent_count(page, op):
 def test_web_tab_returns_to_completed_result_without_repeat(engine, viewport, touch):
     with browser_fixture("es", viewport, engine=engine, touch=touch) as (page, errors):
         page.wait_for_function("cache.at > 0")
-        page.evaluate("""() => { window.__delay=900; window.__searchResults=[
-          {title:'Resultado sintético de navegación',url:'https://example.test/result',snippet:'Prueba'}]; }""")
+        page.evaluate("""() => {
+          // Hold only this synthetic response until the test explicitly releases it.
+          // A fixed delay can expire while a slower runner is changing tabs.
+          const original = window.webxdc.sendUpdate;
+          window.webxdc.sendUpdate = (update, ...args) => {
+            if (update?.payload?.t === 'req' && update.payload.op === 'search') {
+              window.__sentUpdates.push(update);
+              window.__heldSearch = update.payload;
+              return;
+            }
+            return original.call(window.webxdc, update, ...args);
+          };
+        }""")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.locator('#view input[type="search"]').fill('consulta sintética')
         page.get_by_role('button', name='Ir', exact=True).click()
         page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'search')")
         page.locator('.tab[data-tab="apps"]:visible').click()
         web_tab = page.locator('.tab[data-tab="web"]:visible')
+        assert page.evaluate("!!window.__heldSearch && !!bridge.pending()[window.__heldSearch.id]")
+        assert not page.evaluate("window.__fixtureResponses.includes('search')")
         assert web_tab.locator('.tab-badge').is_hidden()  # activity alone never adds an unread badge
+        page.evaluate("""() => {
+          const request = window.__heldSearch;
+          window.__fixtureResponses.push('search');
+          window.__listener({serial: ++window.__serial, payload: {t:'res', re:request.id, ok:true,
+            data:{engine:'web',results:[{title:'Resultado sintético de navegación',
+              url:'https://example.test/result',snippet:'Prueba'}]}}});
+        }""")
         page.wait_for_function("store.get('notices',[]).some(n => n.unread && n.target?.view === 'results')")
         assert '1 sin leer' in web_tab.get_attribute('aria-label')
         web_tab.click()
