@@ -97,6 +97,17 @@ function chrome() {
   $("#gear").setAttribute("aria-label", t("tab_settings"));
   $("#gear").onclick = () => goTab("settings");
   $("#activity").onclick = pendingSheet;
+  // Home's general notices may be below the fold. Check them as the person
+  // scrolls or changes orientation, not merely because the page was opened.
+  let checkingNotices = false;
+  const checkNotices = () => {
+    if (current.view !== "home" || checkingNotices) return;
+    checkingNotices = true;
+    requestAnimationFrame(() => { checkingNotices = false; if (current.view === "home") markVisibleNoticesRead(); });
+  };
+  $("#view").addEventListener("scroll", checkNotices, { passive: true });
+  // Dynamic viewport units can settle one frame after the resize event.
+  window.addEventListener("resize", () => requestAnimationFrame(checkNotices));
   activity();
   jobBadge();
 }
@@ -206,7 +217,6 @@ function render(scroll = 0) {
   if (current.view === "images") imagesReadyToAcknowledge = false;
   try { definition.render(main, current.params); }
   finally { openingNoticeKey = ""; }
-  markVisibleNoticesRead();
   // The category badge can represent several different results. Offer an
   // explicit way to open the next one without clearing the others.
   if (tab !== "home") {
@@ -221,7 +231,13 @@ function render(scroll = 0) {
     main.prepend(next);
   }
   main.scrollTop = scroll;
-  requestAnimationFrame(() => requestAnimationFrame(() => main.classList.remove("enter")));
+  markVisibleNoticesRead();
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    main.classList.remove("enter");
+    // Wait for the fade before acknowledging general notices that are actually
+    // visible; leaving the view during the transition does not consume them.
+    if (current.view === "home") setTimeout(() => { if (current.view === "home") markVisibleNoticesRead(); }, 250);
+  }));
 }
 
 function activity() {
@@ -497,14 +513,33 @@ function focusNotice(item) {
   });
 }
 
+function visibleHomeNoticeIds() {
+  const main = $("#view"), sheet = $("#sheet");
+  if (!main || main.classList.contains("enter") || Number(getComputedStyle(main).opacity) < 0.5 || (sheet && !sheet.hidden)) return new Set();
+  const bounds = main.getBoundingClientRect();
+  const top = Math.max(0, bounds.top), bottom = Math.min(window.innerHeight, bounds.bottom);
+  const left = Math.max(0, bounds.left), right = Math.min(window.innerWidth, bounds.right);
+  if (bottom <= top || right <= left) return new Set();
+  const seen = new Set();
+  for (const row of main.querySelectorAll(".notice[data-notice-id]")) {
+    const rect = row.getBoundingClientRect();
+    const height = Math.max(0, Math.min(bottom, rect.bottom) - Math.max(top, rect.top));
+    if (rect.height > 0 && rect.width > 0 && rect.right > left && rect.left < right &&
+        height >= Math.min(rect.height, bottom - top) / 2 && getComputedStyle(row).visibility !== "hidden")
+      seen.add(row.dataset.noticeId);
+  }
+  return seen;
+}
+
 function markVisibleNoticesRead() {
   if (!resultsVisible()) return;
   const list = store.get("notices", []);
   let changed = false;
   if (current.view === "home") {
-    // General notices are shown together in the home notices list; section
-    // replies keep their individual destinations and are never cleared here.
-    for (const item of list) if (item.unread && !item.target) { item.unread = false; changed = true; }
+    // General notices have no separate destination. Clear only rows actually
+    // in view; section replies remain unread until their own destination opens.
+    const seen = list.some((item) => item.unread && !item.target) ? visibleHomeNoticeIds() : new Set();
+    for (const item of list) if (item.unread && !item.target && seen.has(item.id)) { item.unread = false; changed = true; }
   } else {
     const item = activeNoticeId ? list.find((entry) => entry.id === activeNoticeId) :
       list.find((entry) => entry.unread && entry.target && samePlace(entry.target));
@@ -523,7 +558,9 @@ function notice(text, kind = "info", options = {}) {
   if (code && seen.includes(code)) return;
   const list = store.get("notices", []);
   const target = options.target || null;
-  const visible = target ? visiblePlace(target) : resultsVisible() && current.view === "home";
+  // A targetless notice is not visible simply because Home is open; its row
+  // must actually be on screen after it has been rendered.
+  const visible = target ? visiblePlace(target) : false;
   const job = options.job ? { id: String(options.job.id), status: options.job.status,
     title: plain(options.job.title).slice(0, 500), error: plain(options.job.error).slice(0, 5000),
     warning: plain(options.job.warning).slice(0, 5000) } : null;
@@ -536,6 +573,7 @@ function notice(text, kind = "info", options = {}) {
   const keep = list.filter((item) => item.unread || readKept++ < 30);
   if (store.set("notices", keep) && code) store.set("noticeCodes", [...seen, code].slice(-20));
   bus.emit("notices");
+  if (!target && options.local !== true && current.view === "home") markVisibleNoticesRead();
 }
 
 // A local timeout is useful history, but it is not a reply from the bot and
@@ -966,7 +1004,7 @@ function noticeList() {
     fill(box, ...(list.length ? list.map((item) => {
       const open = item.target && VIEWS[item.target.view] ? () => openNotice(item) : null;
       return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread ? "unread" : ""}`,
-        onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
+        "data-notice-id": item.id, onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
         icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
         h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)), open ? icon("next") : null);
     }) : [h("p", { class: "empty small" }, t("notices_none"))]));
