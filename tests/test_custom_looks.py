@@ -17,7 +17,10 @@ def test_visible_answer_never_creates_an_unread_badge(engine):
         assert ai.locator(".tab-badge").is_hidden()
         page.get_by_text("SIMULATED agent answer", exact=False).first.wait_for(state="visible")
         assert ai.locator(".tab-badge").is_hidden()
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
+        # An in-place result is kept provisionally until it has survived a
+        # visible paint. Do not assume the storage update is synchronous.
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
+        assert ai.locator(".tab-badge").is_hidden()
         assert errors == []
 
 
@@ -33,6 +36,8 @@ def test_hidden_document_counts_as_away_even_when_same_chat_is_selected():
         assert page.locator('.tab[data-tab="ai"]:visible .tab-badge').inner_text() == "1"
         page.evaluate("""() => { Object.defineProperty(document,'visibilityState',{value:'visible', configurable:true});
           document.dispatchEvent(new Event('visibilitychange')); }""")
+        # Returning starts the focus-and-paint check; it is not a synchronous read.
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
         assert page.locator('.tab[data-tab="ai"]:visible .tab-badge').is_hidden()
         assert errors == []
 
@@ -46,9 +51,13 @@ def test_download_progress_is_visible_in_queue_but_not_a_reply_badge():
         tab.click()
         assert page.locator('.job.downloading').get_by_text("Archivo sintético").is_visible()
         assert page.locator('.job.downloading .bar').count() or page.locator('.job.downloading progress').count()
+        # Wait for the section's entrance to finish before delivering a
+        # response intended to be visible on arrival.
+        page.wait_for_function("viewReady()")
         page.evaluate("""() => bridge.pushes.job({id:17,title:'Archivo sintético',kind:'file',status:'done',size:1000,done:1000,created:Date.now()/1000})""")
         assert tab.locator(".tab-badge").is_hidden()  # default Downloads subsection is currently visible
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread && n.target?.view==='downloads')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread && n.target?.view==='downloads')")
+        assert tab.locator(".tab-badge").is_hidden()
         page.get_by_role("tab", name="Herramientas de enlaces").click() if page.get_by_role("tab", name="Herramientas de enlaces").count() else page.evaluate("go('downloads',{section:'links'})")
         page.evaluate("""() => { setJobs([{id:18,title:'Segundo',kind:'file',status:'downloading',size:20,done:10,created:Date.now()/1000}]);
           bridge.pushes.job({id:18,title:'Segundo',kind:'file',status:'done',size:20,done:20,created:Date.now()/1000}); }""")

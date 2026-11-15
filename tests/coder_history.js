@@ -12,6 +12,7 @@ const store = {
   set(_key, value) { Object.assign(project, value); },
 };
 const notices = [];
+const resultNotices = [];
 const context = {
   store,
   bridge: { handlers: {}, pending: () => ({}), request: () => ({ id: "test" }) },
@@ -19,7 +20,7 @@ const context = {
   VIEWS: {},
   t: (key) => key,
   toast(text) { notices.push(text); },
-  visiblePlace: () => true, // this unit fixture models the coder view in the foreground
+  resultNotice(text, kind, options, received) { resultNotices.push({ text, kind, options, received }); },
   now: () => 1,
   h: () => ({}),
   openSheet() {},
@@ -40,9 +41,13 @@ context.bridge.handlers.code({ files: [{ path: "first.txt", text: "first" }], pr
 assert.equal(project.history.length, 1);
 assert.equal(project.history[0].files.length, 0);
 assert.equal(notices.at(-1), "coder_draft");
+assert.equal(resultNotices.at(-1).options.resultId, "initial");
+assert.equal(project.turns.at(-1).rid, "initial");
 project.rid = "finished";
 context.bridge.handlers.code({ files: project.files, project_complete: true, model_confirmed: true, summary: "finished" }, null, null, "finished");
 assert.equal(notices.at(-1), "coder_ready");
+assert.equal(resultNotices.at(-1).options.resultId, "finished");
+assert.equal(project.turns.at(-1).rid, "finished");
 context.coderUndo();
 assert.equal(project.files.length, 0);
 console.log("coder history ok");

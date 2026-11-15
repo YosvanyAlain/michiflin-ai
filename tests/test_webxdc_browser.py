@@ -1258,6 +1258,13 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'action')")
                 action = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'action').at(-1).payload.args")
                 self.assertEqual((action["kind"], action["quality"], action["audio_format"]), ("audio", 128, "opus"))
+                # The synthetic action returns text immediately, opening a
+                # result sheet after the quality sheet starts closing. Wait
+                # for that response and close it like a person would.
+                page.wait_for_function("!Object.values(bridge.pending()).some(x=>x.op==='action')")
+                page.get_by_text("smoke test result", exact=False).wait_for(state="visible")
+                page.locator("#sheet .sheet-head button").click()
+                page.locator("#sheet").wait_for(state="hidden")
 
                 page.locator('.tab[data-tab="apps"]:visible').click()
                 page.locator("#view .tile-audio").click()

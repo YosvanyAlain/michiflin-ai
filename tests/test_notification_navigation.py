@@ -31,7 +31,7 @@ def test_web_tab_returns_to_completed_result_without_repeat(engine, viewport, to
         web_tab.click()
         assert page.evaluate('current.view') == 'results'
         page.get_by_text('Resultado sintético de navegación', exact=True).wait_for(state='visible')
-        assert web_tab.locator('.tab-badge').is_hidden()
+        web_tab.locator('.tab-badge').wait_for(state='hidden')
         assert sent_count(page, 'search') == 1
         assert errors == []
 
@@ -51,7 +51,7 @@ def test_second_youtube_page_notice_opens_actual_page_without_repeat():
         assert page.evaluate('current.view') == 'youtube'
         page.get_by_text('Vídeo sintético 16', exact=True).wait_for(state='visible')
         assert sent_count(page, 'youtube_search') == 2
-        assert not page.evaluate("store.get('notices',[]).some(n => n.unread && n.target?.view === 'youtube')")
+        page.wait_for_function("!store.get('notices',[]).some(n => n.unread && n.target?.view === 'youtube')")
         assert errors == []
 
 
@@ -84,11 +84,12 @@ def test_multiple_web_notices_are_opened_one_at_a_time():
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Respuesta dos', exact=True).wait_for(state='visible')
         assert page.evaluate('current.params.q') == 'segunda'
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.category==='web').length===1")
         assert '1 sin leer' in page.locator('.tab[data-tab="web"]:visible').get_attribute('aria-label')
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Respuesta uno', exact=True).wait_for(state='visible')
         assert page.evaluate('current.params.q') == 'primera'
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').is_hidden()
+        page.locator('.tab[data-tab="web"]:visible .tab-badge').wait_for(state='hidden')
         assert sent_count(page, 'search') == 2
         assert errors == []
 
@@ -107,10 +108,10 @@ def test_expired_web_notice_warns_and_keeps_other_unread_results():
           const saved=store.get(RESULT_CACHE_KEY,{});saved[item.cacheKey].at=now()-RESULT_CACHE_SECONDS-1;store.set(RESULT_CACHE_KEY,saved); }""")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
-        assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&n.category==='web').length") == 1
+        page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.category==='web').length===1")
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Conservada', exact=True).wait_for(state='visible')
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').is_hidden()
+        page.locator('.tab[data-tab="web"]:visible .tab-badge').wait_for(state='hidden')
         assert sent_count(page, 'search') == 2
         assert errors == []
 
@@ -132,7 +133,7 @@ def test_response_after_reopen_restores_from_persisted_request_without_resending
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('Respuesta tras reapertura', exact=True).wait_for(state='visible')
         assert sent_count(page, 'search') == 0
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').is_hidden()
+        page.locator('.tab[data-tab="web"]:visible .tab-badge').wait_for(state='hidden')
         assert errors == []
 
 
@@ -239,7 +240,7 @@ def test_download_notice_shows_evicted_failure_details_without_retry():
         page.locator('.tab[data-tab="downloads"]:visible').click()
         page.get_by_text('Fallo sintético de descarga', exact=True).wait_for(state='visible')
         page.get_by_text('Este estado guardado ya no figura', exact=False).wait_for(state='visible')
-        assert page.locator('.tab[data-tab="downloads"]:visible .tab-badge').is_hidden()
+        page.locator('.tab[data-tab="downloads"]:visible .tab-badge').wait_for(state='hidden')
         assert sent_count(page, 'queue') == 0
         assert errors == []
 
@@ -255,7 +256,7 @@ def test_hidden_view_does_not_acknowledge_until_visible():
         page.evaluate("""() => {Object.defineProperty(document,'visibilityState',{configurable:true,value:'visible'});
           document.dispatchEvent(new Event('visibilitychange'));}""")
         page.get_by_text('Respuesta oculta', exact=True).wait_for(state='visible')
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='oculta')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='oculta')")
         assert sent_count(page, 'search') == 1
         assert errors == []
 
@@ -280,7 +281,7 @@ def test_paged_media_notice_from_home_opens_exact_page_or_error(view, fail):
         page.get_by_text(expected, exact=not fail).first.wait_for(state='visible')
         assert page.evaluate('current.params.resultPage') == 2
         assert sent_count(page, 'youtube_search') == 2
-        assert not page.evaluate('name=>store.get("notices",[]).some(n=>n.unread&&n.target?.view===name)', view)
+        page.wait_for_function('name=>!store.get("notices",[]).some(n=>n.unread&&n.target?.view===name)', arg=view)
         assert errors == []
 
 
@@ -291,8 +292,9 @@ def test_result_evicted_during_open_never_starts_a_new_search():
           go('results',{q:'carrera',engine:'web',mode:'standard'});goTab('apps');}""")
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='carrera')")
         page.evaluate("""() => {const item=store.get('notices',[]).find(n=>n.unread&&n.target?.params?.q==='carrera');
-          const original=resultMemoHas;let checks=0;
-          resultMemoHas=(key)=>{if(key===item.cacheKey&&++checks===1){memo.delete(key);store.del(RESULT_CACHE_KEY);return true;}return original(key);};}""")
+          const original=savedResult;let checks=0;
+          savedResult=(key)=>{if(key===item.cacheKey&&++checks===1){memo.delete(key);resultMemoTimes.delete(key);
+            store.del(RESULT_CACHE_KEY);return null;}return original(key);};}""")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
         assert sent_count(page, 'search') == 1
@@ -325,12 +327,11 @@ def test_reopen_with_expired_result_retains_badge_until_warning_is_visible():
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='vieja')")
         page.evaluate("store.del(RESULT_CACHE_KEY);store.set('tab','web')")
         page.reload()
-        page.wait_for_function('window.__listener && current.view === "web"')
+        page.wait_for_function('window.__listener && current.view === "results"')
         assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='vieja')")
         page.locator('#splash').wait_for(state='detached', timeout=8000)
-        page.locator('.tab[data-tab="web"]:visible').click()
         page.get_by_text('El resultado guardado ya no está disponible', exact=False).first.wait_for(state='visible')
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='vieja')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='vieja')")
         assert sent_count(page, 'search') == 0
         assert errors == []
 
@@ -373,7 +374,7 @@ def test_legacy_youtube_notice_recovers_its_original_page_from_cache_key():
         page.locator('button.notice').filter(has_text='YouTube').first.click()
         page.get_by_text('Antiguo 16', exact=True).wait_for(state='visible', timeout=5000)
         assert page.evaluate('current.params.resultPage') == 2
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='youtube')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='youtube')")
         assert sent_count(page, 'youtube_search') == 2
         assert errors == []
 
@@ -465,7 +466,7 @@ def test_transcript_reply_after_reopening_is_delivered_without_resending():
         page.locator('.tab[data-tab="apps"]:visible').tap()
         page.get_by_text('Texto recibido tras reabrir', exact=True).wait_for(state='visible')
         assert sent_count(page, 'action') == 0
-        assert not page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='transcript')")
+        page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.view==='transcript')")
         assert errors == []
 
 
@@ -597,7 +598,7 @@ def test_general_notice_covered_by_sheet_is_read_after_closing_it(engine):
         page.wait_for_function("document.querySelector('#sheet').hidden && !store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
         # A new general notice appearing in the part already on screen is read.
         page.evaluate("notice('Aviso ya visible','info')")
-        assert not page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso ya visible').unread")
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso ya visible').unread")
         assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
         assert errors == []
 

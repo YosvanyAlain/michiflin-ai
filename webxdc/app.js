@@ -16,6 +16,10 @@ const TOUCH = matchMedia("(pointer: coarse)").matches;
 const cache = Object.assign({ version: "", admin: false, models: null, health: null, settings: null, jobs: [], maintenance_notice: null, lang: "", at: 0 }, store.get("cache", {}));
 const memo = new Map();
 const VIEWS = {};
+// Keep the latest request markers in memory as well: local storage may reject
+// a marker after the bridge has already saved and sent the tracked request.
+let latestTranslationId = store.get("tr.latest", "") || (store.get("tr.result", null) || {}).rid || "";
+let latestWeatherId = store.get("weather.latest", "");
 let current = { view: TABS.some((tab) => tab.id === store.get("tab")) ? store.get("tab") : "home", params: {} };
 let trail = [];
 // A notice must never turn a missing cached result into another request.
@@ -23,6 +27,16 @@ let openingNoticeKey = "";
 // A single selected notice belongs to the rendered result. Keep it until
 // navigation so a redraw cannot acknowledge other outcomes in the same view.
 let activeNoticeId = "";
+// A reply arriving in the current view while it is covered or fading may need
+// its exact snapshot redrawn when the view becomes visible again.
+let deferredNoticeId = "";
+let renderRevision = 0;
+let pendingNoticeFocus = null;
+// Persist unread state immediately; defer its badge until a visible reply or
+// Home row has survived an actual paint. Navigation exposes it immediately.
+const pendingNoticePaint = new Set();
+let visibleNoticeCheck = null;
+let visibilityRevision = 0;
 // Image results are loaded asynchronously from IndexedDB; do not acknowledge
 // their notices until the gallery (or an explicit missing-result message) exists.
 let imagesReadyToAcknowledge = false;
@@ -97,15 +111,20 @@ function chrome() {
   $("#gear").setAttribute("aria-label", t("tab_settings"));
   $("#gear").onclick = () => goTab("settings");
   $("#activity").onclick = pendingSheet;
-  // Home's general notices may be below the fold. Check them as the person
-  // scrolls or changes orientation, not merely because the page was opened.
+  // General notices and inline outcomes may be below the fold or in a closed
+  // disclosure. Recheck what is actually visible after scroll, resize or toggle.
   let checkingNotices = false;
   const checkNotices = () => {
-    if (current.view !== "home" || checkingNotices) return;
+    if (checkingNotices) return;
     checkingNotices = true;
-    requestAnimationFrame(() => { checkingNotices = false; if (current.view === "home") markVisibleNoticesRead(); });
+    requestAnimationFrame(() => {
+      checkingNotices = false;
+      if (current.view === "home") markVisibleNoticesRead();
+      else markInlineVisibleNoticesRead();
+    });
   };
   $("#view").addEventListener("scroll", checkNotices, { passive: true });
+  $("#view").addEventListener("toggle", checkNotices, true);
   // Dynamic viewport units can settle one frame after the resize event.
   window.addEventListener("resize", () => requestAnimationFrame(checkNotices));
   activity();
@@ -127,7 +146,7 @@ function pendingTarget(meta) {
 function notificationCounts() {
   const counts = Object.fromEntries(TABS.map(({ id }) => [id, { pending: 0, unread: 0 }]));
   for (const item of store.get("notices", [])) {
-    if (item.unread && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
+    if (item.unread && !pendingNoticePaint.has(item.id) && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
   }
   for (const meta of Object.values(bridge.pending())) {
     const target = pendingTarget(meta);
@@ -159,6 +178,13 @@ function jobBadge() {
   });
   Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.unread])));
   bus.emit("badges");
+}
+
+// A provisional badge can change without any notice data changing. Avoid
+// rebuilding interactive result cards while someone is scrolling or tapping.
+function refreshNoticePaint() {
+  jobBadge();
+  bus.emit("notice-paint");
 }
 
 function goTab(tab) {
@@ -196,6 +222,12 @@ function back() {
 }
 
 function render(scroll = 0) {
+  // Replacing the view before its pending first paint cannot count as seeing
+  // the reply. Publish its durable badge even if the old rAF never resumes.
+  const hadPendingPaint = pendingNoticePaint.size > 0;
+  pendingNoticePaint.clear();
+  visibleNoticeCheck = null;
+  const revision = ++renderRevision;
   FileKitUI.stop();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
@@ -222,21 +254,27 @@ function render(scroll = 0) {
   if (tab !== "home") {
     const next = h("button", { class: "btn ghost small pending-notices", hidden: true, onclick: () => goTab(tab) });
     const drawNext = () => {
-      const count = store.get("notices", []).filter((item) => item.unread && (item.category || "home") === tab && item.target).length;
+      const count = store.get("notices", []).filter((item) => item.unread && !pendingNoticePaint.has(item.id) && (item.category || "home") === tab && item.target).length;
       next.hidden = count === 0;
       if (count) fill(next, icon("bell"), t("notification_next", { n: count }));
     };
-    bus.on("notices", drawNext);
+    bus.on("badges", drawNext);
     drawNext();
     main.prepend(next);
   }
   main.scrollTop = scroll;
-  markVisibleNoticesRead();
+  if (hadPendingPaint) refreshNoticePaint();
   requestAnimationFrame(() => requestAnimationFrame(() => {
+    if (revision !== renderRevision) return;
     main.classList.remove("enter");
-    // Wait for the fade before acknowledging general notices that are actually
-    // visible; leaving the view during the transition does not consume them.
-    if (current.view === "home") setTimeout(() => { if (current.view === "home") markVisibleNoticesRead(); }, 250);
+    // A busy renderer can begin its fade late. Recheck for a bounded period
+    // rather than losing the only acknowledgement callback at 250 ms.
+    const revealWhenReady = (tries = 30) => {
+      if (revision !== renderRevision) return;
+      if (viewReady()) revealVisibleNotices();
+      else if (tries) setTimeout(() => revealWhenReady(tries - 1), 100);
+    };
+    setTimeout(revealWhenReady, 250);
   }));
 }
 
@@ -269,7 +307,7 @@ function pendingSheet() {
     h("div", { class: "list-row" },
       h("i", { class: "spinner" }),
       h("div", { class: "grow" }, h("b", {}, opLabel(meta.op)), h("small", { class: "muted" }, ...pendingState(meta))),
-      meta.p ? h("button", { class: "icon-btn tiny", title: t("retry"), "aria-label": t("retry"), onclick: () => { bridge.resend(id); toast(t("retry_sent"), "ok"); closeSheet(); } }, icon("refresh")) : null,
+      meta.p ? h("button", { class: "icon-btn tiny", title: t("retry"), "aria-label": t("retry"), onclick: () => { if (bridge.resend(id)) toast(t("retry_sent"), "ok"); closeSheet(); } }, icon("refresh")) : null,
       h("button", { class: "icon-btn tiny", title: t("cancel"), "aria-label": t("cancel"), onclick: () => { bridge.forget(id); closeSheet(); } }, icon("close"))));
   openSheet(t("pending_title"), [
     h("p", { class: "muted small" }, t("pending_hint")),
@@ -435,13 +473,22 @@ function baseResultKey(key) {
   } catch (error) { return key; }
 }
 
+// Associate the *rendered* outcome with its request, not its old loading row.
+// A notice is acknowledged only after this node exists and is actually visible.
+function renderedResult(node, rid = "", selectedId = "") {
+  if (rid) node.dataset.resultId = String(rid); else delete node.dataset.resultId;
+  if (selectedId) node.dataset.noticeId = String(selectedId); else delete node.dataset.noticeId;
+  requestAnimationFrame(markInlineVisibleNoticesRead);
+}
+
 // Request with in-memory reuse, so going back does not cost another e-mail.
 async function fetchView(target, op, args, draw, options = {}) {
   const reportable = ["search", "music_search", "tool", "read", "music_item"].includes(op) ||
     (op === "action" && args.kind === "transcript");
+  const selectedId = reportable && openingNoticeKey ? activeNoticeId : "";
   const legacy = op + JSON.stringify(args), canonical = resultKey(op, args);
   if (reportable && openingNoticeKey && ![canonical, legacy].includes(baseResultKey(openingNoticeKey))) {
-    fill(target, failure(t("notification_expired"))); return;
+    fill(target, failure(t("notification_expired"))); renderedResult(target, "", selectedId); return;
   }
   const key = reportable ? (openingNoticeKey || canonical) : legacy;
   const saved = reportable && savedResult(key);
@@ -452,34 +499,50 @@ async function fetchView(target, op, args, draw, options = {}) {
   const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
   if (!options.fresh && cachedError) {
     fill(target, failure(cachedError, retry));
+    if (reportable) renderedResult(target, "", selectedId);
     return;
   }
   if (!options.fresh && (inMemory || saved)) {
     draw(inMemory ? memo.get(key) : saved.data);
-    if (reportable) target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
-      h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
+    if (reportable) {
+      target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+        h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
+      renderedResult(target, "", selectedId);
+    }
     return;
   }
-  if (reportable && !options.fresh && openingNoticeKey === key && !resultPending(key)) {
-    fill(target, failure(t("notification_expired"))); return;
+  // A newer request for the same query is not the missing older response.
+  if (reportable && !options.fresh && openingNoticeKey === key) {
+    fill(target, failure(t("notification_expired"))); renderedResult(target, "", selectedId); return;
   }
+  delete target.dataset.resultId; delete target.dataset.noticeId;
   fill(target, loading(options.label));
   if (reportable && resultPending(key)) {
     bus.on("result:" + key, (result) => {
       if (!target.isConnected) return;
       if (result.error) fill(target, failure(result.error, retry)); else draw(result.data);
+      renderedResult(target, result.rid);
     });
     return;
   }
+  let rid = "";
   try {
     const label = op === "tool" ? (options.noticeLabel || "notification_tool") : op === "music_search" ? "notification_music" :
       ({ news: "notification_news", reader: "notification_reader", transcript: "notification_transcript",
         music_item: "notification_music_item" })[current.view] || "notification_search";
-    const data = reportable ? await bridge.request(op, args, resultContext(key, label)).promise : await bridge.call(op, args);
+    let data;
+    if (reportable) {
+      const request = bridge.request(op, args, resultContext(key, label));
+      rid = request.id;
+      data = await request.promise;
+    } else data = await bridge.call(op, args);
     if (!reportable) memo.set(key, data);
-    if (target.isConnected) draw(data);
+    if (target.isConnected) { draw(data); if (reportable) renderedResult(target, rid); }
   } catch (error) {
-    if (target.isConnected && !error.cancelled) fill(target, failure(error.message, retry));
+    if (target.isConnected && !error.cancelled) {
+      fill(target, failure(error.message, retry));
+      if (reportable) renderedResult(target, rid);
+    }
   }
 }
 
@@ -492,87 +555,251 @@ function samePlace(target) {
   return JSON.stringify(target.params || {}) === JSON.stringify(current.params || {});
 }
 function resultsVisible() {
-  // A visible WebView can still be covered by its splash or introduction.
-  return document.visibilityState !== "hidden" && !$("#splash") && !$(".intro-overlay");
+  // A visible WebView can still be covered by its splash, introduction, or a
+  // sheet. Do not consume results behind any of them, even in the same view.
+  const sheet = $("#sheet");
+  return document.visibilityState !== "hidden" && !$("#splash") && !$(".intro-overlay") && (!sheet || sheet.hidden);
+}
+function viewReady() {
+  const main = $("#view");
+  return !!main && !main.classList.contains("enter") && Number(getComputedStyle(main).opacity) >= 0.5;
 }
 function visiblePlace(target) {
-  return resultsVisible() && samePlace(target);
+  return resultsVisible() && viewReady() && samePlace(target);
 }
-function focusNotice(item) {
-  if (!item) return;
+function noticeNode(item) {
   const main = $("#view");
-  const selectors = [["noticeId", item.id], ["messageId", item.messageId], ["imageId", item.imageId], ["jobId", item.job && item.job.id]];
-  requestAnimationFrame(() => {
-    if (activeNoticeId !== item.id || !main.isConnected || !resultsVisible()) return;
-    for (const [attribute, value] of selectors) {
-      if (!value) continue;
-      const key = attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase());
-      const node = Array.from(main.querySelectorAll(`[data-${key}]`)).find((element) => element.dataset[attribute] === String(value));
-      if (node) { node.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" }); break; }
+  if (!main || !item) return null;
+  const selectors = [["noticeId", item.id], ["messageId", item.messageId], ["imageId", item.imageId],
+    ["jobId", item.job && item.job.id], ["resultId", item.resultId]];
+  for (const [attribute, value] of selectors) {
+    if (!value) continue;
+    const key = attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase());
+    const node = Array.from(main.querySelectorAll(`[data-${key}]`)).find((element) => element.dataset[attribute] === String(value));
+    if (node) return node;
+  }
+  return null;
+}
+function visibleContentBounds(main) {
+  const bounds = main.getBoundingClientRect();
+  let top = Math.max(0, bounds.top), bottom = Math.min(window.innerHeight, bounds.bottom);
+  const left = Math.max(0, bounds.left), right = Math.min(window.innerWidth, bounds.right);
+  if (current.view === "chat") {
+    // Sticky controls occupy part of the scroller; a bubble hidden behind
+    // them is not actually visible even if its rectangle overlaps #view.
+    for (const header of main.querySelectorAll(".agent-mode, .chat-meta")) {
+      const rect = header.getBoundingClientRect(), position = getComputedStyle(header).position;
+      if ((position === "sticky" || position === "fixed") && rect.top <= top + 1 && rect.bottom > top) top = rect.bottom;
     }
+    const composer = main.querySelector(".composer-wrap");
+    if (composer && getComputedStyle(composer).position === "sticky") {
+      const rect = composer.getBoundingClientRect();
+      if (rect.bottom >= bottom - 1 && rect.top < bottom) bottom = rect.top;
+    }
+  }
+  return { top, bottom, left, right };
+}
+function elementInView(node) {
+  const main = $("#view");
+  if (!main || !node || !node.isConnected) return false;
+  // Chromium can retain a nonzero layout rectangle for a closed <details>.
+  // Its hidden body must not count until the person opens the disclosure.
+  for (let parent = node.parentElement; parent && parent !== main; parent = parent.parentElement) {
+    if (parent.tagName === "DETAILS" && !parent.open) {
+      const summary = Array.from(parent.children).find((child) => child.tagName === "SUMMARY");
+      if (!summary || !summary.contains(node)) return false;
+    }
+  }
+  const rect = node.getBoundingClientRect(), { top, bottom, left, right } = visibleContentBounds(main);
+  const height = Math.max(0, Math.min(bottom, rect.bottom) - Math.max(top, rect.top));
+  return bottom > top && right > left && rect.height > 0 && rect.width > 0 && rect.right > left && rect.left < right &&
+    height >= Math.min(rect.height, bottom - top) / 2 && getComputedStyle(node).visibility !== "hidden";
+}
+function focusNotice(item, attempts = 2) {
+  if (!item) return;
+  const main = $("#view"), revision = renderRevision;
+  if (pendingNoticeFocus && pendingNoticeFocus.id === item.id && pendingNoticeFocus.revision === revision) return;
+  const ticket = { id: item.id, revision };
+  pendingNoticeFocus = ticket;
+  const requiresNode = !!(item.messageId || item.imageId || item.resultId || (item.job && item.job.id));
+  const stillHere = () => pendingNoticeFocus === ticket && activeNoticeId === item.id && revision === renderRevision &&
+    main.isConnected && resultsVisible() && viewReady() && samePlace(item.target);
+  const retryFocus = () => {
+    if (attempts <= 0) return;
+    requestAnimationFrame(() => {
+      if (activeNoticeId === item.id && revision === renderRevision && resultsVisible() && viewReady() &&
+          store.get("notices", []).some((entry) => entry.id === item.id && entry.unread)) focusNotice(item, attempts - 1);
+    });
+  };
+  requestAnimationFrame(() => {
+    if (!stillHere()) { if (pendingNoticeFocus === ticket) pendingNoticeFocus = null; return; }
+    const node = noticeNode(item);
+    if (requiresNode && !node) { pendingNoticeFocus = null; retryFocus(); return; }
+    if (node) {
+      node.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" });
+      if (item.target.view === "chat") {
+        const overlap = visibleContentBounds(main).top - node.getBoundingClientRect().top;
+        if (overlap > 0) main.scrollTop -= overlap + 8;
+      }
+    }
+    // The first frame positions the exact outcome; a later frame confirms it
+    // is still on screen and uncovered before changing its unread state.
+    const visibility = visibilityRevision, sheet = sheetRevision;
+    requestAnimationFrame(() => {
+      if (!stillHere() || visibility !== visibilityRevision || sheet !== sheetRevision) {
+        const retry = stillHere();
+        if (pendingNoticeFocus === ticket) pendingNoticeFocus = null;
+        if (retry) retryFocus();
+        return;
+      }
+      pendingNoticeFocus = null;
+      if (node && (noticeNode(item) !== node || !elementInView(node))) { retryFocus(); return; }
+      const list = store.get("notices", []), entry = list.find((value) => value.id === item.id && value.unread);
+      if (entry && entry.target && samePlace(entry.target)) {
+        entry.unread = false;
+        if (store.set("notices", list)) bus.emit("notices");
+      }
+    });
   });
 }
 
-function visibleHomeNoticeIds() {
-  const main = $("#view"), sheet = $("#sheet");
-  if (!main || main.classList.contains("enter") || Number(getComputedStyle(main).opacity) < 0.5 || (sheet && !sheet.hidden)) return new Set();
-  const bounds = main.getBoundingClientRect();
-  const top = Math.max(0, bounds.top), bottom = Math.min(window.innerHeight, bounds.bottom);
-  const left = Math.max(0, bounds.left), right = Math.min(window.innerWidth, bounds.right);
-  if (bottom <= top || right <= left) return new Set();
-  const seen = new Set();
-  for (const row of main.querySelectorAll(".notice[data-notice-id]")) {
-    const rect = row.getBoundingClientRect();
-    const height = Math.max(0, Math.min(bottom, rect.bottom) - Math.max(top, rect.top));
-    if (rect.height > 0 && rect.width > 0 && rect.right > left && rect.left < right &&
-        height >= Math.min(rect.height, bottom - top) / 2 && getComputedStyle(row).visibility !== "hidden")
-      seen.add(row.dataset.noticeId);
-  }
-  return seen;
+// A geometrically visible node is only a candidate: it must survive a paint
+// and remain the same, uncovered node in the next frame before being read.
+function inPlaceNoticeNode(item, allowPending = false) {
+  if (!item || !item.unread || (!allowPending && pendingNoticePaint.has(item.id)) || !resultsVisible() || !viewReady()) return null;
+  if (current.view === "home") {
+    if (item.target) return null;
+  } else if (!item.observeInPlace || !item.target || !samePlace(item.target)) return null;
+  const node = noticeNode(item);
+  return elementInView(node) ? node : null;
+}
+
+function scheduleInPlaceNoticeRead(retries = 2) {
+  if (visibleNoticeCheck || !resultsVisible() || !viewReady()) return;
+  const ticket = { revision: renderRevision };
+  visibleNoticeCheck = ticket;
+  requestAnimationFrame(() => {
+    if (visibleNoticeCheck !== ticket) return;
+    if (ticket.revision !== renderRevision || !resultsVisible() || !viewReady()) { visibleNoticeCheck = null; return; }
+    const visibility = visibilityRevision, sheet = sheetRevision;
+    const candidates = new Map();
+    for (const item of store.get("notices", [])) {
+      const node = inPlaceNoticeNode(item);
+      if (node) candidates.set(item.id, node);
+    }
+    if (!candidates.size) { visibleNoticeCheck = null; return; }
+    requestAnimationFrame(() => {
+      if (visibleNoticeCheck !== ticket) return;
+      visibleNoticeCheck = null;
+      if (ticket.revision !== renderRevision || visibility !== visibilityRevision || sheet !== sheetRevision || !resultsVisible() || !viewReady()) return;
+      const list = store.get("notices", []);
+      let changed = false, redrawn = false;
+      for (const item of list) {
+        const previous = candidates.get(item.id);
+        if (!previous) continue;
+        const node = inPlaceNoticeNode(item);
+        if (node === previous) { item.unread = false; changed = true; }
+        else if (node) redrawn = true;
+      }
+      if (changed && store.set("notices", list)) bus.emit("notices");
+      // A different reply may have redrawn this candidate between frames.
+      if (redrawn && retries) scheduleInPlaceNoticeRead(retries - 1);
+    });
+  });
+}
+
+function markInlineVisibleNoticesRead() {
+  if (current.view !== "home") scheduleInPlaceNoticeRead();
+}
+
+function confirmPendingNoticePaint(id) {
+  const revision = renderRevision;
+  requestAnimationFrame(() => {
+    if (!pendingNoticePaint.has(id)) return;
+    const item = store.get("notices", []).find((entry) => entry.id === id);
+    const node = inPlaceNoticeNode(item, true), visibility = visibilityRevision, sheet = sheetRevision;
+    requestAnimationFrame(() => {
+      if (!pendingNoticePaint.delete(id)) return;
+      const list = store.get("notices", []), entry = list.find((value) => value.id === id);
+      let read = false;
+      if (node && revision === renderRevision && visibility === visibilityRevision && sheet === sheetRevision && inPlaceNoticeNode(entry, true) === node) {
+        entry.unread = false;
+        read = store.set("notices", list);
+      }
+      if (read) bus.emit("notices");
+      else { refreshNoticePaint(); scheduleInPlaceNoticeRead(); }
+    });
+  });
 }
 
 function markVisibleNoticesRead() {
-  if (!resultsVisible()) return;
-  const list = store.get("notices", []);
-  let changed = false;
-  if (current.view === "home") {
-    // General notices have no separate destination. Clear only rows actually
-    // in view; section replies remain unread until their own destination opens.
-    const seen = list.some((item) => item.unread && !item.target) ? visibleHomeNoticeIds() : new Set();
-    for (const item of list) if (item.unread && !item.target && seen.has(item.id)) { item.unread = false; changed = true; }
-  } else {
+  if (!resultsVisible() || !viewReady()) return;
+  // Home general rows and in-place replies need one painted, uncovered frame.
+  scheduleInPlaceNoticeRead();
+  if (current.view !== "home") {
+    const list = store.get("notices", []);
     const item = activeNoticeId ? list.find((entry) => entry.id === activeNoticeId) :
-      list.find((entry) => entry.unread && entry.target && samePlace(entry.target));
+      list.find((entry) => entry.unread && !entry.observeInPlace && entry.target && samePlace(entry.target));
     const imageReady = item && (!(item.target && item.target.view === "images") || imagesReadyToAcknowledge);
     if (item && item.unread && imageReady && item.target && samePlace(item.target)) {
       activeNoticeId = item.id;
       focusNotice(item);
-      item.unread = false; changed = true;
     }
   }
-  if (changed) { store.set("notices", list); bus.emit("notices"); }
 }
+
+function revealVisibleNotices() {
+  if (!resultsVisible() || !viewReady()) return;
+  const id = deferredNoticeId;
+  deferredNoticeId = "";
+  const item = id && store.get("notices", []).find((entry) => entry.id === id && entry.unread);
+  if (item && item.id === activeNoticeId && item.cacheKey && samePlace(item.target)) {
+    // Multiple replies can share a destination. Redraw the selected snapshot
+    // before acknowledging it, instead of clearing a reply not on screen.
+    if (!resultMemoHas(item.cacheKey) && !savedResult(item.cacheKey)) { openNotice(item); return; }
+    openingNoticeKey = item.cacheKey;
+    render();
+  } else markVisibleNoticesRead();
+}
+
 function notice(text, kind = "info", options = {}) {
   const code = /^(?:collaboration|local-ai)-[0-9]+$/.test(options.code || "") ? options.code : "";
   const seen = store.get("noticeCodes", []);
   if (code && seen.includes(code)) return;
   const list = store.get("notices", []);
   const target = options.target || null;
-  // A targetless notice is not visible simply because Home is open; its row
-  // must actually be on screen after it has been rendered.
-  const visible = target ? visiblePlace(target) : false;
   const job = options.job ? { id: String(options.job.id), status: options.job.status,
     title: plain(options.job.title).slice(0, 500), error: plain(options.job.error).slice(0, 5000),
     warning: plain(options.job.warning).slice(0, 5000) } : null;
-  list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text).slice(0, 5000), kind,
+  const item = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text).slice(0, 5000), kind,
     category: options.category || "home", target, cacheKey: options.cacheKey || "", imageId: options.imageId || "",
-    messageId: options.messageId || "", job, unread: options.local !== true && !visible });
+    messageId: options.messageId || "", resultId: options.resultId || "", job };
+  const viewVisible = !!target && visiblePlace(target);
+  // Even an inline node in the viewport may not have painted yet. Persist it
+  // unread first and confirm after two frames; no badge is shown meanwhile.
+  // Targetless Home notices also need their own visible row.
+  const inline = !!(job || item.messageId || item.resultId || (target && target.view === "images" && item.imageId));
+  const visible = viewVisible && !inline;
+  item.unread = options.local !== true && !visible;
+  item.observeInPlace = !!(item.unread && inline && viewVisible);
+  const provisional = item.observeInPlace || (item.unread && !target && current.view === "home" && resultsVisible() && viewReady());
+  if (provisional) pendingNoticePaint.add(item.id);
+  list.unshift(item);
+  // Select a reply that arrived in this view while it was covered; an inline
+  // outcome below the fold instead waits until seen or deliberately opened.
+  if (item.unread && !item.observeInPlace && target && !visible && samePlace(target)) {
+    activeNoticeId = item.id;
+    deferredNoticeId = item.id;
+  }
   // Retain every unread notice while storage permits; trim only older read
   // history. If device storage is full, store.set reports that explicitly.
   let readKept = 0;
-  const keep = list.filter((item) => item.unread || readKept++ < 30);
-  if (store.set("notices", keep) && code) store.set("noticeCodes", [...seen, code].slice(-20));
+  const keep = list.filter((entry) => entry.unread || readKept++ < 30);
+  const stored = store.set("notices", keep);
+  if (stored && code) store.set("noticeCodes", [...seen, code].slice(-20));
   bus.emit("notices");
+  if (provisional && stored) confirmPendingNoticePaint(item.id);
+  else pendingNoticePaint.delete(item.id);
   if (!target && options.local !== true && current.view === "home") markVisibleNoticesRead();
 }
 
@@ -606,15 +833,23 @@ function openNotice(item, rootTab = "") {
   const target = item.target;
   const definition = target && Object.prototype.hasOwnProperty.call(VIEWS, target.view) ? VIEWS[target.view] : null;
   const valid = definition && typeof definition.render === "function" && (!rootTab || (definition.tab || target.view) === rootTab);
-  const available = !item.cacheKey || resultMemoHas(item.cacheKey) || savedResult(item.cacheKey);
-  if (!valid || !available) {
-    // Keep an unavailable notice unread until its warning can actually be seen.
+  if (!valid) {
+    // A damaged or obsolete destination has no page to host its warning.
+    // Do not clear it until the toast itself survives an uncovered paint.
     if (!resultsVisible()) return false;
-    const list = store.get("notices", []);
-    const found = list.find((entry) => entry.id === item.id);
-    if (found) { found.unread = false; store.set("notices", list); bus.emit("notices"); }
-    toast(t("notification_expired"), "bad"); return false;
+    const warning = toast(t("notification_expired"), "bad"), visibility = visibilityRevision, sheet = sheetRevision;
+    requestAnimationFrame(() => {
+      if (!warning.isConnected || !resultsVisible()) return;
+      requestAnimationFrame(() => {
+        if (!warning.isConnected || visibility !== visibilityRevision || sheet !== sheetRevision || !resultsVisible()) return;
+        const list = store.get("notices", []), found = list.find((entry) => entry.id === item.id && entry.unread);
+        if (found) { found.unread = false; if (store.set("notices", list)) bus.emit("notices"); }
+      });
+    });
+    return false;
   }
+  // Open even when the snapshot expired: each destination displays its own
+  // persistent warning without repeating the request, then acknowledges it.
   openingNoticeKey = item.cacheKey || "";
   activeNoticeId = item.id;
   if (rootTab) {
@@ -637,7 +872,7 @@ function shortcutMatch(view, fallback, target) {
 function shortcutCount(view, fallback = {}) {
   const matches = (target) => shortcutMatch(view, fallback, target);
   return {
-    unread: store.get("notices", []).filter((item) => item.unread && matches(item.target)).length,
+    unread: store.get("notices", []).filter((item) => item.unread && !pendingNoticePaint.has(item.id) && matches(item.target)).length,
     pending: Object.values(bridge.pending()).map(pendingTarget).filter((item) => item && matches(item.target)).length,
   };
 }
@@ -742,44 +977,63 @@ function receiveViewResult(data, error, ctx, rid, received = true) {
   // open, even if persistent storage is full or the reply exceeds its limit.
   rememberResultInMemory(key, error ? null : data, now(), error);
   saveResult(key, error ? null : data, error);
-  if (!visiblePlace(ctx.target)) {
-    if (error) {
-      const view = ctx.target.view;
-      const utility = view === "tools" && UTILITIES.find((item) => item[0] === ctx.target.params?.tool);
-      const name = utility ? `${t("tile_tools")} · ${t(utility[2])}` :
-        t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools",
-          reader: "tab_web", transcript: "act_transcript", music_item: "music_files_title" })[view] || "tab_web");
-      resultNotice(`${name} · ${t("notification_query_failed")}`, "bad", { category: ctx.category, target: ctx.target, cacheKey: key }, received);
-    } else resultNotice(t(ctx.label), "ok", { category: ctx.category, target: ctx.target, cacheKey: key }, received);
-  }
-  bus.emit("result:" + ctx.key, { data, error });
+  const options = { category: ctx.category, target: ctx.target, cacheKey: key, resultId: rid };
+  if (error) {
+    const view = ctx.target.view;
+    const utility = view === "tools" && UTILITIES.find((item) => item[0] === ctx.target.params?.tool);
+    const name = utility ? `${t("tile_tools")} · ${t(utility[2])}` :
+      t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools",
+        reader: "tab_web", transcript: "act_transcript", music_item: "music_files_title" })[view] || "tab_web");
+    resultNotice(`${name} · ${t("notification_query_failed")}`, "bad", options, received);
+  } else resultNotice(t(ctx.label), "ok", options, received);
+  bus.emit("result:" + ctx.key, { data, error, rid, key });
 }
 for (const op of ["search", "youtube_search", "music_search", "tool", "read", "music_item", "action"]) bridge.handlers[op] = receiveViewResult;
 bridge.handlers.translate = (data, error, ctx, rid, received = true) => {
-  if (!ctx || ctx.kind !== "translate-result" || store.get("tr.latest", "") !== rid) return;
-  store.del("tr.latest");
-  const record = { data, error: error || "", at: now() };
-  store.set("tr.result", record);
-  bus.emit("translate_result", record);
-  if (!visiblePlace(ctx.target)) resultNotice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target }, received);
+  if (!ctx || ctx.kind !== "translate-result") return;
+  const latest = latestTranslationId === rid;
+  const record = { data, error: error || "", at: now(), rid };
+  const key = JSON.stringify(["translate-result-v1", rid]);
+  // A later request must not hide an older reply; each gets its own snapshot.
+  rememberResultInMemory(key, data, record.at, error);
+  saveResult(key, data, error, record.at);
+  if (latest) {
+    store.del("tr.latest");
+    store.set("tr.result", record);
+    bus.emit("translate_result", record);
+  }
+  resultNotice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target, resultId: rid, cacheKey: key }, received);
 };
 bridge.handlers.weather = (data, error, ctx, rid, received = true) => {
-  if (!ctx || ctx.kind !== "weather-result" || store.get("weather.latest", "") !== rid) return;
-  store.del("weather.latest");
-  if (error) store.set("weather.error", error);
-  else { store.del("weather.error"); saveManualWeather(data); }
-  bus.emit("weather_result", { data, error });
-  if (!visiblePlace(ctx.target)) resultNotice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target }, received);
+  if (!ctx || ctx.kind !== "weather-result") return;
+  const latest = latestWeatherId === rid;
+  const key = JSON.stringify(["weather-result-v1", rid]);
+  rememberResultInMemory(key, data, now(), error);
+  saveResult(key, data, error);
+  if (latest) {
+    store.del("weather.latest");
+    if (error) store.set("weather.error", error);
+    else { store.del("weather.error"); saveManualWeather(data); }
+    bus.emit("weather_result", { data, error, rid });
+  }
+  // An older concurrent city request must not replace the latest forecast,
+  // but its reply is still reachable through its own saved notice.
+  resultNotice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target, resultId: rid, cacheKey: key }, received);
 };
 bus.always("notices", jobBadge);
 bridge.watchers.add(jobBadge);
 function reflectAppVisibility() {
-  document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
-  if (document.visibilityState === "hidden") {
-    // Keep an unacknowledged selection behind the splash, but allow the next
-    // reply received in the background to be selected when the app resumes.
-    if (!store.get("notices", []).some((item) => item.id === activeNoticeId && item.unread)) activeNoticeId = "";
-  } else markVisibleNoticesRead();
+  visibilityRevision += 1;
+  const hidden = document.visibilityState === "hidden";
+  document.documentElement.classList.toggle("app-hidden", hidden);
+  if (hidden) {
+    visibleNoticeCheck = null;
+    if (pendingNoticePaint.size) { pendingNoticePaint.clear(); refreshNoticePaint(); }
+  }
+  // Keep the displayed selection when backgrounded: clearing it would consume
+  // another unread result with the same destination on resume. A new reply
+  // received while hidden selects itself in notice() instead.
+  if (!hidden) revealVisibleNotices();
 }
 document.addEventListener("visibilitychange", reflectAppVisibility);
 document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
@@ -1003,13 +1257,22 @@ function noticeList() {
     const list = store.get("notices", []);
     fill(box, ...(list.length ? list.map((item) => {
       const open = item.target && VIEWS[item.target.view] ? () => openNotice(item) : null;
-      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread ? "unread" : ""}`,
+      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread && !pendingNoticePaint.has(item.id) ? "unread" : ""}`,
         "data-notice-id": item.id, onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
         icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
         h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)), open ? icon("next") : null);
     }) : [h("p", { class: "empty small" }, t("notices_none"))]));
   };
   bus.on("notices", draw);
+  // Badge exposure does not change the row content; update its state in place
+  // so another pending row does not disappear between two animation frames.
+  bus.on("notice-paint", () => {
+    const byId = new Map(store.get("notices", []).map((item) => [item.id, item]));
+    for (const row of box.querySelectorAll(".notice[data-notice-id]")) {
+      const item = byId.get(row.dataset.noticeId);
+      if (item) row.classList.toggle("unread", !!item.unread && !pendingNoticePaint.has(item.id));
+    }
+  });
   draw();
   return box;
 }
@@ -1734,7 +1997,7 @@ bridge.handlers.ask = (data, error, ctx, rid, received = true) => {
   }
   saveMessages(ctx.space, list);
   const target = { view: "chat", params: { space: ctx.space } };
-  if (!visiblePlace(target)) resultNotice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
+  resultNotice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
 };
 
 function spaceMeta(space) {
@@ -1843,6 +2106,9 @@ VIEWS.chat = {
       area.dispatchEvent(new Event("input"));
       attached = null;
       drawTray();
+      // An explicit send follows the new message; incoming replies do not
+      // pull someone away from older messages they are reading.
+      requestAnimationFrame(() => { if (list.isConnected) main.scrollTop = main.scrollHeight; });
     };
     area.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey && !TOUCH) {
@@ -1853,7 +2119,10 @@ VIEWS.chat = {
     const drawMeta = () => fill(meta, ...spaceMeta(space), iconButton("trash", t("clear_chat"), async () => {
       if (await confirmBox(t("clear_chat"), t("clear_chat_q"), t("clear"))) saveMessages(space, []);
     }, "tiny"));
+    let firstDraw = true;
     const drawList = () => {
+      const follow = firstDraw || main.scrollHeight - main.scrollTop - main.clientHeight < 140;
+      firstDraw = false;
       const items = messages(space);
       const ids = new Set(items.map((item) => item.rid));
       const missing = store.get("notices", []).filter((item) => item.unread && item.messageId && !ids.has(item.messageId) &&
@@ -1864,9 +2133,9 @@ VIEWS.chat = {
         return node;
       }) : [chatIntro(space, submit)]),
         ...missing.map((item) => h("p", { class: "note warn", role: "status", "data-notice-id": item.id }, item.text, " · ", t("notification_expired"))));
-      // An empty conversation should open at the mode selector, not scrolled
-      // past it; existing/new messages still open at the latest response.
-      if (items.length || missing.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
+      // Follow new content only if already near the end, or on first opening.
+      // The guard prevents a delayed frame from scrolling a different view.
+      if (follow && (items.length || missing.length)) requestAnimationFrame(() => { if (list.isConnected) main.scrollTop = main.scrollHeight; });
     };
     bus.on("models", drawMeta);
     bus.on("quota", drawMeta);
@@ -2020,7 +2289,7 @@ bridge.handlers.image = async (data, error, ctx, rid, received = true) => {
   }
   if (chatImage) {
     const target = { view: "chat", params: { space: ctx.space } };
-    if (!visiblePlace(target)) resultNotice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
+    resultNotice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
   }
   if (error) {
     if (!chatImage) {
@@ -2033,7 +2302,7 @@ bridge.handlers.image = async (data, error, ctx, rid, received = true) => {
       saveCache();
       bus.emit("models");
     }
-    if (!chatImage && !visiblePlace({ view: "images", params: {} })) resultNotice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} }, imageId: rid }, received);
+    if (!chatImage) resultNotice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} }, imageId: rid }, received);
   }
   bus.emit("images");
 };
@@ -2349,7 +2618,7 @@ function youtubePages(box, query, audioOnly = false, startPage = 1) {
   const controls = h("div", { class: "stack" });
   const seen = new Set();
   let page = Number.isSafeInteger(Number(startPage)) && Number(startPage) > 0 ? Number(startPage) : 1;
-  let busy = false, first = true;
+  let busy = false, first = true, incoming = null;
   fill(box, results, controls);
   const load = async (fresh = false, restart = false) => {
     if (busy || !box.isConnected) return;
@@ -2357,45 +2626,63 @@ function youtubePages(box, query, audioOnly = false, startPage = 1) {
     // A notice for page N must reopen that actual page, not page 1.
     current.params = { ...current.params, resultPage: page };
     busy = true;
+    const openedKey = openingNoticeKey, selectedId = openedKey ? activeNoticeId : "";
+    let rid = incoming ? incoming.rid : "";
+    const incomingKey = incoming ? incoming.key : "";
+    incoming = null;
+    delete controls.dataset.resultId; delete controls.dataset.noticeId;
     fill(controls, loading(t("searching")));
     try {
       const args = { q: query, page }, legacy = "youtube_search" + JSON.stringify(args), canonical = resultKey("youtube_search", args);
-      if (openingNoticeKey && ![canonical, legacy].includes(baseResultKey(openingNoticeKey))) {
-        fill(controls, failure(t("notification_expired"))); return;
+      if (openedKey && ![canonical, legacy].includes(baseResultKey(openedKey))) {
+        fill(controls, failure(t("notification_expired"))); renderedResult(controls, "", selectedId); return;
       }
-      const key = openingNoticeKey || canonical;
+      const key = incomingKey || openedKey || canonical;
       const saved = savedResult(key), inMemory = resultMemoHas(key);
       const cachedError = inMemory ? resultMemoErrors.get(key) : saved && saved.error;
       if (!fresh && cachedError) {
         fill(controls, failure(cachedError, () => load(true)));
+        renderedResult(controls, rid, selectedId);
         return;
       }
       const reused = !fresh && (inMemory || !!saved);
+      // Do not mistake a newer pending page with the same key for this notice.
+      if (!fresh && !reused && openedKey === key) {
+        fill(controls, failure(t("notification_expired"))); renderedResult(controls, "", selectedId); return;
+      }
       if (!reused && resultPending(key)) {
-        bus.on("result:" + key, () => { if (box.isConnected) { busy = false; load(); } });
+        bus.on("result:" + key, (result) => { if (box.isConnected) { incoming = result; busy = false; load(); } });
         return;
       }
-      if (!fresh && !reused && openingNoticeKey === key) {
-        fill(controls, failure(t("notification_expired"))); return;
+      let data;
+      if (reused) data = inMemory ? memo.get(key) : saved.data;
+      else {
+        const request = bridge.request("youtube_search", args, resultContext(key, audioOnly ? "notification_music" : "notification_youtube"));
+        rid = request.id;
+        data = await request.promise;
       }
-      const data = reused ? (inMemory ? memo.get(key) : saved.data) :
-        await bridge.request("youtube_search", args, resultContext(key, audioOnly ? "notification_music" : "notification_youtube")).promise;
       if (!box.isConnected) return;
+      const pageOutput = h("div", { class: "stack" });
       if (reused && first) {
-        if (page > 1) add(results, h("p", { class: "note" }, t("result_page_restored", { n: page })));
-        add(results, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
+        if (page > 1) add(pageOutput, h("p", { class: "note" }, t("result_page_restored", { n: page })));
+        add(pageOutput, h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
           h("button", { class: "btn ghost small", onclick: () => load(true, true) }, t("result_refresh"))));
       }
       first = false;
       const items = (data.results || []).filter((item) => youtubeUrl(item.url) && !seen.has(item.url));
-      for (const item of items) { seen.add(item.url); add(results, youtubeCard(item, audioOnly)); }
+      for (const item of items) { seen.add(item.url); add(pageOutput, youtubeCard(item, audioOnly)); }
+      if (!items.length) add(pageOutput, !seen.size && !data.more ? empty(t("no_results"), "search") : h("p", { class: "muted small" }, t("youtube_no_new")));
+      add(results, pageOutput);
+      renderedResult(pageOutput, rid, selectedId);
       page += 1;
       fill(controls,
         data.more ? h("button", { class: "btn ghost wide", onclick: () => load() }, icon("down"), t("youtube_more")) : null,
-        data.limited ? h("p", { class: "muted small" }, t("youtube_limit")) : null,
-        !seen.size && !data.more ? empty(t("no_results"), "search") : null);
+        data.limited ? h("p", { class: "muted small" }, t("youtube_limit")) : null);
     } catch (error) {
-      if (box.isConnected && !error.cancelled) fill(controls, failure(error.message, () => load(true)));
+      if (box.isConnected && !error.cancelled) {
+        fill(controls, failure(error.message, () => load(true)));
+        renderedResult(controls, rid, selectedId);
+      }
     } finally { busy = false; }
   };
   load();
@@ -2729,6 +3016,13 @@ VIEWS.weather = {
   tab: "apps",
   title: () => t("tile_weather"),
   render(main) {
+    const selected = openingNoticeKey && activeNoticeId ? store.get("notices", []).find((item) => item.id === activeNoticeId) : null;
+    const selectedMemory = selected && resultMemoHas(openingNoticeKey);
+    const selectedSaved = selected && !selectedMemory ? savedResult(openingNoticeKey) : null;
+    const selectedRecord = selected && (selectedMemory || selectedSaved) ? {
+      data: selectedMemory ? memo.get(openingNoticeKey) : selectedSaved.data,
+      error: selectedMemory ? resultMemoErrors.get(openingNoticeKey) : selectedSaved.error,
+    } : null;
     const box = h("div", { class: "stack weather-result" });
     const settings = h("div", { class: "card stack weather-settings" });
     const savedCities = store.get("cities", [t("default_city")]);
@@ -2801,14 +3095,18 @@ VIEWS.weather = {
     const run = async (city, placeId = 0) => {
       const ticket = ++sequence;
       remember("cities", city, 6);
+      delete box.dataset.resultId; delete box.dataset.noticeId;
       fill(box, loading());
+      let rid = "";
       try {
         const request = bridge.request("weather", { city, place_id: placeId },
           { kind: "weather-result", category: "apps", target: { view: "weather", params: {} } });
-        if (!request.id) throw new Error(t("request_big"));
+        if (!request.id) throw new Error(request.error || t("request_big"));
+        rid = request.id;
+        latestWeatherId = request.id;
         store.set("weather.latest", request.id);
         const data = await request.promise;
-        if (box.isConnected && ticket === sequence) draw(data);
+        if (box.isConnected && ticket === sequence) { draw(data); renderedResult(box, rid); }
       } catch (error) {
         if (box.isConnected && ticket === sequence && !error.cancelled) {
           const last = weatherHome().last;
@@ -2816,16 +3114,18 @@ VIEWS.weather = {
             draw(last.data);
             box.prepend(h("p", { class: "note warn", role: "status" }, error.message));
           } else fill(box, failure(error.message, () => run(city, placeId)));
+          renderedResult(box, rid);
         }
       }
     };
-    bus.on("weather_result", ({ data, error }) => {
+    bus.on("weather_result", ({ data, error, rid }) => {
       if (!box.isConnected) return;
       if (error) {
         const last = weatherHome().last;
         if (validWeatherLast(last)) { draw(last.data); box.prepend(h("p", { class: "note warn", role: "status" }, error)); }
         else fill(box, failure(error));
       } else if (data) draw(data);
+      renderedResult(box, rid);
     });
     bus.on("weather_home", () => {
       drawSettings();
@@ -2836,12 +3136,19 @@ VIEWS.weather = {
     add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather", label: t("weather_find") }),
       h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box, settings);
     const last = weatherHome().last;
-    if (validWeatherLast(last)) draw(last.data);
+    if (selectedRecord && !selectedRecord.error && selectedRecord.data) draw(selectedRecord.data);
+    else if (validWeatherLast(last)) draw(last.data);
     else add(box, empty(t("weather_none"), "weather"));
-    const previousError = store.get("weather.error", "");
-    if (previousError) box.prepend(h("p", { class: "note warn", role: "status" }, previousError));
-    const pendingWeather = store.get("weather.latest", "");
-    if (pendingWeather && bridge.pending()[pendingWeather]) box.prepend(loading(t("searching")));
+    if (selected) {
+      if (!selectedRecord) fill(box, failure(t("notification_expired")));
+      else if (selectedRecord.error) box.prepend(h("p", { class: "note warn", role: "status" }, selectedRecord.error));
+      renderedResult(box, selected.resultId, selected.id);
+    } else {
+      const previousError = store.get("weather.error", "");
+      if (previousError) box.prepend(h("p", { class: "note warn", role: "status" }, previousError));
+      const pendingWeather = latestWeatherId;
+      if (pendingWeather && bridge.pending()[pendingWeather]) box.prepend(loading(t("searching")));
+    }
   },
 };
 
@@ -2878,6 +3185,14 @@ VIEWS.translate = {
   render(main) {
     let source = store.get("tr.source", "auto");
     let target = store.get("tr.target", lang() === "es" ? "en" : "es");
+    const selected = openingNoticeKey && activeNoticeId ? store.get("notices", []).find((item) => item.id === activeNoticeId) : null;
+    const selectedMemory = selected && resultMemoHas(openingNoticeKey);
+    const selectedSaved = selected && !selectedMemory ? savedResult(openingNoticeKey) : null;
+    const selectedRecord = selected && (selectedMemory || selectedSaved) ? {
+      data: selectedMemory ? memo.get(openingNoticeKey) : selectedSaved.data,
+      error: selectedMemory ? resultMemoErrors.get(openingNoticeKey) : selectedSaved.error,
+      rid: selected.resultId, noticeId: selected.id,
+    } : null;
     const area = autosize(h("textarea", { class: "input", rows: 4, placeholder: t("translate_placeholder"), value: store.get("tr.text", "") }));
     const output = h("div", { class: "card translation" }, h("p", { class: "muted" }, t("translate_hint")));
     const pickers = h("div", { class: "row lang-row" });
@@ -2893,13 +3208,16 @@ VIEWS.translate = {
       select(target, LANGS.map((code) => [code, langName(code)]), (value) => { target = value; store.set("tr.target", value); }));
     const showTranslation = (record) => {
       if (!record) return;
-      if (record.error) { fill(output, failure(record.error)); return; }
-      const data = record.data;
-      if (!data) return;
-      fill(output, h("p", { class: "translated" }, data.text),
-        data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
-        h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
-          iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
+      if (record.error) fill(output, failure(record.error));
+      else {
+        const data = record.data;
+        if (!data) return;
+        fill(output, h("p", { class: "translated" }, data.text),
+          data.provider === "Apertium (beta)" ? h("p", { class: "muted small" }, t("translate_apertium_note")) : null,
+          h("div", { class: "row between" }, h("small", { class: "muted" }, [data.detected && data.detected !== "auto" ? t("detected", { name: langName(data.detected) }) : "", data.provider ? t("translate_provider", { name: data.provider }) : ""].filter(Boolean).join(" · ")),
+            iconButton("copy", t("copy"), () => copyText(data.text), "tiny")));
+      }
+      renderedResult(output, record.rid, record.noticeId);
     };
     const run = async (button) => {
       const text = area.value.trim();
@@ -2909,19 +3227,22 @@ VIEWS.translate = {
       store.set("tr.text", text);
       button.disabled = true;
       button.classList.add("busy");
+      delete output.dataset.resultId; delete output.dataset.noticeId;
       fill(output, loading(t("translating")));
+      let rid = "";
       try {
         const request = bridge.request("translate", { text, source, target },
           { kind: "translate-result", category: "apps", target: { view: "translate", params: {} } });
-        if (!request.id) throw new Error(t("request_big"));
-        store.set("tr.latest", request.id);
+        if (!request.id) throw new Error(request.error || t("request_big"));
+        rid = request.id;
+        latestTranslationId = rid;
+        store.set("tr.latest", rid);
         const data = await request.promise;
-        if (output.isConnected) showTranslation({ data });
+        if (output.isConnected && latestTranslationId === rid) showTranslation({ data, rid });
       } catch (error) {
-        if (!error.cancelled) fill(output, failure(error.message));
+        if (output.isConnected && (!rid || latestTranslationId === rid) && !error.cancelled) fill(output, failure(error.message));
       } finally {
-        button.disabled = false;
-        button.classList.remove("busy");
+        if (!rid || latestTranslationId === rid) { button.disabled = false; button.classList.remove("busy"); }
       }
     };
     const button = h("button", { class: "btn primary", onclick: () => run(button) }, icon("translate"), t("translate"));
@@ -2930,8 +3251,10 @@ VIEWS.translate = {
       button.disabled = false; button.classList.remove("busy"); showTranslation(record);
     });
     drawPickers();
-    const pendingTranslation = store.get("tr.latest", "");
-    if (pendingTranslation && bridge.pending()[pendingTranslation]) {
+    const pendingTranslation = latestTranslationId;
+    if (selectedRecord) showTranslation(selectedRecord);
+    else if (selected) { fill(output, failure(t("notification_expired"))); renderedResult(output, "", selected.id); }
+    else if (pendingTranslation && bridge.pending()[pendingTranslation]) {
       button.disabled = true; button.classList.add("busy"); fill(output, loading(t("translating")));
     } else showTranslation(store.get("tr.result", null));
     add(main, card(pickers, area, h("div", { class: "row between" }, h("small", { class: "muted" }, t("translate_note")), button)), contextHelp(t("translate_privacy") + " " + t("translate_limit")), output);
@@ -3749,7 +4072,7 @@ function onboarding(force = false) {
   const finish = () => {
     store.set("tour_done", true);
     overlay.classList.add("gone");
-    setTimeout(() => { overlay.remove(); markVisibleNoticesRead(); }, 300);
+    setTimeout(() => { overlay.remove(); revealVisibleNotices(); }, 300);
   };
   const body = h("div", { class: "intro-card", role: "dialog", "aria-modal": "true" });
   const overlay = h("div", { class: "intro-overlay" }, body);
@@ -3792,7 +4115,7 @@ function boot() {
     gone = true;
     setTimeout(() => {
       splash.classList.add("gone");
-      setTimeout(() => { splash.remove(); markVisibleNoticesRead(); }, 250);
+      setTimeout(() => { splash.remove(); revealVisibleNotices(); }, 250);
       onboarding();
     }, Math.max(0, SPLASH_MIN - (performance.now() - started)));
   };
