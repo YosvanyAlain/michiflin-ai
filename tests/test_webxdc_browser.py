@@ -1245,6 +1245,10 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 query.press("Enter")
                 page.get_by_text("SIMULATED video").wait_for(state="visible")
                 self.assertEqual(page.get_by_text("OTHER SITE").count(), 0)
+                # A fast synthetic search can finish during the entrance fade.
+                # Let its on-screen result be confirmed before covering it or
+                # Apps correctly opens that still-unread result instead of the menu.
+                page.wait_for_function("store.get('notices',[]).some(n=>n.target?.view==='youtube' && !n.unread)")
                 screenshot_if_requested(page, language + "-youtube")
                 page.locator("article.video").get_by_role("button", name="Audio").click()
                 sheet = page.locator("#sheet.open")
