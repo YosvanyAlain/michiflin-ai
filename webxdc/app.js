@@ -20,6 +20,9 @@ let current = { view: TABS.some((tab) => tab.id === store.get("tab")) ? store.ge
 let trail = [];
 // A notice must never turn a missing cached result into another request.
 let openingNoticeKey = "";
+// A single selected notice belongs to the rendered result. Keep it until
+// navigation so a redraw cannot acknowledge other outcomes in the same view.
+let activeNoticeId = "";
 // Image results are loaded asynchronously from IndexedDB; do not acknowledge
 // their notices until the gallery (or an explicit missing-result message) exists.
 let imagesReadyToAcknowledge = false;
@@ -149,6 +152,7 @@ function jobBadge() {
 
 function goTab(tab) {
   trail = [];
+  activeNoticeId = "";
   current = { view: tab, params: {} };
   store.set("tab", tab);
   // Home remains the overview of all notices. In another section, open the
@@ -162,17 +166,20 @@ function goTab(tab) {
 
 function go(view, params = {}) {
   trail.push({ ...current, scroll: $("#view").scrollTop });
+  activeNoticeId = "";
   current = { view, params };
   render();
 }
 
 function swap(view, params = {}) {
+  activeNoticeId = "";
   current = { view, params };
   render();
 }
 
 function back() {
   const previous = trail.pop();
+  activeNoticeId = "";
   current = previous || { view: VIEWS[current.view].tab || "home", params: {} };
   render(previous ? previous.scroll : 0);
 }
@@ -181,6 +188,12 @@ function render(scroll = 0) {
   FileKitUI.stop();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
+  // Direct navigation can also open an unread result. Resolve just one; a
+  // second notice for this same view may refer to a different message or job.
+  if (!activeNoticeId && current.view !== "home") {
+    const item = store.get("notices", []).find((entry) => entry.unread && entry.target && samePlace(entry.target));
+    if (item) { activeNoticeId = item.id; openingNoticeKey = item.cacheKey || ""; }
+  }
   bus.local = [];
   $("#title").textContent = definition.title(current.params);
   $("#back").hidden = trail.length === 0;
@@ -251,8 +264,19 @@ function pendingSheet() {
 
 // Repair tools: shown in the pending sheet and in Settings, so a stuck sync never needs a deleted chat.
 function syncTools(after = () => {}) {
+  const timing = h("div", { class: "sync-timings", role: "status", "aria-live": "polite" });
+  const drawTiming = () => {
+    const format = (record) => (record.ms / 1000).toLocaleString(lang(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const syncTime = bridge.timings.sync, requestTime = bridge.timings.request;
+    fill(timing, h("p", { class: "muted small" }, t("sync_timing_explain")),
+      syncTime ? h("p", { class: "small" }, t(syncTime.ok ? "sync_timing_sync" : "sync_timing_sync_error", { time: format(syncTime) })) : null,
+      requestTime ? h("p", { class: "small" }, t(requestTime.ok ? "sync_timing_request" : "sync_timing_request_error", { name: opLabel(requestTime.op), time: format(requestTime) })) : null,
+      !syncTime && !requestTime ? h("p", { class: "muted small" }, t("sync_timing_empty")) : null);
+  };
+  bus.on("bridge", drawTiming);
+  drawTiming();
   return h("div", { class: "sync-tools" },
-    h("p", { class: "muted small" }, t("sync_hint")),
+    h("p", { class: "muted small" }, t("sync_hint")), timing,
     h("div", { class: "row wrap" },
       h("button", { class: "btn small", onclick: () => {
         bridge.repair();
@@ -388,17 +412,30 @@ function resultKey(op, args, view = current.view) {
   if (!["search", "youtube_search", "music_search"].includes(op)) return legacy;
   return JSON.stringify(["view-result-v2", view, op, args]);
 }
+function baseResultKey(key) {
+  try {
+    const value = JSON.parse(key);
+    return Array.isArray(value) && value[0] === "notice-snapshot-v1" && typeof value[1] === "string" ? value[1] : key;
+  } catch (error) { return key; }
+}
 
 // Request with in-memory reuse, so going back does not cost another e-mail.
 async function fetchView(target, op, args, draw, options = {}) {
-  const reportable = ["search", "music_search", "tool"].includes(op);
-  const legacy = op + JSON.stringify(args);
-  const key = reportable && openingNoticeKey !== legacy ? resultKey(op, args) : legacy;
+  const reportable = ["search", "music_search", "tool", "read", "music_item"].includes(op) ||
+    (op === "action" && args.kind === "transcript");
+  const legacy = op + JSON.stringify(args), canonical = resultKey(op, args);
+  if (reportable && openingNoticeKey && ![canonical, legacy].includes(baseResultKey(openingNoticeKey))) {
+    fill(target, failure(t("notification_expired"))); return;
+  }
+  const key = reportable ? (openingNoticeKey || canonical) : legacy;
   const saved = reportable && savedResult(key);
   const inMemory = reportable ? resultMemoHas(key) : memo.has(key);
+  // The latest in-memory response takes precedence if the device could not
+  // update its older persisted copy. Errors get the same bounded fallback.
+  const cachedError = inMemory ? resultMemoErrors.get(key) : saved && saved.error;
   const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
-  if (!options.fresh && saved && saved.error) {
-    fill(target, failure(saved.error, retry));
+  if (!options.fresh && cachedError) {
+    fill(target, failure(cachedError, retry));
     return;
   }
   if (!options.fresh && (inMemory || saved)) {
@@ -420,7 +457,8 @@ async function fetchView(target, op, args, draw, options = {}) {
   }
   try {
     const label = op === "tool" ? (options.noticeLabel || "notification_tool") : op === "music_search" ? "notification_music" :
-      current.view === "news" ? "notification_news" : "notification_search";
+      ({ news: "notification_news", reader: "notification_reader", transcript: "notification_transcript",
+        music_item: "notification_music_item" })[current.view] || "notification_search";
     const data = reportable ? await bridge.request(op, args, resultContext(key, label)).promise : await bridge.call(op, args);
     if (!reportable) memo.set(key, data);
     if (target.isConnected) draw(data);
@@ -444,13 +482,36 @@ function resultsVisible() {
 function visiblePlace(target) {
   return resultsVisible() && samePlace(target);
 }
+function focusNotice(item) {
+  if (!item) return;
+  const main = $("#view");
+  const selectors = [["noticeId", item.id], ["messageId", item.messageId], ["imageId", item.imageId], ["jobId", item.job && item.job.id]];
+  requestAnimationFrame(() => {
+    if (activeNoticeId !== item.id || !main.isConnected || !resultsVisible()) return;
+    for (const [attribute, value] of selectors) {
+      if (!value) continue;
+      const key = attribute.replace(/[A-Z]/g, (letter) => "-" + letter.toLowerCase());
+      const node = Array.from(main.querySelectorAll(`[data-${key}]`)).find((element) => element.dataset[attribute] === String(value));
+      if (node) { node.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" }); break; }
+    }
+  });
+}
+
 function markVisibleNoticesRead() {
   if (!resultsVisible()) return;
   const list = store.get("notices", []);
   let changed = false;
-  for (const item of list) {
-    const imageReady = !(item.target && item.target.view === "images") || imagesReadyToAcknowledge;
-    if (item.unread && imageReady && ((item.target && samePlace(item.target)) || (!item.target && current.view === "home"))) {
+  if (current.view === "home") {
+    // General notices are shown together in the home notices list; section
+    // replies keep their individual destinations and are never cleared here.
+    for (const item of list) if (item.unread && !item.target) { item.unread = false; changed = true; }
+  } else {
+    const item = activeNoticeId ? list.find((entry) => entry.id === activeNoticeId) :
+      list.find((entry) => entry.unread && entry.target && samePlace(entry.target));
+    const imageReady = item && (!(item.target && item.target.view === "images") || imagesReadyToAcknowledge);
+    if (item && item.unread && imageReady && item.target && samePlace(item.target)) {
+      activeNoticeId = item.id;
+      focusNotice(item);
       item.unread = false; changed = true;
     }
   }
@@ -468,7 +529,7 @@ function notice(text, kind = "info", options = {}) {
     warning: plain(options.job.warning).slice(0, 5000) } : null;
   list.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: now(), text: plain(text).slice(0, 5000), kind,
     category: options.category || "home", target, cacheKey: options.cacheKey || "", imageId: options.imageId || "",
-    messageId: options.messageId || "", job, unread: !visible });
+    messageId: options.messageId || "", job, unread: options.local !== true && !visible });
   // Retain every unread notice while storage permits; trim only older read
   // history. If device storage is full, store.set reports that explicitly.
   let readKept = 0;
@@ -477,14 +538,20 @@ function notice(text, kind = "info", options = {}) {
   bus.emit("notices");
 }
 
+// A local timeout is useful history, but it is not a reply from the bot and
+// must not create an unread-response badge. Its destination stays accessible.
+function resultNotice(text, kind, options, received = true) {
+  notice(received ? text : t("notification_local_wait_ended"), kind, { ...options, local: !received });
+}
+
 // Older notices did not store the YouTube page in their destination, but the
 // exact page is recoverable from their saved cache key without a new request.
 function normalizePagedNotice(item) {
   const target = item && item.target, params = target && target.params;
-  if (!target || !["youtube", "music"].includes(target.view) || (params && params.resultPage) ||
-      typeof item.cacheKey !== "string" || !item.cacheKey.startsWith("youtube_search{")) return item;
+  const key = item && typeof item.cacheKey === "string" ? baseResultKey(item.cacheKey) : "";
+  if (!target || !["youtube", "music"].includes(target.view) || (params && params.resultPage) || !key.startsWith("youtube_search{")) return item;
   try {
-    const args = JSON.parse(item.cacheKey.slice("youtube_search".length));
+    const args = JSON.parse(key.slice("youtube_search".length));
     if (!Number.isSafeInteger(args.page) || args.page < 1) return item;
     const normalized = { ...item, target: { ...target, params: { ...(params || {}), resultPage: args.page } } };
     const list = store.get("notices", []), index = list.findIndex((entry) => entry.id === item.id);
@@ -511,12 +578,16 @@ function openNotice(item, rootTab = "") {
     toast(t("notification_expired"), "bad"); return false;
   }
   openingNoticeKey = item.cacheKey || "";
+  activeNoticeId = item.id;
   if (rootTab) {
     const params = target.params || {};
     if (target.view !== rootTab || Object.keys(params).length) trail.push({ view: rootTab, params: {}, scroll: 0 });
     current = { view: target.view, params };
-    render();
-  } else go(target.view, target.params || {});
+  } else {
+    trail.push({ ...current, scroll: $("#view").scrollTop });
+    current = { view: target.view, params: target.params || {} };
+  }
+  render();
   return true;
 }
 function shortcutMatch(view, fallback, target) {
@@ -546,10 +617,11 @@ function openNotifiedView(view, fallback = {}) {
 const RESULT_CACHE_KEY = "resultCache";
 const RESULT_CACHE_SECONDS = 12 * 3600;
 const resultMemoTimes = new Map();
+const resultMemoErrors = new Map();
 function resultMemoHas(key) {
   const at = resultMemoTimes.get(key);
   if (at && now() - at >= RESULT_CACHE_SECONDS) {
-    resultMemoTimes.delete(key); memo.delete(key); return false;
+    resultMemoTimes.delete(key); resultMemoErrors.delete(key); memo.delete(key); return false;
   }
   return memo.has(key);
 }
@@ -568,19 +640,53 @@ function savedResult(key) {
   const record = savedResults()[key];
   return record && now() - Number(record.at || 0) < RESULT_CACHE_SECONDS ? record : null;
 }
-function saveResult(key, data, error = "") {
+function saveResult(key, data, error = "", at = now()) {
   try {
     const safeError = error ? plain(String(error)).slice(0, 5000) : "";
     const body = JSON.stringify(error ? safeError : data);
     if (!body || new Blob([body]).size > 180000) return false;
     const records = savedResults();
     // Put the new entry first so equal timestamps cannot evict the just-arrived result.
-    const ordered = [[key, { at: now(), data, error: safeError }], ...Object.entries(records).filter(([old]) => old !== key)];
+    const ordered = [[key, { at, data, error: safeError }], ...Object.entries(records).filter(([old]) => old !== key)];
     const keep = Object.fromEntries(ordered.filter(([, value]) => value && now() - Number(value.at || 0) < RESULT_CACHE_SECONDS)
       .sort((a, b) => Number(b[1].at) - Number(a[1].at)).slice(0, 6));
     return store.set(RESULT_CACHE_KEY, keep);
   } catch (error) { return false; }
 }
+function rememberResultInMemory(key, data, at = now(), error = "") {
+  resultMemoTimes.delete(key); resultMemoErrors.delete(key);
+  if (resultMemoTimes.size >= 6) {
+    const oldest = resultMemoTimes.keys().next().value;
+    resultMemoTimes.delete(oldest); resultMemoErrors.delete(oldest); memo.delete(oldest);
+  }
+  memo.set(key, data); resultMemoTimes.set(key, at);
+  if (error) resultMemoErrors.set(key, plain(String(error)).slice(0, 5000));
+}
+
+// A later reply may use the same query key. Preserve the earlier unread
+// snapshot under its own notice before updating the canonical result. If an
+// older client left several ambiguous notices, only the newest can safely use
+// the surviving snapshot; the others explicitly report that it has expired.
+function preserveUnreadResult(key) {
+  const list = store.get("notices", []);
+  const matches = list.filter((item) => item.unread && item.cacheKey === key);
+  if (!matches.length) return true;
+  const saved = savedResult(key), memory = resultMemoHas(key);
+  const data = memory ? memo.get(key) : saved && saved.data;
+  const error = memory ? (resultMemoErrors.get(key) || "") : (saved && saved.error) || "";
+  const at = (memory && resultMemoTimes.get(key)) || (saved && saved.at) || now();
+  const snapshot = JSON.stringify(["notice-snapshot-v1", key, matches[0].id]);
+  // If the only copy is on disk and copying it fails, leave the old notice's
+  // key intact. The new reply will use a different key instead of overwriting it.
+  const copied = (memory || saved) && saveResult(snapshot, data, error, at);
+  if (!copied && saved && !memory) return false;
+  for (const item of matches) item.cacheKey = JSON.stringify(["notice-snapshot-v1", key, item.id]);
+  if (!store.set("notices", list)) return false;
+  if (memory) rememberResultInMemory(snapshot, data, at, error);
+  bus.emit("notices");
+  return true;
+}
+
 function resultPending(key) {
   return Object.values(bridge.pending()).some((meta) => meta.ctx && meta.ctx.kind === "view-result" && meta.ctx.key === key);
 }
@@ -589,47 +695,53 @@ function resultContext(key, label) {
   return { kind: "view-result", key, target: { view: current.view, params: { ...current.params } },
     category: definition.tab || current.view, label };
 }
-function receiveViewResult(data, error, ctx) {
+function receiveViewResult(data, error, ctx, rid, received = true) {
   if (!ctx || ctx.kind !== "view-result" || !ctx.key || !ctx.target) return;
-  if (error) { memo.delete(ctx.key); resultMemoTimes.delete(ctx.key); saveResult(ctx.key, null, error); }
-  else {
-    resultMemoTimes.delete(ctx.key);
-    if (resultMemoTimes.size >= 6) { const oldest = resultMemoTimes.keys().next().value; resultMemoTimes.delete(oldest); memo.delete(oldest); }
-    memo.set(ctx.key, data); resultMemoTimes.set(ctx.key, now()); saveResult(ctx.key, data);
-  }
+  // If localStorage refused the notice update, never overwrite a result that
+  // an old notice still points to. The failure is already shown by store.set.
+  const key = preserveUnreadResult(ctx.key) ? ctx.key : JSON.stringify(["notice-snapshot-v1", ctx.key, rid]);
+  // Keep both successful replies and errors available while this app stays
+  // open, even if persistent storage is full or the reply exceeds its limit.
+  rememberResultInMemory(key, error ? null : data, now(), error);
+  saveResult(key, error ? null : data, error);
   if (!visiblePlace(ctx.target)) {
     if (error) {
       const view = ctx.target.view;
       const utility = view === "tools" && UTILITIES.find((item) => item[0] === ctx.target.params?.tool);
       const name = utility ? `${t("tile_tools")} · ${t(utility[2])}` :
-        t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools" })[view] || "tab_web");
-      notice(`${name} · ${t("notification_query_failed")}`, "bad", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
-    } else notice(t(ctx.label), "ok", { category: ctx.category, target: ctx.target, cacheKey: ctx.key });
+        t(({ results: "tab_web", youtube: "tile_youtube", music: "tile_music", news: "tile_news", tools: "tile_tools",
+          reader: "tab_web", transcript: "act_transcript", music_item: "music_files_title" })[view] || "tab_web");
+      resultNotice(`${name} · ${t("notification_query_failed")}`, "bad", { category: ctx.category, target: ctx.target, cacheKey: key }, received);
+    } else resultNotice(t(ctx.label), "ok", { category: ctx.category, target: ctx.target, cacheKey: key }, received);
   }
   bus.emit("result:" + ctx.key, { data, error });
 }
-for (const op of ["search", "youtube_search", "music_search", "tool"]) bridge.handlers[op] = receiveViewResult;
-bridge.handlers.translate = (data, error, ctx, rid) => {
+for (const op of ["search", "youtube_search", "music_search", "tool", "read", "music_item", "action"]) bridge.handlers[op] = receiveViewResult;
+bridge.handlers.translate = (data, error, ctx, rid, received = true) => {
   if (!ctx || ctx.kind !== "translate-result" || store.get("tr.latest", "") !== rid) return;
   store.del("tr.latest");
   const record = { data, error: error || "", at: now() };
   store.set("tr.result", record);
   bus.emit("translate_result", record);
-  if (!visiblePlace(ctx.target)) notice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+  if (!visiblePlace(ctx.target)) resultNotice(t("notification_translate"), error ? "bad" : "ok", { category: "apps", target: ctx.target }, received);
 };
-bridge.handlers.weather = (data, error, ctx, rid) => {
+bridge.handlers.weather = (data, error, ctx, rid, received = true) => {
   if (!ctx || ctx.kind !== "weather-result" || store.get("weather.latest", "") !== rid) return;
   store.del("weather.latest");
   if (error) store.set("weather.error", error);
   else { store.del("weather.error"); saveManualWeather(data); }
   bus.emit("weather_result", { data, error });
-  if (!visiblePlace(ctx.target)) notice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target });
+  if (!visiblePlace(ctx.target)) resultNotice(t("notification_weather"), error ? "bad" : "ok", { category: "apps", target: ctx.target }, received);
 };
 bus.always("notices", jobBadge);
 bridge.watchers.add(jobBadge);
 function reflectAppVisibility() {
   document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
-  if (document.visibilityState === "visible") markVisibleNoticesRead();
+  if (document.visibilityState === "hidden") {
+    // Keep an unacknowledged selection behind the splash, but allow the next
+    // reply received in the background to be selected when the app resumes.
+    if (!store.get("notices", []).some((item) => item.id === activeNoticeId && item.unread)) activeNoticeId = "";
+  } else markVisibleNoticesRead();
 }
 document.addEventListener("visibilitychange", reflectAppVisibility);
 document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
@@ -759,6 +871,7 @@ bridge.pushes.job = (job) => {
 };
 
 bridge.watchers.add(activity);
+bridge.watchers.add(() => bus.emit("bridge"));
 
 // ---------------------------------------------------------------------------
 // Home.
@@ -885,6 +998,15 @@ function refreshSharedRates() {
   return sharedRateRefresh;
 }
 
+function quietRefreshBusy() {
+  // Quiet refreshes yield to user-visible work and to the messenger's
+  // recommended interval. This does not delay or silently repeat user tasks.
+  const advertised = window.webxdc && window.webxdc.sendUpdateInterval;
+  const interval = typeof advertised === "number" && Number.isFinite(advertised) && advertised >= 0 ? advertised : 10000;
+  const recent = bridge.lastSentAt > 0 && Date.now() - bridge.lastSentAt < interval;
+  return recent || !!syncing || Object.values(bridge.pending()).some((meta) => !!pendingTarget(meta));
+}
+
 function watchVisibleRates(element) {
   let nextAttempt = 0;
   const check = async () => {
@@ -892,7 +1014,7 @@ function watchVisibleRates(element) {
     const saved = store.get("rates", null);
     const age = saved ? now() - Number(saved.at || 0) : Infinity;
     const interval = Math.max(120, Number((saved || {}).refresh_seconds || 300));
-    if (document.visibilityState !== "hidden" && age >= interval && now() >= nextAttempt) {
+    if (document.visibilityState !== "hidden" && age >= interval && now() >= nextAttempt && !quietRefreshBusy()) {
       nextAttempt = now() + interval;  // back off even when the bridge or API fails
       try {
         const result = await refreshSharedRates();
@@ -939,7 +1061,7 @@ function watchHomeWeather(element) {
     const due = Number(saved.next_at) || 0;
     const lastAttempt = Number(store.get("weatherHomeSyncAt", 0)) || 0;
     // Only retrieve the saved snapshot; the bot does the bounded API refresh.
-    if (saved.auto === true && document.visibilityState !== "hidden" && now() >= due + 90 && now() - lastAttempt >= 21600) {
+    if (saved.auto === true && document.visibilityState !== "hidden" && now() >= due + 90 && now() - lastAttempt >= 21600 && !quietRefreshBusy()) {
       store.set("weatherHomeSyncAt", now());
       hello(true, true);
     }
@@ -1556,7 +1678,7 @@ function attachmentLine(file) {
     h("span", { class: "clamp1" }, file.name), h("small", { class: "muted" }, fmtSize(file.size)));
 }
 
-bridge.handlers.ask = (data, error, ctx, rid) => {
+bridge.handlers.ask = (data, error, ctx, rid, received = true) => {
   const list = messages(ctx.space, false);
   const item = list.find((entry) => entry.rid === rid);
   if (!item) return;
@@ -1574,7 +1696,7 @@ bridge.handlers.ask = (data, error, ctx, rid) => {
   }
   saveMessages(ctx.space, list);
   const target = { view: "chat", params: { space: ctx.space } };
-  if (!visiblePlace(target)) notice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target, messageId: rid });
+  if (!visiblePlace(target)) resultNotice(t("notice_answer", { name: spaceTitle(ctx.space) }), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
 };
 
 function spaceMeta(space) {
@@ -1698,8 +1820,12 @@ VIEWS.chat = {
       const ids = new Set(items.map((item) => item.rid));
       const missing = store.get("notices", []).filter((item) => item.unread && item.messageId && !ids.has(item.messageId) &&
         item.target && item.target.view === "chat" && (item.target.params || {}).space === space);
-      fill(list, ...(items.length ? items.map((item) => bubble(space, item, items)) : [chatIntro(space, submit)]),
-        ...missing.map((item) => h("p", { class: "note warn", role: "status" }, item.text, " · ", t("notification_expired"))));
+      fill(list, ...(items.length ? items.map((item) => {
+        const node = bubble(space, item, items);
+        if (item.rid) node.dataset.messageId = item.rid;
+        return node;
+      }) : [chatIntro(space, submit)]),
+        ...missing.map((item) => h("p", { class: "note warn", role: "status", "data-notice-id": item.id }, item.text, " · ", t("notification_expired"))));
       // An empty conversation should open at the mode selector, not scrolled
       // past it; existing/new messages still open at the latest response.
       if (items.length || missing.length) requestAnimationFrame(() => { main.scrollTop = main.scrollHeight; });
@@ -1830,7 +1956,7 @@ function createChatImage(space, prompt) {
   return true;
 }
 
-bridge.handlers.image = async (data, error, ctx, rid) => {
+bridge.handlers.image = async (data, error, ctx, rid, received = true) => {
   const pending = store.get("img.pending", []);
   const request = pending.find((item) => item.rid === rid);
   store.set("img.pending", pending.filter((item) => item.rid !== rid));
@@ -1856,12 +1982,12 @@ bridge.handlers.image = async (data, error, ctx, rid) => {
   }
   if (chatImage) {
     const target = { view: "chat", params: { space: ctx.space } };
-    if (!visiblePlace(target)) notice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target, messageId: rid });
+    if (!visiblePlace(target)) resultNotice(t("notification_image_chat"), error ? "bad" : "ok", { category: "ai", target, messageId: rid }, received);
   }
   if (error) {
     if (!chatImage) {
       rememberImageFailure(rid, (ctx && ctx.prompt) || (request && request.prompt) || "", error);
-      notice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} }, imageId: rid });
+      resultNotice(t("image_failed", { error }), "bad", { category: "ai", target: { view: "images", params: {} }, imageId: rid }, received);
     }
   } else {
     if (data.models) {
@@ -1869,7 +1995,7 @@ bridge.handlers.image = async (data, error, ctx, rid) => {
       saveCache();
       bus.emit("models");
     }
-    if (!chatImage && !visiblePlace({ view: "images", params: {} })) notice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} }, imageId: rid });
+    if (!chatImage && !visiblePlace({ view: "images", params: {} })) resultNotice(t("image_ready"), "ok", { category: "ai", target: { view: "images", params: {} }, imageId: rid }, received);
   }
   bus.emit("images");
 };
@@ -1945,17 +2071,17 @@ VIEWS.images = {
       store.set("img.pending", list);
       fill(waiting, ...list.map((item) => h("div", { class: "card row" }, h("i", { class: "spinner" }),
         h("span", { class: "grow" }, h("span", { class: "clamp" }, item.prompt), h("small", { class: "muted" }, imageSourceLabel(item.model || ""))), since(item.ts))));
-      fill(failures, ...imageFailures().map((item) => h("article", { class: "card stack image-failure", role: "status" },
+      fill(failures, ...imageFailures().map((item) => h("article", { class: "card stack image-failure", role: "status", "data-image-id": item.id },
         h("div", { class: "row" }, icon("alert"), h("p", { class: "grow" }, t("image_failed", { error: item.error })),
           iconButton("close", t("close"), () => forgetImageFailure(item.id))),
         item.prompt ? h("small", { class: "muted" }, item.prompt) : null)));
       const items = await media.all();
       if (!gallery.isConnected || version !== drawVersion) return;
-      fill(gallery, ...(items.length ? items.map((item) => h("button", { class: "thumb", onclick: () => imageViewer(item) },
+      fill(gallery, ...(items.length ? items.map((item) => h("button", { class: "thumb", "data-image-id": item.id, onclick: () => imageViewer(item) },
         h("img", { src: `data:${item.mime};base64,${item.b64}`, alt: item.prompt, loading: "lazy" }))) : [empty(t("images_none"), "image")]));
       const available = new Set([...imageFailures(), ...items].map((item) => item.id));
       const missing = store.get("notices", []).filter((item) => item.unread && item.target && item.target.view === "images" && item.imageId && !available.has(item.imageId));
-      for (const item of missing) add(failures, h("p", { class: "note warn", role: "status" }, item.text, " · ", t("notification_expired")));
+      for (const item of missing) add(failures, h("p", { class: "note warn", role: "status", "data-notice-id": item.id }, item.text, " · ", t("notification_expired")));
       imagesReadyToAcknowledge = true;
       markVisibleNoticesRead();
     };
@@ -2195,14 +2321,17 @@ function youtubePages(box, query, audioOnly = false, startPage = 1) {
     busy = true;
     fill(controls, loading(t("searching")));
     try {
-      const args = { q: query, page }, legacy = "youtube_search" + JSON.stringify(args);
-      const key = openingNoticeKey === legacy ? legacy : resultKey("youtube_search", args);
-      const saved = savedResult(key);
-      if (!fresh && saved && saved.error) {
-        fill(controls, failure(saved.error, () => load(true)));
+      const args = { q: query, page }, legacy = "youtube_search" + JSON.stringify(args), canonical = resultKey("youtube_search", args);
+      if (openingNoticeKey && ![canonical, legacy].includes(baseResultKey(openingNoticeKey))) {
+        fill(controls, failure(t("notification_expired"))); return;
+      }
+      const key = openingNoticeKey || canonical;
+      const saved = savedResult(key), inMemory = resultMemoHas(key);
+      const cachedError = inMemory ? resultMemoErrors.get(key) : saved && saved.error;
+      if (!fresh && cachedError) {
+        fill(controls, failure(cachedError, () => load(true)));
         return;
       }
-      const inMemory = resultMemoHas(key);
       const reused = !fresh && (inMemory || !!saved);
       if (!reused && resultPending(key)) {
         bus.on("result:" + key, () => { if (box.isConnected) { busy = false; load(); } });
@@ -2781,7 +2910,7 @@ VIEWS.tools = {
     const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
     add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
       const box = h("div");
-      if (last && last.name === name && last.args && (last.key === openingNoticeKey || resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
+      if (last && last.name === name && last.args && (last.key === baseResultKey(openingNoticeKey) || resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
         fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
       }
       return h("details", { class: "card utility-card", open: !!(last && last.name === name) }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
@@ -2836,7 +2965,7 @@ function jobCard(job) {
     : job.status === "sending" && job.parts ? [bar(job.delivered, job.parts), h("small", { class: "muted" }, t("parts_sent", { n: job.delivered, m: job.parts }))]
       : job.status === "queued" || job.status === "packing" ? [bar(0, 0, "indeterminate")] : [];
   const meta = [job.size ? fmtSize(job.size) : "", job.parts > 1 ? t("parts_n", { n: job.parts }) : "", job.parts > 1 ? formatLabel(job.format) : "", fmtTime(job.created)];
-  return h("article", { class: `card job ${job.status}` },
+  return h("article", { class: `card job ${job.status}`, "data-job-id": String(job.id) },
     h("div", { class: "row" }, h("span", { class: "job-icon" }, icon(job.kind === "video" ? "video" : job.kind === "audio" ? "audio" : "file")),
       h("div", { class: "grow" }, h("b", { class: "clamp" }, plain(job.title)), h("small", { class: "muted" }, meta.filter(Boolean).join(" · "))),
       h("span", { class: `status s-${(maintenancePause || (job.hold && !FINAL.includes(job.status))) ? "paused" : job.status}` },
@@ -2882,7 +3011,7 @@ function downloadPanel(main) {
           (!snapshot.error || plain(job.error).slice(0, 5000) === snapshot.error));
         if (!present) noticeSnapshots.set(item.id, item);
       }
-      const archived = [...noticeSnapshots.values()].map((item) => h("article", { class: "card stack", role: "status" },
+      const archived = [...noticeSnapshots.values()].map((item) => h("article", { class: "card stack", role: "status", "data-notice-id": item.id },
         h("b", {}, item.text), item.job && item.job.error ? h("p", { class: "note bad" }, item.job.error) : null,
         item.job && item.job.warning ? h("p", { class: "note warn" }, item.job.warning) : null,
         h("small", { class: "muted" }, t("notification_job_missing"))));
@@ -3048,7 +3177,7 @@ VIEWS.settings = {
       section(t("set_data"), h("div", { class: "card list" },
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
         wipe(t("wipe_images"), () => { imageFailureMemory.length = 0; store.del("img.errors"); return media.clear(); }),
-        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); bus.emit("notices"); }))),
+        wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); resultMemoTimes.clear(); resultMemoErrors.clear(); bus.emit("notices"); }))),
       section(t("about_title"), card(
         h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
@@ -3606,9 +3735,10 @@ function onboarding(force = false) {
 // ---------------------------------------------------------------------------
 // Start.
 // ---------------------------------------------------------------------------
-// The splash stays long enough to be seen and to cover the first paint of the home screen.
-const SPLASH_MIN = 2600;
-const SPLASH_MAX = 6000;
+// Paint the shell promptly; the existing snapshot stays usable while a slow
+// mail-backed sync continues in the background. Do not wait minutes for hello.
+const SPLASH_MIN = 700;
+const SPLASH_MAX = 1600;
 
 function boot() {
   applyLook();
@@ -3616,6 +3746,7 @@ function boot() {
   pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
   const splash = $("#splash");
+  if (splash) splash.prepend(icon("catpixel", "splash-pixel"));
   const started = performance.now();
   let gone = false;
   const hide = () => {
@@ -3623,7 +3754,7 @@ function boot() {
     gone = true;
     setTimeout(() => {
       splash.classList.add("gone");
-      setTimeout(() => { splash.remove(); markVisibleNoticesRead(); }, 800);
+      setTimeout(() => { splash.remove(); markVisibleNoticesRead(); }, 250);
       onboarding();
     }, Math.max(0, SPLASH_MIN - (performance.now() - started)));
   };

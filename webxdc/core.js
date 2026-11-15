@@ -105,9 +105,87 @@ const ICONS = {
   status: '<circle cx="12" cy="12" r="9"/><path d="M5 12h3l2-4 3 8 2-4h4"/>',
 };
 
+// Pixel variants for the interface icons. The multicolour cat is already
+// pixel art. Both paths stay in the SVG so appearance changes are immediate
+// and work offline.
+const PIXEL_ICONS = {
+  home: '<path d="M3 10h2V8h2V6h2V4h6v2h2v2h2v2h2M5 10v10h5v-6h4v6h5V10"/>',
+  ai: '<path d="M10 3h4v3h3v3h3v4h-3v3h-3v3h-4v-3H7v-3H4V9h3V6h3z"/><path d="M19 17h2v2h-2z"/>',
+  web: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM3 12h18M10 4 8 8v8l2 4M14 4l2 4v8l-2 4"/>',
+  apps: '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>',
+  downloads: '<path d="M10 3h4v9h4v2h-2v2h-2v2h-4v-2H8v-2H6v-2h4zM4 20h16"/>',
+  settings: '<path d="M9 3h6v2h3v2h2v3h2v4h-2v3h-2v2h-3v2H9v-2H6v-2H4v-3H2v-4h2V7h2V5h3zM9 9h6v6H9z"/>',
+  back: '<path d="M15 4h-3v3H9v3H6v4h3v3h3v3h3M7 12h12"/>',
+  next: '<path d="M9 4h3v3h3v3h3v4h-3v3h-3v3H9M17 12H5"/>',
+  search: '<path d="M7 3h7v2h3v3h1v6h-1v3h-3v1H7v-1H4v-3H3V8h1V5h3zM17 17h2v2h2v2"/>',
+  image: '<path d="M3 3h18v18H3zM6 17h2v-2h2v-2h3v2h2v2h2v2M8 7h3v3H8z"/>',
+  youtube: '<path d="M4 5h16v2h2v10h-2v2H4v-2H2V7h2zM10 8v8h2v-1h2v-2h2v-2h-2V9h-2V8z"/>',
+  audio: '<path d="M10 5h3V4h7v12h-3v-2h-4V8h4M10 5v13H8v2H4v-4h6"/>',
+  news: '<path d="M4 3h15v15h2v3H6v-2H4zM8 7h7v3H8zM8 13h7M8 17h7"/>',
+  rates: '<path d="M4 4h8v2h2v7h-2v2H4v-2H2V6h2zM10 16h2v2h2v2h7v-2h1v-7h-5M7 7v5M5 9h4"/>',
+  weather: '<path d="M5 11V9h2V7h3V5h5v2h2v3h2v2h2v5h-2v2H5v-2H3v-4h2z"/>',
+  translate: '<path d="M3 5h10M8 3v2M5 8h2v2h2v2h2v2h2M12 8h-2v2H8v2H6v2H4M14 20l3-9h2l3 9M15 17h6"/>',
+  tools: '<path d="M5 3h14v18H5zM8 6h8v3H8zM8 12h1M12 12h1M16 12h1M8 16h1M12 16h1M16 16h1"/>',
+  chat: '<path d="M5 4h14v2h2v10h-2v2h-8v2H6v2H3v-4h2v-2H3V6h2z"/>',
+  file: '<path d="M5 3h9v2h2v2h2v2h2v12H5zM14 3v6h6"/>',
+  folder: '<path d="M3 5h7v2h11v13H3z"/>',
+  health: '<path d="M3 12h4v-2h2V6h2v12h2v-4h2v-2h6"/>',
+  notes: '<path d="M4 4h16v17H4zM8 2v4M16 2v4M8 10h8M8 14h8M8 18h5"/>',
+  bolt: '<path d="M12 3h4v5h4v3h-3v3h-3v3h-3v3H8v-7H4v-3h3V7h3V4h2z"/>',
+  bell: '<path d="M9 4h6v2h3v8h2v3H4v-3h2V6h3zM10 20h4"/>',
+  clock: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 7v5h4"/>',
+  close: '<path d="M5 5h2v2h2v2h2v2h2V9h2V7h2V5h2M5 19h2v-2h2v-2h2v-2h2v2h2v2h2v2h2"/>',
+  refresh: '<path d="M5 10V7h2V5h9v2h2v3h3V4M19 14v3h-2v2H8v-2H6v-3H3v6"/>',
+  send: '<path d="M3 10h3V8h4V6h4V4h4V2h3v6h-2v4h-2v4h-2v4h-3v2h-2v-7H7v-2H3zM10 15l8-9"/>',
+  cat: '<path d="M4 4h3v2h3v2h4V6h3V4h3v6h1v6h-2v3h-3v2H8v-2H5v-3H3v-6h1zM7 11h3v3H7zM14 11h3v3h-3z"/>',
+  alert: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 7v6M12 17h1"/>',
+  ban: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM6 6l12 12"/>',
+  book: '<path d="M3 4h7v2h2v14h-2v-2H3zM21 4h-7v2h-2v14h2v-2h7z"/>',
+  camera: '<path d="M3 7h5V5h2V3h4v2h2v2h5v13H3zM9 10h6v6H9z"/>',
+  check: '<path d="M4 12h3v3h3v2h2v-3h2v-2h2v-2h2V8h2V6h1"/>',
+  clip: '<path d="M16 6V4H8v2H6v12h2v2h8v-2h2V8h-2v9H9V8h4v7"/>',
+  cloudfog: '<path d="M5 11V9h2V7h3V5h5v2h2v3h2v2h2v2H3v-3zM5 17h14M7 20h12"/>',
+  cloudrain: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM7 17v3M12 17v3M17 17v3"/>',
+  cloudsnow: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM7 17v4M5 19h4M16 17v4M14 19h4"/>',
+  cloudstorm: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM12 15h3l-2 3h2l-4 4v-3H9z"/>',
+  code: '<path d="M8 5H6v2H4v2H2v6h2v2h2v2h2M16 5h2v2h2v2h2v6h-2v2h-2v2h-2M14 3l-4 18"/>',
+  copy: '<path d="M8 8h12v13H8zM5 16H3V3h12v2"/>',
+  down: '<path d="M5 9h2v2h2v2h2v2h2v-2h2v-2h2V9h2"/>',
+  drop: '<path d="M11 3h2v3h2v3h2v3h2v5h-2v3H7v-3H5v-5h2V9h2V6h2z"/>',
+  help: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM9 8V7h6v2h-2v2h-1v2M12 17h1"/>',
+  info: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 11v6M12 7h1"/>',
+  join: '<path d="M12 3 3 7l9 4 9-4zM3 12l9 4 9-4M3 17l9 4 9-4"/>',
+  killswitch: '<path d="M11 3h2v9h-2zM7 5H5v2H3v10h2v2h3v2h8v-2h3v-2h2V7h-2V5h-2"/>',
+  link: '<path d="M10 14h4v-2h2v-2h2V8h-2V6h-4v2h-2M14 10h-4v2H8v2H6v2h2v2h4v-2h2"/>',
+  links: '<path d="M10 14h4v-2h2v-2h2V8h-2V6h-4v2h-2M14 10h-4v2H8v2H6v2h2v2h4v-2h2"/>',
+  moon: '<path d="M15 3h-4v2H8v2H6v3H4v6h2v3h3v2h7v-2h3v-2h2v-3h-5v-2h-2V8h1z"/>',
+  more: '<path d="M4 11h2v2H4zM11 11h2v2h-2zM18 11h2v2h-2z"/>',
+  nauta: '<path d="M3 5h18v14H3zM4 7h2v2h2v2h2v2h4v-2h2V9h2V7h2"/>',
+  open: '<path d="M13 4h7v7M20 4l-9 9M18 13v7H4V6h7"/>',
+  pause: '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>',
+  pdf: '<path d="M5 3h9v2h2v2h2v2h2v12H5zM14 3v6h6M8 13h8M8 17h6"/>',
+  pin: '<path d="M9 3h6v2h2v5h2v2H5v-2h2V5h2zM12 12v9"/>',
+  play: '<path d="M7 4h3v2h3v2h3v2h3v4h-3v2h-3v2h-3v2H7z"/>',
+  plus: '<path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z"/>',
+  share: '<path d="M4 12v8h16v-8M8 7h2V5h2V3h2v2h2v2M13 4v12"/>',
+  shield: '<path d="M11 3h2v2h4v2h3v7h-2v3h-2v2h-3v2h-2v-2H8v-2H6v-3H4V7h3V5h4z"/>',
+  status: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM5 12h3v-2h2V8h2v8h2v-4h5"/>',
+  subtitles: '<path d="M3 5h18v14H3zM6 9h5M6 13h5M13 9h5M13 13h5"/>',
+  sun: '<path d="M9 8h6v2h2v4h-2v2H9v-2H7v-4h2zM12 2v3M12 19v3M2 12h3M19 12h3M4 4l2 2M18 18l2 2M20 4l-2 2M6 18l-2 2"/>',
+  swap: '<path d="M4 7h15M16 4h3v3h2v2h-2v2h-3M20 17H5M8 14H5v3H3v2h2v2h3"/>',
+  trash: '<path d="M5 6h14M9 6V3h6v3M7 7v13h10V7M10 10v7M14 10v7"/>',
+  up: '<path d="M5 15h2v-2h2v-2h2V9h2v2h2v2h2v2h2"/>',
+  user: '<path d="M9 3h6v2h2v5h-2v2H9v-2H7V5h2zM6 20v-3h2v-2h8v2h2v3z"/>',
+  video: '<path d="M3 3h18v18H3zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/>',
+  wind: '<path d="M3 7h12V5h3v2h-2M2 12h17v2h-2M3 17h9v2h-2"/>',
+};
+
 function icon(name, extra = "") {
   const holder = document.createElement("span");
-  holder.innerHTML = `<svg class="ic ${extra}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ICONS.info}</svg>`;
+  const key = Object.prototype.hasOwnProperty.call(ICONS, name) ? name : "info";
+  const normal = ICONS[key], pixel = PIXEL_ICONS[key];
+  const art = pixel ? `<g class="icon-normal">${normal}</g><g class="icon-pixel">${pixel}</g>` : normal;
+  holder.innerHTML = `<svg class="ic ${extra}" viewBox="0 0 24 24" aria-hidden="true">${art}</svg>`;
   return holder.firstChild;
 }
 
@@ -435,6 +513,9 @@ const bridge = {
   handlers: {},
   pushes: {},
   watchers: new Set(),
+  // In-memory only: end-to-end observations for this opening, never content.
+  timings: { sync: null, request: null },
+  lastSentAt: 0,
   pending() {
     const pending = store.get("pending", {});
     const limit = Date.now() - STALE_MS;
@@ -485,10 +566,15 @@ const bridge = {
         binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
       const encoded = btoa(binary);
       const count = Math.ceil(encoded.length / chunkSize);
-      for (let i = 0; i < count; i += 1)
+      for (let i = 0; i < count; i += 1) {
+        this.lastSentAt = Date.now();
         window.webxdc.sendUpdate({ payload: { t: "req_chunk", id, i, n: count,
           s: encoded.slice(i * chunkSize, (i + 1) * chunkSize) } }, "");
-    } else window.webxdc.sendUpdate({ payload }, "");
+      }
+    } else {
+      this.lastSentAt = Date.now();
+      window.webxdc.sendUpdate({ payload }, "");
+    }
     this.changed();
     return { id, promise };
   },
@@ -501,6 +587,7 @@ const bridge = {
     meta.tries = (meta.tries || 0) + 1;
     meta.sent = Date.now();
     this.save(pending);
+    this.lastSentAt = Date.now();
     window.webxdc.sendUpdate({ payload: Object.assign({}, meta.p, { retry: meta.tries }) }, "");
     this.changed();
     return true;
@@ -522,7 +609,7 @@ const bridge = {
     }
     const payload = update.payload;
     if (!payload || typeof payload !== "object") return;
-    if (payload.t === "res") this.settle(payload);
+    if (payload.t === "res") this.settle(payload, true);
     else if (payload.t === "chunk") this.piece(payload, update.serial);
     else if (payload.t === "ack") this.acked(payload.re);
     else if (payload.t === "push" && !replay && this.pushes[payload.kind]) this.pushes[payload.kind](payload.data);
@@ -552,9 +639,9 @@ const bridge = {
       this.chunks.delete(payload.re);
       this.dropFloor(payload.re);
       try {
-        this.settle(JSON.parse(parts.join("")));
+        this.settle(JSON.parse(parts.join("")), true);
       } catch (error) {
-        this.settle({ re: payload.re, ok: false, error: t("bad_answer") });
+        this.settle({ re: payload.re, ok: false, error: t("bad_answer") }, true);
       }
     }
   },
@@ -570,11 +657,18 @@ const bridge = {
     }
     if (changed) store.set("floors", floors);
   },
-  settle(answer) {
+  settle(answer, received = false) {
     const pending = this.pending();
     const meta = pending[answer.re];
     const waiter = this.waiting.get(answer.re);
     if (!meta && !waiter) return;
+    const observed = meta && Number(meta.ts) > 0 ? Date.now() - Number(meta.ts) : -1;
+    const group = meta && meta.op === "hello" ? "sync" : meta &&
+      ["ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "tool", "translate", "weather"].includes(meta.op) ? "request" : "";
+    // Timeouts and locally abandoned requests are not responses. Ignore
+    // negative or very old intervals, which are not useful measurements.
+    if (received && group && Number.isFinite(observed) && observed >= 0 && observed <= STALE_MS)
+      this.timings[group] = { op: meta.op, ms: observed, ok: !!answer.ok };
     delete pending[answer.re];
     this.save(pending);
     this.chunks.delete(answer.re);
@@ -584,7 +678,7 @@ const bridge = {
     // Refresh the session but never repeat the uncertain work automatically.
     if (answer.code === "session_changed" && typeof hello === "function") setTimeout(() => hello(true), 0);
     if (data && typeof data === "object" && !Array.isArray(data) && "quota" in data && typeof onQuota === "function") onQuota(data.quota);
-    if (meta && this.handlers[meta.op]) this.handlers[meta.op](answer.ok ? answer.data : null, error, meta.ctx, answer.re);
+    if (meta && this.handlers[meta.op]) this.handlers[meta.op](answer.ok ? answer.data : null, error, meta.ctx, answer.re, received);
     if (waiter) {
       this.waiting.delete(answer.re);
       if (answer.ok) waiter.resolve(answer.data);

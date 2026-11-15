@@ -348,7 +348,7 @@ def observed_locale(chat_id: int) -> str:
 SAFE_REPLAY = {"hello", "models", "health", "repair"}  # no provider calls or billable side effects
 BOOT_SESSION = secrets.token_urlsafe(24)  # deliberately never stored in a backup
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
-SWEEP_EVERY = 30.0      # catch updates whose event was missed (restarts, reconnects)
+SWEEP_EVERY = 15.0      # local fallback for missed events; normal updates remain event-driven
 ANSWER_CACHE = 2400.0   # seconds an answer stays ready for a resend
 ANSWER_ITEM_BYTES = 3_000_000
 ANSWER_TOTAL_BYTES = 24_000_000  # bounded RAM; never write responses or keys to the state backup

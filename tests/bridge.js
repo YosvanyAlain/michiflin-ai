@@ -30,10 +30,13 @@ let bridge = boot(storage, sent);
 // 1. a request is resent with the same id and an increasing retry counter
 const { id } = bridge.request("search", { q: "gatos" });
 assert.strictEqual(sent.length, 1);
+assert.ok(bridge.lastSentAt > 0, "normal sends update the quiet-refresh clock");
 const pending = bridge.pending();
 pending[id].sent -= 50000;
 bridge.save(pending);
+bridge.lastSentAt = 0;
 bridge.tick();
+assert.ok(bridge.lastSentAt > 0, "a resend also updates the quiet-refresh clock");
 assert.strictEqual(sent.length, 2);
 assert.strictEqual(sent[1].id, id);
 assert.strictEqual(sent[1].retry, 1);
@@ -91,10 +94,15 @@ setImmediate(() => {
 {
   const chunksSent = [];
   const separate = boot({}, chunksSent);
+  const timestamps = [];
+  let last = 0;
+  Object.defineProperty(separate, 'lastSentAt', { get: () => last, set: value => { last = value; timestamps.push(value); } });
   const project = { text: 'continue', files: [{ path: 'x.txt', text: '🌴á'.repeat(35000) }] };
   const sentRequest = separate.request('code', project);
   assert.ok(sentRequest.id);
   assert.ok(chunksSent.length > 1);
+  assert.equal(timestamps.length, chunksSent.length, 'every chunk updates the quiet-refresh clock');
+  assert.ok(timestamps.every(value => value > 0));
   assert.ok(chunksSent.every(p => p.t === 'req_chunk' && p.id === sentRequest.id && p.s.length <= 74000));
   const reconstructed = JSON.parse(Buffer.from(chunksSent.map(p => p.s).join(''), 'base64').toString('utf8'));
   assert.strictEqual(reconstructed.args.files[0].text, project.files[0].text);
