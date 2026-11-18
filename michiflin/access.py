@@ -6,6 +6,7 @@ maintenance remains a stricter emergency gate.
 """
 from __future__ import annotations
 
+import logging
 import secrets
 import threading
 import time
@@ -13,6 +14,7 @@ from typing import Any
 
 from . import config
 
+log = logging.getLogger("michiflin")
 _lock = threading.RLock()
 _policy_change = threading.RLock()
 _controlled = False
@@ -102,6 +104,20 @@ def restore_policy() -> None:
         _revision += 1
 
 
+def _forget_guest_context() -> None:
+    """Discard the guests' in-process context once their grants are gone.
+
+    Revoking permission is not enough on its own: an uploaded document and the
+    recent conversation would otherwise stay in memory until they expire. Must
+    be called outside _lock -- it takes the agent and local model locks.
+    """
+    try:
+        from . import agent
+        agent.forget_except(config.OWNER_ADDRESS)
+    except Exception:  # noqa: BLE001 - closing access must never fail on cleanup
+        log.warning("guest context purge deferred")
+
+
 def set_owner_only(enabled: bool, minutes: int = 60, nonce: str = "") -> bool:
     """Close immediately; in invitation mode checkpoint the restart policy."""
     global _controlled, _owner_only, _deadline, _revision, _nonce, _close_checkpoint_ok
@@ -118,6 +134,7 @@ def set_owner_only(enabled: bool, minutes: int = 60, nonce: str = "") -> bool:
             _guests.clear()
             _nonce = secrets.token_urlsafe(24)
             _revision += 1
+        _forget_guest_context()  # outside _lock: the grants are gone, so is their context
         return True
     from . import community, state
     with _policy_change:
@@ -134,6 +151,7 @@ def set_owner_only(enabled: bool, minutes: int = 60, nonce: str = "") -> bool:
             _nonce = secrets.token_urlsafe(24)
             _revision += 1
             transition_revision = _revision
+        _forget_guest_context()  # the close above is immediate; so is the purge
         until = time.time() + minutes * 60 if not enabled and minutes > 0 else 0.0
         policy = {"closed": bool(enabled or minutes != -1), "until": until}
         try:

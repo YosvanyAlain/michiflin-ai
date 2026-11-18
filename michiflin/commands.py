@@ -185,13 +185,16 @@ def dispatch(chat_id: int, text: str, locale: str) -> bool:
             return False  # ordinary local-only text belongs to the agent
     if parsed is None:
         pending = take_pending(chat_id)
-        if pending:
-            COMMANDS[pending](chat_id, [], text.strip(), locale)
-            return True
-        return False
-    _pending.pop(chat_id, None)
-    key, args, rest = parsed
-    if not key or (key in ADMIN_ONLY and not admin.is_admin(chat.sender())):
+        if not pending:
+            return False
+        # An answer to an earlier question runs the same command as a typed one,
+        # so it must clear the same checks below: a single authorization point
+        # keeps a future two-step administrator command from skipping ADMIN_ONLY.
+        key, args, rest = pending, [], text.strip()
+    else:
+        _pending.pop(chat_id, None)
+        key, args, rest = parsed
+    if not key or key not in COMMANDS or (key in ADMIN_ONLY and not admin.is_admin(chat.sender())):
         chat.text(chat_id, tr(locale, f"⚠️ Comando desconocido. {C(locale, 'help')}", f"⚠️ Unknown command. {C(locale, 'help')}"))
         return True
     COMMANDS[key](chat_id, args, rest, locale)
@@ -500,7 +503,7 @@ def cmd_transcript(chat_id: int, args: list[str], rest: str, locale: str) -> Non
     if len(text) <= 3500:
         chat.text(chat_id, f"📝 {title}\n\n{text}" if title else f"📝 {text}")
         return
-    config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.TEMP_ROOT)
     stem = queue.short_stem(title or tr(locale, "subtitulos", "transcript"))
     path = config.TEMP_ROOT / f"{stem}.txt"
     path.write_text(f"{title}\n{url}\n\n{text}\n", encoding="utf-8")
@@ -720,7 +723,7 @@ def cmd_health(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     elapsed = time.monotonic() - config.STARTED_AT
     remaining = max(0, config.SESSION_SECONDS - elapsed)
     disk = shutil.disk_usage(config.JOB_ROOT if config.JOB_ROOT.exists() else "/")
-    version = getattr(getattr(media.yt_dlp, "version", None), "__version__", "—") if media.available() else "—"
+    version = media.version()
     tools_line = " · ".join(f"{'●' if ok else '○'} {name}" for name, ok in (
         ("ffmpeg", bool(shutil.which("ffmpeg"))), ("7z", bool(shutil.which("7z") or shutil.which("7zz"))),
         ("chromium", browser.available()), ("deno", bool(shutil.which("deno"))), ("proxy", bool(config.MEDIA_PROXY))))
