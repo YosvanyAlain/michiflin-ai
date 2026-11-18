@@ -6,6 +6,7 @@ separate Delta Chat account and backups can contain additional sensitive data.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -216,9 +217,23 @@ def set_setting(key: str, value: Any) -> bool:
     return True
 
 
+def _private_config_dir() -> None:
+    """Keep the state directory owner-only; the file holds personal content."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        # An existing directory keeps its old mode and mkdir's mode is filtered
+        # by the umask, so check every time: anything that widens the directory
+        # later must not leave the state exposed until the next restart.
+        info = CONFIG_DIR.stat()
+        if info.st_mode & 0o077 and info.st_uid == os.getuid():
+            CONFIG_DIR.chmod(0o700)
+    except OSError:
+        pass
+
+
 def save() -> None:
     with lock:
-        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        _private_config_dir()
         now = time.time()
         if access.preserve_history():
             # Retain historical non-owner/unknown delivery records; do not purge
@@ -231,7 +246,17 @@ def save() -> None:
             data["sent"] = [item for item in data["sent"] if now - item[0] < 86400][-2000:]
         _prune_usage()
         temporary = STATE_FILE.with_suffix(".tmp")
-        temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+        # Notes, saved links, job URLs and per-person settings are personal
+        # content: never leave them readable to other accounts on the host.
+        payload = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+        os.chmod(temporary, 0o600)  # an older temporary file may predate this rule
         temporary.replace(STATE_FILE)
 
 
