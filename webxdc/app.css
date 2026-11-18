@@ -203,10 +203,14 @@ select.input { padding-right: 8px; }
 }
 .segmented button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); }
 
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
 .chips.center { justify-content: center; }
 .chip {
-  display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 11px;
+  /* Chips are tapped with a thumb: keep them comfortably above the 24px
+     minimum target size, and keep the row gap wider than zero so neighbouring
+     chips never share an edge. */
+  min-height: 36px; box-sizing: border-box;
   border: 1px solid var(--line); border-radius: 99px; background: var(--surface-2); font-size: 13px; line-height: 1.3;
 }
 .chip .ic { width: 15px; height: 15px; }
@@ -797,7 +801,11 @@ details[open] .caret { transform: rotate(180deg); }
 .home-carousel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .home-banner-slot > .hero, .home-banner-slot > .rate-banner, .home-banner-slot > .weather-banner { min-height: 152px; }
 .home-banner-controls { display: flex; align-items: center; justify-content: center; gap: 4px; }
-.home-banner-dot { display: grid; place-items: center; width: 32px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.home-banner-dot { position: relative; display: grid; place-items: center; width: 32px; height: 28px; padding: 0; border: 0; background: transparent; cursor: pointer; }
+/* The painted dot stays small; the finger target does not. Dots have no
+   vertical neighbours, so growing the hit area upward and downward cannot
+   overlap another control. */
+.home-banner-dot::before { content: ""; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
 .home-banner-dot::after { content: ""; width: 8px; height: 8px; border-radius: 10px; background: var(--muted); opacity: .45; transition: width .2s, opacity .2s; }
 .home-banner-dot.on::after { width: 22px; background: var(--accent); opacity: 1; }
 .home-banner-dot:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 8px; }
