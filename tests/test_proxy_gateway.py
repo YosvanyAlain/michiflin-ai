@@ -21,6 +21,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
+import requests
+
 from michiflin import config, egress, sandbox
 
 TEST_HOST = "fixture.example"
@@ -74,8 +76,10 @@ def tls_fixture():
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _TLSHandler)
         server.paths = []  # type: ignore[attr-defined]
+        server.sni = []  # type: ignore[attr-defined]
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(str(cert), str(key))
+        context.set_servername_callback(lambda _socket, name, _context: server.sni.append(name))
         server.socket = context.wrap_socket(server.socket, server_side=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -176,12 +180,25 @@ def proxy_fixture(fixture_port: int, mode: str = "socks", authenticate: bool = F
 
 
 @contextmanager
-def test_dns():
+def dns_fixture():
     original = socket.getaddrinfo
 
     def resolve(host, port, *args, **kwargs):
         if host == TEST_HOST:
             return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (TEST_IP, port))]
+        return original(host, port, *args, **kwargs)
+
+    with mock.patch.object(egress.socket, "getaddrinfo", side_effect=resolve):
+        yield
+
+
+@contextmanager
+def dns_ipv6_fixture():
+    original = socket.getaddrinfo
+
+    def resolve(host, port, *args, **kwargs):
+        if host == TEST_HOST:
+            return [(socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2606:4700:4700::1111", port, 0, 0))]
         return original(host, port, *args, **kwargs)
 
     with mock.patch.object(egress.socket, "getaddrinfo", side_effect=resolve):
@@ -219,9 +236,10 @@ def _open_through_gateway(path: Path) -> bytes:
 
 
 class GatewayProxyTests(unittest.TestCase):
+    @unittest.skipIf(egress.socks is None, "requires PySocks for the SOCKS upstream fixture")
     @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
     def test_socks5_gateway_uses_vetted_ip_and_keeps_tls_end_to_end(self):
-        with tls_fixture() as tls, proxy_fixture(tls.server_port, authenticate=True) as proxy, test_dns(), \
+        with tls_fixture() as tls, proxy_fixture(tls.server_port, authenticate=True) as proxy, dns_fixture(), \
              tempfile.TemporaryDirectory(prefix="gateway-test-") as directory:
             path = Path(directory) / "gate.sock"
             upstream = f"socks5h://fixture-user:fixture-password@127.0.0.1:{proxy.server_address[1]}"
@@ -233,9 +251,10 @@ class GatewayProxyTests(unittest.TestCase):
             self.assertTrue(proxy.destinations)
             self.assertTrue(all(item == (1, TEST_IP, 443) for item in proxy.destinations))
 
+    @unittest.skipIf(egress.socks is None, "requires PySocks for the SOCKS upstream fixture")
     @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
     def test_proxy_disappearing_after_start_fails_closed_and_reports_it(self):
-        with tls_fixture() as tls, proxy_fixture(tls.server_port) as proxy, test_dns(), \
+        with tls_fixture() as tls, proxy_fixture(tls.server_port) as proxy, dns_fixture(), \
              tempfile.TemporaryDirectory(prefix="gateway-test-") as directory:
             path = Path(directory) / "gate.sock"
             upstream = f"socks5://127.0.0.1:{proxy.server_address[1]}"
@@ -257,7 +276,7 @@ class GatewayProxyTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
     def test_http_proxy_connect_receives_numeric_ip_and_authentication(self):
-        with tls_fixture() as tls, proxy_fixture(tls.server_port, mode="http") as proxy, test_dns(), \
+        with tls_fixture() as tls, proxy_fixture(tls.server_port, mode="http") as proxy, dns_fixture(), \
              tempfile.TemporaryDirectory(prefix="gateway-test-") as directory:
             path = Path(directory) / "gate.sock"
             upstream = f"http://fixture-user:fixture-password@127.0.0.1:{proxy.server_address[1]}"
@@ -267,12 +286,43 @@ class GatewayProxyTests(unittest.TestCase):
             self.assertEqual(proxy.destinations, [("http", TEST_IP + ":443", 443)])
             self.assertTrue(proxy.auth_seen)
 
+    @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
+    def test_http_proxy_connect_brackets_the_vetted_ipv6_target(self):
+        with tls_fixture() as tls, proxy_fixture(tls.server_port, mode="http") as upstream, dns_ipv6_fixture():
+            proxy_url = f"http://127.0.0.1:{upstream.server_address[1]}"
+            with egress.EgressProxy(upstream=proxy_url) as gateway:
+                response = requests.get(
+                    f"https://{TEST_HOST}/ipv6",
+                    proxies={"http": gateway.url, "https": gateway.url},
+                    verify=False, timeout=(5, 5),
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(upstream.destinations, [("http", "[2606:4700:4700::1111]:443", 443)])
+            self.assertEqual(tls.sni, [TEST_HOST])
+
+    @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
+    def test_loopback_proxy_tunnels_https_through_the_vetted_numeric_target(self):
+        with tls_fixture() as tls, proxy_fixture(tls.server_port, mode="http") as upstream, dns_fixture():
+            proxy_url = f"http://127.0.0.1:{upstream.server_address[1]}"
+            with egress.EgressProxy(upstream=proxy_url) as gateway:
+                response = requests.get(
+                    f"https://{TEST_HOST}/loopback",
+                    proxies={"http": gateway.url, "https": gateway.url},
+                    verify=False, timeout=(5, 5),
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(b"Proxy fixture reached", response.content)
+            self.assertIn("/loopback", tls.paths)
+            self.assertEqual(tls.sni, [TEST_HOST])
+            self.assertEqual(upstream.destinations, [("http", TEST_IP + ":443", 443)])
+
 
 @unittest.skipUnless(os.getenv("MICHIFLIN_SANDBOX_TESTS") == "1", "requires a real Linux browser sandbox")
 class BrowserProxyIntegrationTests(unittest.TestCase):
+    @unittest.skipIf(egress.socks is None, "requires PySocks for the SOCKS upstream fixture")
     @unittest.skipUnless(shutil.which("openssl"), "requires openssl for the local TLS fixture")
     def test_real_chromium_crosses_gateway_and_socks_proxy(self):
-        with tls_fixture() as tls, proxy_fixture(tls.server_port) as proxy, test_dns():
+        with tls_fixture() as tls, proxy_fixture(tls.server_port) as proxy, dns_fixture():
             upstream = f"socks5://127.0.0.1:{proxy.server_address[1]}"
             original_copy = sandbox.shutil.copyfile
 

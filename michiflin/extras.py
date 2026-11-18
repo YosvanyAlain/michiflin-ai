@@ -108,6 +108,8 @@ def _translation_ready(provider: str) -> bool:
 
 
 def _translation_status(response: requests.Response, provider: str) -> None:
+    if 300 <= int(response.status_code) < 400:
+        raise _TranslationFailure("unavailable")
     if response.status_code == 429:
         # Honour Retry-After, or wait five minutes when the provider omits it.
         value = str(getattr(response, "headers", {}).get("Retry-After", "")).strip()
@@ -155,7 +157,7 @@ def _google_translation(text: str, target: str, source: str, deadline: float) ->
         state_check_translation()
         response = requests.get("https://translate.googleapis.com/translate_a/single",
                                 params={"client": "gtx", "sl": source, "tl": target, "dt": "t", "q": segment},
-                                headers=UA, timeout=_translation_timeout(deadline, 12))
+                                headers=UA, timeout=_translation_timeout(deadline, 12), allow_redirects=False)
         _translation_status(response, "google")
         data = response.json()
         part = "".join(str(item[0]) for item in data[0] if item and item[0])
@@ -414,22 +416,23 @@ def transcript(url: str, language: str) -> tuple[str, str]:
     preferred = list(dict.fromkeys([language, "es", "en"]))
     last_error: Exception | None = None
     for proxy in media._routes(url):
-        base = {**media._options(proxy), "skip_download": True}
         try:
-            with media.yt_dlp.YoutubeDL(base) as client:
-                info = client.extract_info(url, download=False) or {}
-            code, automatic = _pick_track(info, preferred)
-            if not code:
-                raise ValueError("no_subtitles")
-            with tempfile.TemporaryDirectory(prefix="subs-") as folder:
-                options = {**base, "writesubtitles": not automatic, "writeautomaticsub": automatic, "subtitleslangs": [code],
-                           "subtitlesformat": "vtt", "outtmpl": str(Path(folder) / "subs.%(ext)s")}
-                with media.yt_dlp.YoutubeDL(options) as client:
-                    client.process_ie_result(info, download=True)
-                files = list(Path(folder).glob("subs*.vtt"))
-                if not files:
+            with media.egress.EgressProxy(upstream=proxy, allow_http=True) as gateway:
+                base = {**media._options(gateway.url), "skip_download": True}
+                with media.yt_dlp.YoutubeDL(base) as client:
+                    info = client.extract_info(url, download=False) or {}
+                code, automatic = _pick_track(info, preferred)
+                if not code:
                     raise ValueError("no_subtitles")
-                return str(info.get("title") or ""), _vtt_text(files[0].read_text(errors="ignore"))
+                with tempfile.TemporaryDirectory(prefix="subs-") as folder:
+                    options = {**base, "writesubtitles": not automatic, "writeautomaticsub": automatic, "subtitleslangs": [code],
+                               "subtitlesformat": "vtt", "outtmpl": str(Path(folder) / "subs.%(ext)s")}
+                    with media.yt_dlp.YoutubeDL(options) as client:
+                        client.process_ie_result(info, download=True)
+                    files = list(Path(folder).glob("subs*.vtt"))
+                    if not files:
+                        raise ValueError("no_subtitles")
+                    return str(info.get("title") or ""), _vtt_text(files[0].read_text(errors="ignore"))
         except ValueError:
             raise
         except Exception as exc:

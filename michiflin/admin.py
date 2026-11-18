@@ -469,7 +469,8 @@ def restart(locale: str) -> str:
     try:
         response = requests.post(f"https://api.github.com/repos/{repository}/actions/workflows/michiflin.yml/dispatches",
                                  json={"ref": os.getenv("GITHUB_REF_NAME", "main")}, timeout=20,
-                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"})
+                                 headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                                 allow_redirects=False)
     except requests.RequestException:
         return tr(locale, "⚠️ No pude contactar con GitHub.", "⚠️ Could not reach GitHub.")
     if response.status_code != 204:

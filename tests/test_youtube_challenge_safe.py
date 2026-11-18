@@ -5,14 +5,29 @@ from unittest import mock
 from michiflin import media, tools
 
 
+class FakeGateway:
+    def __init__(self, upstream="", **_kwargs):
+        self.upstream = upstream
+        self.url = "http://127.0.0.1:18080"
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
 def test_youtube_search_does_not_switch_route_after_challenge():
     routes = ["socks5://127.0.0.1:40000", ""]
     client = mock.Mock()
     client.extract_info.side_effect = RuntimeError("Sign in to confirm you're not a bot")
+    factory = mock.Mock(side_effect=lambda _options: nullcontext(client))
+    ytdlp_stub = mock.Mock(YoutubeDL=factory)
     with mock.patch.object(media, "available", return_value=True), \
+         mock.patch.object(media, "yt_dlp", ytdlp_stub), \
          mock.patch.object(media, "_routes", return_value=routes), \
-         mock.patch.object(media, "_options", side_effect=lambda route: {"proxy": route}), \
-         mock.patch.object(media.yt_dlp, "YoutubeDL", side_effect=lambda _options: nullcontext(client)) as factory:
+         mock.patch.object(media.egress, "EgressProxy", FakeGateway), \
+         mock.patch.object(media, "_options", side_effect=lambda route: {"proxy": route}):
         result = tools._youtube_search("sintético", 3, "es")
     assert result == []
     assert factory.call_count == 1 and client.extract_info.call_count == 1
@@ -23,10 +38,13 @@ def test_youtube_search_may_retry_after_ordinary_network_failure():
     first, second = mock.Mock(), mock.Mock()
     first.extract_info.side_effect = OSError("network unavailable")
     second.extract_info.return_value = {"entries": [{"id": "abcdefghijk", "title": "Prueba"}]}
+    factory = mock.Mock(side_effect=[nullcontext(first), nullcontext(second)])
+    ytdlp_stub = mock.Mock(YoutubeDL=factory)
     with mock.patch.object(media, "available", return_value=True), \
+         mock.patch.object(media, "yt_dlp", ytdlp_stub), \
          mock.patch.object(media, "_routes", return_value=routes), \
-         mock.patch.object(media, "_options", side_effect=lambda route: {"proxy": route}), \
-         mock.patch.object(media.yt_dlp, "YoutubeDL", side_effect=[nullcontext(first), nullcontext(second)]) as factory:
+         mock.patch.object(media.egress, "EgressProxy", FakeGateway), \
+         mock.patch.object(media, "_options", side_effect=lambda route: {"proxy": route}):
         result = tools._youtube_search("sintético", 3, "es")
     assert len(result) == 1 and result[0].title == "Prueba"
     assert factory.call_count == 2

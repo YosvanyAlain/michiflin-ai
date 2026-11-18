@@ -316,11 +316,18 @@ def discover() -> None:
         _watch_catalog()
 
 
+def _reject_provider_redirect(response: requests.Response) -> None:
+    """A provider API must not redirect requests that may carry credentials or prompts."""
+    if 300 <= int(response.status_code) < 400:
+        raise requests.RequestException("provider redirect refused")
+
+
 def _discover_openrouter() -> None:
     provider = _providers.get("openrouter")
     if not provider:
         return
-    response = requests.get("https://openrouter.ai/api/v1/models", timeout=25)
+    response = requests.get("https://openrouter.ai/api/v1/models", timeout=25, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     free = []
     for item in response.json().get("data", []):
@@ -369,7 +376,9 @@ def _discover_bazaarlink() -> None:
     provider = _providers.get("bazaarlink")
     if not provider:
         return
-    response = requests.get(f"{provider.base_url}/models", headers={"Authorization": f"Bearer {provider.api_key}"}, timeout=20)
+    response = requests.get(f"{provider.base_url}/models", headers={"Authorization": f"Bearer {provider.api_key}"},
+                            timeout=20, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     known = {model.model: model for model in provider.models}
     models = []
@@ -389,7 +398,8 @@ def _discover_orcarouter() -> None:
     provider = _providers.get("orcarouter")
     if not provider:
         return
-    response = requests.get("https://api.orcarouter.ai/api/free-package/public", timeout=20)
+    response = requests.get("https://api.orcarouter.ai/api/free-package/public", timeout=20, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     body = response.json().get("data") or {}
     known = {model.model: model for model in provider.models}
@@ -433,7 +443,8 @@ def _discover_llm7() -> None:
     provider = _providers.get("llm7")
     if not provider:
         return
-    response = requests.get(f"{provider.base_url}/models", timeout=20)
+    response = requests.get(f"{provider.base_url}/models", timeout=20, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     known = {model.model: model for model in provider.models}
     models = []
@@ -455,7 +466,8 @@ def _discover_kilo() -> None:
     provider = _providers.get("kilo")
     if not provider:
         return
-    response = requests.get(f"{provider.base_url}/models", timeout=25)
+    response = requests.get(f"{provider.base_url}/models", timeout=25, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     known = {model.model: model for model in provider.models}
     models = []
@@ -478,7 +490,9 @@ def _discover_groq() -> None:
     provider = _providers.get("groq")
     if not provider:
         return
-    response = requests.get(f"{provider.base_url}/models", headers={"Authorization": f"Bearer {provider.api_key}"}, timeout=20)
+    response = requests.get(f"{provider.base_url}/models", headers={"Authorization": f"Bearer {provider.api_key}"},
+                            timeout=20, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     available = {str(item.get("id")) for item in response.json().get("data", []) if item.get("active", True)}
     if not available:
@@ -502,7 +516,9 @@ def _discover_gemini() -> None:
     provider = _providers.get("gemini")
     if not provider:
         return
-    response = requests.get(f"{provider.base_url}/models", params={"key": provider.api_key, "pageSize": 200}, timeout=20)
+    response = requests.get(f"{provider.base_url}/models", params={"key": provider.api_key, "pageSize": 200},
+                            timeout=20, allow_redirects=False)
+    _reject_provider_redirect(response)
     response.raise_for_status()
     available = {str(item.get("name", "")).removeprefix("models/") for item in response.json().get("models", [])}
     models = [model for model in provider.models if model.model in available]
@@ -1121,8 +1137,9 @@ def transcribe(data: bytes, filename: str, mime: str) -> str:
                 headers={"Authorization": f"Bearer {groq.api_key}"},
                 files={"file": (filename, data, mime or "audio/ogg")},
                 data={"model": "whisper-large-v3-turbo", "response_format": "json"},
-                timeout=120,
+                timeout=120, allow_redirects=False,
             )
+            _reject_provider_redirect(response)
             state.record_usage("groq:whisper", response.ok)
             if response.ok and response.json().get("text"):
                 return str(response.json()["text"]).strip()
@@ -1142,8 +1159,9 @@ def transcribe(data: bytes, filename: str, mime: str) -> str:
                 f"https://api.cloudflare.com/client/v4/accounts/{config.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/openai/whisper-large-v3-turbo",
                 headers={"Authorization": f"Bearer {cloud.api_key}"},
                 json={"audio": base64.b64encode(data).decode()},
-                timeout=120,
+                timeout=120, allow_redirects=False,
             )
+            _reject_provider_redirect(response)
             state.record_usage("cloudflare:whisper", response.ok)
             if response.ok:
                 text = ((response.json().get("result") or {}).get("text") or "").strip()
