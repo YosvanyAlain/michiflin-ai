@@ -170,6 +170,25 @@ except Exception:  # pragma: no cover - invalid zone falls back to UTC
     LOCAL_ZONE = ZoneInfo("UTC")
 SESSION_SECONDS = env_int("SESSION_DURATION_SECONDS", 19200)
 
+
+def private_dir(path: Path) -> Path:
+    """Create a work directory that other accounts on the host cannot enter.
+
+    The defaults live under /tmp, which every local account can read, and the
+    file names alone disclose what a person downloaded. mkdir's mode is filtered
+    by the umask and an existing directory keeps its old mode, so re-check and
+    tighten on every call instead of trusting what happened at creation time.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        info = path.stat()
+        if info.st_mode & 0o077 and info.st_uid == os.getuid():
+            path.chmod(0o700)
+    except OSError:
+        pass
+    return path
+
+
 # Storage and download limits (permissive; disk space is checked live).
 MAX_FILE_BYTES = env_int("MAX_FILE_MB", 4096) * MIB
 MAX_QUEUE_BYTES = env_int("MAX_QUEUE_MB", 12288) * MIB
