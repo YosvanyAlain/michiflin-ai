@@ -53,6 +53,7 @@ def test_translation_detection_never_guesses_or_returns_partial_text():
 
 def test_translation_primary_detects_language_and_preserves_long_text():
     def get(_url, **kwargs):
+        assert kwargs["allow_redirects"] is False
         word = kwargs["params"]["q"]
         return Response([[[word.upper(), word, None, None]], None, "es"])
     text = ("hola mundo. " * 450).strip()[:4400]

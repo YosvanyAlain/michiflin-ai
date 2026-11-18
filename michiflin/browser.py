@@ -14,7 +14,7 @@ import time
 from concurrent.futures import Future
 from typing import Any, Callable
 
-from . import chat, config, net
+from . import chat, config, egress, net
 
 log = logging.getLogger(__name__)
 
@@ -201,7 +201,8 @@ def _worker() -> None:
                 # the browser process. --no-sandbox remains necessary on some CI
                 # runners; the request firewall below is a separate defense.
                 safe_env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "XDG_RUNTIME_DIR", "FONTCONFIG_PATH", "FONTCONFIG_FILE", "LD_LIBRARY_PATH") if key in os.environ}
-                browser = playwright.chromium.launch(args=["--disable-dev-shm-usage", "--no-sandbox"], env=safe_env)
+                browser = playwright.chromium.launch(args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-quic",
+                                                             "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"], env=safe_env)
             future.set_result(_run_for_sender(function, browser, args, sender))
         except Exception as exc:
             future.set_exception(exc)
@@ -250,7 +251,10 @@ def _shrink(data: bytes, max_width: int = 900, quality: int = 55) -> bytes | Non
 
 
 def _context(browser: Any, device: str, block_heavy: bool = False, proxy: str = "", shrink_images: bool = False, scale: float = 1.0) -> Any:
-    extra = {"proxy": {"server": proxy}} if proxy else {}
+    # Chromium normally bypasses proxies for loopback destinations. Disable that
+    # exception so rebinding/private targets cannot escape before the gateway
+    # gets a chance to reject them.
+    extra = {"proxy": {"server": proxy, "bypass": "<-loopback>"}} if proxy else {}
     if device == "desktop":
         context = browser.new_context(viewport={"width": 1280, "height": 900}, user_agent=net.DESKTOP_UA, locale="es-ES",
                                       device_scale_factor=scale, reduced_motion="reduce", **extra)
@@ -385,15 +389,17 @@ def network_error(exc: BaseException) -> bool:
 
 
 def _with_proxy_fallback(work: Callable[..., Any]) -> Callable[..., Any]:
-    """Retry through WEB_PROXY when a site does not answer from the server's own address."""
+    """Use a DNS-pinning gateway; optionally retry that gateway via WEB_PROXY."""
     def run(browser: Any, *args: Any) -> Any:
         try:
-            return work(browser, *args, proxy="")
+            with egress.EgressProxy(allow_http=True) as direct:
+                return work(browser, *args, proxy=direct.url)
         except Exception as exc:
             if not (config.WEB_PROXY and network_error(exc)):
                 raise
-            log.info("browser retry via proxy: %s", str(exc).splitlines()[0][:160])
-            return work(browser, *args, proxy=config.WEB_PROXY)
+            log.info("browser retry via configured upstream proxy: %s", str(exc).splitlines()[0][:160])
+            with egress.EgressProxy(upstream=config.WEB_PROXY, allow_http=True) as upstream:
+                return work(browser, *args, proxy=upstream.url)
     return run
 
 

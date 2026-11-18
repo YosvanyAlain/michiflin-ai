@@ -487,7 +487,14 @@ class OperationalMaintenanceTests(unittest.TestCase):
                     self.toggle(True)
                     self.toggle(False)
             return real_download(source, folder, kind, quality, audio, track, stop)
+        # Downloads cross the DNS-pinning gateway, which refuses non-public
+        # destinations by design. Accept only this fixture's loopback address so
+        # the real transport, Range resume and byte accounting still run through
+        # the same proxy path used in production; rejection itself is covered by
+        # tests/test_ssrf_pinning.py and tests/test_proxy_gateway.py.
+        public = media.egress._public
         with mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
+             mock.patch.object(media.egress, "_public", lambda value: value == "127.0.0.1" or public(value)), \
              mock.patch.object(media, "supported", return_value=True), \
              mock.patch.object(private_media, "storage_for", return_value=None), \
              mock.patch.object(media, "format_options", return_value={"format": "best"}), \

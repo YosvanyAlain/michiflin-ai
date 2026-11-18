@@ -126,7 +126,7 @@ def capture(chat_id: int, url: str, locale: str) -> None:
         return
     host = host_of(final_url)
     total = len(images)
-    config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.TEMP_ROOT)
     for index, data in enumerate(images, 1):
         stem = tr(locale, "captura", "screenshot")
         name = clean_filename(f"{stem}-{host}-{index}.jpg" if total > 1 else f"{stem}-{host}.jpg")
