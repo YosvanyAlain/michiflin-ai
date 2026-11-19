@@ -15,7 +15,7 @@ from tests.test_webxdc_browser import browser_fixture, screenshot_if_requested
 def test_styles_cover_navigation_icons_brands_banners_and_views(language, engine, width):
     with browser_fixture(language, {'width': width, 'height': 844}, engine=engine, touch=width < 900) as (page, errors):
         page.wait_for_function('cache.at > 0')
-        assert page.evaluate("Object.keys(ICONS).filter(k=>k!=='catpixel'&&!PIXEL_ICONS[k])") == []
+        assert page.evaluate("Object.keys(ICONS).filter(k=>k!=='catpixel'&&k!=='catfullpixel'&&!PIXEL_ICONS[k])") == []
         # The source art must not change color, filter or require network just
         # because the surrounding frame adopts a look.
         official = page.evaluate("brandMark('gemini').querySelector('img').getAttribute('src')")
@@ -124,6 +124,8 @@ def test_local_timing_reports_only_received_results_without_extra_requests():
         assert timing['op'] == 'search' and 600 <= timing['ms'] < 3000
         before = page.evaluate('window.__sentUpdates.length')
         page.evaluate("go('settings')")
+        # Sync tools live in a collapsed section now; open it the way a user would.
+        page.get_by_role('button', name='Sincronización').click()
         page.get_by_text('Última respuesta (Búsqueda):', exact=False).wait_for(state='visible')
         assert page.get_by_text('no se envían datos adicionales.', exact=False).count() >= 1
         assert page.evaluate('window.__sentUpdates.length') == before
