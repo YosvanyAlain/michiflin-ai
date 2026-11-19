@@ -326,6 +326,7 @@ def help_pages(locale: str, owner: bool) -> list[str]:
             f"{c('admin', 'logs')} – " + t("advertencias y errores recientes", "recent warnings and errors"),
             f"{c('admin', 'alerts')}_{t('si', 'yes')} · {c('admin', 'alerts')}_no",
             f"{c('admin', 'restart')} – " + t("reiniciar el servidor", "restart the server"),
+            f"{c('invitacion')} – " + t("tu enlace de invitación, para copiar", "your invitation link, ready to copy"),
         ]))
     index = [
         t("Escríbeme normal o envía un enlace; yo decido qué hacer.", "Write normally or send a link; I decide what to do."),
@@ -855,6 +856,31 @@ def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> Non
                       else "Only addresses you approve can enter; old grants remain closed.")
     chat.text(chat_id, tr(locale, f"Para confirmar ({duration_es}), responde: {command} 0 {code}\n{explanation_es}",
                           f"To confirm ({duration_en}), reply: {command} 0 {code}\n{explanation_en}"))
+
+
+@command("invitacion", owner=True)
+def cmd_invitacion(chat_id: int, args: list[str], rest: str, locale: str) -> None:
+    """Hand the bot's own invitation link back to its owner, ready to copy."""
+    if not config.is_owner_admin(chat.sender()):
+        chat.text(chat_id, tr(locale, "Solo los administradores autorizados pueden pedir el enlace.",
+                              "Only authorized administrators can request the link."))
+        return
+    from . import invite
+
+    words = args + rest.split()
+    refresh = any(names.word_key(word) in {"refrescar", "refresh"} for word in words)
+    value = invite.link(refresh=refresh)
+    if not value:
+        chat.text(chat_id, tr(locale, "No pude obtener el enlace ahora mismo: la cuenta de Delta Chat no responde. Inténtalo de nuevo en unos segundos.",
+                              "The link is unavailable right now: the Delta Chat account is not responding. Try again in a few seconds."))
+        return
+    # Sent on its own line and with no surrounding text so a long press copies
+    # the link cleanly; the explanation goes in a separate message.
+    chat.text(chat_id, value)
+    chat.text(chat_id, tr(locale, "☝️ Tu enlace de invitación. Mantén pulsado para copiarlo. "
+                          "Quien lo use abre un chat verificado contigo: compártelo solo con quien quieras dentro.",
+                          "☝️ Your invitation link. Long-press to copy it. "
+                          "Anyone using it opens a verified chat with you: share it only with people you want in."))
 
 
 @command("admin", owner=True)

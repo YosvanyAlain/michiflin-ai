@@ -3840,6 +3840,32 @@ function maintenanceSection(snapshot) {
   return section(t("maintenance_title"), holder);
 }
 
+function inviteLinkSection(box) {
+  // The link is fetched on demand, never with the panel: it should not sit on
+  // screen, in a screenshot or in the memo cache unless the owner asks for it.
+  const slot = h("div", { class: "stack" });
+  const reveal = async (refresh) => {
+    fill(slot, h("p", { class: "muted small" }, t("invite_link_loading")));
+    try {
+      const data = await bridge.call("invitacion", refresh ? { refresh: true } : {});
+      if (!box.isConnected) return;
+      fill(slot,
+        h("p", { class: "code wrap", role: "status" }, data.link),
+        h("div", { class: "row" },
+          h("button", { class: "btn primary", onclick: () => copyText(data.link) }, icon("copy"), t("copy_link")),
+          h("button", { class: "btn ghost", onclick: () => reveal(true) }, icon("refresh"), t("refresh")),
+          h("button", { class: "btn ghost", onclick: () => fill(slot, start) }, icon("close"), t("invite_link_hide"))));
+    } catch (error) {
+      if (box.isConnected && !error.cancelled) fill(slot, failure(error.message, () => reveal(refresh)));
+    }
+  };
+  const start = h("button", { class: "btn ghost wide", onclick: () => reveal(false) },
+    icon("link"), t("invite_link_show"));
+  fill(slot, start);
+  return section(t("invite_link"),
+    h("div", { class: "card stack" }, h("p", { class: "muted small" }, t("invite_link_hint")), slot));
+}
+
 function drawAdmin(box, data) {
   const address = field({ type: "email", placeholder: t("admin_address") });
   const person = (entry, ...tools) => h("div", { class: "list-row" }, icon("user"),
@@ -3847,6 +3873,7 @@ function drawAdmin(box, data) {
   fill(box,
     headRow(t("admin_live"), iconButton("refresh", t("refresh"), () => adminOp(box, {}))),
     ownerAccessSection(box, data),
+    data.owner_admin ? inviteLinkSection(box) : null,
     singleGuestSection(box, data),
     maintenanceSection(data.maintenance_notice || cache.maintenance_notice),
     data.perf ? perfSection(data.perf) : null,
