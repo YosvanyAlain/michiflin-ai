@@ -615,16 +615,16 @@ details[open] .caret { transform: rotate(180deg); }
 /* Splash */
 #splash {
   position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
-  color: #fff; background: radial-gradient(circle at 50% 40%, #6d4ae0 0%, #2b2396 55%, #0b0d17 100%);
+  color: #fff; background: radial-gradient(circle at 50% 38%, #7d5ce8 0%, #4a3dd4 48%, #221c6b 100%);
   transition: opacity 0.22s ease, transform 0.22s ease;
 }
 #splash.gone { opacity: 0; transform: scale(1.04); pointer-events: none; }
 #splash .cat { width: 136px; height: 136px; }
-#splash .line, #splash .lens { fill: none; stroke: #e6fffb; stroke-linecap: round; stroke-linejoin: round; }
+#splash .line { fill: none; stroke: #eef0ff; stroke-linecap: round; stroke-linejoin: round; }
 #splash .line { stroke-width: 3; stroke-dasharray: 420; stroke-dashoffset: 420; animation: draw 0.65s ease forwards; }
 #splash .thin { stroke-width: 2; animation-delay: 0.12s; }
-#splash .lens { stroke-width: 2.4; stroke-dasharray: 80; stroke-dashoffset: 80; animation: draw 0.45s 0.15s ease forwards; }
-#splash .eye { fill: #f5a524; opacity: 0; transform-box: fill-box; transform-origin: center; animation: glow 0.28s 0.35s ease forwards; }
+
+#splash .eye { fill: var(--amber, #f5a524); opacity: 0; transform-box: fill-box; transform-origin: center; animation: glow 0.28s 0.35s ease forwards; }
 /* Own class name: ".brand" is the provider badge (34px box) and used to squeeze the splash title. */
 #splash .splash-name { font-size: 25px; font-weight: 600; line-height: 1.2; text-align: center; white-space: nowrap; opacity: 0;
   isolation: isolate; backface-visibility: hidden; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision;
@@ -1466,7 +1466,9 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .hero-art .pixel-mascot { display: none; }
 :root[data-style="pixel"] .hero-art .ic:not(.pixel-mascot) { display: none; }
 :root[data-style="pixel"] .hero-art .pixel-mascot { display: block; image-rendering: pixelated; animation: pixel-bob 4s steps(2, end) infinite; }
-:root[data-style="pixel"] :is(.hero-art .pixel-mascot, #splash .splash-pixel) path:nth-child(2) { fill: var(--accent-fill); }
+.px-body { fill: currentColor; stroke: none; }
+.px-face { fill: var(--amber); stroke: none; }
+.hero-art .px-body, #splash .px-body { fill: #eef0ff; }
 #splash .splash-pixel { display: none; width: 136px; height: 136px; }
 :root[data-style="pixel"] #splash .cat { display: none; }
 :root[data-style="pixel"] #splash .splash-pixel { display: block; shape-rendering: crispEdges; }
