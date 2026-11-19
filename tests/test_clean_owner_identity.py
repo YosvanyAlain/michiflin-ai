@@ -168,11 +168,25 @@ def test_activation_rejects_unsafe_legacy_configuration_before_network(tmp_path,
     credentials.assert_not_called()
 
 
-def test_clean_workflow_forces_private_policy_without_changing_legacy_policy():
+def test_clean_workflow_access_fails_closed_and_keeps_the_clean_storage():
+    """Access is the owner's call; the clean epoch still owns storage and keys.
+
+    The clean identity was pinned private while it was being seeded, which is
+    no longer wanted now that the owner has opened the bot. What must not
+    regress is the direction of failure: an unset or deleted variable has to
+    leave the bot closed, never open it. The epoch keeps governing the backup
+    namespace and passphrase, so opening access can never silently move the
+    bot back onto the legacy identity's storage.
+    """
     workflow = (clean.Path(__file__).resolve().parents[1] / ".github/workflows/michiflin.yml").read_text()
-    assert "OWNER_ONLY: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '1' || vars.OWNER_ONLY || '1' }}" in workflow
-    assert "INVITE_AUTO_ACCESS: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || vars.INVITE_AUTO_ACCESS || '0' }}" in workflow
+    # Owner-controlled access, defaulting to closed when the variable is absent.
+    assert "OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}" in workflow
+    assert "INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}" in workflow
+    # The epoch must no longer decide access at all.
+    assert "CLEAN_IDENTITY_EPOCH != '' && '1'" not in workflow
+    # Storage and keys stay bound to the clean epoch.
     assert "secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE']" in workflow
+    assert "STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}" in workflow
 
 
 def test_address_only_or_blocked_contacts_cannot_be_inherited(tmp_path, monkeypatch):

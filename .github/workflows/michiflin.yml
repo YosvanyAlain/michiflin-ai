@@ -38,9 +38,12 @@ jobs:
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
       EMAIL_KEY_RECOVERY: ${{ vars.EMAIL_KEY_RECOVERY || '0' }}
-      # A clean identity is always private, regardless of legacy repo variables.
-      OWNER_ONLY: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '1' || vars.OWNER_ONLY || '1' }}
-      INVITE_AUTO_ACCESS: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || vars.INVITE_AUTO_ACCESS || '0' }}
+      # The clean identity stayed private while it was being seeded and sealed.
+      # That seeding is long finished and the owner has opened the bot, so the
+      # repository variables now decide access on their own. Both still default
+      # to closed, so an unset variable can never open the bot by accident.
+      OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}
+      INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
