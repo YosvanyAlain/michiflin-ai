@@ -1088,6 +1088,17 @@ details[open] .caret { transform: rotate(180deg); }
 .space-icon { background-image: linear-gradient(145deg, rgba(143, 138, 255, .14), rgba(81, 70, 224, .08)); }
 .btn.primary { background: linear-gradient(125deg, var(--accent-fill), var(--accent) 65%, var(--violet));
   box-shadow: 0 6px 16px rgba(81, 70, 224, .24), inset 0 1px rgba(255, 255, 255, .18); }
+/* In dark mode --accent and --violet lighten so they can be read as text on a
+   dark surface. Used as a fill under white letters they drop to 2.7:1, so the
+   primary button keeps the saturated ramp instead. */
+:root[data-theme="dark"] .btn.primary {
+  background: linear-gradient(125deg, #4134d2, #5a4ce8 65%, #7c4dff);
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] .btn.primary {
+    background: linear-gradient(125deg, #4134d2, #5a4ce8 65%, #7c4dff);
+  }
+}
 .tab.on .ic { box-shadow: inset 0 1px 2px rgba(255, 255, 255, .12); }
 .hero { background: radial-gradient(circle at 86% 12%, rgba(241, 183, 75, .14), transparent 38%),
   radial-gradient(circle at 20% 100%, rgba(124, 77, 255, .22), transparent 47%), var(--hero); }
