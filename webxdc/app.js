@@ -352,6 +352,25 @@ function section(title, ...children) {
   return h("section", { class: "section" }, title ? h("h3", { class: "section-title" }, title) : null, ...children);
 }
 
+// Settings is where people come looking for one specific switch, so the
+// secondary groups start folded. Everything stays one tap away instead of
+// three screenfuls down, and the choice is remembered per group.
+function foldSection(title, ...children) {
+  const key = "fold." + title;
+  const open = store.get(key, false);
+  const body = h("div", { class: "fold-body" }, ...children.filter(Boolean));
+  const head = h("button", { class: "fold-head", type: "button", "aria-expanded": String(open) },
+    h("span", { class: "section-title" }, title), icon("down", "caret"));
+  const box = h("section", { class: open ? "section fold open" : "section fold" }, head, body);
+  head.onclick = () => {
+    const next = !box.classList.contains("open");
+    box.classList.toggle("open", next);
+    head.setAttribute("aria-expanded", String(next));
+    store.set(key, next);
+  };
+  return box;
+}
+
 function card(...children) {
   return h("div", { class: "card" }, ...children);
 }
@@ -3533,12 +3552,12 @@ VIEWS.settings = {
         cache.admin ? h("button", { class: "list-row", onclick: () => go("admin") }, icon("shield"), h("span", { class: "grow" }, t("tile_admin")), icon("next")) : null,
         h("button", { class: "list-row", onclick: () => go("help") }, icon("help"), h("span", { class: "grow" }, t("help_title")), icon("next")),
         h("button", { class: "list-row", onclick: () => hello(true) }, icon("refresh"), h("span", { class: "grow" }, t("sync")), icon("next")))),
-      section(t("sync_title"), h("div", { class: "card" }, syncTools())),
-      section(t("set_data"), h("div", { class: "card list" },
+      foldSection(t("sync_title"), h("div", { class: "card" }, syncTools())),
+      foldSection(t("set_data"), h("div", { class: "card list" },
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
         wipe(t("wipe_images"), () => { imageFailureMemory.length = 0; store.del("img.errors"); return media.clear(); }),
         wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); resultMemoTimes.clear(); resultMemoErrors.clear(); bus.emit("notices"); }))),
-      section(t("about_title"), card(
+      foldSection(t("about_title"), card(
         h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
         h("button", { class: "btn ghost", onclick: () => openLiveAddress("https://github.com/YosvanyAlain/michiflin-ai") }, icon("web"), t("about_repository")),
