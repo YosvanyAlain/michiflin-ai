@@ -2253,6 +2253,21 @@ def op_maintenance_notice(chat_id: int, args: dict[str, Any], locale: str) -> An
     return {"notice": notice, "profile_updated": profile_updated}
 
 
+@op("invitacion")
+def op_invitacion(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    """Return the bot's own invitation link so the panel can offer a copy button."""
+    if not config.is_owner_admin(chat.sender()):
+        raise AppError(tr(locale, "Solo los administradores autorizados pueden pedir el enlace.",
+                          "Only authorized administrators can request the link."))
+    from . import invite
+
+    value = invite.link(refresh=bool(args.get("refresh")))
+    if not value:
+        raise AppError(tr(locale, "No pude obtener el enlace ahora mismo: la cuenta de Delta Chat no responde.",
+                          "The link is unavailable right now: the Delta Chat account is not responding."))
+    return {"link": value}
+
+
 @op("admin")
 def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if not admin.is_admin(chat.sender()):

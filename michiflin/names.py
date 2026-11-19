@@ -49,6 +49,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "admin": ("admin", "admin"),
     "owner_only": ("solo_dueno", "owner_only"),
     "maintenance": ("mantenimiento", "maintenance"),
+    "invitacion": ("invitacion", "invitation"),
     "nota": ("nota", "note"),
     "notas": ("notas", "notes"),
     "borrar_nota": ("borrar_nota", "delete_note"),

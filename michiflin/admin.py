@@ -14,7 +14,7 @@ from typing import Any
 
 import requests
 
-from . import access, chat, config, names, state
+from . import access, chat, config, invite, names, state
 from .util import local_time, tr
 
 log = logging.getLogger("michiflin")
@@ -397,6 +397,10 @@ def overview(locale: str) -> str:
     run = os.getenv("GITHUB_RUN_ID", "")
     if run:
         lines.append(tr(locale, f"Sesión del servidor: {run}", f"Server session: {run}"))
+    if invite.available():
+        ask = names.cmd(locale, "invitacion")
+        lines += ["", tr(locale, f"Tu enlace de invitación: pide {ask} y te lo doy para copiar.",
+                         f"Your invitation link: send {ask} and I will hand it over, ready to copy.")]
     return "\n".join(lines)
 
 
@@ -443,6 +447,9 @@ def snapshot() -> dict[str, Any]:
         "control_nonce": mode["nonce"], "preserve_history": access.preserve_history(),
         "invite_auto_access": bool(config.INVITE_AUTO_ACCESS),
         "email_key_recovery": bool(config.EMAIL_KEY_RECOVERY),
+        # Only the authorized owner may ask for the invitation link, and only
+        # while the account is reachable: the panel hides the control otherwise.
+        "owner_admin": bool(config.is_owner_admin(chat.sender()) and invite.available()),
         "users": [{"address": address, "admin": is_admin(address), "last": _activity.get(address, 0.0),
                    "active": is_allowed(address)} for address in users],
         "attempts": [{"address": address, "count": entry["count"], "last": entry["last"]}
