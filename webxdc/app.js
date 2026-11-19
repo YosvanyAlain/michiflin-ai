@@ -1462,7 +1462,7 @@ function homeCarousel() {
   const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
   const slides = [
     () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art" }, icon("cat"), icon("catpixel", "pixel-mascot"))),
+      h("div", { class: "hero-art" }, icon("catfull"), icon("catfullpixel", "pixel-mascot"))),
     homeRatesBanner,
     homeWeatherBanner,
   ];
