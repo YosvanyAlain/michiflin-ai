@@ -1416,8 +1416,10 @@ function weatherBannerArt(current) {
   const orb = scene === "clear" || scene === "partly";
   const cloud = scene !== "clear";
   return h("span", { class: `weather-scene scene-${scene}${night ? " at-night" : ""}`, "aria-hidden": "true" },
+    night && orb ? h("i", { class: "scene-stars" }) : null,
     orb && (day || night) ? icon(night ? "moon" : "sun", "scene-orb") : null,
     cloud ? icon("weather", "scene-cloud") : null,
+    scene === "cloudy" || scene === "storm" ? icon("weather", "scene-cloud-far") : null,
     scene === "fog" ? h("i", { class: "scene-fog-lines" }) : null,
     scene === "rain" || scene === "storm" ? h("i", { class: "scene-precip-rain" }) : null,
     scene === "snow" ? h("i", { class: "scene-precip-snow" }) : null,
