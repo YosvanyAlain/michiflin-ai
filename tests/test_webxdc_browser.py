@@ -867,7 +867,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertGreater(drag["points"][-1]["x"], drag["points"][0]["x"])
                 self.assertGreater(drag["points"][-1]["ms"], 0)
                 self.assertEqual(page.evaluate("window.__liveActions.filter(x => x.action === 'click').length"), before_clicks)
-                self.assertIn("no es tu saldo" if language == "es" else "not your ETECSA balance", page.locator(".live-traffic").inner_text())
+                self.assertIn("no es el saldo" if language == "es" else "not your carrier balance", page.locator(".live-traffic").inner_text())
                 gesture.uncheck()
                 page.get_by_role("button", name="Tecla Espacio" if language == "es" else "Key Space").click()
                 page.wait_for_function("window.__liveActions.some(x => x.action === 'key' && x.key === 'Space')")
