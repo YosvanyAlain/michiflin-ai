@@ -3849,12 +3849,36 @@ function inviteLinkSection(box) {
     try {
       const data = await bridge.call("invitacion", refresh ? { refresh: true } : {});
       if (!box.isConnected) return;
+      // A QR is the same secret in a form a camera across the room can read,
+      // so it obeys the rule the text link already follows: off until asked
+      // for, and gone the moment the link is hidden.
+      const code = h("div", { class: "stack" });
+      const toggle = h("button", { class: "btn ghost" }, icon("qr"), t("invite_qr_show"));
+      let showing = false;
+      toggle.onclick = () => {
+        showing = !showing;
+        fill(toggle, icon("qr"), t(showing ? "invite_qr_hide" : "invite_qr_show"));
+        if (!showing) { fill(code); return; }
+        const art = h("div", { class: "qr-art" });
+        const palette = getComputedStyle(document.documentElement);
+        const tone = (name, fallback) => palette.getPropertyValue(name).trim() || fallback;
+        art.innerHTML = qrSvg(data.link, {
+          from: tone("--qr-ink-from", "#0e8577"),
+          to: tone("--qr-ink-to", "#075f56"),
+          bg: tone("--qr-paper", "#ffffff"),
+        });
+        fill(code, art,
+          h("p", { class: "muted small qr-caption" }, t("invite_qr_caption")),
+          h("p", { class: "note warn", role: "status" }, icon("alert"), t("invite_qr_warning")));
+      };
       fill(slot,
         h("p", { class: "code wrap", role: "status" }, data.link),
-        h("div", { class: "row" },
+        h("div", { class: "row wrap" },
           h("button", { class: "btn primary", onclick: () => copyText(data.link) }, icon("copy"), t("copy_link")),
+          toggle,
           h("button", { class: "btn ghost", onclick: () => reveal(true) }, icon("refresh"), t("refresh")),
-          h("button", { class: "btn ghost", onclick: () => fill(slot, start) }, icon("close"), t("invite_link_hide"))));
+          h("button", { class: "btn ghost", onclick: () => fill(slot, start) }, icon("close"), t("invite_link_hide"))),
+        code);
     } catch (error) {
       if (box.isConnected && !error.cancelled) fill(slot, failure(error.message, () => reveal(refresh)));
     }

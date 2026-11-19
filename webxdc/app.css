@@ -9,6 +9,11 @@
   --accent-strong: #0a6a60;
   --accent-soft: rgba(14, 133, 119, 0.12);
   --accent-fill: #075f56;
+  /* The QR keeps dark ink on light paper in both themes: inverted codes are
+     a coin flip across scanners, and this one has to work the first time. */
+  --qr-ink-from: #0e8577;
+  --qr-ink-to: #075f56;
+  --qr-paper: #ffffff;
   --amber: #f0a020;
   --ok: #1d9a5f;
   --ok-soft: rgba(29, 154, 95, 0.12);
@@ -141,6 +146,33 @@ small { font-size: 12.5px; }
 .ic.ok { color: var(--ok); }
 .ic.bad { color: var(--danger); }
 .ic.accent { color: var(--accent); }
+
+/* Inline code / link text */
+.code {
+  margin: 0; padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; line-height: 1.55; color: var(--text);
+}
+/* Invitation links have no spaces, so they need permission to break anywhere
+   or they push the whole card off screen. */
+.code.wrap { overflow-wrap: anywhere; word-break: break-word; }
+
+/* Invitation QR */
+.qr-art {
+  display: flex; justify-content: center;
+  padding: 4px;
+}
+.qr-art svg {
+  width: 100%; max-width: 260px; min-width: 200px; height: auto;
+  /* No border-radius here: the SVG already rounds its own corners, and
+     clipping again eats into the quiet zone the scanner needs to find the
+     code. The min-width keeps enough pixels per module on narrow phones. */
+  box-shadow: var(--shadow);
+}
+.qr-caption { text-align: center; }
 
 /* Controls */
 .btn {
