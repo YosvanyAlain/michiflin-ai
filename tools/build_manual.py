@@ -525,6 +525,7 @@ def build_story() -> list:
                   ["core.js", "Puente con Delta Chat, solicitudes, sesiones, fragmentos y reintentos seguros."],
                   ["app.js", "Navegación, acciones, estado visible y control de formularios."],
                   ["i18n.js", "Textos y etiquetas en español e inglés."],
+                  ["qr.js", "Genera el código QR de la invitación dentro de la propia miniapp, sin servicios externos."],
                   ["coder.js", "Interfaz del Programador y control de proyectos e historial."],
                   ["live.js", "Interfaz de navegación en tiempo real y manejo de su cierre."],
                   ["mp4.js", "Rutinas de unión de segmentos multimedia en el cliente."],

@@ -170,7 +170,10 @@ def seed(candidate: Path, metadata: dict[str, Any], owner: str, epoch: str) -> s
 def activate(path: Path, owner: str) -> dict[str, Any]:
     """Verify the new account on every later session; never initialize anew."""
     _require(os.getenv("STATE_BACKUP_NAMESPACE", "") == state_backup.CLEAN_OWNER_NAMESPACE, "wrong_namespace")
-    _require(config.OWNER_ONLY and not config.INVITE_AUTO_ACCESS, "owner_only_policy_required")
+    # Private mode, or the invitation mode whose guard already demands a
+    # verified contact for every guest. What stays forbidden is the only
+    # genuinely unsafe combination: wide open with no invitation at all.
+    _require(config.OWNER_ONLY or config.INVITE_AUTO_ACCESS, "owner_only_policy_required")
     _require(config.ALLOWED_SENDERS <= {str(owner or "").strip().casefold()}, "legacy_allowlist_present")
     _require(not config.MAILBOX_PROFILES_JSON and not config.OWNER_NOTICE, "legacy_configuration_present")
     settings = state_backup.configuration()
