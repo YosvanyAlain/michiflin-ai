@@ -326,47 +326,96 @@ function toast(text, kind = "") {
 }
 
 let sheetRevision = 0;
+let sheetReturnFocus = null;
+let sheetOnClose = null;
+let sheetBackgroundInert = false;
+
+function sheetFocusable() {
+  return [...$("#sheet").querySelectorAll('button, input, select, textarea, a[href], [tabindex]')]
+    .filter((node) => !node.disabled && node.tabIndex >= 0 && !node.closest('[inert]')
+      && node.getClientRects().length && getComputedStyle(node).visibility !== "hidden");
+}
+
 function closeSheet() {
-  const sheet = $("#sheet"), revision = ++sheetRevision;
+  const sheet = $("#sheet");
+  if (sheet.hidden) return;
+  const revision = ++sheetRevision;
+  const onClose = sheetOnClose;
+  sheetOnClose = null;
   sheet.classList.remove("open");
   setTimeout(() => {
     // A newer sheet may already have replaced this one during its animation.
     if (revision !== sheetRevision) return;
     sheet.hidden = true;
     fill(sheet);
+    $("#app").inert = sheetBackgroundInert;
+    const target = sheetReturnFocus;
+    sheetReturnFocus = null;
+    if (target && target.isConnected && !target.closest('[inert]')) target.focus({ preventScroll: true });
     // Only acknowledge the current result after the sheet has really closed.
     if (typeof revealVisibleNotices === "function") revealVisibleNotices();
     else if (typeof markVisibleNoticesRead === "function") markVisibleNoticesRead();
   }, 220);
+  // Escape, scrim and close must settle an awaiting confirmation too.
+  if (onClose) onClose();
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("#sheet").hidden) closeSheet();
+  if ($("#sheet").hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSheet();
+  } else if (event.key === "Tab") {
+    const nodes = sheetFocusable(), first = nodes[0], last = nodes[nodes.length - 1];
+    if (!first) {
+      event.preventDefault();
+      $("#sheet .sheet-panel").focus({ preventScroll: true });
+    } else if (!$("#sheet").contains(document.activeElement) ||
+               (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus({ preventScroll: true });
+    }
+  }
 });
 
-function openSheet(title, body) {
+function openSheet(title, body, onClose = null) {
   const sheet = $("#sheet"), revision = ++sheetRevision;
-  const panel = h("div", { class: "sheet-panel", role: "dialog" },
-    h("div", { class: "sheet-head" }, h("h2", {}, title), h("button", { class: "icon-btn", "aria-label": t("close"), onclick: closeSheet }, icon("close"))),
+  const previousClose = sheetOnClose;
+  sheetOnClose = null;
+  if (previousClose) previousClose();
+  if (sheet.hidden) {
+    sheetReturnFocus = document.activeElement;
+    sheetBackgroundInert = $("#app").inert;
+  }
+  sheetOnClose = onClose;
+  const titleId = `sheet-title-${revision}`;
+  const panel = h("div", { class: "sheet-panel", role: "dialog", "aria-modal": "true", "aria-labelledby": titleId, tabindex: "-1" },
+    h("div", { class: "sheet-head" }, h("h2", { id: titleId }, title), h("button", { class: "icon-btn", "aria-label": t("close"), onclick: closeSheet }, icon("close"))),
     h("div", { class: "sheet-body" }, body));
   fill(sheet, h("div", { class: "sheet-scrim", onclick: closeSheet }), panel);
   sheet.hidden = false;
-  requestAnimationFrame(() => { if (revision === sheetRevision) sheet.classList.add("open"); });
+  $("#app").inert = true;
+  requestAnimationFrame(() => {
+    if (revision !== sheetRevision) return;
+    sheet.classList.add("open");
+    (sheetFocusable()[0] || panel).focus({ preventScroll: true });
+  });
   return panel;
 }
 
 function confirmBox(title, text, okLabel) {
   return new Promise((resolve) => {
     const done = (value) => {
-      closeSheet();
+      // Settle the explicit choice before close invokes the dismissal callback.
       resolve(value);
+      closeSheet();
     };
     openSheet(title, [
       h("p", { class: "muted" }, text),
       h("div", { class: "row end" },
         h("button", { class: "btn ghost", onclick: () => done(false) }, t("cancel")),
         h("button", { class: "btn danger", onclick: () => done(true) }, okLabel || t("confirm"))),
-    ]);
+    ], () => resolve(false));
   });
 }
 

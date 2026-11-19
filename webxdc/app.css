@@ -596,8 +596,9 @@ details[open] .caret { transform: rotate(180deg); }
 }
 .sheet.open .sheet-scrim { opacity: 1; }
 .sheet.open .sheet-panel { transform: none; }
-.sheet-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; padding: 14px 0 10px; background: var(--surface); }
-.sheet-head h2 { margin: 0; font-size: 17px; }
+.sheet-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0 10px; background: var(--surface); }
+.sheet-head h2 { min-width: 0; margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.sheet-head > .icon-btn { flex-shrink: 0; }
 .sheet-body { display: flex; flex-direction: column; gap: 12px; }
 .sheet-body p { margin: 0; }
 .choice-list { display: flex; flex-direction: column; gap: 8px; }

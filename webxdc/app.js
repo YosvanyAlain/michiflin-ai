@@ -3972,16 +3972,24 @@ VIEWS.notes = {
     const input = field({ type: "text", placeholder: t("nota_placeholder"), "aria-label": t("nota_placeholder"), enterkeyhint: "go" });
     const list = h("div", { class: "stack" });
     const onAdd = async () => {
-      const text = input.value.trim();
+      if (addButton.disabled) return;
+      const draft = input.value, text = draft.trim();
       if (!text) return;
+      addButton.disabled = true;
+      addButton.classList.add("busy");
       try {
         await bridge.call("notas", { do: "add", text });
-        input.value = "";
+        // Mail can take minutes: never erase text entered after this request.
+        if (input.value === draft) input.value = "";
         load();
       } catch (error) {
         if (!error.cancelled) toast(error.message, "bad");
+      } finally {
+        addButton.disabled = false;
+        addButton.classList.remove("busy");
       }
     };
+    const addButton = h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("nota_save"));
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); onAdd(); } });
     const load = async () => {
       try {
@@ -3996,8 +4004,7 @@ VIEWS.notes = {
         if (!error.cancelled) toast(error.message, "bad");
       }
     };
-    const cardEl = card(h("div", { class: "search-field" }, icon("notes"), input,
-      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("nota_save"))));
+    const cardEl = card(h("div", { class: "search-field" }, icon("notes"), input, addButton));
     add(main, cardEl, section(null, list));
     load();
   },
@@ -4013,16 +4020,23 @@ VIEWS.links = {
     const input = field({ type: "url", placeholder: t("download_placeholder"), enterkeyhint: "go" });
     const list = h("div", { class: "stack" });
     const onAdd = async () => {
-      const url = normalUrl(input.value.trim());
+      if (addButton.disabled) return;
+      const draft = input.value, url = normalUrl(draft.trim());
       if (!isUrl(url)) { toast(t("invalid_url"), "bad"); return; }
+      addButton.disabled = true;
+      addButton.classList.add("busy");
       try {
         await bridge.call("enlaces", { do: "add", url });
-        input.value = "";
+        if (input.value === draft) input.value = "";
         load();
       } catch (error) {
         if (!error.cancelled) toast(error.message, "bad");
+      } finally {
+        addButton.disabled = false;
+        addButton.classList.remove("busy");
       }
     };
+    const addButton = h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("done"));
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); onAdd(); } });
     const load = async () => {
       try {
@@ -4054,8 +4068,7 @@ VIEWS.links = {
         if (!error.cancelled) toast(error.message, "bad");
       }
     };
-    const cardEl = card(h("div", { class: "search-field" }, icon("link"), input,
-      h("button", { class: "btn primary small", onclick: onAdd }, icon("plus"), t("done"))));
+    const cardEl = card(h("div", { class: "search-field" }, icon("link"), input, addButton));
     add(main, cardEl,
       h("button", { class: "btn primary wide", onclick: processNext }, icon("play"), t("link_open_next")),
       h("p", { class: "note" }, icon("info"), t("saved_public_hint")), section(null, list));

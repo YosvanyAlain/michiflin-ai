@@ -83,6 +83,11 @@ jobs:
           python -m unittest tests.test_webxdc_browser -v
           python -m pytest -q tests/test_inline_answer_browser.py tests/test_5_1_browser.py tests/test_offline_owner_data.py tests/test_premium_ui.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py
 
+      - name: Slow-mail forms, accessible dialogs and pre-audit compatibility
+        run: |
+          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py
+          ruff check tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py --select F,E9
+
       - name: File kit, encrypted bridge and isolated archive worker
         env:
           MICHIFLIN_WEBKIT_TESTS: "1"
