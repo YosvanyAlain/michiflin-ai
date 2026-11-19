@@ -430,7 +430,7 @@ class Session:
                 raise ValueError("capture")
             entry, _ = _authorized(self.instance) or ({}, "")
             chat_id = int(entry["chat"])
-            config.TEMP_ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
+            config.private_dir(config.TEMP_ROOT)
             config.TEMP_ROOT.chmod(0o700)
             fd, name = tempfile.mkstemp(prefix="private-capture-", suffix=".jpg", dir=config.TEMP_ROOT)
             try:

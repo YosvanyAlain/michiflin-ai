@@ -900,7 +900,7 @@ def _send_logo(chat_id: int, item: dict[str, str], source: str, locale: str) -> 
     """Send only in response to this user's explicit image request."""
     try:
         raw = base64.b64decode(item["b64"], validate=True)
-        config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+        config.private_dir(config.TEMP_ROOT)
         with tempfile.NamedTemporaryFile(prefix="local-collab-", suffix=".jpg", dir=config.TEMP_ROOT, delete=False) as out:
             out.write(raw)
             path = Path(out.name)

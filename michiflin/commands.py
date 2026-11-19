@@ -185,13 +185,16 @@ def dispatch(chat_id: int, text: str, locale: str) -> bool:
             return False  # ordinary local-only text belongs to the agent
     if parsed is None:
         pending = take_pending(chat_id)
-        if pending:
-            COMMANDS[pending](chat_id, [], text.strip(), locale)
-            return True
-        return False
-    _pending.pop(chat_id, None)
-    key, args, rest = parsed
-    if not key or (key in ADMIN_ONLY and not admin.is_admin(chat.sender())):
+        if not pending:
+            return False
+        # An answer to an earlier question runs the same command as a typed one,
+        # so it must clear the same checks below: a single authorization point
+        # keeps a future two-step administrator command from skipping ADMIN_ONLY.
+        key, args, rest = pending, [], text.strip()
+    else:
+        _pending.pop(chat_id, None)
+        key, args, rest = parsed
+    if not key or key not in COMMANDS or (key in ADMIN_ONLY and not admin.is_admin(chat.sender())):
         chat.text(chat_id, tr(locale, f"⚠️ Comando desconocido. {C(locale, 'help')}", f"⚠️ Unknown command. {C(locale, 'help')}"))
         return True
     COMMANDS[key](chat_id, args, rest, locale)
@@ -323,6 +326,7 @@ def help_pages(locale: str, owner: bool) -> list[str]:
             f"{c('admin', 'logs')} – " + t("advertencias y errores recientes", "recent warnings and errors"),
             f"{c('admin', 'alerts')}_{t('si', 'yes')} · {c('admin', 'alerts')}_no",
             f"{c('admin', 'restart')} – " + t("reiniciar el servidor", "restart the server"),
+            f"{c('invitacion')} – " + t("tu enlace de invitación, para copiar", "your invitation link, ready to copy"),
         ]))
     index = [
         t("Escríbeme normal o envía un enlace; yo decido qué hacer.", "Write normally or send a link; I decide what to do."),
@@ -500,7 +504,7 @@ def cmd_transcript(chat_id: int, args: list[str], rest: str, locale: str) -> Non
     if len(text) <= 3500:
         chat.text(chat_id, f"📝 {title}\n\n{text}" if title else f"📝 {text}")
         return
-    config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.TEMP_ROOT)
     stem = queue.short_stem(title or tr(locale, "subtitulos", "transcript"))
     path = config.TEMP_ROOT / f"{stem}.txt"
     path.write_text(f"{title}\n{url}\n\n{text}\n", encoding="utf-8")
@@ -720,7 +724,7 @@ def cmd_health(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     elapsed = time.monotonic() - config.STARTED_AT
     remaining = max(0, config.SESSION_SECONDS - elapsed)
     disk = shutil.disk_usage(config.JOB_ROOT if config.JOB_ROOT.exists() else "/")
-    version = getattr(getattr(media.yt_dlp, "version", None), "__version__", "—") if media.available() else "—"
+    version = media.version()
     tools_line = " · ".join(f"{'●' if ok else '○'} {name}" for name, ok in (
         ("ffmpeg", bool(shutil.which("ffmpeg"))), ("7z", bool(shutil.which("7z") or shutil.which("7zz"))),
         ("chromium", browser.available()), ("deno", bool(shutil.which("deno"))), ("proxy", bool(config.MEDIA_PROXY))))
@@ -852,6 +856,31 @@ def cmd_owner_only(chat_id: int, args: list[str], rest: str, locale: str) -> Non
                       else "Only addresses you approve can enter; old grants remain closed.")
     chat.text(chat_id, tr(locale, f"Para confirmar ({duration_es}), responde: {command} 0 {code}\n{explanation_es}",
                           f"To confirm ({duration_en}), reply: {command} 0 {code}\n{explanation_en}"))
+
+
+@command("invitacion", owner=True)
+def cmd_invitacion(chat_id: int, args: list[str], rest: str, locale: str) -> None:
+    """Hand the bot's own invitation link back to its owner, ready to copy."""
+    if not config.is_owner_admin(chat.sender()):
+        chat.text(chat_id, tr(locale, "Solo los administradores autorizados pueden pedir el enlace.",
+                              "Only authorized administrators can request the link."))
+        return
+    from . import invite
+
+    words = args + rest.split()
+    refresh = any(names.word_key(word) in {"refrescar", "refresh"} for word in words)
+    value = invite.link(refresh=refresh)
+    if not value:
+        chat.text(chat_id, tr(locale, "No pude obtener el enlace ahora mismo: la cuenta de Delta Chat no responde. Inténtalo de nuevo en unos segundos.",
+                              "The link is unavailable right now: the Delta Chat account is not responding. Try again in a few seconds."))
+        return
+    # Sent on its own line and with no surrounding text so a long press copies
+    # the link cleanly; the explanation goes in a separate message.
+    chat.text(chat_id, value)
+    chat.text(chat_id, tr(locale, "☝️ Tu enlace de invitación. Mantén pulsado para copiarlo. "
+                          "Quien lo use abre un chat verificado contigo: compártelo solo con quien quieras dentro.",
+                          "☝️ Your invitation link. Long-press to copy it. "
+                          "Anyone using it opens a verified chat with you: share it only with people you want in."))
 
 
 @command("admin", owner=True)

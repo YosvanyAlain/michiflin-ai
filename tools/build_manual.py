@@ -323,6 +323,7 @@ MODULES = {
     "miniapp.py": "Construye la WebXDC, vincula cada instancia al chat y atiende operaciones y actualizaciones.",
     "music.py": "Consulta metadatos públicos de música de Internet Archive y conserva las declaraciones de licencia.",
     "names.py": "Nombres y alias de comandos en español e inglés.",
+    "invite.py": "Enlace de invitación de la propia cuenta, a petición del dueño.",
     "net.py": "Cliente HTTP y control de URLs, direcciones públicas, redirecciones y límites de lectura.",
     "pager.py": "Paginación de listas y navegación por resultados en el chat.",
     "perf.py": "Métricas y diagnóstico acotado de CPU, memoria, disco, red y tiempos de respuesta.",

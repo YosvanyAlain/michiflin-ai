@@ -117,7 +117,7 @@ def queue_bytes() -> int:
 
 
 def free_disk() -> int:
-    config.JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.JOB_ROOT)
     return shutil.disk_usage(config.JOB_ROOT).free
 
 
@@ -1421,7 +1421,7 @@ def start() -> None:
     if _started:
         return
     _started = True
-    config.JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.JOB_ROOT)
     recover()
     workers = [(_preparer, f"preparer-{index + 1}") for index in range(PREPARERS)]
     for target, name in (*workers, (_sender, "sender"), (_janitor, "janitor")):

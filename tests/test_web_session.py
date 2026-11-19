@@ -731,12 +731,17 @@ class EgressAndResearchTests(unittest.TestCase):
         provider_url = "https://fixture.example/private?cookie=fixture-secret"
         ydl = mock.MagicMock()
         ydl.__enter__.return_value.extract_info.side_effect = RuntimeError(provider_url)
+        gateway = mock.MagicMock()
+        gateway.url = "http://127.0.0.1:18080"
+        gateway.__enter__.return_value = gateway
+        ytdlp_stub = mock.Mock(YoutubeDL=mock.Mock(return_value=ydl))
         with mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
              mock.patch.object(media, "supported", return_value=True), \
              mock.patch.object(media, "_routes", return_value=[upstream]), \
+             mock.patch.object(media.egress, "EgressProxy", return_value=gateway), \
              mock.patch.object(media, "_options", return_value={}), \
              mock.patch.object(private_media, "storage_for", return_value=None), \
-             mock.patch.object(media.yt_dlp, "YoutubeDL", return_value=ydl), \
+             mock.patch.object(media, "yt_dlp", ytdlp_stub), \
              self.assertLogs("michiflin", level="INFO") as captured, self.assertRaises(ValueError):
             media.inspect("https://fixture.example/video")
         output = " ".join(captured.output)
