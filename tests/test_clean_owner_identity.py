@@ -148,8 +148,9 @@ def test_candidate_rejects_extra_contacts_instead_of_purging_them(tmp_path, monk
 
 
 @pytest.mark.parametrize("unsafe", [
+    # Wide open: neither private nor gated behind a verified invitation.
     {"OWNER_ONLY": False},
-    {"INVITE_AUTO_ACCESS": True},
+    {"OWNER_ONLY": False, "INVITE_AUTO_ACCESS": False},
     {"ALLOWED_SENDERS": {OWNER, "legacy@example.test"}},
     {"MAILBOX_PROFILES_JSON": "[{}]"},
     {"OWNER_NOTICE": "legacy notice"},
@@ -166,6 +167,33 @@ def test_activation_rejects_unsafe_legacy_configuration_before_network(tmp_path,
     with pytest.raises(clean.CleanIdentityError):
         clean.activate(tmp_path, OWNER)
     credentials.assert_not_called()
+
+
+@pytest.mark.parametrize("policy", [
+    {"OWNER_ONLY": True, "INVITE_AUTO_ACCESS": False},   # private
+    {"OWNER_ONLY": False, "INVITE_AUTO_ACCESS": True},   # open by verified invitation
+    {"OWNER_ONLY": True, "INVITE_AUTO_ACCESS": True},    # closed while invitations exist
+])
+def test_activation_allows_private_or_verified_invitation_policies(tmp_path, monkeypatch, policy):
+    """Opening by invitation is a supported policy, not a misconfiguration.
+
+    cutover_identity_once states the same rule in words: activation requires
+    private mode *or* explicit verified invitations. The invitation guard in
+    identity_guard demands a verified contact for every guest, so this is an
+    open door with a lock, not an open door. The check under test must let
+    these three through; a later step fails for unrelated reasons, which is
+    why the assertion is only that the policy itself is not what rejected it.
+    """
+    monkeypatch.setenv("STATE_BACKUP_NAMESPACE", state_backup.CLEAN_OWNER_NAMESPACE)
+    baseline = {"ALLOWED_SENDERS": {OWNER}, "MAILBOX_PROFILES_JSON": "", "OWNER_NOTICE": ""}
+    for key, value in (baseline | policy).items():
+        monkeypatch.setattr(clean.config, key, value)
+    monkeypatch.setattr(state_backup, "configuration", lambda: None)
+    with pytest.raises(clean.CleanIdentityError) as caught:
+        clean.activate(tmp_path, OWNER)
+    # It got past the policy gate and stopped at the next one.
+    assert "owner_only_policy_required" not in str(caught.value)
+    assert "backup_credentials_missing" in str(caught.value)
 
 
 def test_clean_workflow_access_fails_closed_and_keeps_the_clean_storage():
