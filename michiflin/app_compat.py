@@ -2,6 +2,8 @@
 
 Only files changed by a later package are archived. Every other source file is
 verified against the pinned manifest before its epoch-specific hash is returned.
+A package is identified by its own manifest, so files that later packages added
+are skipped; every file the package did ship must still exist and match.
 """
 from __future__ import annotations
 
@@ -10,23 +12,25 @@ import json
 from pathlib import Path
 
 _PREVIOUS = Path(__file__).resolve().parent / "compat" / "618c355"
-_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _RECENT = Path(__file__).resolve().parent / "compat" / "58a0657"
-_RECENT_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_RECENT_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _LATEST = Path(__file__).resolve().parent / "compat" / "582d273"
-_LATEST_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_LATEST_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _PUBLISHED = Path(__file__).resolve().parent / "compat" / "e8a104c"
-_PUBLISHED_REPLACED = {"app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+_PUBLISHED_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
     try:
         expected = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
-        if not isinstance(expected, dict) or len(files) != len(expected) or set(files) != set(expected):
+        if not isinstance(expected, dict) or not expected or not set(expected) <= set(files):
             return ""
         digest = hashlib.sha256()
         digest.update(f"epoch:{epoch}".encode())
         for name in files:
+            if name not in expected:
+                continue  # added by a later package, never part of this one
             source = (source_dir if name in replaced else Path(app_dir)) / name
             data = source.read_bytes()
             if hashlib.sha256(data).hexdigest() != expected[name]:

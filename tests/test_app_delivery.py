@@ -297,9 +297,31 @@ def test_previous_compatibility_fails_closed_when_snapshot_or_other_asset_change
     shutil.copytree(Path(__file__).resolve().parents[1] / "michiflin" / "compat" / "618c355", old)
     current = tmp_path / "webxdc"
     shutil.copytree(miniapp.APP_DIR, current)
-    with (current / "index.html").open("a", encoding="utf-8") as handle:
+    with (current / "mp4.js").open("a", encoding="utf-8") as handle:
         handle.write("\n// tampered synthetic copy\n")
     assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == ""
+    # index.html is archived as well now, so the snapshot copy is the verified one.
+    shutil.rmtree(current)
+    shutil.copytree(miniapp.APP_DIR, current)
+    assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == "c7544a8050"
+    with (old / "index.html").open("a", encoding="utf-8") as handle:
+        handle.write("\n<!-- tampered synthetic copy -->\n")
+    assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == ""
+
+
+def test_files_added_after_a_shipped_package_do_not_break_its_compatibility(app_state, tmp_path):
+    """qr.js shipped later, so it is not part of 618c355 and cannot change its hash."""
+    import shutil
+    manifest = json.loads((app_compat._PREVIOUS / "manifest.json").read_text(encoding="utf-8"))
+    assert "qr.js" in miniapp.APP_FILES and "qr.js" not in manifest
+    current = tmp_path / "webxdc"
+    shutil.copytree(miniapp.APP_DIR, current)
+    with (current / "qr.js").open("a", encoding="utf-8") as handle:
+        handle.write("\n// only a later package ships this file\n")
+    assert app_compat.previous_build("test-epoch", str(current), miniapp.APP_FILES) == "c7544a8050"
+    # A file the package did ship may never go missing from the current package.
+    shrunk = tuple(name for name in miniapp.APP_FILES if name != "live.js")
+    assert app_compat.previous_build("test-epoch", str(current), shrunk) == ""
 
 
 @pytest.mark.parametrize("build_fn", ["previous_build", "recent_build", "latest_build", "published_build"])
