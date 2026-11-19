@@ -4,11 +4,13 @@ from __future__ import annotations
 import ipaddress
 import socket
 import threading
+import weakref
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import requests
 
+from . import config, egress
 from .config import WEB_PROXY
 
 BROWSER_UA = (
@@ -81,51 +83,88 @@ def cookie_jar() -> requests.cookies.RequestsCookieJar:
 
 
 def _blocked(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast
+    """Treat only globally routable unicast addresses as public."""
+    return not egress._public(address)
 
 
 def validate_public_url(url: str) -> str:
     """Reject non-HTTP schemes and private-network destinations before any request."""
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    try:
+        normalized = url.strip()
+        parsed = urlparse(normalized)
+        port = parsed.port
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError("bad_url") from None
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or port is not None and not 1 <= port <= 65535):
         raise ValueError("bad_url")
     host = parsed.hostname.rstrip(".")
-    if host.lower() in {"localhost", "localhost.localdomain"}:
+    lower = host.lower()
+    if not host or lower in {"localhost", "localhost.localdomain"} or lower.endswith(".localhost"):
         raise ValueError("private_url")
     try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
         if _blocked(host):
             raise ValueError("private_url")
-    except ValueError as exc:
-        if str(exc) == "private_url":
-            raise
     try:
         addresses = {entry[4][0] for entry in socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)}
     except socket.gaierror:
         raise ValueError("dns") from None
-    if any(_blocked(address) for address in addresses):
+    if not addresses or any(_blocked(address) for address in addresses):
         raise ValueError("private_url")
-    return url.strip()
+    return normalized
 
 
-def request(method: str, url: str, proxy: bool = False, **kwargs: Any) -> requests.Response:
-    """Follow redirects manually so each hop is validated; cookies are kept automatically."""
+def _retain_gateway(response: requests.Response, gateway: egress.EgressProxy, stream: bool) -> requests.Response:
+    if not stream:
+        gateway.close()
+        return response
+    close_method = weakref.WeakMethod(response.close)
+    finalizer = weakref.finalize(response, gateway.close)
+
+    def close() -> None:
+        try:
+            original = close_method()
+            if original is not None:
+                original()
+        finally:
+            finalizer()
+
+    response.close = close  # type: ignore[method-assign]
+    response._egress_proxy_finalizer = finalizer  # type: ignore[attr-defined]
+    return response
+
+
+def request(method: str, url: str, proxy: bool = False, *, follow_redirects: bool = True,
+            **kwargs: Any) -> requests.Response:
+    """Use a DNS-pinning gateway; optionally validate and follow each redirect."""
     current = validate_public_url(url)
     kwargs["allow_redirects"] = False
     kwargs.setdefault("timeout", (15, 45))
-    if proxy and WEB_PROXY:
-        kwargs["proxies"] = {"http": WEB_PROXY, "https": WEB_PROXY}
     http = session()
     for _ in range(10):
-        response = http.request(method, current, **kwargs)
-        if response.status_code not in {301, 302, 303, 307, 308}:
-            return response
-        target = response.headers.get("Location")
-        response.close()
+        upstream = WEB_PROXY if proxy else ""
+        gateway_limit = max(1_000_000_000, config.MAX_FILE_BYTES * 3 + 100_000_000)
+        gateway = egress.EgressProxy(upstream=upstream, max_bytes=gateway_limit, allow_http=True)
+        try:
+            request_kwargs = dict(kwargs)
+            request_kwargs["proxies"] = {"http": gateway.url, "https": gateway.url}
+            response = http.request(method, current, **request_kwargs)
+        except BaseException:
+            gateway.close()
+            raise
+        status = response.status_code
+        target = response.headers.get("Location") if follow_redirects and status in {301, 302, 303, 307, 308} else None
         if not target:
-            return response
+            return _retain_gateway(response, gateway, bool(kwargs.get("stream", False)))
+        response.close()
+        gateway.close()
         current = validate_public_url(urljoin(current, target))
-        if response.status_code == 303:
+        if status == 303:
             method = "GET"
     raise ValueError("redirects")
 

@@ -12,8 +12,10 @@ import base64
 import http.client
 import ipaddress
 import select
+import shutil
 import socket
 import socketserver
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -29,6 +31,10 @@ except ImportError:  # direct egress must still work without the optional module
 MAX_HEADER = 8192
 MAX_CLIENTS = 20
 IDLE_SECONDS = 40
+# socketserver's shutdown() only returns once serve_forever notices the flag,
+# so the default 0.5 s poll interval is paid as latency on every request that
+# builds a gateway. These proxies are ephemeral; poll often and close fast.
+POLL_SECONDS = 0.02
 MAX_TUNNEL_SECONDS = 180
 MAX_CONNECT_SECONDS = 15
 PROXY_PROBE_SECONDS = 3
@@ -55,14 +61,17 @@ def _public(value: str) -> bool:
     return bool(address.is_global and not (address.is_reserved or address.is_multicast or address.is_unspecified))
 
 
-def _authority(value: str) -> tuple[str, int]:
+def _authority(value: str, *, allow_nonstandard_port: bool = False) -> tuple[str, int]:
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        raise EgressError("authority")
     try:
         parsed = urlsplit("https://" + value)
         host, port = parsed.hostname, parsed.port
     except ValueError:
         raise EgressError("authority") from None
-    if (not host or port != 443 or parsed.username is not None or parsed.password is not None
-            or parsed.path or parsed.query or parsed.fragment or len(host) > 253):
+    if (not host or port is None or not 1 <= port <= 65535
+            or (port != 443 and not allow_nonstandard_port) or parsed.username is not None or parsed.password is not None
+            or parsed.path or parsed.query or parsed.fragment or len(host) > 253 or "%" in host):
         raise EgressError("authority")
     return host, port
 
@@ -159,7 +168,8 @@ def _via_http(proxy: _Proxy, address: str, port: int, timeout: float) -> socket.
         token = base64.b64encode(f"{proxy.username}:{proxy.password}".encode("utf-8")).decode("ascii")
         headers["Proxy-Authorization"] = "Basic " + token
     try:
-        connection.set_tunnel(address, port, headers=headers)
+        connect_host = f"[{address}]" if ":" in address else address
+        connection.set_tunnel(connect_host, port, headers=headers)
         connection.connect()
         remote = connection.sock
         if remote is None:
@@ -171,15 +181,20 @@ def _via_http(proxy: _Proxy, address: str, port: int, timeout: float) -> socket.
         raise EgressError("proxy_unavailable") from None
 
 
-def _connect(host: str, port: int, upstream: _Proxy | None = None) -> socket.socket:
+def _resolve_public(host: str, port: int) -> list[tuple[int, int, int, str, tuple[Any, ...]]]:
     try:
         candidates = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, proto=socket.IPPROTO_TCP)
     except OSError:
         raise EgressError("dns") from None
-    # Mixed public/private answers are rejected, not merely filtered. The
-    # upstream is given only these numeric addresses, not the hostname.
+    # Mixed public/private answers are rejected, not merely filtered. Every
+    # returned connection target is numeric and already vetted.
     if not candidates or any("%" in item[4][0] or not _public(item[4][0]) for item in candidates):
         raise EgressError("private")
+    return candidates
+
+
+def _connect(host: str, port: int, upstream: _Proxy | None = None) -> socket.socket:
+    candidates = _resolve_public(host, port)
     deadline = time.monotonic() + MAX_CONNECT_SECONDS
     for family, kind, protocol, _name, address in candidates[:8]:
         remaining = deadline - time.monotonic()
@@ -212,11 +227,12 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     allow_reuse_address = False
 
-    def __init__(self, path: str, max_bytes: int, upstream: _Proxy | None):
+    def __init__(self, path: str, max_bytes: int, upstream: _Proxy | None, allow_http: bool = False):
         self.limit = threading.BoundedSemaphore(MAX_CLIENTS)
         self.remaining = max_bytes
         self.budget_lock = threading.Lock()
         self.upstream = upstream
+        self.allow_http = allow_http
         self.proxy_failure = threading.Event()
         super().__init__(path, _Handler)
 
@@ -242,6 +258,73 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             self.limit.release()
 
 
+def _parse_http_request(first: bytes, fields: list[bytes]) -> tuple[str, int, bytes, bytes, bytes, bytes, list[bytes]]:
+    """Parse an absolute-form HTTP request and strip proxy hop-by-hop headers."""
+    parts = first.split(b" ")
+    if (len(parts) != 3 or parts[0] not in {b"GET", b"HEAD", b"POST", b"PUT", b"PATCH", b"DELETE", b"OPTIONS", b"TRACE"}
+            or parts[2] not in {b"HTTP/1.0", b"HTTP/1.1"}):
+        raise EgressError("method")
+    try:
+        target = parts[1].decode("ascii", "strict")
+        if any(ord(char) <= 32 or ord(char) == 127 for char in target) or "#" in target:
+            raise ValueError()
+        parsed = urlsplit(target)
+        host, explicit_port = parsed.hostname, parsed.port
+        port = explicit_port if explicit_port is not None else 80
+    except (UnicodeError, ValueError):
+        raise EgressError("authority") from None
+    if (parsed.scheme.lower() != "http" or not host or len(host) > 253 or "%" in host
+            or parsed.username is not None or parsed.password is not None or parsed.fragment
+            or not 1 <= port <= 65535 or not parsed.netloc):
+        raise EgressError("authority")
+    try:
+        host_ascii = ipaddress.ip_address(host).compressed
+    except ValueError:
+        try:
+            host_ascii = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            raise EgressError("authority") from None
+    host_header = f"[{host_ascii}]" if ":" in host_ascii else host_ascii
+    if explicit_port is not None:
+        host_header += f":{port}"
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    connection_tokens: set[bytes] = set()
+    parsed_fields: list[tuple[bytes, bytes]] = []
+    token_chars = b"!#$%&'*+-.^_`|~"
+    for field in fields:
+        name, separator, value = field.partition(b":")
+        if (not separator or not name or field[:1] in {b" ", b"\t"}
+                or any(not (48 <= char <= 57 or 65 <= char <= 90 or 97 <= char <= 122 or char in token_chars) for char in name)):
+            raise EgressError("headers")
+        if any((char < 32 and char != 9) or char == 127 for char in value):
+            raise EgressError("headers")
+        lowered = name.lower()
+        if lowered == b"connection":
+            connection_tokens.update(item.strip().lower() for item in value.split(b",") if item.strip())
+        parsed_fields.append((lowered, field))
+    blocked = connection_tokens | {b"host", b"connection", b"keep-alive", b"proxy-authorization", b"proxy-connection", b"upgrade"}
+    safe_fields = [field for name, field in parsed_fields if name not in blocked]
+    return host, port, parts[0], parts[2], path.encode("ascii"), host_header.encode("ascii"), safe_fields
+
+
+def _serialize_http_request(method: bytes, version: bytes, path: bytes, host_header: bytes,
+                            fields: list[bytes], *, target_ip: str = "", target_port: int = 80,
+                            proxy: _Proxy | None = None) -> bytes:
+    if proxy is not None:
+        address = f"[{target_ip}]" if ":" in target_ip else target_ip
+        target = f"http://{address}:{target_port}".encode("ascii") + path
+    else:
+        target = path
+    lines = [method + b" " + target + b" " + version, b"Host: " + host_header, *fields]
+    if proxy is not None and proxy.username:
+        credentials = base64.b64encode(f"{proxy.username}:{proxy.password}".encode("utf-8"))
+        lines.append(b"Proxy-Authorization: Basic " + credentials)
+    lines.append(b"Connection: close")
+    return b"\r\n".join(lines) + b"\r\n\r\n"
+
+
 class _Handler(socketserver.BaseRequestHandler):
     server: _Server
     request: socket.socket
@@ -257,21 +340,54 @@ class _Handler(socketserver.BaseRequestHandler):
                 if not piece:
                     return
                 data += piece
-            headers, separator, pending = data.partition(b"\r\n\r\n")
-            if not separator or len(headers) > MAX_HEADER:
+            raw_headers, separator, pending = data.partition(b"\r\n\r\n")
+            if not separator or len(raw_headers) > MAX_HEADER:
                 raise EgressError("headers")
-            first = headers.split(b"\r\n", 1)[0].decode("ascii", "strict").split(" ")
-            if len(first) != 3 or first[0] != "CONNECT" or first[2] not in {"HTTP/1.0", "HTTP/1.1"}:
+            lines = raw_headers.split(b"\r\n")
+            first_line, fields = lines[0], lines[1:]
+            parts = first_line.split(b" ")
+            if len(parts) != 3:
                 raise EgressError("method")
-            host, port = _authority(first[1])
-            remote = _connect(host, port, self.server.upstream)
-            self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            established = True
-            self.request.settimeout(None)
-            if pending:
-                if not self.server.spend(len(pending)):
+            outbound = pending
+            if parts[0] == b"CONNECT":
+                try:
+                    authority = parts[1].decode("ascii", "strict")
+                except UnicodeError:
+                    raise EgressError("authority") from None
+                if parts[2] not in {b"HTTP/1.0", b"HTTP/1.1"}:
+                    raise EgressError("method")
+                host, port = _authority(authority, allow_nonstandard_port=self.server.allow_http)
+                remote = _connect(host, port, self.server.upstream)
+                self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                established = True
+            else:
+                if not self.server.allow_http:
+                    raise EgressError("method")
+                host, port, method, version, path, host_header, safe_fields = _parse_http_request(first_line, fields)
+                upstream = self.server.upstream
+                if upstream is not None and upstream.scheme == "http":
+                    # An upstream HTTP proxy receives a numeric absolute URI,
+                    # never the original hostname that it could resolve again.
+                    address = _resolve_public(host, port)[0][4][0]
+                    try:
+                        remote = socket.create_connection((upstream.host, upstream.port), timeout=MAX_CONNECT_SECONDS)
+                    except OSError:
+                        raise EgressError("proxy_unavailable") from None
+                    outbound = _serialize_http_request(method, version, path, host_header, safe_fields,
+                                                       target_ip=address, target_port=port, proxy=upstream) + pending
+                else:
+                    remote = _connect(host, port, upstream)
+                    outbound = _serialize_http_request(method, version, path, host_header, safe_fields) + pending
+                if not self.server.spend(len(outbound)):
                     return
-                remote.sendall(pending)
+                remote.sendall(outbound)
+                established = True
+            self.request.settimeout(None)
+            remote.settimeout(None)
+            if parts[0] == b"CONNECT" and outbound:
+                if not self.server.spend(len(outbound)):
+                    return
+                remote.sendall(outbound)
             sockets = [self.request, remote]
             until = time.monotonic() + MAX_TUNNEL_SECONDS
             while time.monotonic() < until:
@@ -297,17 +413,18 @@ class _Handler(socketserver.BaseRequestHandler):
 
 
 class Gateway:
-    """A private socket; place it in a non-listable randomized directory."""
+    """A private Unix socket; place it in a non-listable randomized directory."""
 
-    def __init__(self, socket_path: Path, max_bytes: int = 100_000_000, upstream: str = ""):
+    def __init__(self, socket_path: Path, max_bytes: int = 100_000_000, upstream: str = "", allow_http: bool = False):
         self.path = socket_path
         proxy = _proxy(upstream) if upstream else None
         if proxy is not None:
             _probe_proxy(proxy)
-        self.server = _Server(str(socket_path), max_bytes, proxy)
+        self.server = _Server(str(socket_path), max_bytes, proxy, allow_http)
         try:
             socket_path.chmod(0o666)  # reachable by the unprivileged socat inside the worker namespace
-            self.thread = threading.Thread(target=self.server.serve_forever, name="egress", daemon=True)
+            self.thread = threading.Thread(target=self.server.serve_forever, args=(POLL_SECONDS,),
+                                           name="egress", daemon=True)
             self.thread.start()
         except BaseException:
             self.server.server_close()
@@ -326,6 +443,112 @@ class Gateway:
         self.path.unlink(missing_ok=True)
 
     def __enter__(self) -> Gateway:
+        return self
+
+    def __exit__(self, *_args: Any) -> None:
+        self.close()
+
+
+class _RelayServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def __init__(self, socket_path: Path):
+        self.socket_path = str(socket_path)
+        self.active: set[socket.socket] = set()
+        self.active_lock = threading.Lock()
+        super().__init__(("127.0.0.1", 0), _RelayHandler)
+
+    def close_active_connections(self) -> None:
+        with self.active_lock:
+            active = list(self.active)
+        for current in active:
+            try:
+                current.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            current.close()
+
+
+class _RelayHandler(socketserver.BaseRequestHandler):
+    server: _RelayServer
+
+    def handle(self) -> None:
+        remote = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with self.server.active_lock:
+            self.server.active.add(self.request)
+        try:
+            remote.settimeout(5)
+            remote.connect(self.server.socket_path)
+            remote.settimeout(None)
+            self.request.settimeout(None)
+            sockets = [self.request, remote]
+            until = time.monotonic() + MAX_TUNNEL_SECONDS
+            while time.monotonic() < until:
+                readable, _, exceptional = select.select(sockets, [], sockets, IDLE_SECONDS)
+                if exceptional or not readable:
+                    return
+                for source in readable:
+                    block = source.recv(65536)
+                    if not block:
+                        return
+                    (remote if source is self.request else self.request).sendall(block)
+        except OSError:
+            return
+        finally:
+            with self.server.active_lock:
+                self.server.active.discard(self.request)
+            remote.close()
+
+
+class EgressProxy:
+    """Short-lived loopback HTTP proxy backed by the same DNS-pinning gateway.
+
+    Browser and library clients can use an ordinary HTTP proxy URL while all
+    origin name resolution, public-address checks and numeric connections stay
+    in Gateway. Only the listener's random port is exposed on loopback.
+    """
+
+    def __init__(self, upstream: str = "", max_bytes: int = 1_000_000_000, allow_http: bool = True):
+        self.root = Path(tempfile.mkdtemp(prefix="michiflin-egress-"))
+        self.root.chmod(0o700)
+        self.gateway: Gateway | None = None
+        self.server: _RelayServer | None = None
+        self.thread: threading.Thread | None = None
+        self.url = ""
+        self._closed = False
+        try:
+            path = self.root / "gate.sock"
+            self.gateway = Gateway(path, max_bytes=max_bytes, upstream=upstream, allow_http=allow_http)
+            self.server = _RelayServer(path)
+            self.thread = threading.Thread(target=self.server.serve_forever, args=(POLL_SECONDS,),
+                                           name="egress-relay", daemon=True)
+            self.thread.start()
+            self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.server is not None:
+                if self.thread is not None and self.thread.is_alive():
+                    self.server.shutdown()
+                self.server.close_active_connections()
+                self.server.server_close()
+                if self.thread is not None:
+                    self.thread.join(timeout=3)
+        finally:
+            try:
+                if self.gateway is not None:
+                    self.gateway.close()
+            finally:
+                shutil.rmtree(self.root, ignore_errors=True)
+
+    def __enter__(self) -> EgressProxy:
         return self
 
     def __exit__(self, *_args: Any) -> None:

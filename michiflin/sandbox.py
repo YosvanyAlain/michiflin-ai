@@ -148,7 +148,7 @@ class BrowserProcess:
             if changed.returncode:
                 raise SandboxError("isolation_unavailable")
             try:
-                self.gateway = egress.Gateway(self.root / "gate.sock", max_bytes=max_bytes, upstream=upstream)
+                self.gateway = egress.Gateway(self.root / "gate.sock", max_bytes=max_bytes, upstream=upstream, allow_http=True)
             except egress.EgressError as exc:
                 # Only short, non-sensitive error codes cross into the UI.
                 raise SandboxError(str(exc)) from None

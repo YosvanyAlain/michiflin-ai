@@ -138,8 +138,12 @@ def pollinations_balance() -> float | None:
         return _balance_cache.get("value")
     try:
         response = requests.get("https://gen.pollinations.ai/account/balance",
-                                headers={"Authorization": f"Bearer {config.POLLINATIONS_API_KEY}"}, timeout=15)
-        value = float(response.json().get("balance")) if response.ok else None
+                                headers={"Authorization": f"Bearer {config.POLLINATIONS_API_KEY}"},
+                                timeout=15, allow_redirects=False)
+        if 300 <= int(response.status_code) < 400:
+            value = None
+        else:
+            value = float(response.json().get("balance")) if response.ok else None
     except (requests.RequestException, ValueError, TypeError):
         value = None
     _balance_cache.update(at=time.time(), value=value)
@@ -476,7 +480,10 @@ def _horde(key: str, prompt: str, width: int, height: int, seed: int, wait: int 
         "params": {"width": width, "height": height, "steps": steps, "cfg_scale": cfg, "sampler_name": sampler,
                    "seed": str(seed), "n": 1, "karras": sampler != "k_euler"},
     }
-    response = requests.post(f"{HORDE_API}/generate/async", json=body, headers=headers, timeout=30)
+    response = requests.post(f"{HORDE_API}/generate/async", json=body, headers=headers, timeout=30,
+                             allow_redirects=False)
+    if 300 <= int(response.status_code) < 400:
+        raise _SourceError("redirect")
     if response.status_code == 429:
         raise _BusyError()
     if response.status_code == 401:
@@ -488,16 +495,29 @@ def _horde(key: str, prompt: str, width: int, height: int, seed: int, wait: int 
     try:
         while True:
             time.sleep(6)
-            check = requests.get(f"{HORDE_API}/generate/check/{job}", headers=headers, timeout=20).json()
+            check_response = requests.get(f"{HORDE_API}/generate/check/{job}", headers=headers, timeout=20,
+                                          allow_redirects=False)
+            if 300 <= int(check_response.status_code) < 400:
+                raise _SourceError("redirect")
+            if not check_response.ok:
+                raise _SourceError("response")
+            check = check_response.json()
             if check.get("faulted") or check.get("is_possible") is False:
                 raise _SourceError("response")
             if check.get("done"):
                 break
             if time.monotonic() - started > wait:
                 raise _BusyError()
-        status = requests.get(f"{HORDE_API}/generate/status/{job}", headers=headers, timeout=30).json()
+        status_response = requests.get(f"{HORDE_API}/generate/status/{job}", headers=headers, timeout=30,
+                                       allow_redirects=False)
+        if 300 <= int(status_response.status_code) < 400:
+            raise _SourceError("redirect")
+        if not status_response.ok:
+            raise _SourceError("response")
+        status = status_response.json()
     except (_BusyError, _SourceError):
-        requests.delete(f"{HORDE_API}/generate/status/{job}", headers=headers, timeout=15)
+        requests.delete(f"{HORDE_API}/generate/status/{job}", headers=headers, timeout=15,
+                        allow_redirects=False)
         raise
     generation = (status.get("generations") or [{}])[0]
     if generation.get("censored"):
@@ -516,15 +536,21 @@ def _horde(key: str, prompt: str, width: int, height: int, seed: int, wait: int 
 
 
 def _hf_space(prompt: str, width: int, height: int, seed: int) -> bytes:
+    # This setting is a Hub repository id, not a general URL. Gradio Client
+    # also accepts arbitrary app URLs; reject those so deployment configuration
+    # cannot accidentally turn image generation into a private-network fetch.
+    space = str(config.HF_IMAGE_SPACE or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", space):
+        raise _SourceError("response")
     from gradio_client import Client
 
-    config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.TEMP_ROOT)
     # Constrain downloaded files to a fresh private directory; never open a path
     # supplied by a remote Space outside it, and cap the read.
     with tempfile.TemporaryDirectory(prefix="hf-image-", dir=config.TEMP_ROOT) as folder:
         client = None
         try:
-            client = Client(config.HF_IMAGE_SPACE, token=config.HF_TOKEN or None, verbose=False,
+            client = Client(space, token=config.HF_TOKEN or None, verbose=False,
                             download_files=folder, analytics_enabled=False)
             result = client.predict(prompt=prompt[:1500], seed=seed, randomize_seed=False, width=width, height=height,
                                     num_inference_steps=4, api_name="/infer")

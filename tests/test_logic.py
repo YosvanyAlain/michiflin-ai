@@ -333,6 +333,25 @@ class FreeGatewayTests(Base):
         self.assertIn("reason", kilo_models["nvidia/nemotron-3-super-120b-a12b:free"].roles)
         self.assertEqual(kilo_models["nvidia/nemotron-3-super-120b-a12b:free"].title(), "Nemotron 3 Super 120B")
 
+    def test_discovery_does_not_follow_redirect_with_provider_credentials(self) -> None:
+        seen = {}
+
+        class Redirect:
+            status_code, ok = 302, True
+
+            def json(self):
+                raise AssertionError("redirect body must not be parsed")
+
+        def get(url, **kwargs):
+            seen.update(url=url, **kwargs)
+            return Redirect()
+
+        with mock.patch("michiflin.ai.requests.get", get):
+            with self.assertRaises(ai.requests.RequestException):
+                ai._discover_groq()
+        self.assertFalse(seen["allow_redirects"])
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer test")
+
     def test_keyless_call_sends_no_credentials(self) -> None:
         seen = {}
 
@@ -421,21 +440,27 @@ class HordeTests(Base):
         from PIL import Image
         buffer = __import__("io").BytesIO()
         Image.new("RGB", (64, 64), "orange").save(buffer, "WEBP")
-        sent = {}
+        sent = {"redirect_flags": []}
         checks = iter([{"done": False}, {"done": True}])
 
-        def post(url, json=None, headers=None, timeout=None):
+        def post(url, json=None, headers=None, timeout=None, **kwargs):
             sent.update(json=json, headers=headers)
+            sent["redirect_flags"].append(kwargs.get("allow_redirects"))
             return self.Reply({"id": "job1"}, status=202)
 
-        def get(url, headers=None, timeout=None, **_kwargs):
+        def get(url, headers=None, timeout=None, **kwargs):
+            sent["redirect_flags"].append(kwargs.get("allow_redirects"))
             if "/check/" in url:
                 return self.Reply(next(checks))
             if "/status/" in url:
                 return self.Reply({"generations": [{"img": "https://r2.example/img.webp", "censored": censored}]})
             return self.Reply(content=buffer.getvalue())
+
+        def delete(*_args, **kwargs):
+            sent["redirect_flags"].append(kwargs.get("allow_redirects"))
+
         with mock.patch.object(config, "AI_HORDE", True), mock.patch("michiflin.images.requests.post", post), \
-                mock.patch("michiflin.images.requests.get", get), mock.patch("michiflin.images.requests.delete", lambda *a, **k: None), \
+                mock.patch("michiflin.images.requests.get", get), mock.patch("michiflin.images.requests.delete", delete), \
                 mock.patch("michiflin.images.time.sleep", lambda _s: None), mock.patch("michiflin.images.english_prompt", lambda p: p), \
                 mock.patch("michiflin.images._public_image", return_value=buffer.getvalue()):
             result = images.generate("a lighthouse 1920x1080", "horde:flux")
@@ -451,6 +476,7 @@ class HordeTests(Base):
         self.assertFalse(sent["json"]["nsfw"])
         self.assertTrue(sent["json"]["censor_nsfw"])
         self.assertEqual(sent["headers"]["apikey"], "0000000000")
+        self.assertEqual(sent["redirect_flags"], [False, False, False, False])
 
     def test_censored_result_is_not_delivered(self) -> None:
         result, _sent = self.run_job(censored=True)
@@ -980,6 +1006,16 @@ class ToolTests(unittest.TestCase):
         from michiflin import media, private_media
 
         attempts: list[tuple[str, object]] = []
+        gateways: list[str] = []
+        class FakeGateway:
+            def __init__(self, upstream="", **_kwargs):
+                gateways.append(upstream)
+                self.url = "http://127.0.0.1:18080"
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+
         class FakeYDL:
             def __init__(self, options):
                 self.options = options
@@ -996,19 +1032,28 @@ class ToolTests(unittest.TestCase):
 
         folder = Path(tempfile.mkdtemp(dir=_TMP))
         url = "https://www.youtube.com/watch?v=abc"
+        ytdlp_stub = mock.Mock(YoutubeDL=FakeYDL)
+        ytdlp_stub.utils = type("Utils", (), {"DownloadCancelled": type("DownloadCancelled", (Exception,), {})})()
         with mock.patch.object(media.config, "MEDIA_PROXY", "socks5://127.0.0.1:40000"), \
                 mock.patch.object(media.net, "validate_public_url", side_effect=lambda value: value), \
                 mock.patch.object(media, "supported", return_value=True), \
                 mock.patch.object(private_media, "storage_for", return_value=None), \
-                mock.patch.object(media.yt_dlp, "YoutubeDL", FakeYDL):
+                mock.patch.object(media.egress, "EgressProxy", FakeGateway), \
+                mock.patch.object(media, "yt_dlp", ytdlp_stub):
             with self.assertRaisesRegex(ValueError, "bot_check"):
                 media.download(url, folder, "audio", 64, "m4a")
-            self.assertEqual(attempts, [("socks5://127.0.0.1:40000", None)])
+            self.assertEqual(attempts, [("http://127.0.0.1:18080", None)])
             attempts.clear()
             with self.assertRaisesRegex(ValueError, "bot_check"):
                 media.inspect(url)
-            self.assertEqual(attempts, [("socks5://127.0.0.1:40000", None)])
+            self.assertEqual(attempts, [("http://127.0.0.1:18080", None)])
+            self.assertEqual(gateways, ["socks5://127.0.0.1:40000", "socks5://127.0.0.1:40000"])
             self.assertFalse(media._options()["geo_bypass"])
+
+    def test_huggingface_space_setting_rejects_arbitrary_urls(self) -> None:
+        with mock.patch.object(images.config, "HF_IMAGE_SPACE", "https://127.0.0.1/private"):
+            with self.assertRaises(images._SourceError):
+                images._hf_space("synthetic", 512, 512, 1)
 
     def test_image_intent(self) -> None:
         self.assertTrue(images.is_image_request("dibuja un gato astronauta"))
@@ -1087,7 +1132,13 @@ class BrowserSecurityTests(unittest.TestCase):
                 pass
 
         context = Context()
-        browser_stub = type("Browser", (), {"new_context": lambda _self, **_kwargs: context})()
+        context_options = {}
+
+        def new_context(_self, **kwargs):
+            context_options.update(kwargs)
+            return context
+
+        browser_stub = type("Browser", (), {"new_context": new_context})()
 
         def validate(url):
             if "127.0.0.1" in url:
@@ -1096,7 +1147,8 @@ class BrowserSecurityTests(unittest.TestCase):
 
         with mock.patch.object(browser.net, "cookie_jar", return_value=[]), \
                 mock.patch.object(browser.net, "validate_public_url", side_effect=validate):
-            browser._context(browser_stub, "desktop", shrink_images=True)
+            browser._context(browser_stub, "desktop", proxy="http://127.0.0.1:18080", shrink_images=True)
+            self.assertEqual(context_options["proxy"], {"server": "http://127.0.0.1:18080", "bypass": "<-loopback>"})
             public = Route("https://public.example/image.png")
             context.route_handler(public)
             self.assertEqual(public.fetch_options, {"max_redirects": 0})
@@ -1118,6 +1170,38 @@ class StateTests(unittest.TestCase):
         self.assertTrue(config.LEGACY_STATE_FILE.exists())
         self.assertNotIn("x", state.data["jobs"])
         config.LEGACY_STATE_FILE.unlink()
+
+    def test_saved_state_and_its_directory_are_not_readable_by_other_accounts(self) -> None:
+        """Notes, links and job URLs are personal content, whatever the umask is."""
+        import stat
+
+        previous = os.umask(0o022)  # a permissive service umask must not widen the file
+        try:
+            config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            config.CONFIG_DIR.chmod(0o755)  # an installation created before this rule
+            state.save()
+            file_mode = config.STATE_FILE.stat().st_mode
+            directory_mode = config.CONFIG_DIR.stat().st_mode
+        finally:
+            os.umask(previous)
+        self.assertFalse(file_mode & (stat.S_IRWXG | stat.S_IRWXO), oct(file_mode))
+        self.assertFalse(directory_mode & (stat.S_IRWXG | stat.S_IRWXO), oct(directory_mode))
+        self.assertFalse(config.STATE_FILE.with_suffix(".tmp").exists())
+
+    def test_work_directories_are_not_traversable_by_other_accounts(self) -> None:
+        """The defaults live under /tmp: the file names alone disclose personal content."""
+        import stat
+
+        previous = os.umask(0o022)
+        try:
+            for root in (config.JOB_ROOT, config.TEMP_ROOT):
+                root.mkdir(parents=True, exist_ok=True)
+                root.chmod(0o755)  # an installation created before this rule
+                self.assertIs(config.private_dir(root), root)
+                mode = root.stat().st_mode
+                self.assertFalse(mode & (stat.S_IRWXG | stat.S_IRWXO), f"{root}: {oct(mode)}")
+        finally:
+            os.umask(previous)
 
 
 class BackupTests(unittest.TestCase):
@@ -1361,11 +1445,42 @@ class SearchAndImageSourceTests(Base):
             def json(self):
                 return {"results": {"web": [{"title": "elTOQUE", "url": "https://eltoque.com/x", "description": "tasas"}]}}
 
+        seen = {}
+        def get(*args, **kwargs):
+            seen.update(kwargs)
+            return Response()
+
         with mock.patch.object(config, "YDC_API_KEY", "k"), mock.patch.object(config, "YDC_DAILY", 1), \
-                mock.patch("michiflin.tools.requests.get", lambda *a, **k: Response()):
+                mock.patch("michiflin.tools.requests.get", get):
             self.assertEqual(tools._you_search("tasa", 5)[0].url, "https://eltoque.com/x")
             self.assertEqual(tools._you_search("tasa", 5), [])
+        self.assertFalse(seen["allow_redirects"])
         self.assertEqual(state.usage_today("you:search"), 1)
+
+    def test_github_account_query_does_not_follow_redirects_with_the_bot_token(self) -> None:
+        seen = {}
+
+        class Redirect:
+            status_code, ok = 302, False
+            headers = {"Location": "https://attacker.example/collect"}
+
+            def raise_for_status(self):
+                raise tools.requests.RequestException("redirect")
+
+            def json(self):
+                raise AssertionError("a redirect body must not be parsed")
+
+        def get(url, **kwargs):
+            seen.update(url=url, **kwargs)
+            return Redirect()
+
+        with mock.patch.object(config, "MICHIFLIN_GITHUB_TOKEN", "t"), \
+                mock.patch("michiflin.tools.requests.get", get):
+            answer = tools.github_text("account", "es")
+        self.assertEqual(seen["url"], "https://api.github.com/user")
+        self.assertFalse(seen["allow_redirects"])
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer t")
+        self.assertNotIn("attacker.example", answer)
 
     def test_image_sources_renewable_first(self) -> None:
         fake = [images.Source("pollinations:flux", "P", 300), images.Source("pollinations:key", "PK", 40),
@@ -1652,6 +1767,72 @@ class NavigationAndReactionTests(Base):
     def test_sensitive_commands_are_owner_only(self) -> None:
         self.assertIn("github", commands.ADMIN_ONLY)
         self.assertIn("purge", commands.ADMIN_ONLY)
+
+    def test_pending_answer_revalidates_admin_only(self) -> None:
+        """A queued command must clear ADMIN_ONLY when its answer arrives.
+
+        The two branches of dispatch (typed command, answer to an earlier
+        question) have to share one authorization point, so that making any
+        administrator command two-step later cannot skip the check.
+        """
+        from michiflin import admin
+        called = []
+        admin_key = next(iter(commands.ADMIN_ONLY & set(commands.COMMANDS)))
+        with mock.patch.dict(commands.COMMANDS, {admin_key: lambda *a, **k: called.append(a)}, clear=False), \
+                mock.patch.object(admin, "is_admin", return_value=False):
+            commands.set_pending(77, admin_key)
+            self.assertTrue(commands.dispatch(77, "whatever the answer is", "es"))
+        self.assertEqual(called, [])
+        self.assertIn("⚠️", self.sent.items[-1]["text"])
+
+    def test_pending_answer_still_runs_an_allowed_command(self) -> None:
+        from michiflin import admin
+        called = []
+        admin_key = next(iter(commands.ADMIN_ONLY & set(commands.COMMANDS)))
+        with mock.patch.dict(commands.COMMANDS, {admin_key: lambda *a, **k: called.append(a)}, clear=False), \
+                mock.patch.object(admin, "is_admin", return_value=True):
+            commands.set_pending(78, admin_key)
+            self.assertTrue(commands.dispatch(78, "the answer", "es"))
+        self.assertEqual([item[0] for item in called], [78])
+        self.assertEqual(called[0][2], "the answer")
+
+    def test_unknown_pending_key_is_refused(self) -> None:
+        commands.set_pending(79, "not-a-command")
+        self.assertTrue(commands.dispatch(79, "anything", "es"))
+        self.assertIn("⚠️", self.sent.items[-1]["text"])
+
+    def test_closing_access_purges_guest_context(self) -> None:
+        """Revoking the grants must take the guests' in-process context too."""
+        from michiflin import access, agent, local_ai
+        agent._memory.clear()
+        local_ai._memory.clear()
+        with mock.patch.object(chat, "sender", return_value="guest@example.org"):
+            guest = agent.memory(4242)
+        guest.document = "a private upload"
+        local_ai._memory[(4242, "guest@example.org")] = ["private turn"]
+        with mock.patch.object(chat, "sender", return_value="owner@example.org"), \
+                mock.patch.object(config, "OWNER_ADDRESS", "owner@example.org"):
+            kept = agent.memory(1)
+            kept.document = "the owner's own upload"
+            local_ai._memory[(1, "owner@example.org")] = ["owner turn"]
+            access._forget_guest_context()
+        self.assertNotIn(4242, agent._memory)
+        self.assertNotIn((4242, "guest@example.org"), local_ai._memory)
+        self.assertIn(1, agent._memory)
+        self.assertEqual(agent._memory[1].document, "the owner's own upload")
+        self.assertIn((1, "owner@example.org"), local_ai._memory)
+
+    def test_memory_is_not_handed_to_another_sender(self) -> None:
+        """A chat id alone is not an identity: never reuse a stranger's context."""
+        from michiflin import agent
+        agent._memory.clear()
+        with mock.patch.object(chat, "sender", return_value="first@example.org"):
+            first = agent.memory(5150)
+            first.document = "first person's upload"
+        with mock.patch.object(chat, "sender", return_value="second@example.org"):
+            second = agent.memory(5150)
+        self.assertIsNone(second.document)
+        self.assertEqual(second.address, "second@example.org")
 
     def test_revoking_user_removes_saved_app_instances(self) -> None:
         from michiflin import admin
@@ -2238,23 +2419,34 @@ class IntakeTests(Base):
         env = {"RUNNING_SHA": "aaa", "GITHUB_REPOSITORY": "o/r", "GITHUB_REF_NAME": "main", "RESTART_MARKER": str(marker)}
         calls: list[int] = []
 
+        request_args = {}
+
         class Response:
-            def __enter__(self):
-                return self
+            status_code = 200
 
-            def __exit__(self, *a):
-                return False
+            def iter_content(self, chunk_size):
+                assert chunk_size == 64
+                yield b"bbb"
 
-            def read(self, n):
-                return b"bbb"
+            def raise_for_status(self):
+                return None
+
+            def close(self):
+                pass
+
+        def request(*args, **kwargs):
+            request_args.update(args=args, **kwargs)
+            return Response()
 
         with mock.patch.dict(os.environ, env), mock.patch.object(self.app._draining, "wait", lambda t: False), \
-                mock.patch("urllib.request.urlopen", lambda *a, **k: Response()), \
+                mock.patch.object(self.app.net, "request", request), \
                 mock.patch.object(self.app, "_graceful", lambda sig, frame: calls.append(sig)), \
                 mock.patch.object(self.app.miniapp, "busy", lambda: 0):
             self.app._watch_updates()
         self.assertEqual(calls, [self.app.signal.SIGTERM])
         self.assertEqual(marker.read_text(), "bbb")
+        self.assertFalse(request_args["follow_redirects"])
+        self.assertTrue(request_args["stream"])
 
 
 if __name__ == "__main__":

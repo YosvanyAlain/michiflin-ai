@@ -86,6 +86,7 @@ class Memory:
     document: Any = None
     document_at: float = 0.0
     updated: float = field(default_factory=time.time)
+    address: str = ""  # whose context this is; a chat alone is not an identity
 
 
 _memory: dict[int, Memory] = {}
@@ -93,13 +94,39 @@ _lock = threading.Lock()
 
 
 def memory(chat_id: int) -> Memory:
+    # This holds an uploaded document and past results, so it is bound to the
+    # person as well as the chat: if the same chat is ever seen with another
+    # sender, start a fresh context instead of handing over the previous one.
+    address = (chat.sender() or "").strip().lower()
     with _lock:
         item = _memory.get(chat_id)
-        if item is None or time.time() - item.updated > 3600:
-            item = Memory()
+        stale = item is not None and time.time() - item.updated > 3600
+        foreign = item is not None and bool(address) and bool(item.address) and item.address != address
+        if item is None or stale or foreign:
+            item = Memory(address=address)
             _memory[chat_id] = item
+        elif address and not item.address:
+            item.address = address
         item.updated = time.time()
         return item
+
+
+def forget_except(keep: str) -> int:
+    """Drop every in-memory context that is not the given person's.
+
+    Closing access revokes the guests, but their uploaded document and past
+    results would otherwise sit in this process until the hourly expiry. An
+    emergency close should take the content with it, not only the permission.
+    """
+    keeper = (keep or "").strip().lower()
+    dropped = 0
+    with _lock:
+        for chat_id, item in list(_memory.items()):
+            if not keeper or item.address != keeper:
+                _memory.pop(chat_id, None)
+                dropped += 1
+    local_ai.forget_except(keeper)
+    return dropped
 
 
 def forget(chat_id: int) -> None:

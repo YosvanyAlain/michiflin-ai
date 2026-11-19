@@ -8,11 +8,11 @@ import shutil
 import signal
 import threading
 import time
-import urllib.request
 from collections import deque
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import quote
 
 from deltabot_cli import BotCli
 from deltachat2 import (
@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, perf, profile, progress, queue, rates_monitor, state, weather_home
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, net, perf, profile, progress, queue, rates_monitor, state, weather_home
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -475,11 +475,19 @@ def _watch_updates() -> None:
     while not _draining.is_set():
         _draining.wait(300)
         try:
-            request = urllib.request.Request(f"https://api.github.com/repos/{repo}/commits/{ref}",
-                                             headers={"Accept": "application/vnd.github.sha", "User-Agent": "michiflin",
-                                                      **({"Authorization": f"Bearer {token}"} if token else {})})
-            with urllib.request.urlopen(request, timeout=20) as response:
-                latest = response.read(64).decode().strip()
+            response = net.request(
+                "GET", f"https://api.github.com/repos/{repo}/commits/{quote(ref, safe='')}",
+                headers={"Accept": "application/vnd.github.sha", "User-Agent": "michiflin",
+                         **({"Authorization": f"Bearer {token}"} if token else {})},
+                timeout=20, stream=True, follow_redirects=False,
+            )
+            try:
+                if 300 <= response.status_code < 400:
+                    raise ValueError("update redirect refused")
+                response.raise_for_status()
+                latest = next(response.iter_content(chunk_size=64), b"").decode().strip()
+            finally:
+                response.close()
         except Exception as exc:
             log.debug("update check failed: %s", exc)
             continue
@@ -868,7 +876,7 @@ def on_start(bot: Any, args: Any) -> None:
         log.warning("maintenance notice profile could not be updated")
     if not access.preserve_history():
         shutil.rmtree(config.TEMP_ROOT, ignore_errors=True)
-    config.TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    config.private_dir(config.TEMP_ROOT)
     # Never purge pending mail automatically: the owner must explicitly choose
     # whether to remove old messages, especially during a state migration.
     ai.build_registry()

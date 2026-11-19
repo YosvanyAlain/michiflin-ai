@@ -155,11 +155,12 @@ def _youtube_search(query: str, limit: int, locale: str) -> list[Result]:
     if not media.available():
         return []
     for proxy in media._routes("https://www.youtube.com/"):
-        options = {**media._options(proxy), "extract_flat": "in_playlist", "skip_download": True, "noplaylist": False,
-                   "socket_timeout": 20, "retries": 1}
         try:
-            with media.yt_dlp.YoutubeDL(options) as client:
-                info = client.extract_info(f"ytsearch{limit}:{query}", download=False) or {}
+            with media.egress.EgressProxy(upstream=proxy, allow_http=True) as gateway:
+                options = {**media._options(gateway.url), "extract_flat": "in_playlist", "skip_download": True, "noplaylist": False,
+                           "socket_timeout": 20, "retries": 1}
+                with media.yt_dlp.YoutubeDL(options) as client:
+                    info = client.extract_info(f"ytsearch{limit}:{query}", download=False) or {}
         except Exception as exc:
             # A challenge is not a network failure. Never change route or IP to
             # try to bypass it; a public search index may still list links later.
@@ -304,9 +305,12 @@ def _you_search(query: str, limit: int) -> list[Result]:
         return []
     try:
         response = requests.get("https://ydc-index.io/v1/search", params={"query": query, "count": min(20, limit + 2), "safesearch": "moderate"},
-                                headers={"X-API-Key": config.YDC_API_KEY}, timeout=20)
+                                headers={"X-API-Key": config.YDC_API_KEY}, timeout=20, allow_redirects=False)
     except requests.RequestException:
         state.set_cooldown(key, 300)
+        return []
+    if 300 <= int(response.status_code) < 400:
+        state.set_cooldown(key, 600)
         return []
     state.record_usage(key, response.ok)
     if not response.ok:
@@ -1045,10 +1049,12 @@ def github_text(argument: str, locale: str) -> str:
             if not config.MICHIFLIN_GITHUB_TOKEN:
                 return tr(locale, "ℹ️ Falta el token de GitHub del bot (permiso notifications).", "ℹ️ The bot's GitHub token is missing (notifications scope).")
             if "read" in words[1:]:
-                response = requests.put("https://api.github.com/notifications", json={}, headers=_github_headers(), timeout=20)
+                response = requests.put("https://api.github.com/notifications", json={}, headers=_github_headers(),
+                                        timeout=20, allow_redirects=False)
                 return tr(locale, "✅ Notificaciones marcadas como leídas.", "✅ Notifications marked as read.") if response.status_code in {202, 205} \
                     else tr(locale, f"⚠️ GitHub respondió {response.status_code}.", f"⚠️ GitHub answered {response.status_code}.")
-            response = requests.get("https://api.github.com/notifications", params={"all": "true", "per_page": 15}, headers=_github_headers(), timeout=20)
+            response = requests.get("https://api.github.com/notifications", params={"all": "true", "per_page": 15},
+                                    headers=_github_headers(), timeout=20, allow_redirects=False)
             response.raise_for_status()
             threads = response.json()
             if not threads:
@@ -1069,7 +1075,8 @@ def github_text(argument: str, locale: str) -> str:
         if action in {"account", "c"}:
             if not config.MICHIFLIN_GITHUB_TOKEN:
                 return tr(locale, "ℹ️ Falta el token de GitHub del bot.", "ℹ️ The bot's GitHub token is missing.")
-            response = requests.get("https://api.github.com/user", headers=_github_headers(), timeout=20)
+            response = requests.get("https://api.github.com/user", headers=_github_headers(),
+                                    timeout=20, allow_redirects=False)
             response.raise_for_status()
             profile = response.json()
             return (f"🐙 {profile.get('login')}\n"
@@ -1079,8 +1086,10 @@ def github_text(argument: str, locale: str) -> str:
                          f"Followers: {profile.get('followers', 0)} · following: {profile.get('following', 0)}"))
         if not repository:
             return f"{account} · {notifications}"
-        info = requests.get(f"https://api.github.com/repos/{repository}", headers=_github_headers(), timeout=20).json()
-        runs = requests.get(f"https://api.github.com/repos/{repository}/actions/runs", params={"per_page": 3}, headers=_github_headers(), timeout=20).json()
+        info = requests.get(f"https://api.github.com/repos/{repository}", headers=_github_headers(),
+                            timeout=20, allow_redirects=False).json()
+        runs = requests.get(f"https://api.github.com/repos/{repository}/actions/runs", params={"per_page": 3},
+                            headers=_github_headers(), timeout=20, allow_redirects=False).json()
         lines = [f"🐙 {info.get('full_name', repository)} · {info.get('visibility', '')}"]
         for run in (runs.get("workflow_runs") or [])[:3]:
             lines.append(f"• {run.get('status')}{'/' + run['conclusion'] if run.get('conclusion') else ''} · {compact(run.get('created_at'), 16).replace('T', ' ')}")

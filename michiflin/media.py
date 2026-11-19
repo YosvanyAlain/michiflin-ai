@@ -14,16 +14,46 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
-from . import config, net
+from . import config, egress, net
 
 log = logging.getLogger("michiflin")
 
-try:
-    import yt_dlp
-    from yt_dlp.extractor import gen_extractor_classes
-except ImportError:  # pragma: no cover
-    yt_dlp = None  # type: ignore[assignment]
-    gen_extractor_classes = None  # type: ignore[assignment]
+# yt-dlp costs ~35 MiB of resident memory and ~140 ms of import time, and a bot
+# can run for days without a single download, so it is loaded on first real use.
+# It stays a module attribute: tests patch michiflin.media.yt_dlp with a stub,
+# and _ytdlp() returns whatever is already there instead of overwriting it.
+_ytdlp_lock = threading.Lock()
+_ytdlp_present: bool | None = None
+
+
+def __getattr__(name: str) -> Any:
+    """Load yt-dlp on first attribute access, so `media.yt_dlp` still works (PEP 562)."""
+    if name in ("yt_dlp", "gen_extractor_classes"):
+        return globals()[name] if _ytdlp() is not None else None
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _ytdlp() -> Any:
+    """Import yt-dlp the first time something actually needs it."""
+    global yt_dlp, gen_extractor_classes
+    if globals().get("yt_dlp") is None:
+        with _ytdlp_lock:
+            if globals().get("yt_dlp") is None:
+                try:
+                    import yt_dlp as module
+                    from yt_dlp.extractor import gen_extractor_classes as classes
+                except ImportError:  # pragma: no cover
+                    return None
+                gen_extractor_classes = classes
+                yt_dlp = module
+    return globals().get("yt_dlp")
+
+
+def version() -> str:
+    """yt-dlp's version string, loading it only if it is installed."""
+    module = _ytdlp() if available() else None
+    return getattr(getattr(module, "version", None), "__version__", "—")
+
 
 VIDEO_LEVELS = {"baja": 360, "media": 480, "alta": 720, "low": 360, "medium": 480, "high": 720}
 AUDIO_LEVELS = {"baja": 64, "media": 96, "alta": 160, "low": 64, "medium": 96, "high": 160}
@@ -52,11 +82,22 @@ class MediaInfo:
 
 
 def available() -> bool:
-    return yt_dlp is not None
+    """True when yt-dlp can be used, without paying for the import to find out."""
+    global _ytdlp_present
+    if globals().get("yt_dlp") is not None:
+        return True
+    if _ytdlp_present is None:
+        import importlib.util
+        try:
+            _ytdlp_present = importlib.util.find_spec("yt_dlp") is not None
+        except (ImportError, ValueError):  # pragma: no cover
+            _ytdlp_present = False
+    return _ytdlp_present
 
 
 def _classes() -> list[Any]:
     global _extractors
+    _ytdlp()
     with _extractor_lock:
         if _extractors is None:
             _extractors = [item for item in gen_extractor_classes() if item.IE_NAME not in {"generic"}] if gen_extractor_classes else []
@@ -65,7 +106,7 @@ def _classes() -> list[Any]:
 
 def supported(url: str) -> bool:
     """True when a site-specific extractor (not the generic one) handles the URL."""
-    if not yt_dlp:
+    if not _ytdlp():
         return False
     for extractor in _classes():
         try:
@@ -172,7 +213,7 @@ def inspect(url: str) -> MediaInfo:
     # yt-dlp can make its own HTTP requests; never let a user-supplied URL
     # point at loopback, private, link-local, or cloud-metadata addresses.
     url = net.validate_public_url(url)
-    if not yt_dlp:
+    if not _ytdlp():
         raise ValueError("ytdlp_missing")
     if not supported(url):
         raise ValueError("unsupported")
@@ -188,11 +229,12 @@ def inspect(url: str) -> MediaInfo:
         info = None
         while routes:
             route = routes.pop(0)
-            options = _options(route)
-            options.update({"skip_download": True, "extract_flat": "in_playlist", "noplaylist": "list=" not in url or "watch?v=" in url})
             try:
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    info = ydl.extract_info(url, download=False)
+                with egress.EgressProxy(upstream=route, allow_http=True) as gateway:
+                    options = _options(gateway.url)
+                    options.update({"skip_download": True, "extract_flat": "in_playlist", "noplaylist": "list=" not in url or "watch?v=" in url})
+                    with yt_dlp.YoutubeDL(options) as ydl:
+                        info = ydl.extract_info(url, download=False)
                 break
             except Exception as exc:  # yt-dlp raises many types
                 last = exc
@@ -270,7 +312,7 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
     if stop and stop():
         raise InterruptedError()
     url = net.validate_public_url(url)
-    if not yt_dlp:
+    if not _ytdlp():
         raise ValueError("ytdlp_missing")
     if not supported(url):
         raise ValueError("unsupported")
@@ -307,22 +349,24 @@ def download(url: str, folder: Path, kind: str, quality: int, audio_format: str,
             identity = "\0".join((url, kind, str(quality), audio_format, route, client))
             attempt = folder / (".resume-" + hashlib.sha256(identity.encode()).hexdigest()[:20])
             attempt.mkdir(parents=True, exist_ok=True)
-            options = _options(route)
-            options.update({
-                "outtmpl": str(attempt / "media.%(ext)s"),
-                "progress_hooks": [hook],
-                "continuedl": True,
-                "max_filesize": config.MAX_FILE_BYTES,
-                "socket_timeout": 90,
-            })
-            if client:
-                options["extractor_args"] = {"youtube": {"player_client": [client]}}
-            if config.MAX_MEDIA_MINUTES:
-                options["match_filter"] = yt_dlp.utils.match_filter_func(f"duration <= {config.MAX_MEDIA_MINUTES * 60}")
-            options.update(format_options(kind, quality, audio_format))
             try:
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    ydl.download([url])
+                gateway_limit = max(1_000_000_000, config.MAX_FILE_BYTES * 3 + 100_000_000)
+                with egress.EgressProxy(upstream=route, max_bytes=gateway_limit, allow_http=True) as gateway:
+                    options = _options(gateway.url)
+                    options.update({
+                        "outtmpl": str(attempt / "media.%(ext)s"),
+                        "progress_hooks": [hook],
+                        "continuedl": True,
+                        "max_filesize": config.MAX_FILE_BYTES,
+                        "socket_timeout": 90,
+                    })
+                    if client:
+                        options["extractor_args"] = {"youtube": {"player_client": [client]}}
+                    if config.MAX_MEDIA_MINUTES:
+                        options["match_filter"] = yt_dlp.utils.match_filter_func(f"duration <= {config.MAX_MEDIA_MINUTES * 60}")
+                    options.update(format_options(kind, quality, audio_format))
+                    with yt_dlp.YoutubeDL(options) as ydl:
+                        ydl.download([url])
                 if stop and stop():
                     raise InterruptedError()
                 produced = [item for item in attempt.glob("media.*") if item.is_file()

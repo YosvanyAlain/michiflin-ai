@@ -222,6 +222,20 @@ def forget(chat_id: int, address: str) -> None:
                     _memory.pop(key, None)
 
 
+def forget_except(keep: str) -> int:
+    """Drop every conversation that is not the given person's.
+
+    Used when access is closed: the guests lose the permission, and their
+    context must not outlive it inside this process.
+    """
+    keeper = (keep or "").strip().lower()
+    with _memory_lock:
+        doomed = [key for key in _memory if not keeper or key[1] != keeper]
+        for key in doomed:
+            _memory.pop(key, None)
+    return len(doomed)
+
+
 def _port() -> int:
     try:
         port = int(os.environ.get("LOCAL_GGUF_PORT", str(_DEFAULT_PORT)))
