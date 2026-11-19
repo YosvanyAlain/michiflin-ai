@@ -352,6 +352,25 @@ function section(title, ...children) {
   return h("section", { class: "section" }, title ? h("h3", { class: "section-title" }, title) : null, ...children);
 }
 
+// Settings is where people come looking for one specific switch, so the
+// secondary groups start folded. Everything stays one tap away instead of
+// three screenfuls down, and the choice is remembered per group.
+function foldSection(title, ...children) {
+  const key = "fold." + title;
+  const open = store.get(key, false);
+  const body = h("div", { class: "fold-body" }, ...children.filter(Boolean));
+  const head = h("button", { class: "fold-head", type: "button", "aria-expanded": String(open) },
+    h("span", { class: "section-title" }, title), icon("down", "caret"));
+  const box = h("section", { class: open ? "section fold open" : "section fold" }, head, body);
+  head.onclick = () => {
+    const next = !box.classList.contains("open");
+    box.classList.toggle("open", next);
+    head.setAttribute("aria-expanded", String(next));
+    store.set(key, next);
+  };
+  return box;
+}
+
 function card(...children) {
   return h("div", { class: "card" }, ...children);
 }
@@ -1397,8 +1416,10 @@ function weatherBannerArt(current) {
   const orb = scene === "clear" || scene === "partly";
   const cloud = scene !== "clear";
   return h("span", { class: `weather-scene scene-${scene}${night ? " at-night" : ""}`, "aria-hidden": "true" },
+    night && orb ? h("i", { class: "scene-stars" }) : null,
     orb && (day || night) ? icon(night ? "moon" : "sun", "scene-orb") : null,
     cloud ? icon("weather", "scene-cloud") : null,
+    scene === "cloudy" || scene === "storm" ? icon("weather", "scene-cloud-far") : null,
     scene === "fog" ? h("i", { class: "scene-fog-lines" }) : null,
     scene === "rain" || scene === "storm" ? h("i", { class: "scene-precip-rain" }) : null,
     scene === "snow" ? h("i", { class: "scene-precip-snow" }) : null,
@@ -1441,7 +1462,7 @@ function homeCarousel() {
   const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
   const slides = [
     () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art" }, icon("cat"), icon("catpixel", "pixel-mascot"))),
+      h("div", { class: "hero-art" }, icon("catfull"), icon("catfullpixel", "pixel-mascot"))),
     homeRatesBanner,
     homeWeatherBanner,
   ];
@@ -3533,12 +3554,12 @@ VIEWS.settings = {
         cache.admin ? h("button", { class: "list-row", onclick: () => go("admin") }, icon("shield"), h("span", { class: "grow" }, t("tile_admin")), icon("next")) : null,
         h("button", { class: "list-row", onclick: () => go("help") }, icon("help"), h("span", { class: "grow" }, t("help_title")), icon("next")),
         h("button", { class: "list-row", onclick: () => hello(true) }, icon("refresh"), h("span", { class: "grow" }, t("sync")), icon("next")))),
-      section(t("sync_title"), h("div", { class: "card" }, syncTools())),
-      section(t("set_data"), h("div", { class: "card list" },
+      foldSection(t("sync_title"), h("div", { class: "card" }, syncTools())),
+      foldSection(t("set_data"), h("div", { class: "card list" },
         wipe(t("wipe_chats"), () => clearKeys("chat.")),
         wipe(t("wipe_images"), () => { imageFailureMemory.length = 0; store.del("img.errors"); return media.clear(); }),
         wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); resultMemoTimes.clear(); resultMemoErrors.clear(); bus.emit("notices"); }))),
-      section(t("about_title"), card(
+      foldSection(t("about_title"), card(
         h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
         h("button", { class: "btn ghost", onclick: () => openLiveAddress("https://github.com/YosvanyAlain/michiflin-ai") }, icon("web"), t("about_repository")),
@@ -3849,12 +3870,36 @@ function inviteLinkSection(box) {
     try {
       const data = await bridge.call("invitacion", refresh ? { refresh: true } : {});
       if (!box.isConnected) return;
+      // A QR is the same secret in a form a camera across the room can read,
+      // so it obeys the rule the text link already follows: off until asked
+      // for, and gone the moment the link is hidden.
+      const code = h("div", { class: "stack" });
+      const toggle = h("button", { class: "btn ghost" }, icon("qr"), t("invite_qr_show"));
+      let showing = false;
+      toggle.onclick = () => {
+        showing = !showing;
+        fill(toggle, icon("qr"), t(showing ? "invite_qr_hide" : "invite_qr_show"));
+        if (!showing) { fill(code); return; }
+        const art = h("div", { class: "qr-art" });
+        const palette = getComputedStyle(document.documentElement);
+        const tone = (name, fallback) => palette.getPropertyValue(name).trim() || fallback;
+        art.innerHTML = qrSvg(data.link, {
+          from: tone("--qr-ink-from", "#0e8577"),
+          to: tone("--qr-ink-to", "#075f56"),
+          bg: tone("--qr-paper", "#ffffff"),
+        });
+        fill(code, art,
+          h("p", { class: "muted small qr-caption" }, t("invite_qr_caption")),
+          h("p", { class: "note warn", role: "status" }, icon("alert"), t("invite_qr_warning")));
+      };
       fill(slot,
         h("p", { class: "code wrap", role: "status" }, data.link),
-        h("div", { class: "row" },
+        h("div", { class: "row wrap" },
           h("button", { class: "btn primary", onclick: () => copyText(data.link) }, icon("copy"), t("copy_link")),
+          toggle,
           h("button", { class: "btn ghost", onclick: () => reveal(true) }, icon("refresh"), t("refresh")),
-          h("button", { class: "btn ghost", onclick: () => fill(slot, start) }, icon("close"), t("invite_link_hide"))));
+          h("button", { class: "btn ghost", onclick: () => fill(slot, start) }, icon("close"), t("invite_link_hide"))),
+        code);
     } catch (error) {
       if (box.isConnected && !error.cancelled) fill(slot, failure(error.message, () => reveal(refresh)));
     }

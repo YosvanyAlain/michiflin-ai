@@ -35,7 +35,7 @@ from .util import clean_filename, compact, human_size, tr
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 APP_FILES = (
-    "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
+    "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
     "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
