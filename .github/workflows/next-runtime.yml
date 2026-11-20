@@ -23,12 +23,12 @@ concurrency:
   cancel-in-progress: false
 jobs:
   private-session:
-    if: github.event_name == 'workflow_dispatch' || vars.NEXT_LAUNCH_REVISION == 'b446f4720f2efec5dda88402ff1f6401838e0f5f'
+    if: github.event_name == 'workflow_dispatch' || vars.NEXT_LAUNCH_REVISION == 'a08c164b10db17e59ebf60ec02701dfca78a81ba'
     runs-on: ubuntu-24.04
     timeout-minutes: 358
     env:
       PYTHONUNBUFFERED: '1'
-      MICHIFLIN_DEPLOY_REVISION: b446f4720f2efec5dda88402ff1f6401838e0f5f
+      MICHIFLIN_DEPLOY_REVISION: a08c164b10db17e59ebf60ec02701dfca78a81ba
       MICHIFLIN_LAUNCH_REVISION: ${{ vars.NEXT_LAUNCH_REVISION }}
       MICHIFLIN_DEPLOY_CONFIG: ${{ secrets.NEXT_RUNTIME_CONFIG }}
       MICHIFLIN_BACKUP_PASSPHRASE: ${{ secrets.NEXT_BACKUP_PASSPHRASE }}
@@ -42,13 +42,51 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: YosvanyAlain/michiflin-ai-next
-          ref: b446f4720f2efec5dda88402ff1f6401838e0f5f
+          ref: a08c164b10db17e59ebf60ec02701dfca78a81ba
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - name: Install reviewed runtime dependencies
         run: python -m pip install -e '.[bot]'
+      - name: Check live public sources without sending files
+        id: sources
+        continue-on-error: true
+        timeout-minutes: 4
+        run: |
+          timeout 180s python - <<'PYSOURCES'
+          import tempfile,json,hashlib
+          from pathlib import Path
+          from michiflin import library,weather,downloads
+          from michiflin.identity import Principal
+          from michiflin.storage import Ledger
+          from michiflin.network import JsonClient
+          from michiflin.errors import AppError
+          client=JsonClient()
+          results={}
+          with tempfile.TemporaryDirectory() as temporary:
+              root=Path(temporary)
+              principal=Principal('source-test@example.invalid','A'*40,1,True,True)
+              ledger=Ledger(root/'state');ledger.bind(1,principal.storage_key,1)
+              def download():
+                  result=downloads.prepare(client,ledger,root/'downloads',principal,1,{'book':1342,'format':'epub'})
+                  files=list((root/'downloads').glob('*.epub'));assert len(files)==1
+                  return {'verified_epub_bytes':result['bytes'],'sha256':hashlib.sha256(files[0].read_bytes()).hexdigest()}
+              checks={
+                  'gutenberg_search':lambda: {'books':len(library.search(client,library.BookQuery.parse({'title':'Pride and Prejudice','author':'Austen','format':'epub'}))['books'])},
+                  'gutenberg_epub':download,
+                  'openlibrary':lambda:{'books':len(library.search(client,library.BookQuery.parse({'source':'openlibrary','title':'Don Quijote','language':'es'}))['books'])},
+                  'geocoding':lambda:{'ok':bool(weather.locations(client,'La Habana','es'))},
+                  'forecast':lambda:{'ok':bool(weather.forecast(client,23.1136,-82.3666))},
+              }
+              for name,run in checks.items():
+                  try:results[name]={'ok':True,'data':run()}
+                  except AppError as error:results[name]={'ok':False,'error':error.code}
+                  except Exception:results[name]={'ok':False,'error':'check_failed'}
+                  print('SOURCE_CHECK '+json.dumps({name:results[name]}),flush=True)
+          print('SOURCE_SUMMARY '+json.dumps(results),flush=True)
+          if not all(value['ok'] for value in results.values()):raise SystemExit(1)
+          PYSOURCES
       - name: Validate or run the bounded private session
         run: |
           umask 077
