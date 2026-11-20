@@ -27,6 +27,7 @@ jobs:
       MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
       STATE_BACKUP_PASSPHRASE: ${{ secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE'] }}
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -34,7 +35,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Dependencies
-        run: python -m pip install requests 'cryptography>=50'
+        run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
       - name: Restore isolated copy only
         run: |
           python - <<'PY'

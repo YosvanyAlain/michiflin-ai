@@ -82,8 +82,44 @@ def diagnose(root: Path) -> dict:
         result['owner_contacts_count'] = len(contacts)
         result['owner_marker_fingerprint_present'] = any(str(f or '').upper() == fp and fp for f, _ in contacts)
         result['owner_directly_verified_contact_present'] = any(v == 1 for _, v in contacts)
+    active = [e.get('active') for e in apps.values() if isinstance(e, dict) and isinstance(e.get('active'), (int, float))]
+    result['latest_app_activity_age_seconds'] = max(0, int(time.time() - max(active))) if active else None
+    result['snapshot_json_age_seconds'] = max(0, int(time.time() - state_path.stat().st_mtime))
+    if os.getenv('SYNC_DIAGNOSTIC_OFFLINE_RPC') == '1' and marker:
+        result.update(inspect_offline_core(root, marker, apps))
     # Schema intentionally permits only counts, booleans and null; no sensitive strings.
     assert all(isinstance(v, (bool, int)) or v is None for k, v in result.items() if k != 'schema')
+    return result
+
+
+def inspect_offline_core(root: Path, marker: dict, apps: dict) -> dict:
+    """Open ONLY the isolated restored copy. Never call start_io or send methods."""
+    import subprocess
+    from deltachat2 import IOTransport, Rpc
+    os.environ.update(BOT_EPOCH=str(marker['epoch']), BOT_EPOCH_STRICT='1',
+                      BOT_VERIFIED_CONTACTS_ONLY='1', INVITE_AUTO_ACCESS='0', EMAIL_KEY_RECOVERY='0',
+                      OWNER_PGP_FINGERPRINT=str(marker['owner_fingerprint']))
+    from michiflin import identity_guard
+    result = {'offline_owner_bindings_authorized': 0, 'offline_owner_bindings_denied': 0,
+              'offline_updates_beyond_cursor': 0, 'offline_owner_chat_authorized': False}
+    with IOTransport(accounts_dir=str(root / 'accounts'), stderr=subprocess.DEVNULL) as io:
+        rpc = Rpc(io)
+        accounts = rpc.get_all_account_ids()
+        if len(accounts) != 1:
+            return result
+        a = accounts[0]
+        result['offline_owner_chat_authorized'] = identity_guard.authorized_chat(
+            rpc, a, int(marker['owner_chat']), str(marker['owner_address']))
+        for key, entry in apps.items():
+            if str(entry.get('addr', '')).casefold() != str(marker['owner_address']).casefold():
+                continue
+            authorized = identity_guard.authorized_entry(rpc, a, entry)
+            result['offline_owner_bindings_authorized' if authorized else 'offline_owner_bindings_denied'] += 1
+            try:
+                updates = json.loads(rpc.get_webxdc_status_updates(a, int(key), int(entry.get('serial') or 0)))
+                result['offline_updates_beyond_cursor'] += len(updates)
+            except Exception:
+                pass
     return result
 
 
