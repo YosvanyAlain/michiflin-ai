@@ -1,0 +1,85 @@
+name: Validate next private recovery
+"on":
+  workflow_dispatch:
+    inputs:
+      use_warp:
+        description: Explicitly route public sources through a verified local WARP proxy
+        type: boolean
+        default: true
+        required: true
+      check_sources:
+        description: Test actual public sources after the authenticated recovery check
+        type: boolean
+        default: true
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: michiflin-offline-recovery-validation
+  cancel-in-progress: false
+jobs:
+  validate-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: '1'
+      MICHIFLIN_DEPLOY_REVISION: 32c8257d915d515620bd530a7ceaa7caba0b25b1
+      MICHIFLIN_DEPLOY_CONFIG: ${{ secrets.NEXT_RUNTIME_CONFIG }}
+      MICHIFLIN_BACKUP_PASSPHRASE: ${{ secrets.NEXT_BACKUP_PASSPHRASE }}
+      MICHIFLIN_BACKUP_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+      MICHIFLIN_BACKUP_REPOSITORY: ${{ secrets.STATE_BACKUP_REPO }}
+      MICHIFLIN_SEED_ASSET_ID: '770164542'
+      MICHIFLIN_SEED_SHA256: 107d02269b0d3996e16132658f5871f5ecf4b241c9c7c9eb0d246671e788eb4f
+      MICHIFLIN_LAUNCH_REVISION: ""
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: YosvanyAlain/michiflin-ai-next
+          ref: 32c8257d915d515620bd530a7ceaa7caba0b25b1
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Install reviewed recovery dependencies
+        run: python -m pip install -e '.[bot]'
+      - name: Set up explicitly selected public-source WARP proxy
+        if: inputs.use_warp
+        timeout-minutes: 5
+        run: bash tools/setup_warp.sh
+      - name: Authenticate identity and catalogue recovery without mail IO
+        env:
+          PRIVATE_VALIDATION_DIRECTORY: ${{ runner.temp }}/michiflin-offline-recovery
+        run: |
+          umask 077
+          python - <<'PYRECOVERY'
+          import json,os
+          from pathlib import Path
+          from michiflin.deployment import execute
+          result=execute(validate_only=True,duration=60,directory=Path(os.environ['PRIVATE_VALIDATION_DIRECTORY']),source=Path('miniapp'),prepare_catalog=True)
+          checkpoint=result['checkpoint']
+          assert result['validated'] is True and result['io_started'] is False
+          assert 0 < checkpoint['catalog_bytes'] <= 8*1024*1024
+          summary={key:checkpoint[key] for key in ['asset_id','sha256','revision','catalog_bytes']}
+          summary['io_started']=False
+          print('RECOVERY_VALIDATION_SUMMARY '+json.dumps(summary),flush=True)
+          PYRECOVERY
+      - name: Check live public sources independently of recovery
+        id: sources
+        if: inputs.check_sources
+        continue-on-error: true
+        timeout-minutes: 4
+        run: timeout 180s python -m michiflin.diagnostics --download --reader --media
+      - name: Preserve only encrypted rescue snapshots after failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: next-validation-encrypted-rescue-${{ github.run_id }}
+          path: ${{ runner.temp }}/michiflin-offline-recovery/recovery/*.snapshot
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Disconnect the explicitly selected source proxy
+        if: always() && inputs.use_warp
+        run: warp-cli --accept-tos disconnect || true
+      - name: Keep failed source probes visible as a failed validation
+        if: inputs.check_sources && steps.sources.outcome != 'success'
+        run: exit 1
