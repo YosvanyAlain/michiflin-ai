@@ -148,7 +148,7 @@ def _verified_binding(entry: dict[str, Any]) -> bool:
 
 
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None,
-             bilingual_welcome: bool = False) -> int:
+             bilingual_welcome: bool = False, recovery_revision: str = "") -> int:
     recipient = address or chat.sender()
     if not _verified_binding({"chat": chat_id, "addr": recipient}):
         return 0
@@ -163,6 +163,16 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
         english = ("👋 Hi! I'm Michiflin AI. Download this mini app, then open it with “Start” or its icon. "
                    "Inside you'll find AI, web, downloads and settings; replies arrive by email.")
         text = spanish + "\n\n" + english if bilingual_welcome else tr(locale, spanish, english)
+    if recovery_revision:
+        if not re.fullmatch(r"[0-9a-f]{40}", recovery_revision):
+            return 0
+        text += "\n\n" + tr(locale,
+            "Recuperación de conexión solicitada: abre esta miniapp desde ESTE mensaje. Las copias anteriores "
+            "no se han borrado y sus datos no se trasladan automáticamente. Si esta tampoco responde, "
+            "indícalo sin borrar el chat ni reinstalar Delta Chat.",
+            "Requested connection recovery: open this mini app from THIS message. Previous copies were not "
+            "deleted and their data is not moved automatically. If this one does not respond either, "
+            "report it without deleting the chat or reinstalling Delta Chat.")
     # An unknown-language first welcome still needs to carry the maintenance
     # notice for both audiences, without creating another chat message.
     languages = ("es", "en") if bilingual_welcome and not updated else (locale,)
@@ -185,6 +195,8 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             _apps()[str(msg_id)] = {"chat": chat_id, "serial": 0, "addr": recipient, "sent": time.time(), "locale": locale,
                                     "build": app_build(), "epoch": config.BOT_EPOCH,
                                     "access_session": access.session_stamp(recipient)}
+            if recovery_revision:
+                _apps()[str(msg_id)]["recovery_revision"] = recovery_revision
             # Every WebXDC instance owns its local storage. Dropping an old binding can
             # lead the history pruner to delete its bot-side message and strand projects.
             # Keep even older instances until the user explicitly deletes them.

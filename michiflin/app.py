@@ -891,6 +891,8 @@ def on_start(bot: Any, args: Any) -> None:
     threading.Thread(target=weather_home.run, args=(_draining,), name="weather-home", daemon=True).start()
     queue.start()
     _start_cursor(bot, accid)
+    from . import owner_recovery
+    _pool.submit(owner_recovery.deliver)
     _pool.submit(_bootstrap_verified_owner, bot, accid)
     _pool.submit(_bootstrap_email_recovery, bot, accid)
     if config.INVITE_AUTO_ACCESS:
