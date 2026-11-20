@@ -325,6 +325,7 @@ MODULES = {
     "names.py": "Nombres y alias de comandos en español e inglés.",
     "invite.py": "Enlace de invitación de la propia cuenta, a petición del dueño.",
     "net.py": "Cliente HTTP y control de URLs, direcciones públicas, redirecciones y límites de lectura.",
+    "owner_recovery.py": "Recuperación explícita de miniapp para el propietario verificado, limitada a una revisión exacta y sin borrar instancias previas.",
     "pager.py": "Paginación de listas y navegación por resultados en el chat.",
     "perf.py": "Métricas y diagnóstico acotado de CPU, memoria, disco, red y tiempos de respuesta.",
     "personal_ai.py": "Bóveda de APIs propias por persona, transporte cifrado, descubrimiento y selección explícita.",

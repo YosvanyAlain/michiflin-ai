@@ -30,4 +30,12 @@ La revisión exacta es una autorización operativa, no una apertura permanente. 
 
 89 casos locales aprobados, sin fallos, en la batería de recuperación, diagnóstico, entrega de paquetes, guardas de identidad, identidad limpia y compatibilidad del lote anterior. Las identidades y transportes de esas pruebas son sintéticos. El diagnóstico remoto usa datos reales solo para producir contadores/booleanos agregados; no es una interacción real del propietario ni valida la interfaz nativa.
 
-La reconstrucción visual completa (logos normal/pixel, animación inicial, navegación y estados de conexión) sigue pendiente hasta recuperar y confirmar las respuestas.
+## Confirmación del propietario y cierre de la autorización temporal
+
+El propietario confirmó en la conversación que recibió la nueva miniapp, la abrió desde su mensaje original y obtuvo **391** al probar **17 × 23**. Esto valida un intercambio completo desde su dispositivo en esa nueva instancia; no valida todas las funciones ni las instancias históricas y no establece la causa raíz.
+
+La sesión de producción comprobada fue `44647770360`, revisión `a68844cbdd899c06c276e16e4731ebbf6031936d`. Tras esa confirmación se eliminó `OWNER_APP_RECOVERY_REVISION` por la API de GitHub (HTTP 204) y se verificó su ausencia (HTTP 404). No se eliminaron mensajes, apps ni datos.
+
+La CI de esa revisión (`44647386979`) falló en el inventario del manual porque faltaba la descripción del nuevo módulo `owner_recovery.py`. Se corrige el inventario sin desactivar la prueba ni cambiar el comportamiento del servicio; la nueva CI deberá revisarse por separado.
+
+La reconstrucción visual completa (logos normal/pixel, animación inicial, navegación y estados de conexión) queda como siguiente fase autorizada. Se hará aislada de producción hasta validar el empaquetado y las regresiones del puente WebXDC.
