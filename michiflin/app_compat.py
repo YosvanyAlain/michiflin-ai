@@ -20,7 +20,7 @@ _LATEST_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", 
 _PUBLISHED = Path(__file__).resolve().parent / "compat" / "e8a104c"
 _PUBLISHED_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
 _AUDIT_BASE = Path(__file__).resolve().parent / "compat" / "ec7e67e"
-_AUDIT_BASE_REPLACED = {"index.html", "app.css", "app.js", "core.js"}
+_AUDIT_BASE_REPLACED = {"index.html", "app.css", "app.js", "core.js", "i18n.js"}
 
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:

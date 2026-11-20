@@ -238,13 +238,16 @@ function render(scroll = 0) {
     if (item) { activeNoticeId = item.id; openingNoticeKey = item.cacheKey || ""; }
   }
   bus.local = [];
-  $("#title").textContent = definition.title(current.params);
+  $("#title").classList.toggle("home-title", current.view === "home");
+  fill($("#title"), current.view === "home" ? h("span", { class: "home-brand-mark", "aria-hidden": "true" }, icon("cat")) : null,
+    definition.title(current.params));
   $("#back").hidden = trail.length === 0;
   const tab = definition.tab || current.view;
   document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("on", node.dataset.tab === tab));
   $("#gear").classList.toggle("on", tab === "settings");
   const main = $("#view");
   main.className = "view enter";
+  main.dataset.view = current.view;
   main.replaceChildren();
   if (current.view === "images") imagesReadyToAcknowledge = false;
   try { definition.render(main, current.params); }
@@ -1243,7 +1246,7 @@ function statusChips() {
   ];
 }
 
-function searchBox(initial = {}, replace = false) {
+function searchBox(initial = {}, replace = false, compact = false) {
   let engine = searchEngine(initial.engine || prefs.engine);
   let mode = ["standard", "advanced"].includes(initial.mode || prefs.searchMode) ? (initial.mode || prefs.searchMode) : "standard";
   const input = field({ type: "search", placeholder: t("search_placeholder"), value: initial.q || "", enterkeyhint: "search" });
@@ -1262,12 +1265,15 @@ function searchBox(initial = {}, replace = false) {
   const sources = segmented(engine, [["web", t("engine_web"), "web"], ["news", t("engine_news"), "news"],
     ["wiki", t("engine_wiki"), "book"]], (value) => { engine = value; });
   sources.setAttribute("aria-label", t("search_engine"));
-  return h("div", { class: "searchbox" },
-    h("div", { class: "search-field" }, icon("search"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+  const options = h("div", { class: "search-options" },
     h("div", { class: "search-selectors" },
       h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_choose_mode")), searchModes),
       h("div", { class: "stack" }, h("small", { class: "muted" }, t("search_engine")), sources)),
     contextHelp(t("search_mode_info")));
+  return h("div", { class: "searchbox" },
+    h("div", { class: "search-field" }, icon("search"), input, h("button", { class: "btn primary small", onclick: submit }, t("go"))),
+    compact ? h("details", { class: "home-search-options" },
+      h("summary", {}, icon("settings"), t("home_search_options"), icon("down", "caret")), options) : options);
 }
 
 function noticeList() {
@@ -1461,8 +1467,13 @@ function homeCarousel() {
   const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
   const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
   const slides = [
-    () => h("div", { class: "hero" }, h("div", {}, h("h2", {}, greeting()), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art" }, icon("catfull"), icon("catfullpixel", "pixel-mascot"))),
+    () => h("div", { class: "hero home-hero" },
+      h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, greeting()),
+        h("h2", {}, t("home_headline")), h("p", {}, greetingLine())),
+      h("div", { class: "hero-art", "aria-hidden": "true" }, icon("catfull"), icon("catfullpixel", "pixel-mascot")),
+      h("div", { class: "hero-actions" },
+        h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
+        h("button", { class: "hero-action", onclick: () => go("web") }, icon("web"), t("home_explore")))),
     homeRatesBanner,
     homeWeatherBanner,
   ];
@@ -1472,6 +1483,12 @@ function homeCarousel() {
   const root = h("section", { class: "home-carousel", "aria-label": t("home_banners") }, slot,
     h("div", { class: "home-banner-controls", role: "group", "aria-label": t("home_banners") }, dots));
   const draw = () => {
+    // Keep the richer greeting from moving the search field and shortcuts
+    // whenever the carousel rotates. min-height still permits text reflow.
+    if (slot.isConnected) {
+      const height = slot.getBoundingClientRect().height;
+      if (height > 0) slot.style.minHeight = `${Math.ceil(height)}px`;
+    }
     fill(slot, slides[active]());
     dots.forEach((dot, index) => {
       dot.classList.toggle("on", index === active);
@@ -1507,7 +1524,7 @@ function homeCarousel() {
 VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
-    const status = h("div", { class: "chips" });
+    const status = h("div", { class: "chips home-status" });
     const advisory = h("div");
     const drawStatus = () => fill(status, ...statusChips());
     const drawAdvisory = () => {
@@ -1519,7 +1536,7 @@ VIEWS.home = {
     ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
     drawStatus(); drawAdvisory();
     add(main,
-      homeCarousel(), status, advisory, searchBox(),
+      homeCarousel(), status, advisory, searchBox({}, false, true),
       section(t("shortcuts"), tiles([], ["health", "rates"])),
       section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })),
         contextHelp(t("notification_privacy")), noticeList()),
