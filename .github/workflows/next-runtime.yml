@@ -44,8 +44,8 @@ jobs:
       MICHIFLIN_BACKUP_PASSPHRASE: ${{ secrets.NEXT_BACKUP_PASSPHRASE }}
       MICHIFLIN_BACKUP_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
       MICHIFLIN_BACKUP_REPOSITORY: ${{ secrets.STATE_BACKUP_REPO }}
-      MICHIFLIN_SEED_ASSET_ID: '770164542'
-      MICHIFLIN_SEED_SHA256: 107d02269b0d3996e16132658f5871f5ecf4b241c9c7c9eb0d246671e788eb4f
+      MICHIFLIN_SEED_ASSET_ID: '772513826'
+      MICHIFLIN_SEED_SHA256: ff11ffc6bacdbe6112647906182956b7c707d733ca01d9acde69972dec763681
       MICHIFLIN_SESSION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'run' }}
       MICHIFLIN_SESSION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.seconds || '19200' }}
     steps:

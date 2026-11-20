@@ -7,6 +7,11 @@ name: Validate next private recovery
         type: boolean
         default: true
         required: true
+      verify_cached_restart:
+        description: Block bulk catalogue transfer to verify the authenticated restart cache
+        type: boolean
+        default: false
+        required: true
       check_sources:
         description: Test actual public sources after the authenticated recovery check
         type: boolean
@@ -28,8 +33,8 @@ jobs:
       MICHIFLIN_BACKUP_PASSPHRASE: ${{ secrets.NEXT_BACKUP_PASSPHRASE }}
       MICHIFLIN_BACKUP_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
       MICHIFLIN_BACKUP_REPOSITORY: ${{ secrets.STATE_BACKUP_REPO }}
-      MICHIFLIN_SEED_ASSET_ID: '770164542'
-      MICHIFLIN_SEED_SHA256: 107d02269b0d3996e16132658f5871f5ecf4b241c9c7c9eb0d246671e788eb4f
+      MICHIFLIN_SEED_ASSET_ID: '772513826'
+      MICHIFLIN_SEED_SHA256: ff11ffc6bacdbe6112647906182956b7c707d733ca01d9acde69972dec763681
       MICHIFLIN_LAUNCH_REVISION: ""
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -49,6 +54,7 @@ jobs:
       - name: Authenticate identity and catalogue recovery without mail IO
         env:
           PRIVATE_VALIDATION_DIRECTORY: ${{ runner.temp }}/michiflin-offline-recovery
+          VERIFY_CACHED_RESTART: ${{ inputs.verify_cached_restart }}
         run: |
           umask 077
           python - <<'PYRECOVERY'
@@ -61,12 +67,24 @@ jobs:
               store.download(772482566,feed,maximum=8*1024*1024)
               assert hashlib.sha256(feed.read_bytes()).hexdigest()=='66847ed72335833379699bd2c3d0ae1c1180521c43d405a7ab9b28e28e1afd8e'
               os.utime(feed,(1795190933,1795190933))
-              result=execute(validate_only=True,duration=60,directory=Path(os.environ['PRIVATE_VALIDATION_DIRECTORY']),source=Path('miniapp'),prepare_catalog=True,catalog_feed=feed)
+              verify_restart=os.environ.get('VERIFY_CACHED_RESTART')=='true'
+              bulk_attempts=[]
+              if verify_restart:
+                  from michiflin import gutenberg
+                  original_fetch=gutenberg.fetch
+                  def no_bulk_transfer(url,**kwargs):
+                      if url==gutenberg.FEED:
+                          bulk_attempts.append(url)
+                          raise RuntimeError('Restart must use its authenticated catalogue cache')
+                      return original_fetch(url,**kwargs)
+                  gutenberg.fetch=no_bulk_transfer
+              result=execute(validate_only=True,duration=60,directory=Path(os.environ['PRIVATE_VALIDATION_DIRECTORY']),source=Path('miniapp'),prepare_catalog=True,catalog_feed=None if verify_restart else feed)
+              assert not bulk_attempts
               checkpoint=result['checkpoint']
               assert result['validated'] is True and result['io_started'] is False
               assert checkpoint['catalog_bytes']==5602458
               summary={key:checkpoint[key] for key in ['asset_id','sha256','revision','catalog_bytes']}
-              summary.update(io_started=False,catalog_origin='authenticated_public_feed',catalog_fetched_at=1795190933)
+              summary.update(io_started=False,catalog_origin='restored_authenticated_snapshot' if verify_restart else 'authenticated_public_feed',restart_bulk_transfers=len(bulk_attempts),bulk_transfer_blocked=verify_restart,catalog_fetched_at=1795190933)
               print('RECOVERY_VALIDATION_SUMMARY '+json.dumps(summary),flush=True)
           except Exception as error:
               print('RECOVERY_VALIDATION_FAILED '+type(error).__name__,flush=True)
