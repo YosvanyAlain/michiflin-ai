@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CONFIG_DIR: ${{ runner.temp }}/sync-diagnostic-state
+      CONFIG_DIR: ${{ github.workspace }}/.sync-diagnostic-state
       GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
       STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
       STATE_BACKUP_REQUIRED: "1"
