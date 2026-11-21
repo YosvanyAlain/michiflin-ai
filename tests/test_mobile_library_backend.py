@@ -261,3 +261,21 @@ def test_epub_missing_spine_cannot_be_reported_as_complete(monkeypatch):
     monkeypatch.setattr(books, '_fetch', lambda *args: (data.getvalue(), 'application/epub+zip'))
     with pytest.raises(books.BookError, match='epub_structure'):
         books.reading_copy('https://example.org/book.epub', 'epub')
+
+
+def test_group_weather_never_uses_personal_home_or_saves_a_user_city(monkeypatch):
+    from michiflin import weather_home
+    private = mock.Mock(side_effect=AssertionError('personal home must not be used'))
+    monkeypatch.setattr(weather_home, 'query', private)
+    monkeypatch.setattr(groups.tools, 'weather_data', lambda city, locale: {
+        'place': {'label': city}, 'current': {'description': 'Despejado', 'temp': 28, 'humidity': 70, 'wind': 12},
+        'days': [{'date': '2026-11-20', 'description': 'Sol', 'low': 20, 'high': 30}], 'as_of': 'fixture'})
+    result = groups.public_answer('weather', 'Santiago, Cuba')
+    assert 'Santiago, Cuba' in result and 'Open-Meteo' in result
+    assert 'Inicio' not in result
+    private.assert_not_called()
+
+
+def test_group_rates_never_present_saved_data_as_a_fresh_quote(monkeypatch):
+    monkeypatch.setattr(groups.tools, 'rates_snapshot', lambda: {'rates': {'USD': 325, 'EUR': 350}, 'stale': True, 'at': 100})
+    assert 'Última lectura guardada' in groups.public_answer('rates', '')

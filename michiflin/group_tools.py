@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from deltachat2 import MessageData
 from . import chat, config, identity_guard, state, tools
@@ -58,10 +59,27 @@ def public_answer(command: str, argument: str, locale: str = 'es') -> str:
     if command == 'rates':
         data = tools.rates_snapshot()
         values = data.get('rates', {})
-        rows = [f'{code}: {values[code]} CUP' for code in ['USD', 'EUR', 'MLC'] if code in values]
+        rows = [f'{code}: {values[code]} CUP' for code in ['USD', 'EUR', 'MLC', 'CAD', 'MXN', 'TRX'] if code in values]
+        if data.get('stale'):
+            rows.append('Última lectura guardada; la actualización actual no está disponible.')
+        try:
+            if float(data.get('at') or 0) > 0:
+                rows.append('Lectura recibida: ' + datetime.fromtimestamp(float(data['at']), config.LOCAL_ZONE).isoformat(timespec='minutes'))
+        except (TypeError, ValueError, OverflowError):
+            pass
         return 'Michiflin · elTOQUE\n' + ('\n'.join(rows) if rows else 'No hay una lectura disponible.')
     if command == 'weather':
-        return 'Michiflin · Clima\n' + tools.weather_text(argument or 'La Habana, Cuba', locale)
+        try:
+            data = tools.weather_data(argument or 'La Habana, Cuba', locale)
+            current = data['current']
+            rows = [str(data['place']['label']), f"{current['description']} · {current['temp']} °C",
+                    f"Humedad: {current['humidity']}% · Viento: {current['wind']} km/h"]
+            for day in data.get('days', [])[:4]:
+                rows.append(f"{day['date']}: {day['description']} · {day['low']}–{day['high']} °C")
+            rows.append('Open-Meteo · ' + str(data.get('as_of', '')))
+            return 'Michiflin · Clima\n' + '\n'.join(rows)
+        except tools.WeatherError:
+            return 'Michiflin · No pude consultar ese clima ahora. Prueba /clima ciudad, país.'
     if command == 'search' and argument:
         results = tools.search(argument, locale, limit=4, engine='standard')
         return 'Michiflin · Búsqueda pública sin IA ni cuota de modelos\n\n' + ('\n\n'.join(
