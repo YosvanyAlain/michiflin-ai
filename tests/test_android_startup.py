@@ -157,3 +157,22 @@ def test_host_listener_failure_keeps_local_interface_usable(packaged_app):
         assert page.locator('#startup-recovery').is_hidden()
         assert errors == []
         browser.close()
+
+
+@pytest.mark.parametrize('locale', ['es', 'en'])
+def test_manual_tour_matches_current_chat_and_delivery_policy(locale):
+    with browser_fixture(locale, {'width':360,'height':800}) as (page, errors):
+        assert page.locator('.intro-overlay').count() == 0
+        page.evaluate('onboarding(true)')
+        first = page.locator('.intro-card').inner_text()
+        assert ('/comandos' if locale == 'es' else '/commands') in first
+        assert '/app' in first
+        pages = []
+        for _ in range(5):
+            pages.append(page.locator('.intro-card').inner_text())
+            page.locator('.intro-card .btn.primary').click()
+        page.locator('.intro-overlay').wait_for(state='detached')
+        text = ' '.join(pages)
+        assert ('temporal' if locale == 'es' else 'temporary') in text
+        assert ('requieren la miniapp' if locale == 'es' else 'need the miniapp') in text
+        assert errors == []

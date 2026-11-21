@@ -4505,7 +4505,7 @@ VIEWS.estado = {
 // ---------------------------------------------------------------------------
 // First-run introduction: the app is the whole bot.
 // ---------------------------------------------------------------------------
-const INTRO = [["cat", "tour_1"], ["apps", "tour_2"], ["send", "tour_3"], ["downloads", "tour_4"], ["help", "tour_5"]];
+const INTRO = [["apps", "tour_1"], ["apps", "tour_2"], ["send", "tour_3"], ["downloads", "tour_4"], ["help", "tour_5"]];
 
 function onboarding(force = false) {
   if (!force && store.get("tour_done", false)) return;
