@@ -15,6 +15,8 @@ ENGINE_SHA='31cc3a6bc638ac6c48dc4b1b74888f1eaadf3d14227c1e5f67daf9a49541d97a'
 MODEL_URL='https://huggingface.co/mradermacher/Huihui-Qwen3-4B-Instruct-2507-abliterated-GGUF/resolve/c9e90669eeb205d5af35c28a3e9983fc9293c2ec/Huihui-Qwen3-4B-Instruct-2507-abliterated.Q4_K_M.gguf?download=true'
 MODEL_SHA='b1324e2f1bd2e0610d591f54f93e38d90b187f69d1f215f4cace349eade678d7'
 MODEL_BYTES=2497281312
+CONTEXT=3072
+if [[ "${LOCAL_GGUF_EXTENDED:-0}" == '1' ]]; then CONTEXT=6144; fi
 # Fixed, reviewed variants only; no caller-supplied URLs or arbitrary engines.
 case "${LOCAL_GGUF_VARIANT:-legacy}" in
   legacy) ;;
@@ -108,7 +110,7 @@ start() {
     --property=MemoryMax=7G --property=CPUQuota=200% --property=TasksMax=64 --property=Nice=10 \
     --property=TimeoutStopSec=10 --property=StandardOutput=null --property=StandardError=null \
     "$WORK/llama-b11960/llama-server" --model "$MODEL" --host "$SOCKET" \
-    --api-key-file "$WORK/api-key" --ctx-size 3072 --threads 2 --threads-batch 2 \
+    --api-key-file "$WORK/api-key" --ctx-size "$CONTEXT" --threads 2 --threads-batch 2 \
     --parallel 1 --poll 0 --poll-batch 0 --no-webui
   local socket_prepared=0
   for _ in $(seq 1 180); do
