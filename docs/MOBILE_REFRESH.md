@@ -1,48 +1,49 @@
-# Michiflin: revisión móvil, identidad y biblioteca
+# Michiflin: segunda revisión móvil
 
-## Alcance
+Esta revisión sustituye los requisitos anteriores de mascota al arrancar y selector de calidad de miniaturas. El código local parte de `ffc62f2ae43d7730e44de9c97da08db07d7bbbf3`. Preparar estos archivos no equivale a desplegarlos.
 
-La referencia visual es `assets/michiflin-avatar.png`: gato negro pequeño de ojos dorados, gafas redondas y placa roja. Las poses vectoriales comparten esos rasgos; el retrato real se usa en la cabecera. La animación respeta movimiento reducido.
+## Cambios
 
-| Pedido | Implementación |
-|---|---|
-| 1. Identidad visual | Retrato original, dos poses negras coherentes, ojos y placa sin recoloreado heredado del antiguo icono. |
-| 2. Opciones ocultas | Indicador persistente «Más opciones abajo», pulsable y oculto al llegar al final; no depende de un toast. |
-| 3. Imágenes | Selector plegado, marcas reales de familia/proveedor cuando existe un recurso verificable, nombre de familia cuando no; resultado al lado del prompt. Elegir un modelo pliega el selector. |
-| 4. Solicitudes | Seis filas iniciales, expansión por bloques, altura acotada y diagnóstico secundario plegado. No se pierde la cola. |
-| 5. Submenús | Solo cambia la flecha del `summary` que realmente se abre, no la de sus descendientes. |
-| 6. Utilidades | Texto, JSON, SHA-256, contraseñas seguras, Base64, limpieza de enlaces y porcentajes locales, más conversión, hora y cálculo existentes. Unidades de tiempo/binarias y rechazo de temperaturas físicamente imposibles, recuperando ideas del repo nuevo. |
-| 7. APIs propias | Asistente con trece opciones de proveedor/manual, tres protocolos, normalización de endpoints copiados, descubrimiento sin generaciones de prueba y edición manual. Donación separada, opcional, cifrada y revocable. |
-| 8. Libros | Gutenberg con el catálogo y espejo oficial adaptados del repo nuevo, Open Library, Internet Archive, Google Books, Standard Ebooks, Wikisource y búsqueda web. Estantería, detalles, copia de lectura local, apertura sin conexión y exportación accesible. |
-| 9. Agente y Coder | Identidad Michiflin independiente del proveedor, preservación de límites de herramientas, aislamiento del programador y descarte de prefijos de razonamiento truncados. Se conserva selección explícita y rotación compatible, no se cambia el modelo por una promesa no medida. |
-| 10. YouTube | Miniaturas de tres calidades, baja por defecto, carga visible y agrupada; cambiar calidad no repite la búsqueda ni pierde páginas. |
-| 11. Grupos | Solo búsqueda pública extractiva **sin ningún modelo de IA**, tasas y clima; dueño verificado, grupo cifrado y activación explícita. Sin APIs, archivos, Coder, descargas ni datos privados. |
-| 12. Comandos | Alias experimental retirado; auditoría de aliases y eliminación de un duplicado inocuo de imagen. |
-| 13. Web/Live | Identidad genérica por hostname, sin promoción o clasificación particular de servicios. Migración cifrada de sesiones antiguas; la lista de proveedores de IA no se confunde con sitios de navegación. |
+1. **Apertura directa:** sin splash, animación de gato, retrato en cabecera ni presentación automática. La ayuda guiada sigue disponible bajo petición.
+2. **Descubrimiento de contenido:** flecha discreta en el borde derecho, con etiqueta accesible, pulsable y oculta al alcanzar el final; no ocupa el centro inferior.
+3. **Identidad interior:** iconografía temática genérica, sin mascota o retrato de Michiflin. Se conserva el nombre del producto y el icono externo de la aplicación, no se modifica la identidad del bot.
+4. **Banners:** base compacta de 170 px en móvil y 180 px en escritorio; el contenido puede crecer con reflujo o aumento de texto. Acciones principales de al menos 44 px de alto.
+5. **Biblioteca:** icono de libro propio; cuadrícula de portadas compactas y acciones pequeñas. Solo se muestran registros con un formato de lectura admitido. Internet Archive resuelve metadatos públicos con un máximo de cuatro consultas paralelas, omitiendo préstamos y restricciones.
+6. **Carga silenciosa:** catálogo y portadas no inflan el contador de tareas deliberadas. El catálogo muestra su propio indicador discreto. Dos portadas simultáneas, peticiones deduplicadas, caché de hasta 24 portadas durante un día y seis búsquedas durante diez minutos. Volver a entrar reutiliza esa caché; hay actualización explícita.
+7. **Libros guardados:** siguen en IndexedDB y se abren sin red. Limpiar catálogo/portadas desde Ajustes no borra los libros. La lectura en voz alta depende del cliente y del sistema; exportar texto permite usar un lector externo. No se eluden DRM, préstamos ni límites de recursos.
+8. **YouTube:** miniaturas siempre de calidad baja, carga visible y agrupada, sin selector. No se descarga el video para generar una miniatura y no se conserva multimedia descargada por el bot.
+9. **Modelos:** el aviso invalida y actualiza el catálogo seleccionable; si falla, queda marcado para reintento al entrar en IA. También se invalida el catálogo de otras instancias privadas autorizadas, sin notificación de sistema para invitados. No se inventan modelos ni disponibilidad. Se usan marcas verificadas ya integradas; una identidad desconocida se muestra con iniciales honestas, no con un logo ajeno.
+10. **Ajustes:** nueve categorías: apariencia/idioma; IA/modelos/APIs; búsqueda/clima; bot/descargas; privacidad/controles; biblioteca/caché; grupos públicos; conexión/sincronización; ayuda/administración. Idioma del chat va con apariencia, controles de imagen/cuotas IA con IA y lector/capturas con navegación. Se conservan las autorizaciones del backend y los valores actuales.
+11. **Utilidades:** mosaicos abiertos y compactos. Cada herramienta local o remota abre su propio espacio adaptable; no hay una pila de formularios plegados. Los resultados, errores y avisos mantienen su destino específico y no se vuelven a solicitar al abrir una notificación.
+12. **Grupos:** activación explícita y comprensible; véase abajo. Solo búsqueda pública sin IA, tasas y clima. Sin modelos, cuotas IA, APIs personales, agente, Coder, archivos, descargas o historial privado.
 
-## Límites que se muestran al usuario
+## Grupos: diagnóstico y activación
 
-- **Catálogo no equivale a descarga.** Préstamos, DRM y restricciones no se eluden. Una copia de lectura EPUB/PDF se convierte a texto; la ficha enlaza los formatos originales. Los libros demasiado grandes se rechazan expresamente en lugar de truncarlos. Wikisource puede ser una página enlazada a otros capítulos, no una obra entera.
-- **Fuentes reales:** las pruebas públicas verificaron resultados de Gutenberg, Open Library, Internet Archive y Wikisource. Google Books y Standard Ebooks rechazaron la consulta en el entorno de prueba; la interfaz ofrece otras fuentes y no inventa resultados.
-- **Voz:** usa `speechSynthesis` y voces locales cuando el cliente/sistema las ofrece. No se promete que todos los WebViews tengan voces. La exportación de texto permite usar un lector accesible del sistema. No se envía el libro a un servicio TTS de pago.
-- **Almacenamiento:** los libros descargados pertenecen a esta instancia de WebXDC; el cliente puede borrar su almacenamiento. No se afirma una descarga hasta que termina la transacción local.
-- **APIs:** la donación no es necesaria para usar una API personal. La copia se guarda como un recurso cifrado en un repositorio verificado privado, nunca en código o logs. Se descarga y verifica antes de confirmar recepción. Queda pendiente de revisión, no se activa ni gasta automáticamente. El dueño puede descifrarla. El límite solicitado no sustituye un presupuesto del proveedor. Retirar el recurso no puede invalidar copias ya vistas: hay que rotar/revocar en el proveedor para ello.
-- **Modelos:** una prueba pública pequeña, sin claves de pago ni datos privados, comprobó identidad, suma y código Python parseable en GPT-OSS 120B. Qwen respondió HTTP 200 pero no produjo el JSON solicitado con ese presupuesto. Esto prueba compatibilidad limitada, no calidad general ni «ausencia de censura». Las reglas y disponibilidad del proveedor siguen aplicando.
+La ausencia de respuesta puede ser deliberada: falta de activación, herramientas deshabilitadas en el servidor, grupo sin cifrar, dueño ausente, identidad sin verificación global o pausa/mantenimiento. Esta revisión no afirma haber observado el grupo real del dueño.
 
-## Activar un grupo
+- El servidor debe tener `GROUP_PUBLIC_TOOLS=1`.
+- Dentro del grupo cifrado, el dueño envía `/michiflin activar`.
+- Si ya tiene una clave global verificada, se conserva la activación directa.
+- En una identidad antigua sin esa fijación, el bot crea una solicitud de 24 horas e indica al dueño que abra **su miniapp en el chat individual cifrado → Ajustes → Grupos públicos**.
+- La confirmación exige dueño autorizado, chat individual cifrado y el mismo contacto/huella presente en el grupo. Se fija esa huella para las comprobaciones de pertenencia posteriores. Una dirección por sí sola no habilita herramientas.
+- Se admiten hasta veinte grupos pendientes/registrados por esta vía, con limitación de repetición. La interfaz avisa si la función está deshabilitada en el servidor y bloquea la activación.
+- Comandos públicos: `/buscar consulta`, `/tasas`, `/clima ciudad`, `/ayuda`. `/michiflin desactivar` funciona para el dueño globalmente verificado; el dueño de una identidad antigua puede desactivar desde los Ajustes privados.
+- Si el dueño sale o cambia la huella aprobada, las herramientas dejan de responder. Pausa del dueño, mantenimiento y controles de concurrencia siguen aplicándose.
 
-El dueño que ya tiene una clave verificada debe estar dentro de un grupo cifrado y escribir:
+## Privacidad y conservación
 
-```
-/michiflin activar
-```
+- La donación de API continúa separada, voluntaria, explícita y cifrada; guardar una API personal no implica donarla.
+- No se toca el historial, las instancias existentes, sus temas, sus notificaciones ni las copias de libros del cliente.
+- No se reactiva el bot independiente ni sus arranques programados.
+- No se guarda multimedia descargada del bot ni se incrustan claves en archivos, logs o previsualizaciones.
+- El catálogo indica fallos de fuentes; no se fabrican libros, modelos o disponibilidad. Una URL de formato público es evidencia de descarga ofrecida, no garantía de que una fuente externa nunca falle.
 
-Después los miembros pueden usar `/buscar consulta`, `/tasas` y `/clima ciudad`. No consumen cuotas de modelos de IA; las fuentes web pueden limitar tráfico. Hay control de concurrencia/antiflood, no una cuota diaria de IA. `/michiflin desactivar` apaga esas herramientas en ese grupo. Si el dueño sale, se deja de responder. El mantenimiento y la pausa del dueño también se respetan.
+## Compatibilidad y entrega
 
-## Compatibilidad
+`compat/polish-before` verifica por contenido el paquete exacto previo a esta revisión. Se conserva solo para reconocer instancias ya entregadas; no se incluyen esos archivos en el nuevo `.xdc`. No se pide al dueño borrar chats o datos. La compatibilidad anterior sigue comprobándose con sus huellas y manifiestos.
 
-`compat/mobile-before` preserva las huellas de la miniapp que ya estaba enviada. No se incluye en paquetes nuevos ni restaura el antiguo tema retirado. Las instancias anteriores y sus datos no se eliminan al entregar la nueva. Los nuevos nombres genéricos de Web/Live migran las sesiones cifradas antes de retirar su alias antiguo.
+Antes de publicar: ejecutar las cinco suites de CI, verificar backup cifrado y acceso de escritura, y usar la entrega controlada existente. No arrancar otra identidad. Un `.xdc` aislado no incorpora los cambios de backend: ambos deben desplegarse juntos.
 
 ## Pruebas
 
-Las pruebas usan correo sintético, claves ficticias y almacenamiento aislado. Los sondeos externos solo usan consultas públicas y dos llamadas anónimas de compatibilidad: no usan credenciales donadas ni privadas. La CI se divide en lógica, navegadores y archivos para que su tramo final no se cancele por acumular todo en un único trabajo de 40 minutos.
+Las pruebas de esta revisión usan correo simulado, identidades sintéticas y almacenamiento aislado; no demuestran entrega real por Delta Chat ni disponibilidad de APIs de terceros. `tests/test_mobile_polish.py` cubre arranque sin bloqueo, 320/390/1280 px, Chromium/WebKit, categorías, herramientas independientes, caché, descargas admitidas, miniaturas bajas, catálogo seleccionable y aprobación privada de grupos. Se conservan las regresiones de consentimiento, privacidad, compatibilidad y notificaciones visibles.

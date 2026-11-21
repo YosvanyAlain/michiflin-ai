@@ -22,6 +22,9 @@ def test_saved_rates_and_upcoming_forecast_use_banner_space_without_requests(eng
           goTab('home');
         }""")
         page.wait_for_function("viewReady()")
+        # The carousel reserves local layouts before paint. Reduced-motion
+        # WebKit can report viewReady before that first animation frame runs.
+        page.evaluate("() => new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))")
         before = page.evaluate("window.__sentUpdates.length")
         search_y = page.locator(".searchbox").bounding_box()["y"]
         page.locator(".home-banner-dot").nth(1).click()
@@ -65,27 +68,19 @@ def test_original_teal_and_retired_style_fallback(engine):
         assert page.evaluate("prefs.style") == "michiflin"
         assert page.evaluate("VISUAL_STYLES.length") == 13
         assert page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()") == "#0e8577"
-        assert page.locator(".mascot-seated").count() == 1
+        assert page.locator(".mascot-seated").count() == 0
         page.evaluate("prefs.theme='dark';applyLook()")
         assert page.evaluate("getComputedStyle(document.documentElement).getPropertyValue('--accent').trim()") == "#2bb5a3"
         assert errors == []
 
 
 @pytest.mark.parametrize("engine", ["chromium", "webkit"])
-def test_splash_cat_stops_at_yarn_then_continues_and_does_not_wait_for_mail(engine):
+def test_direct_boot_has_no_animation_and_does_not_wait_for_mail(engine):
     with browser_fixture("en", {"width": 390, "height": 844}, engine=engine) as (page, errors):
         page.add_init_script("Object.defineProperty(window,'__delay',{configurable:true,get(){return 60000},set(_v){}})")
         page.reload(wait_until="domcontentloaded")
-        page.wait_for_function("!!document.querySelector('.mascot-running')")
-        positions = page.evaluate("""() => {
-          const node=document.querySelector('.splash-runner'), a=node.getAnimations()[0];
-          a.pause();
-          return [100,850,1350,2150].map(ms=>{a.currentTime=ms;return node.getBoundingClientRect().left;});
-        }""")
-        assert positions[0] < positions[1]
-        assert abs(positions[1] - positions[2]) < 1
-        assert positions[3] > positions[2] + 100
-        page.locator("#splash").wait_for(state="detached", timeout=3500)
+        page.locator('.home-hero').wait_for(state='visible', timeout=3500)
+        assert page.locator('#splash,.mascot-running,.intro-overlay').count() == 0
         assert page.evaluate("Object.values(bridge.pending()).some(v=>v.op==='hello')")
         assert errors == []
 

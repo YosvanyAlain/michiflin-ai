@@ -188,9 +188,9 @@ def test_section_tabs_open_other_notified_outcomes(feature, fail):
                 page.locator('#view input').first.fill('Havana')
                 page.get_by_role('button', name='Consultar').first.click()
             else:
-                page.locator('.utility-card summary').first.click()
-                page.locator('.utility-card input').first.fill('1 EUR en CUP')
-                page.locator('.utility-card button').first.click()
+                page.locator('.utility-tile').filter(has_text='Conversor de unidades').click()
+                page.locator('.utility-workspace input').first.fill('1 EUR en CUP')
+                page.locator('.utility-workspace .search-field button').first.click()
         page.wait_for_function('op => window.__sentUpdates.some(x=>x.payload?.op===op)', arg=op)
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function('name => store.get("notices",[]).some(n=>n.unread&&n.target?.view===name)', arg=feature)
@@ -324,7 +324,7 @@ def test_result_evicted_during_open_never_starts_a_new_search():
         assert errors == []
 
 
-def test_reopen_on_web_restores_result_but_waits_until_splash_is_gone_to_read():
+def test_reopen_on_web_restores_result_and_reads_only_after_visible():
     with browser_fixture('es', {'width': 390, 'height': 844}, engine='webkit', touch=True) as (page, errors):
         page.wait_for_function('cache.at > 0')
         page.evaluate("""() => {window.__delay=500;window.__searchResults=[{title:'Persistida',url:'https://example.test/persist'}];
@@ -333,8 +333,7 @@ def test_reopen_on_web_restores_result_but_waits_until_splash_is_gone_to_read():
         page.evaluate("store.set('tab','web')")
         page.reload()
         page.wait_for_function('window.__listener && current.view === "results"')
-        assert page.locator('#splash').count() == 1
-        assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='persistida')")
+        assert page.locator('#splash').count() == 0
         page.locator('#splash').wait_for(state='detached', timeout=8000)
         page.get_by_text('Persistida', exact=True).wait_for(state='visible')
         page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='persistida')")

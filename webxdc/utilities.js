@@ -1,7 +1,7 @@
 "use strict";
 // Deliberately local: no AI, API keys, mail, uploads or persistent input history.
 window.LocalUtilities = {
-  mount() {
+  mount(selected = "") {
     const es = lang() !== "en";
     const items = [
       ["text", es ? "Texto: contar y limpiar" : "Text: count and clean", es ? "Palabras, caracteres y espacios" : "Words, characters and whitespace"],
@@ -14,7 +14,13 @@ window.LocalUtilities = {
     ];
     const root = h("div", { class: "stack local-utilities" });
     add(root, h("p", { class: "note" }, icon("shield"), es ? "Estas herramientas funcionan sin correo ni IA. El texto no sale del dispositivo." : "These tools work without mail or AI. Text stays on this device."));
-    for (const [key, title, hint] of items) {
+    if (!selected) {
+      root.classList.add("utility-grid");
+      for (const [key, title, hint] of items) add(root, h("button", { class: "card utility-tile", onclick: () => go("tools", { tool: "local:" + key }) },
+        icon(key === "hash" || key === "password" ? "shield" : key === "url" ? "web" : "tools"), h("b", {}, title), h("small", { class: "muted" }, hint)));
+      return root;
+    }
+    for (const [key, title, hint] of items.filter(item => item[0] === selected)) {
       const input = h("textarea", { class: "input", rows: 2, maxlength: 100000, placeholder: hint });
       const result = h("pre", { class: "local-tool-result", tabindex: "0" });
       const run = h("button", { class: "btn primary small", onclick: async () => {
@@ -58,7 +64,7 @@ window.LocalUtilities = {
         } catch (_) { result.textContent = es ? "Revisa el formato de entrada o la disponibilidad de criptografía del cliente." : "Check the input format or the client's cryptography support."; }
         finally { run.disabled = false; }
       } }, es ? "Usar herramienta" : "Run tool");
-      add(root, h("details", { class: "card local-tool-card" }, h("summary", {}, icon("tools"), h("b", { class: "grow" }, title), icon("down", "caret")),
+      add(root, h("section", { class: "card local-tool-card utility-workspace" }, h("h2", {}, title),
         h("div", { class: "stack utility-body" }, h("p", { class: "muted small" }, hint), key === "password" ? null : input, run, result,
           h("button", { class: "btn ghost small", onclick: () => exportSheet(new Blob([result.textContent], { type: "text/plain" }), key + ".txt") }, icon("share"), t("export")))));
     }

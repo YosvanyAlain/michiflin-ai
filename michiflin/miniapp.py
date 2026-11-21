@@ -93,6 +93,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
         return False
     if value == app_build():
         return True
+    polish_previous = app_compat.polish_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if polish_previous and value == polish_previous:
+        return True
     mobile_previous = app_compat.mobile_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if mobile_previous and value == mobile_previous:
         return True
@@ -118,6 +121,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
+    polish_previous = app_compat.polish_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if polish_previous and value == polish_previous:
+        return True
     mobile_previous = app_compat.mobile_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if mobile_previous and value == mobile_previous:
         return True
@@ -774,7 +780,7 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
 WORK_OPS = {"books", "ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
             "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
-KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
+KILL_SAFE_OPS = {"public_groups", "hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 2100}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-admin-op")
@@ -1205,12 +1211,12 @@ queue.LISTENERS.append(_on_job)
 
 
 def _on_health(kind: str, spanish: str, english: str) -> None:
-    """Model health changes reach the owner's app as a notice with a system notification."""
+    """Invalidate every authorized private catalogue; only notify the owner aloud."""
     with state.lock:
-        chats = {int(entry["chat"]) for entry in _apps().values() if str(entry.get("addr", "")).lower() == config.OWNER_ADDRESS}
-    for chat_id in chats:
-        push(chat_id, "notice", {"kind": kind, "es": spanish, "en": english}, tr(state.setting("language") if state.setting("language") != "auto" else "es",
-                                                                                   spanish, english))
+        chats = {int(entry["chat"]): str(entry.get("addr", "")).casefold() for entry in _apps().values()}
+    for chat_id, address in chats.items():
+        notification = tr(state.setting("language") if state.setting("language") != "auto" else "es", spanish, english) if address == config.OWNER_ADDRESS.casefold() else ""
+        push(chat_id, "notice", {"kind": kind, "es": spanish, "en": english, "models_changed": True}, notification)
 
 
 ai.LISTENERS.append(_on_health)
@@ -2399,3 +2405,13 @@ def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     except Exception:
         raise AppError(tr(locale, "No se pudo leer la fuente o el libro. Puede no estar disponible, protegido o superar el límite de tamaño.",
                           "The source or book could not be read. It may be unavailable, protected or exceed the size limit.")) from None
+
+
+@op("public_groups")
+def op_public_groups(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    from . import group_tools
+    try:
+        return group_tools.manage(chat_id, args)
+    except Exception:
+        raise AppError(tr(locale, "No se pudo confirmar. Usa la miniapp del dueño en su chat individual cifrado; debe estar presente en el grupo con la misma clave. Repite /michiflin activar si la solicitud venció.",
+                          "Could not confirm. Use the owner's encrypted individual miniapp; the same owner key must be present in the group. Repeat /michiflin activar if the request expired.")) from None

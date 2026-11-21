@@ -109,6 +109,7 @@ def search(source: str, query: str, page: int = 1, language: str = '') -> dict:
                 wait = max(60, min(3600, int(retry))) if retry.isdigit() else 300
                 _source_pause[source] = time.monotonic() + wait
             raise
+        books = [book for book in books if book.get('downloads')]
         result = {'books': books, 'page': page, 'more': more, 'unavailable': []}
     _cache[cache_key] = (time.monotonic(), result)
     while len(_cache) > 64:
@@ -175,6 +176,16 @@ def _search(source: str, query: str, page: int, language: str) -> tuple[list, bo
             books.append(_row(source, identifier, row.get('title', ''), author if isinstance(author, list) else [author],
                               'https://archive.org/details/' + quote(identifier),
                               cover_url='https://archive.org/services/img/' + quote(identifier), access='check_provider', archive_id=identifier))
+        # A catalogue id is not evidence of an available download. Resolve
+        # bounded public metadata and omit loans/restricted/unsupported records.
+        def resolve(book):
+            try:
+                downloads = archive_download(book['archive_id'])
+                return {**book, 'downloads': downloads} if downloads else None
+            except Exception:
+                return None
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            books = [book for book in pool.map(resolve, books) if book]
         return books, page * 20 < int(response.get('numFound', 0))
     if source == 'standard':
         feed, _ = _fetch('https://standardebooks.org/opds/all', 7_000_000)

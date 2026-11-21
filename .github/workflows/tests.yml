@@ -101,8 +101,8 @@ jobs:
       - name: Slow-mail forms, accessible dialogs and pre-audit compatibility
         if: matrix.suite == 'mobile'
         run: |
-          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py
-          ruff check tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py --select F,E9
+          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_mobile_polish.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py
+          ruff check tests/test_mobile_polish.py tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py --select F,E9
 
       - name: File kit, encrypted bridge and isolated archive worker
         if: matrix.suite == 'filekit'

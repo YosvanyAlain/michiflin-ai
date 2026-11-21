@@ -207,9 +207,9 @@ def test_other_tool_results_are_visible_without_silent_requery(feature):
             page.get_by_role("button", name="Consultar").first.click()
             op, notice_text, expected = "weather", "Clima", "Havana, Cuba"
         else:
-            page.locator(".utility-card summary").first.click()
-            page.locator(".utility-card input").first.fill("1 EUR en CUP")
-            page.locator(".utility-card button").first.click()
+            page.locator(".utility-tile").filter(has_text="Conversor de unidades").click()
+            page.locator(".utility-workspace input").first.fill("1 EUR en CUP")
+            page.locator(".utility-workspace .search-field button").first.click()
             op, notice_text, expected = "tool", "Utilidades", "smoke test result"
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').click()
@@ -388,7 +388,7 @@ def test_personal_image_overview_uses_shared_attempt_budget(monkeypatch):
 def test_badged_shortcut_returns_to_pending_result_without_an_extra_request(feature):
     with browser_fixture("es", {"width": 390, "height": 844}, engine="webkit", touch=True) as (page, errors):
         page.wait_for_function("cache.at > 0")
-        page.evaluate("""() => { window.__delay=1500; window.__searchResults = [
+        page.evaluate("""() => { window.__delay=60000; window.__searchResults = [
             {title:'Resultado sintético',url:'https://youtube.com/watch?v=synthetic',snippet:'prueba'}]; }""")
         if feature == "youtube":
             page.evaluate("() => go('youtube', {q:'consulta pendiente'})")
@@ -404,9 +404,9 @@ def test_badged_shortcut_returns_to_pending_result_without_an_extra_request(feat
                 page.get_by_role("button", name="Consultar", exact=True).first.tap()
                 op, expected = "weather", "Havana, Cuba"
             else:
-                page.locator(".utility-card summary").first.tap()
-                page.locator(".utility-card input").first.fill("1 km en m")
-                page.locator(".utility-card button").first.tap()
+                page.locator(".utility-tile").filter(has_text="Conversor de unidades").tap()
+                page.locator(".utility-workspace input").first.fill("1 km en m")
+                page.locator(".utility-workspace .search-field button").first.tap()
                 op, expected = "tool", "smoke test result"
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').tap()
@@ -416,6 +416,10 @@ def test_badged_shortcut_returns_to_pending_result_without_an_extra_request(feat
         assert page.evaluate("current.view") == feature
         if feature == "translate":
             assert page.get_by_role("button", name="Traducir", exact=True).is_disabled()
+        # Deliver only after reopening. A wall-clock delay can finish while a
+        # loaded WebKit runner is still tapping Home, invalidating a pending test.
+        page.evaluate("""op=>{const request=window.__sentUpdates.map(x=>x.payload).find(x=>x.op===op);
+          window.__listener({serial:++window.__serial,payload:{t:'res',re:request.id,ok:true,data:window.__fixtureResponseFor(request)}});}""",op)
         result = page.locator(".weather-place").get_by_text(expected, exact=False) if feature == "weather" else page.get_by_text(expected, exact=False).first
         result.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
@@ -431,23 +435,24 @@ def test_two_unread_utility_results_are_individually_locatable():
     with browser_fixture("es", {"width": 390, "height": 844}) as (page, errors):
         page.wait_for_function("cache.at > 0")
         page.evaluate("window.__delay=1400; go('tools')")
-        convert = page.locator(".utility-card").nth(0)
-        convert.locator("summary").click()
+        page.locator(".utility-tile").filter(has_text="Conversor de unidades").click()
+        convert = page.locator(".utility-workspace")
         convert.locator("input").fill("1 km en m")
         convert.locator("button").click()
-        world_time = page.locator(".utility-card").nth(1)
-        world_time.locator("summary").click()
+        page.evaluate("go('tools')")
+        page.locator(".utility-tile").filter(has_text="Hora en el mundo").click()
+        world_time = page.locator(".utility-workspace")
         world_time.locator("input").fill("La Habana")
         world_time.locator("button").click()
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("store.get('notices',[]).filter(n=>n.unread && n.target?.view==='tools').length===2")
         page.locator("button.notice").filter(has_text="Conversor de unidades").click()
         assert page.evaluate("current.params.tool") == "convert"
-        assert page.locator(".utility-card").nth(0).locator(".utility-body").get_by_text("smoke test result").is_visible()
+        assert page.locator(".utility-output").get_by_text("smoke test result").is_visible()
         page.locator('.tab[data-tab="home"]:visible').click()
         page.locator("button.notice").filter(has_text="Hora en el mundo").click()
         assert page.evaluate("current.params.tool") == "time"
-        assert page.locator(".utility-card").nth(1).locator(".utility-body").get_by_text("smoke test result").is_visible()
+        assert page.locator(".utility-output").get_by_text("smoke test result").is_visible()
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='tool').length") == 2
         assert errors == []
 
@@ -466,9 +471,9 @@ def test_failed_background_request_shows_error_without_hidden_retry(feature):
             page.evaluate("() => go('results', {q:'fallo sintético',engine:'web',mode:'standard'})")
         else:
             page.evaluate("go('tools')")
-            page.locator(".utility-card summary").first.click()
-            page.locator(".utility-card input").first.fill("1 km en m")
-            page.locator(".utility-card button").first.click()
+            page.locator(".utility-tile").filter(has_text="Conversor de unidades").click()
+            page.locator(".utility-workspace input").first.fill("1 km en m")
+            page.locator(".utility-workspace .search-field button").first.click()
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("feature => store.get('notices',[]).some(n=>n.unread && n.kind==='bad' && n.target?.view===feature)", arg=feature)

@@ -69,7 +69,7 @@ def test_download_progress_is_visible_in_queue_but_not_a_reply_badge():
 def test_classic_styles_light_dark_accent_persist_and_fit(engine, width):
     with browser_fixture("es", {"width": width, "height": 844}, engine=engine, touch=width < 900) as (page, errors):
         page.wait_for_function("cache.at > 0")
-        page.evaluate("go('settings')")
+        page.evaluate("go('settings',{section:'appearance'})")
         styles = page.get_by_label("Estilo visual")
         accents = page.get_by_label("Color de acento")
         assert styles.locator("option").count() == 13  # three classic looks and ten premium palettes
@@ -133,7 +133,7 @@ def test_real_weather_codes_drive_offline_art_and_reduced_motion():
         page.locator(".home-banner-dot").nth(1).click()
         assert page.locator(".rate-banner").evaluate("e=>getComputedStyle(e,'::after').animationName") == "none"
         page.locator(".home-banner-dot").nth(0).click()
-        assert page.locator(".hero-art .mascot").evaluate("e=>getComputedStyle(e).animationName") == "none"
+        assert page.locator(".hero-art .ic").evaluate("e=>e.getAnimations().length") == 0
         page.evaluate("""() => { const w=weatherHome(); w.last.data.current={code:0,is_day:0,temp:23,description:'Despejado'};
           store.set('weatherHome',w); bus.emit('weather_home'); }""")
         page.locator(".home-banner-dot").nth(2).click()
@@ -150,7 +150,7 @@ def test_offline_authentic_logos_and_neutral_unknown():
           return examples.map(id => {const name=brandOf({id,title:id},{key:'cloudflare'}), mark=brandMark(name);
             document.body.appendChild(mark); return {name, generic:mark.classList.contains('brand-generic'), src:mark.querySelector('img')?.src || ''};});
         }""")
-        assert [v["name"] for v in values] == ["reflection", "recursive", "poolside", "cohere", "kilo", "openai", "qwen", ""]
+        assert [v["name"] for v in values] == ["reflection", "recursive", "poolside", "cohere", "kilo", "openai", "qwen", "unknown/model"]
         assert all(v["src"].startswith("data:image/") and not v["generic"] for v in values[:-1])
         assert values[-1]["generic"] and not values[-1]["src"]
         page.wait_for_function("Array.from(document.querySelectorAll('.brand-official img')).every(i=>i.complete && i.naturalWidth>0)")

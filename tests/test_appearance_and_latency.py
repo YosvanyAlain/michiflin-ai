@@ -74,7 +74,7 @@ def test_system_scheme_matches_light_and_dark_in_all_looks(engine, width):
                 actual = page.evaluate(variables)
                 page.evaluate('v=>{prefs.theme=v;applyLook()}', scheme)
                 assert actual == page.evaluate(variables), (style, scheme, actual)
-        page.evaluate("go('settings')")
+        page.evaluate("go('settings',{section:'connection'})")
         assert page.get_by_text('Last sync reply:', exact=False).count() >= 1
         assert page.get_by_text('no extra data is sent', exact=False).count() >= 1
         assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
@@ -114,9 +114,8 @@ def test_local_timing_reports_only_received_results_without_extra_requests():
         timing = page.evaluate('bridge.timings.request')
         assert timing['op'] == 'search' and 600 <= timing['ms'] < 3000
         before = page.evaluate('window.__sentUpdates.length')
-        page.evaluate("go('settings')")
+        page.evaluate("go('settings',{section:'connection'})")
         # Sync tools live in a collapsed section now; open it the way a user would.
-        page.get_by_role('button', name='Sincronización').click()
         page.get_by_text('Última respuesta (Búsqueda):', exact=False).wait_for(state='visible')
         assert page.get_by_text('no se envían datos adicionales.', exact=False).count() >= 1
         assert page.evaluate('window.__sentUpdates.length') == before
@@ -135,7 +134,7 @@ def test_timing_distinguishes_received_errors_from_local_timeouts():
         timeout_id = page.evaluate("bridge.request('weather',{city:'synthetic'},null).id")
         page.evaluate("id=>bridge.settle({re:id,ok:false,error:'local timeout'})", timeout_id)
         assert page.evaluate('bridge.timings.request') == observed
-        page.evaluate("go('settings')")
+        page.evaluate("go('settings',{section:'connection'})")
         assert page.get_by_text('Last error (Search):', exact=False).count() == 1
         assert not page.evaluate("JSON.stringify(bridge.timings).includes('private synthetic example')")
         page.reload()

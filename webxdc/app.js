@@ -102,7 +102,7 @@ const bus = {
 function chrome() {
   const button = (tab) => h("button", { class: "tab", "data-tab": tab.id, onclick: () => goTab(tab.id) },
     h("span", { class: "tab-icon" }, icon(tab.icon), h("i", { class: "tab-badge", hidden: true })), h("span", {}, t("tab_" + tab.id)));
-  fill($("#rail"), h("div", { class: "rail-brand" }, icon("cat"), h("span", {}, "Michiflin ", h("b", {}, "AI"))), ...TABS.map(button));
+  fill($("#rail"), h("div", { class: "rail-brand" }, icon("apps"), h("span", {}, "Michiflin ", h("b", {}, "AI"))), ...TABS.map(button));
   fill($("#tabs"), ...TABS.filter((tab) => tab.id !== "settings").map(button));
   fill($("#back"), icon("back"));
   $("#back").setAttribute("aria-label", t("back"));
@@ -240,8 +240,7 @@ function render(scroll = 0) {
   }
   bus.local = [];
   $("#title").classList.toggle("home-title", current.view === "home");
-  fill($("#title"), current.view === "home" ? h("span", { class: "home-brand-mark", "aria-hidden": "true" }, h("img", { src: BOT_PORTRAIT, alt: "" })) : null,
-    definition.title(current.params));
+  fill($("#title"), definition.title(current.params));
   $("#back").hidden = trail.length === 0;
   const tab = definition.tab || current.view;
   document.querySelectorAll(".tab").forEach((node) => node.classList.toggle("on", node.dataset.tab === tab));
@@ -283,7 +282,7 @@ function render(scroll = 0) {
 }
 
 function activity() {
-  const pending = Object.keys(bridge.pending()).length;
+  const pending = Object.values(bridge.pending()).filter(meta => !meta.quiet).length;
   const node = $("#activity");
   node.hidden = pending === 0;
   fill(node, h("i", { class: "spinner" }), h("span", {}, String(pending)));
@@ -306,7 +305,7 @@ function opLabel(op) {
 }
 
 function pendingSheet() {
-  const entries = Object.entries(bridge.pending()).sort((a, b) => b[1].ts - a[1].ts);
+  const entries = Object.entries(bridge.pending()).filter(([, meta]) => !meta.quiet).sort((a, b) => b[1].ts - a[1].ts);
   let limit = 6;
   const rows = h("div", { class: "pending-compact-list" });
   const more = h("button", { class: "btn ghost small wide", onclick: () => { limit += 6; draw(); } }, t("pending_more"));
@@ -524,10 +523,11 @@ async function fetchView(target, op, args, draw, options = {}) {
   // The latest in-memory response takes precedence if the device could not
   // update its older persisted copy. Errors get the same bounded fallback.
   const cachedError = inMemory ? resultMemoErrors.get(key) : saved && saved.error;
+  const cachedNotice = reportable && store.get("notices", []).find(item => item.unread && item.cacheKey === key && samePlace(item.target));
   const retry = () => fetchView(target, op, args, draw, { ...options, fresh: true });
   if (!options.fresh && cachedError) {
     fill(target, failure(cachedError, retry));
-    if (reportable) renderedResult(target, "", selectedId);
+    if (reportable) renderedResult(target, cachedNotice?.resultId || "", selectedId);
     return;
   }
   if (!options.fresh && (inMemory || saved)) {
@@ -535,7 +535,7 @@ async function fetchView(target, op, args, draw, options = {}) {
     if (reportable) {
       target.prepend(h("p", { class: "note saved-result" }, icon("clock"), h("span", { class: "grow" }, t("result_cached")),
         h("button", { class: "btn ghost small", onclick: () => fetchView(target, op, args, draw, { ...options, fresh: true }) }, t("result_refresh"))));
-      renderedResult(target, "", selectedId);
+      renderedResult(target, cachedNotice?.resultId || "", selectedId);
     }
     return;
   }
@@ -1216,7 +1216,17 @@ async function sync(force, quiet = false) {
   }
 }
 
-bridge.pushes.notice = (data) => { if (data) notice(lang() === "en" ? data.en : data.es, data.kind, { code: data.code }); };
+let catalogRefresh = null;
+bridge.pushes.notice = (data) => {
+  if (!data) return;
+  notice(lang() === "en" ? data.en : data.es, data.kind, { code: data.code, ...(data.models_changed ? { category: "ai", target: { view: "ai", params: {} } } : {}) });
+  if (data.models_changed) {
+    store.set("models.stale", true);
+    if (!catalogRefresh) catalogRefresh = bridge.call("models").then(models => {
+      cache.models = models; saveCache(); store.del("models.stale"); bus.emit("models");
+    }).catch(() => {}).finally(() => { catalogRefresh = null; });
+  }
+};
 bridge.pushes.maintenance = (data) => {
   if (data && cache.maintenance_notice && Number(data.revision || 0) < Number(cache.maintenance_notice.revision || 0)) return;
   cache.maintenance_notice = data || null;
@@ -1243,7 +1253,7 @@ const TILES = [
   ["weather", "tile_weather", "weather"],
   ["news", "tile_news", "news"],
   ["tools", "tile_tools", "tools"],
-  ["file", "tile_books", "books"],
+  ["book", "tile_books", "books"],
   ["health", "tile_health", "health"],
   ["notes", "tile_notes", "notes"],
 ];
@@ -1577,7 +1587,7 @@ function homeCarousel() {
     () => h("div", { class: "hero home-hero" },
       h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, greeting()),
         h("h2", {}, t("home_headline")), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art", "aria-hidden": "true" }, mascot("seated")),
+      h("div", { class: "hero-art", "aria-hidden": "true" }, icon("apps")),
       h("div", { class: "hero-actions" },
         h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
         h("button", { class: "hero-action", onclick: () => go("web") }, icon("web"), t("home_explore")))),
@@ -1673,7 +1683,7 @@ VIEWS.help = {
   tab: "home",
   title: () => t("help_title"),
   render(main) {
-    add(main, h("button", { class: "btn primary wide", onclick: () => onboarding(true) }, icon("cat"), " ", t("tour_again")));
+    add(main, h("button", { class: "btn primary wide", onclick: () => onboarding(true) }, icon("apps"), " ", t("tour_again")));
     add(main, ...HELP.map(([key, name]) => h("details", { class: "card help", open: key === "how" },
       h("summary", {}, icon(name), h("b", {}, t(`help_${key}_t`)), icon("down", "caret")),
       rich(t(`help_${key}_b`), hooksFor()))));
@@ -1882,6 +1892,7 @@ VIEWS.ai = {
     bus.on("models", draw);
     draw();
     const refresh = iconButton("refresh", t("refresh"), () => refreshModels(refresh));
+    if (store.get("models.stale", false)) refreshModels(refresh);
     add(main, 
       h("div", { class: "stack" },
         notifiedSpaceCard("bolt", t("agent"), t("agent_unified_hint"), "chat", {
@@ -2844,7 +2855,7 @@ function youtubeThumbnail(item) {
   try { const u = new URL(item.url); identifier = u.hostname === "youtu.be" ? u.pathname.slice(1).split("/")[0] : u.searchParams.get("v") || u.pathname.split("/").pop(); } catch (_) {}
   if (!/^[A-Za-z0-9_-]{11}$/.test(identifier)) return art;
   art.dataset.videoId = identifier; art.dataset.videoTitle = item.title || "YouTube";
-  const quality = store.get("youtube.thumbnailQuality", "low"), key = identifier + ":" + quality;
+  const quality = "low", key = identifier + ":low";
   const apply = (data) => { if (data && art.isConnected) fill(art, h("img", { src: data, alt: item.title || "YouTube", loading: "lazy", decoding: "async" })); };
   const load = () => {
     if (youtubeThumbCache.has(key)) return apply(youtubeThumbCache.get(key));
@@ -2860,7 +2871,7 @@ function youtubeThumbnail(item) {
 }
 async function flushYoutubeThumbnails() {
   const queue = youtubeThumbQueue.splice(0);
-  for (const quality of ["low", "medium", "high"]) {
+  for (const quality of ["low"]) {
     const selected = queue.filter(item => item.quality === quality);
     const ids = [...new Set(selected.map(item => item.identifier))];
     for (let offset = 0; offset < ids.length; offset += 6) {
@@ -2986,13 +2997,6 @@ VIEWS.youtube = {
     add(main, h("div", { class: "search-field" }, icon("youtube"), input,
       h("button", { class: "btn primary small", onclick: submit }, t("go"))),
       h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
-    add(main, h("label", { class: "row small" }, t("yt_quality"), select(store.get("youtube.thumbnailQuality", "low"),
-      [["low", t("quality_low")], ["medium", t("quality_medium")], ["high", t("quality_high")]], quality => {
-        store.set("youtube.thumbnailQuality", quality);
-        document.querySelectorAll(".video-preview[data-video-id]").forEach(node => {
-          node.replaceWith(youtubeThumbnail({ url: "https://youtu.be/" + node.dataset.videoId, title: node.dataset.videoTitle }));
-        });
-      })));
     if (params.q) youtubePages(box, params.q, false, params.resultPage || 1);
     else add(box, empty(t("youtube_hint"), "youtube"));
   },
@@ -3551,20 +3555,26 @@ VIEWS.translate = {
 const UTILITIES = [["convert", "tools", "util_convert", "util_convert_hint"], ["time", "clock", "util_time", "util_time_hint"], ["calc", "tools", "util_calc", "util_calc_hint"]];
 
 VIEWS.tools = {
-  tab: "apps",
-  title: () => t("tile_tools"),
+  tab: "apps", title: () => t("tile_tools"),
   render(main, params) {
-    const args = params.tool && typeof params.arg === "string" ? { name: params.tool, arg: params.arg } : null;
-    const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
-    add(main, window.LocalUtilities.mount(), h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
-      const box = h("div");
-      if (last && last.name === name && last.args && (last.key === baseResultKey(openingNoticeKey) || resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
-        fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
-      }
-      return h("details", { class: "card utility-card", open: !!(last && last.name === name) }, h("summary", {}, icon(iconName), h("span", { class: "grow" }, h("b", {}, t(title)),
-        h("small", { class: "muted" }, t(hint))), icon("down", "caret")),
-        h("div", { class: "utility-body stack" }, askBox({ placeholder: t(hint), onsubmit: (value) => toolResult(box, name, value), iconName }), box));
-    }));
+    if (String(params.tool || "").startsWith("local:")) {
+      add(main, window.LocalUtilities.mount(params.tool.slice(6))); return;
+    }
+    const definition = UTILITIES.find(item => item[0] === params.tool);
+    if (!definition) {
+      add(main, window.LocalUtilities.mount(), h("div", { class: "utility-grid" }, UTILITIES.map(([name, glyph, title, hint]) =>
+        h("button", { class: "card utility-tile", onclick: () => go("tools", { tool: name }) }, icon(glyph), h("b", {}, t(title)), h("small", { class: "muted" }, t(hint))))));
+      return;
+    }
+    const [name, glyph, title, hint] = definition, box = h("div", { class: "utility-output" });
+    add(main, h("section", { class: "card utility-workspace" }, h("h2", {}, icon(glyph), t(title)), h("p", { class: "muted" }, t(hint)),
+      askBox({ placeholder: t(hint), value: params.arg || "", onsubmit: value => toolResult(box, name, value), iconName: glyph }), box));
+    const last = params.arg ? { args: { name, arg: params.arg } } : store.get("tool.last", null);
+    if (last?.args?.name === name) {
+      current.params = { tool: name, arg: last.args.arg };
+      const key = "tool" + JSON.stringify(last.args);
+      if (resultMemoHas(key) || savedResult(key) || resultPending(key)) fetchView(box, "tool", last.args, data => fill(box, card(rich(data.text, hooksFor()))));
+    }
   },
 };
 
@@ -3734,7 +3744,13 @@ function settingRow(item) {
   return row;
 }
 
-function botSettings() {
+function botSettings(category = "bot") {
+  const categoryFor = key => {
+    if (["language"].includes(key)) return "appearance";
+    if (["image_size", "ai_daily", "image_daily", "code_daily", "ai_reserve"].includes(key)) return "ai";
+    if (["reader_kb", "reader_images", "capture_device", "capture_quality"].includes(key)) return "navigation";
+    return "bot";
+  };
   const box = h("div", { class: "stack" });
   const draw = () => {
     if (!cache.settings || cache.lang !== lang()) {
@@ -3753,7 +3769,7 @@ function botSettings() {
       bus.emit("settings");
     };
     fill(box, contextHelp(t(cache.admin ? "settings_admin" : "settings_own")),
-      ...cache.settings.map((group) => h("details", { class: "card settings-group" },
+      ...cache.settings.map(group => ({ ...group, items: group.items.filter(item => categoryFor(item.key) === category) })).filter(group => group.items.length).map((group) => h("details", { class: "card settings-group", open: true },
         h("summary", {}, icon("settings"), h("b", { class: "grow" }, group.title), icon("down", "caret")),
         group.shared ? contextHelp(t("settings_shared")) : null,
         h("div", { class: "settings" }, group.items.map(settingRow)))),
@@ -3765,13 +3781,35 @@ function botSettings() {
   return box;
 }
 
+function mountGroupSettings(main) {
+  const es = lang() !== "en", list = h("div", { class: "stack" });
+  add(main, card(h("p", {}, es ? "En el grupo cifrado escribe /michiflin activar. Si tu identidad antigua no tiene una clave global fijada, confirma aquí. Solo se habilitan búsqueda sin IA, tasas y clima; no tus APIs ni datos privados." : "In the encrypted group send /michiflin activar. If the legacy identity has no global owner key pin, confirm here. Only no-AI search, rates and weather are enabled, never personal APIs or data."),
+    h("p", { class: "muted small" }, "/buscar consulta · /tasas · /clima ciudad · /ayuda")), list);
+  const load = async () => {
+    fill(list, loading());
+    try {
+      const data = await bridge.call("public_groups", { do: "status" });
+      if (!list.isConnected) return;
+      fill(list, !data.available ? h("p", { class: "notice warn", role: "status" }, es ? "Las herramientas de grupo están deshabilitadas en este servidor (GROUP_PUBLIC_TOOLS). No se activará ningún grupo mientras siga así." : "Group tools are disabled on this server (GROUP_PUBLIC_TOOLS). No groups can be enabled while this is off.") : null, ...(data.groups || []).map(group => card(h("b", {}, group.title), h("small", {}, group.enabled ? (es ? "Activo" : "Enabled") : group.pending ? (es ? "Pendiente de confirmación" : "Awaiting confirmation") : (es ? "Desactivado / vencido" : "Disabled / expired")),
+        h("button", { class: "btn small", disabled: !group.enabled && (!group.pending || !data.available), onclick: async () => {
+          const action = group.enabled ? "disable" : "enable";
+          if (!await confirmBox(group.title, es ? "¿Confirmas este cambio solo para las herramientas públicas del grupo?" : "Confirm this change for this group's public tools only?", t("confirm"))) return;
+          try { await bridge.call("public_groups", { do: action, id: group.id }); load(); }
+          catch (error) { toast(error.message, "bad"); }
+        } }, group.enabled ? (es ? "Desactivar" : "Disable") : (es ? "Activar" : "Enable")))));
+      if (!data.groups?.length) add(list, empty(es ? "Sin grupos pendientes. Escribe /michiflin activar dentro del grupo y actualiza aquí." : "No pending groups. Send /michiflin activar in the group and refresh here.", "shield"));
+      add(list, h("button", { class: "btn ghost small", onclick: load }, icon("refresh"), t("refresh")));
+    } catch (error) { fill(list, failure(error.message)); }
+  }; load();
+}
+
 function clearKeys(prefix) {
   Object.keys(localStorage).filter((key) => key.startsWith("mf." + prefix)).forEach((key) => localStorage.removeItem(key));
 }
 
 VIEWS.settings = {
   title: () => t("tab_settings"),
-  render(main) {
+  render(main, params = {}) {
     const appRow = (label, control) => {
       // The visible setting name also labels its select or tab group for VoiceOver.
       if (control) control.setAttribute("aria-label", label);
@@ -3826,13 +3864,47 @@ VIEWS.settings = {
         wipe(t("wipe_images"), () => { imageFailureMemory.length = 0; store.del("img.errors"); return media.clear(); }),
         wipe(t("wipe_history"), () => { store.set("visited", []); store.set("recent", []); store.set("notices", []); store.del(RESULT_CACHE_KEY); store.del("tr.result"); store.del("tool.last"); store.del("img.errors"); imageFailureMemory.length = 0; memo.clear(); resultMemoTimes.clear(); resultMemoErrors.clear(); bus.emit("notices"); }))),
       foldSection(t("about_title"), card(
-        h("div", { class: "row" }, icon("cat"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
+        h("div", { class: "row" }, icon("apps"), h("b", {}, "Michiflin AI"), h("span", { class: "chip subtle" }, cache.version || "—")),
         h("p", { class: "muted small" }, t("about_body")),
         h("button", { class: "btn ghost", onclick: () => openLiveAddress("https://github.com/YosvanyAlain/michiflin-ai") }, icon("web"), t("about_repository")),
         h("details", { class: "context-help" }, h("summary", {}, icon("user"), h("span", {}, t("about_collaborate")), icon("down", "caret")),
           h("p", { class: "muted small" }, t("about_support"))))));
     modeControl(modes, "nauta_strict", t("tile_nauta"), "nauta");
     modeControl(modes, "kill_switch", t("tile_killswitch"), "killswitch");
+    const es = lang() !== "en", nodes = [...main.children];
+    const link = (glyph, label, view, args = {}) => h("button", { class: "list-row", onclick: () => go(view, args) }, icon(glyph), h("span", { class: "grow" }, label), icon("next"));
+    const engine = nodes[0].querySelectorAll(".setting")[4];
+    const aiSettings = card(h("h3", {}, es ? "Preferencias de IA" : "AI preferences"),
+      appRow(es ? "Modo del agente" : "Agent mode", select(prefs.agentMode || "agent", [["agent", t("agent")], ["smart_agent", "Michiflin Smart Agent"]], value => { prefs.agentMode = value; savePrefs(); })),
+      appRow(es ? "Modelo de imagen preferido" : "Preferred image model", select(prefs.imageModel || "", [["", t("img_auto")], ...((cache.models?.images) || []).map(item => [item.key, item.label])], value => { prefs.imageModel = value; savePrefs(); })),
+      link("shield", t("personal_title"), "personal_ai"), link("ai", t("models"), "ai"));
+    const cacheSettings = card(h("p", { class: "muted small" }, es ? "El catálogo se conserva 10 minutos; hasta 24 portadas durante un día. Los libros descargados no se borran al limpiar la caché." : "Catalogues are cached for 10 minutes; up to 24 covers for a day. Clearing the cache does not delete downloaded books."),
+      h("button", { class: "btn ghost", onclick: async () => {
+        if (await confirmBox(t("confirm"), es ? "¿Limpiar solo catálogo y portadas?" : "Clear only catalogue and cover cache?", t("confirm"))) {
+          window.BookShelf.clearCache(); toast(t("done"), "ok");
+        }
+      } }, icon("trash"), es ? "Limpiar caché de biblioteca" : "Clear library cache"), link("book", t("tile_books"), "books", { tab: "saved" }));
+    const categories = [
+      ["appearance", "settings", es ? "Apariencia e idioma" : "Appearance and language", [nodes[0], botSettings("appearance")]],
+      ["ai", "ai", es ? "IA, modelos y APIs" : "AI, models and APIs", [aiSettings, botSettings("ai")]],
+      ["navigation", "web", es ? "Búsqueda y clima" : "Search and weather", [card(engine, link("weather", t("tile_weather"), "weather")), botSettings("navigation")]],
+      ["bot", "tools", es ? "Bot y descargas" : "Bot and downloads", [nodes[2]]],
+      ["privacy", "shield", es ? "Privacidad y controles" : "Privacy and controls", [nodes[1], nodes[5]]],
+      ["library", "book", es ? "Biblioteca y caché" : "Library and cache", [cacheSettings]],
+      ["groups", "users", es ? "Grupos públicos" : "Public groups", []],
+      ["connection", "refresh", es ? "Conexión y sincronización" : "Connection and sync", [nodes[4]]],
+      ["support", "help", es ? "Ayuda y administración" : "Help and administration", [nodes[3], nodes[6]]],
+    ];
+    const selected = categories.find(item => item[0] === params.section);
+    fill(main);
+    if (!selected) add(main, h("div", { class: "settings-grid" }, categories.map(([id, glyph, label]) =>
+      h("button", { class: "card settings-tile", "data-setting-section": id, onclick: () => go("settings", { section: id }) }, icon(glyph), h("b", {}, label), icon("next")))));
+    else {
+      add(main, h("h2", {}, selected[2]), ...selected[3]);
+      main.querySelectorAll("details.settings-group").forEach(node => { node.open = true; });
+      main.querySelectorAll(".fold").forEach(node => { node.classList.add("open"); const head = node.querySelector(".fold-head"); if (head) head.replaceWith(h("h3", {}, head.textContent)); });
+      if (selected[0] === "groups") mountGroupSettings(main);
+    }
   },
 };
 
@@ -4447,45 +4519,16 @@ function onboarding(force = false) {
 // Start.
 // ---------------------------------------------------------------------------
 // Paint the shell promptly; the existing snapshot stays usable while a slow
-// mail-backed sync continues in the background. Do not wait minutes for hello.
-const SPLASH_MIN = 2300;
-const SPLASH_MAX = 2400;
-
+// Open directly: no splash, mascot animation or automatic blocking introduction.
 function boot() {
-  applyLook();
-  chrome();
-  pruneSavedResults();
+  applyLook(); chrome(); pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
   setInterval(recoverJobSnapshot, 60000);
-  const splash = $("#splash");
-  if (splash) fill($(".splash-runner", splash), mascot("running"));
-  const started = performance.now();
-  let gone = false;
-  const hide = () => {
-    if (gone || !splash) return;
-    gone = true;
-    setTimeout(() => {
-      splash.classList.add("gone");
-      setTimeout(() => { splash.remove(); revealVisibleNotices(); }, 250);
-      onboarding();
-    }, Math.max(0, (matchMedia("(prefers-reduced-motion: reduce)").matches ? 100 : SPLASH_MIN) - (performance.now() - started)));
-  };
-  setTimeout(hide, SPLASH_MAX);
-  if (!window.webxdc) {
-    fill($("#view"), failure(t("no_webxdc")));
-    hide();
-    return;
-  }
-  // Reopening the miniapp on a category should restore its unread result too.
+  if (!window.webxdc) { fill($("#view"), failure(t("no_webxdc"))); return; }
   goTab(current.view);
-  Promise.resolve(window.webxdc.setUpdateListener((update) => bridge.receive(update), bridge.startSerial())).then(() => {
-    bus.emit("images");
-    const first = hello(true); // refresh the process session even if the visible snapshot is cached
-    bridge.watchExpiry();
-    // With a cached snapshot the home is already complete; the very first open waits for its sync (up to SPLASH_MAX).
-    if (cache.at) hide();
-    else Promise.resolve(first).finally(hide);
-  });
+  Promise.resolve(window.webxdc.setUpdateListener(update => bridge.receive(update), bridge.startSerial())).then(() => {
+    bus.emit("images"); hello(true); bridge.watchExpiry();
+  }).catch(() => toast(t("sync"), "bad"));
 }
 
 boot();
@@ -4494,13 +4537,13 @@ boot();
 (function installScrollDiscovery() {
   const view = $("#view");
   const cue = h("button", { id: "scroll-discovery", class: "scroll-discovery", hidden: true,
-    type: "button", onclick: () => view.scrollBy({ top: Math.max(160, view.clientHeight * .72),
+    type: "button", "aria-label": t("more_below"), title: t("more_below"), onclick: () => view.scrollBy({ top: Math.max(160, view.clientHeight * .72),
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }) }, icon("down"), h("span", {}, t("more_below")));
   document.body.append(cue);
   let frame = 0;
   const update = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
     cue.hidden = current.view === "live_web" || view.scrollHeight - view.clientHeight - view.scrollTop < 36;
-    cue.querySelector("span").textContent = t("more_below");
+    cue.querySelector("span").textContent = t("more_below"); cue.setAttribute("aria-label", t("more_below")); cue.title = t("more_below");
   }); };
   view.addEventListener("scroll", update, { passive: true });
   view.addEventListener("toggle", update, true);

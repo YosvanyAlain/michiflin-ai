@@ -165,16 +165,17 @@ def test_utility_result_outside_viewport_is_not_silently_read(engine, failed):
         page.locator("#splash").wait_for(state="detached", timeout=8000)
         page.evaluate("window.__delay=60000;go('tools')")
         page.wait_for_function("viewReady()")
-        for index in range(3):
-            page.locator(".utility-card summary").nth(index).click()
-        page.locator(".utility-card input").last.fill("1+1")
-        page.locator(".utility-card button").last.click()
+        page.evaluate("go('tools',{tool:'calc'})")
+        page.locator(".utility-workspace input").fill("1+1")
+        page.locator(".utility-workspace .search-field button").click()
+        # A tall independent workspace still must not acknowledge offscreen output.
+        page.add_style_tag(content=".utility-output { margin-top: 1000px; }")
         rid = page.evaluate("Object.entries(bridge.pending()).find(([,x])=>x.op==='tool')[0]")
         page.evaluate("document.querySelector('#view').scrollTop=0")
         deliver(page, rid, {"text": "Dos sintéticos"}, "Error sintético" if failed else "")
-        output = page.locator(".utility-card").last.locator(".utility-body > div").last
+        output = page.locator(".utility-output")
         output.get_by_text("Error sintético" if failed else "Dos sintéticos", exact=False).first.wait_for(state="visible")
-        assert outside_view(page, ".utility-card:last-of-type .utility-body > div:last-child")
+        assert outside_view(page, ".utility-output")
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid, timeout=2500)
         page.locator('.tab[data-tab="apps"]:visible .tab-badge').wait_for(state="visible")
         assert page.locator('.tab[data-tab="apps"]:visible .tab-badge').inner_text() == "1"
@@ -364,12 +365,13 @@ def test_leaving_before_inline_reply_paints_keeps_it_unread(engine, feature):
             op, category, field = "", "downloads", "job"
             data = {"id": 1, "title": "Archivo sintético", "status": "failed", "kind": "file", "error": "Error sintético", "parts": 0}
         rid = page.evaluate("op=>Object.entries(bridge.pending()).find(([,x])=>x.op===op)[0]", op) if op else "1"
-        before_exit = page.evaluate("""v=>{if(v.op)window.__listener({serial:bridge.serial+1,payload:{t:'res',re:v.rid,ok:true,data:v.data}});
+        before_exit = page.evaluate("""v=>{const raf=window.requestAnimationFrame;window.requestAnimationFrame=()=>0;
+          if(v.op)window.__listener({serial:bridge.serial+1,payload:{t:'res',re:v.rid,ok:true,data:v.data}});
           else bridge.pushes.job(v.data);
           const item=store.get('notices',[]).find(n=>v.field==='job'?n.job?.id===v.rid:n[v.field]===v.rid);
           const visible=item&&elementInView(noticeNode(item));
           const badge=Array.from(document.querySelectorAll('.tab[data-tab="'+v.category+'"] .tab-badge')).some(n=>!n.hidden);
-          goTab('home');return {visible,badge};}""",
+          goTab('home');window.requestAnimationFrame=raf;return {visible,badge};}""",
                                     {"op": op, "rid": rid, "data": data, "field": field, "category": category})
         assert before_exit["visible"]
         assert not before_exit["badge"]
@@ -648,16 +650,16 @@ def test_opening_a_closed_utility_marks_its_now_visible_result(engine):
         page.locator("#splash").wait_for(state="detached", timeout=8000)
         page.evaluate("window.__delay=60000;go('tools')")
         page.wait_for_function("viewReady()")
-        details = page.locator(".utility-card").first
-        details.locator("summary").click()
+        page.evaluate("go('tools',{tool:'convert'})")
+        details = page.locator(".utility-workspace")
         details.locator("input").fill("1 EUR en CUP")
-        details.locator("button").first.click()
+        details.locator(".search-field button").click()
         rid = page.evaluate("Object.entries(bridge.pending()).find(([,x])=>x.op==='tool')[0]")
-        details.locator("summary").click()
+        page.evaluate("go('tools')")
         deliver(page, rid, {"text": "Resultado en sección cerrada"})
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid)
         assert not details.get_by_text("Resultado en sección cerrada", exact=False).first.is_visible()
-        details.locator("summary").click()
+        page.evaluate("go('tools',{tool:'convert'})")
         result = details.get_by_text("Resultado en sección cerrada", exact=False).first
         result.wait_for(state="visible")
         # Expanded is not the same as in the viewport when local tools are
