@@ -2253,6 +2253,13 @@ class AIQuotaTests(unittest.TestCase):
 class AdminPanelTests(Base):
     def test_each_person_has_own_settings_and_shared_ones_are_for_admins(self) -> None:
         from michiflin import miniapp
+        # Direct operation calls must supply the same sender context as private intake.
+        sender_context = mock.patch.object(chat, "sender", state.request_sender)
+        sender_context.start()
+        self.addCleanup(sender_context.stop)
+        interfaces = mock.patch.dict(state.data, {"chat_interfaces": {}})
+        interfaces.start()
+        self.addCleanup(interfaces.stop)
         owner = next(iter(config.ADMIN_ADDRESSES), "")
         state.data["prefs"].clear()
         self.addCleanup(state.data["prefs"].clear)
