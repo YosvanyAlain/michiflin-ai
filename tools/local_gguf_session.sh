@@ -69,6 +69,7 @@ prepare() {
     sudo userdel "$USER_NAME" >/dev/null 2>&1 || true
     echo 'SAFE_GGUF_PREP_MARKER_FAILED'; return 1
   fi
+  sudo install -o "$USER_NAME" -g "$USER_NAME" -m 0400 "$(dirname "$0")/download_pinned_model.py" "$WORK/download.py"
   # Download and unpack as a separate UID with an empty environment. This
   # preparation runs before any bot state is restored on the runner.
   sudo -u "$USER_NAME" env -i HOME="$WORK" PATH='/usr/bin:/bin' \
@@ -82,7 +83,7 @@ prepare() {
       test -x llama-b11960/llama-server
       rm -f engine.tar.gz
       echo SAFE_GGUF_MODEL_DOWNLOAD
-      curl --fail --location --silent --show-error --retry 2 --retry-max-time 420 --connect-timeout 25 --max-time 420 "$MODEL_URL" -o model.partial
+      python3 download.py
       test "$(wc -c < model.partial)" -eq "$MODEL_BYTES"
       printf "%s  model.partial\n" "$MODEL_SHA" | sha256sum --check --status
       mv model.partial model.gguf
