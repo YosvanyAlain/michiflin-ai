@@ -15,11 +15,14 @@ This guide walks through the mini app and the chat features. For setup and confi
 - [Saving data](#saving-data)
 - [Privacy](#privacy)
 
+> Screenshots and clips are rebuilt from the current renderer with a visibly labelled synthetic bridge. Clips use held frames, not real mail timings. [Capture method and limitations](media/README.md).
+
 ## Getting started
 
 1. Open the bot's private invitation in Delta Chat and complete the encrypted SecureJoin if the operator has enabled automatic invitation access. Old allow-list entries do not grant access. Do not publish or forward the invitation without the owner's permission.
-2. The bot sends one mini app with one welcome. When your language is not known yet, the same message includes short Spanish and English instructions. Tap **Download** if shown, then **Start** or the app icon to open it. The interface follows the device language or your chosen setting. A brief introduction explains the tabs and how answers arrive; you can replay it from **How it works**. No command is needed to join. If you later lose the app, `/app` can request a fresh copy. Pin the chat or keep the app message at hand.
-3. Use the app for everything. Actions travel to the bot as messages inside the same chat. Responses can take seconds or much longer depending on transport, availability and processing; there is no guaranteed delivery time.
+2. The bot sends one private miniapp attachment **without a welcome caption**. Download it if needed and open it; it starts directly, in the system language unless explicitly changed. The tour is optional under **Home → How it works**, never an automatic startup screen.
+3. Use the app, or explicitly choose chat: `/commands` enables chat and paged help, `/app` selects the miniapp and requests a copy, and `/mode` switches later (Spanish: `/comandos`, `/modo`). The choice is remembered per authorized private chat. A first ordinary direct message only explains these choices; it is not executed or replayed. Attachments are not analyzed or deleted before selection.
+4. Server operations travel through Delta Chat and may be unavailable offline. No email delivery time is guaranteed. The library, Live and local editors require the miniapp; not every app function has a command equivalent.
 
 You can close the app, although delivery and server availability are not guaranteed. Activity and download progress are separate from tab and shortcut badges. A badge marks a reply or error received when its result was not in view; starting a request alone does not create one. If the local wait ends without a reply, it is recorded under **Home → Notices** without a reply badge. A reply arriving after that limit may not appear; check charges and downloads before retrying. Tap the marked section to open its newest unread result. If others remain, use **View unread replies**, tap the section again, or choose one under **Home → Notices**; unseen results remain marked, including replies in the same chat or gallery. A result outside the viewport, inside a closed section, covered by a sheet or still fading in remains unread until shown. In chat, new replies do not pull someone away from older messages they are reading. General notices are marked seen only when their rows appear on screen in Home; scroll to them. Up to six shared search, utility, page, transcript, music collection, translation or weather results are stored locally for 12 hours, up to 180 kB per response, if storage permits. When storage fails or a result is too large, it or its error may only remain in memory during that opening. Missing or expired results show a warning without silently repeating the request. Image failures (including the submitted prompt) and bounded download-status details are also kept locally where storage permits. An older Coder notice opens its summary if available; the files belong to the current project. Dismiss an image error in its view or clear images or history in Settings. These are local indicators, not system notifications, and each mini-app message has separate storage.
 
@@ -27,7 +30,7 @@ If minimal request tracking cannot be saved, the app warns and does not send the
 
 Under **Settings → Sync**, estimates for the latest sync and reply are kept only in memory during the current opening; no extra request is sent. They measure from the original send until the app processes a reply or error, which can include retries, time with the app closed, transport and the bot's wait. The device clock can affect them, and they cannot isolate the cause of a delay. Quiet rates and weather refreshes yield to a sync or user-visible task and try to respect the client's advertised interval since the last send observed in this opening (10 seconds if unspecified); deliberate user requests are not delayed by this rule.
 
-Text written in the chat itself only gets a short reply pointing to the app. Files you send (voice notes, photos, documents) are still transcribed or analyzed.
+Explicit chat selection enables the existing command/agent dispatcher, subject to all original access, provider-consent and quota checks. It does not donate personal APIs or grant administration. Group chats remain restricted to their separate public-tools policy, without AI.
 
 ## Home
 
@@ -47,7 +50,6 @@ Appearance follows the device (light or dark) unless changed in Settings. Choose
 <p align="center">
   <img src="media/en/ai.png" width="230" alt="AI spaces and models">
   <img src="media/en/agent.png" width="230" alt="Agent chat">
-  <img src="media/en/model-chat.png" width="230" alt="Chat with one model">
 </p>
 
 The AI tab has one unified agent, Coder, images and expandable model cards:
@@ -74,7 +76,6 @@ Describe what you want, for example "a nice calculator web page", "a counter min
 
 <p align="center">
   <img src="media/en/images.png" width="230" alt="Image studio">
-  <img src="media/en/image-viewer.png" width="230" alt="Image viewer">
 </p>
 
 Describe the image and tap **Generate**. Images are kept in the app gallery; open one to try again, copy its description, or export it to the gallery, Files or another chat. In the chat, writing "draw…" works too.
@@ -139,10 +140,10 @@ For a newly authorized chat message, the bot uses Delta Chat's read-receipt mech
 ## Downloads
 
 <p align="center">
-  <img src="media/en/clip-download.gif" width="260" alt="Starting a download">
+  <img src="media/en/clip-download.gif" width="260" alt="Synthetic download queue states">
   <img src="media/en/downloads.png" width="230" alt="Downloads tab">
 </p>
-<p align="center"><sub><a href="media/en/clip-download.mp4">MP4 version</a> (sped up)</sub></p>
+<p align="center"><sub><a href="media/en/clip-download.mp4">MP4 version</a> (synthetic held frames)</sub></p>
 
 In Downloads choose the download queue or **Saved links**. Paste a link and choose **File**, **Video** or **Audio**, or use a saved link's reader, screenshot, copy and download buttons. Views depend on the site and do not sign in to your account. Files arrive in the chat as messages, not inside the app.
 
@@ -183,10 +184,10 @@ Media segments play on their own, but joining gives one file: MP4, M4A and MP3 s
   <img src="media/en/settings.png" width="230" alt="Settings">
 </p>
 
-- **App:** language (automatic, Spanish or English), theme (system, light or dark) and default search engine.
+- **Appearance:** language (automatic, Spanish or English), theme (system, light or dark) and default search engine.
 - **Safety and email:** Nauta strict limits parts to 10 MB or a smaller verified mailbox limit; the kill switch blocks new work and cooperatively pauses downloads. Opening settings only reads the saved/default state; it does not change either control. Changes are explicit and wait for the bot's confirmed state.
 - **Bot settings:** downloads, delivery, web and general options, including **Chat use** (app only, or app and commands). The owner controls the deployed bot. Legacy per-person settings can remain stored without granting access. See the [settings table](../README.md#settings).
-- **Device data:** delete AI chats, images, or history and notices. This cannot be undone.
+- **Privacy and data:** delete AI chats, images, or history and notices. This cannot be undone. Library preferences, connection diagnostics, support and information have their own centralized entries.
 
 ## Status and administration
 
@@ -214,9 +215,9 @@ Use **Settings → Kill switch** or `/kill_switch yes|no`. It remains available 
 
 ## Classic chat mode
 
-The bot works through the mini app by default. Setting **Chat use** to *App and commands* (`chat` = `full`) also enables writing normally in the chat ("what is photosynthesis", "weather in Havana", a plain link) and these commands. Each has an English and a Spanish name; tapping one fills the input box.
+Choose `/commands` explicitly to enable ordinary messages and the commands below, or set **Chat use → App and commands** in the miniapp. `/app` switches back; `/mode` shows the choices. Shared environment defaults do not opt a new recipient in. Help is localized and paged; tapping a command fills the input box.
 
-- **Help and app:** `/help` (`/ayuda`), `/app`
+- **Choice, help and app:** `/commands` (`/comandos`), `/mode` (`/modo`), `/help` (`/ayuda`), `/app`
 - **Web:** `/web`, `/pdf`, `/screenshot` (`/captura`), `/search` (`/buscar`), `/videos`, `/summary` (`/resumen`)
 - **Downloads:** `/video`, `/audio`, `/download` (`/bajar`), `/transcript` (`/subtitulos`), `/queue` (`/cola`), `/pause` (`/pausar`), `/resume` (`/seguir`), `/cancel` (`/cancelar`), `/retry` (`/reintentar`), `/resend` (`/reenviar`), `/schedule` (`/programar`)
 - **AI:** `/ai` (`/ia`), `/img`, `/model` (`/modelo`), `/reset` (`/olvidar`)
@@ -241,11 +242,11 @@ The safe default is owner-only; the operator can instead enable automatic access
 
 ### Home refresh and download outcomes
 
-The default Michiflin palette restores its original teal. The local vector mascot has matching seated and running poses; the finite startup scene respects reduced motion and never waits for mail. The rates banner adds CAD, MXN and TRX only when the source actually provides them, plus a bounded USD chart built solely from observations already received on this device. No observations or prices are invented. The weather banner uses the saved forecast for up to four future days in the provider's timezone, without a separate weather request.
+The default Michiflin palette restores its original teal. The app opens directly without a startup animation or logo. A local view failure offers recovery without silently repeating work; optional speech availability does not gate navigation. The rates banner adds CAD, MXN and TRX only when the source actually provides them, plus a bounded USD chart built solely from observations already received on this device. No observations or prices are invented. The weather banner uses the saved forecast for up to four future days in the provider's timezone, without a separate weather request.
 
 Download badges cover **ready to send**, **done**, **failed** and **cancelled** outcomes, not just background activity. A sync reconciles missed transitions, timestamps prevent older pushes from rolling back newer results, and persisted event codes suppress duplicates. Quiet recovery runs only while unfinished work exists and yields to deliberate actions. Email transport can still delay a result; a badge cannot precede receipt of that result.
 
-Compatibility metadata in `michiflin/compat/` preserves access for already-sent packages. Packages with retired themes retain only independently verified, epoch-bound fingerprints and manifests, not their obsolete implementation. Earlier snapshots without that theme remain for exact legacy browser regression tests. None of these are included in newly built miniapps. An updated miniapp is a separate WebXDC instance; previous copies and their local data must not be deleted to install it.
+Compatibility metadata in `michiflin/compat/` supports isolated regression tests and other installation policies; it does not override this deployment's `REVOKE_LEGACY_MINIAPPS=1`. Here, earlier packages and forwarded copies cannot communicate with the bot. An updated miniapp is a separate WebXDC instance: keep earlier messages/local data for recovery, but request `/app` and open the new attachment to use the server. Automatic local-data migration is not promised.
 
 
 ### Lightweight download retention

@@ -1,6 +1,6 @@
 # Michiflin AI
 
-**Your internet over e-mail.** Michiflin AI is a private [Delta Chat](https://delta.chat) bot that searches, reads web pages, answers with free AI models, creates images and downloads files, then delivers everything as small chat messages. It is built for mailboxes with tight quotas and slow, expensive connections.
+**Your internet over e-mail.** Michiflin AI is a private [Delta Chat](https://delta.chat) bot that searches, reads web pages, offers optional AI-provider answers, creates images and downloads files, then delivers everything as small chat messages. It is built for mailboxes with tight quotas and slow, expensive connections.
 
 <p align="center">
   <img src="docs/media/en/home.png" width="200" alt="Home screen of the mini app">
@@ -17,7 +17,7 @@
 ## Highlights
 
 - **Private mini app, silent delivery.** The bot sends one WebXDC attachment with no welcome caption on first contact. It opens directly and follows the device language unless explicitly changed. Direct chat messages offer miniapp or explicit command/chat use; the choice is remembered for that private chat. The chat also carries delivered media and files.
-- **An agent that needs no AI.** Write normally or paste a link; the agent searches, reads the sources and builds the answer from them, with cited sentences, plus calculator, weather, rates, translation and summaries. It never calls an AI model, so it touches no quota.
+- **An agent that needs no AI.** In the no-model-quota agent, write normally or paste a link; the agent searches, reads the sources and builds the answer from them, with cited sentences, plus calculator, weather, rates, translation and summaries. It never calls an AI model, so it touches no quota.
 - **One agent, two modes.** The same agent offers a no-model-quota mode and an optional AI/API mode. The latter can select an exact model or automatic routing, plan up to four steps with public tools, and handle supported attachments. AI/provider quotas may apply; it does not log in, send messages or execute code on its own. The previous automatic chat remains accessible as legacy history.
 - **Free hosted AI.** Routes across free tiers (Gemini, Groq, Mistral, SambaNova, Z.AI, OpenRouter, Cloudflare, BazaarLink, OrcaRouter, plus the keyless LLM7 and Kilo gateways) with per-model quotas and automatic fallback. SambaNova's documented free-tier caps are tracked conservatively; see [provider notes](docs/AI_PROVIDERS.md). Each model shows why it is paused: limit reached, key rejected or no longer free, and the bot notifies you when a model stops or comes back. Pick the exact image model or let it choose. Each model chat shows its maker's mark and takes the attachments that model can read: photos, PDF and documents, and audio on Gemini.
 - **A coding agent.** Describe a program or a web page; free coding models write the files, automatically check Python syntax, JavaScript and C/C++ syntax when the sandbox is available, compile Java when `javac` is installed, and run permitted checks in an isolated sandbox without network or secrets, and fix errors. Review the file-level diff and undo the last project change in the app. Preview web pages inside the app and export Delta Chat mini apps as ready-to-open `.xdc` files named after the project (or the source as a ZIP). Plain questions get an answer instead of a build.
@@ -35,16 +35,16 @@
   <img src="docs/media/en/clip-tour.gif" width="260" alt="Mini app tour">
   <img src="docs/media/en/clip-web.gif" width="260" alt="Searching and reading a page">
 </p>
-<p align="center"><sub>Updated 5.5 tour with synthetic data (<a href="docs/media/en/clip-tour.mp4">MP4</a>) · Search and read (<a href="docs/media/en/clip-web.mp4">MP4</a>)</sub></p>
+<p align="center"><sub>Current-interface tour · visibly synthetic data (<a href="docs/media/en/clip-tour.mp4">MP4</a>) · Search and read (<a href="docs/media/en/clip-web.mp4">MP4</a>)</sub></p>
 
-The bot sends a WebXDC app bound to the authorized chat. The interface exchanges updates through Delta Chat; operations that need the server wait for the bot and can be unavailable offline. The tour uses synthetic examples and does not represent a physical-device test.
+The bot sends a WebXDC app bound to the authorized chat. The interface exchanges updates through Delta Chat; operations that need the server wait for the bot and can be unavailable offline. The tour uses the actual renderer with a synthetic offline bridge and held frames. It demonstrates navigation, not live email speed, provider availability or a physical-device test. [Reproduce the captures](docs/media/README.md).
 
 | Tab | What it does |
 |---|---|
 | **Home** | Search box, shortcuts, queue status and time until the next server restart |
 | **AI** | Unified agent with no-quota or AI/API modes, image studio and provider/category model cards |
 | **Web** | Results from the selected engine, reader view, history, PDF, screenshot and download actions |
-| **Apps** | YouTube, translator, rates, weather, news, utilities, status and administration |
+| **Apps** | YouTube, library, translator, rates, weather, news, utilities, status and authorized administration |
 | **Downloads** | Queue, saved links and the integrated file kit: local copies, temporary server workspace, bulk operations, archives and parts joining |
 | **Settings** | Language, appearance, visual style and accent; Nauta strict, kill switch and bot settings |
 
@@ -127,7 +127,7 @@ Use `.env.example` as a template for environment variables and export them into 
     "api_key_env": "EXAMPLE_API_KEY", "models": [{"id": "model-name", "roles": ["chat"], "daily": 200}]}]
   ```
 
-- **Chat mode:** `CHAT_MODE` is `app` (mini app only, the default) or `full` (classic commands too).
+- **Chat mode:** `CHAT_MODE` is an installation default, not a recipient's consent. Private chats explicitly choose `/commands` or `/app`; `/mode` switches later. App settings can also change that chat's choice.
 - **Defaults and limits:** every setting above has an environment default (`DEFAULT_VIDEO_HEIGHT`, `CHUNK_MB`, `READER_PAGE_KB`, `NOTIFY_MODE`…), and `MAX_FILE_MB`, `MAX_QUEUE_MB` and `MIN_FREE_DISK_MB` protect the disk.
 
 The account state (Delta Chat keys, settings, notes and queue metadata) lives in `CONFIG_DIR`. `state_backup.py save|restore` keeps an encrypted copy in a private repository (`STATE_BACKUP_REPO`, `STATE_BACKUP_PASSPHRASE`); larger attachment copies and the default `/tmp/michiflin-queue` partials are excluded. A new Actions runner can therefore lose downloaded bytes and recent progress, and state snapshots are attempted every 30 minutes but can be older if a save fails. This is not a complete archive. Restore only while the bot is stopped and after preserving the current state: restoration runs only when `CONFIG_DIR` is absent and does not automatically overwrite it. Never publish the passphrase or backup token.
@@ -147,9 +147,9 @@ Each session lasts `SESSION_DURATION_SECONDS` (the GitHub Actions deployment use
 
 ### Emergency pause
 
-The owner can enable **Maintenance and notice** in Administration, set Spanish and English messages, then turn it off when work may resume. Authorized users see the notice when they interact, without a broadcast; cooperative work pauses without changing grants or personal holds. In-flight requests, charges and mail handoffs may still finish. Opening an old app does not automatically send another one. If an update is available, request and confirm it explicitly under Settings → Sync. Some exact older builds remain compatible; unknown builds are rejected. Storage is per instance and project migration has not been demonstrated.
+The owner can enable **Maintenance and notice** in Administration, set Spanish and English messages, then turn it off when work may resume. Authorized users see the notice when they interact, without a broadcast; cooperative work pauses without changing grants or personal holds. In-flight requests, charges and mail handoffs may still finish. Opening an old app does not automatically send another one. If an update is available, request and confirm it explicitly under Settings → Sync. This deployment enables `REVOKE_LEGACY_MINIAPPS=1`: earlier packages, including forwarded copies, cannot communicate with the bot. Keeping history does not keep old access. Request `/app` in the verified private chat and open the new attachment. Storage is per instance and automatic project migration is not promised.
 
-Use **Apps → Kill switch** or `/kill_switch yes|no` (also available in app-only chat mode). While on, new work is refused; active downloads and packaging stop at cooperative checkpoints and return to the queue. Turning it off lets queued jobs continue; interrupted AI/agent requests must be retried. A request already sent to a remote provider cannot be recalled, and a network read may take until its timeout to stop. A part already entering the Delta Chat handoff may still be delivered. Delivery intent is recorded before handoff; uncertain outcomes pause instead of being blindly resent. A stale backup or an interruption during transport still cannot guarantee exactly-once delivery: check the chat before retrying. Pending outbox mail is not automatically purged. Inspecting or purging historical state requires the owner's separate permission.
+Use **Settings → Kill switch** or `/kill_switch yes|no` (also available in app-only chat mode). While on, new work is refused; active downloads and packaging stop at cooperative checkpoints and return to the queue. Turning it off lets queued jobs continue; interrupted AI/agent requests must be retried. A request already sent to a remote provider cannot be recalled, and a network read may take until its timeout to stop. A part already entering the Delta Chat handoff may still be delivered. Delivery intent is recorded before handoff; uncertain outcomes pause instead of being blindly resent. A stale backup or an interruption during transport still cannot guarantee exactly-once delivery: check the chat before retrying. Pending outbox mail is not automatically purged. Inspecting or purging historical state requires the owner's separate permission.
 
 **My APIs and models** lets each authorized person register and explicitly choose their own provider. Compatible clients encrypt the key before sending it; the server encrypts the per-user vault with the stable `WEB_SESSION_KEY`. The chosen endpoint receives the key and prompts and may charge; model metadata does not prove that every capability works. Losing or rotating the master key makes the old vault unreadable without the original key and backup.
 
@@ -159,7 +159,13 @@ Use **Apps → Kill switch** or `/kill_switch yes|no` (also available in app-onl
 - **Per-chat order without blocking.** Each chat has its own queue, so a slow request never holds the threads that serve app updates or other chats.
 - **Graceful stop.** On `SIGTERM` or `SIGINT` the bot stops taking new work, lets running requests finish (up to 75 s), waits for outgoing mail to leave and saves the state before closing the core. Unstarted requests stay unread for the next session.
 - **Self-update.** The bot checks the deployed branch every five minutes; when a new commit appears and nothing is running, it hands over to a fresh session (the job writes `RESTART_MARKER` and starts the next run).
-- **App instances are kept.** History pruning never removes the mini app message, so app requests can always be matched to it.
+- **History is kept, old access is not.** Historical miniapp messages and saved history can remain while their server access is revoked. A new app is bound to its recipient and authorized private chat; forwarding the attachment does not transfer access.
+
+## If the app opens blank
+
+Close that view and type `/app` in the same authorized private chat, then open the **new attachment**. Reopening an old attachment does not update its JavaScript. Do not delete the chat, clear app data or reinstall as a first step: each instance can contain local-only work.
+
+The current renderer isolates view failures, validates cached queue data, tolerates unavailable speech features and shows local startup recovery instead of relying on an invisible animation. If the problem persists, report Android, Delta Chat and Android System WebView versions plus the visible error code—never an invitation or key. Browser/viewport tests are not a physical-phone guarantee. [Scope and tests](docs/ANDROID_STARTUP.md).
 
 ## Development
 
