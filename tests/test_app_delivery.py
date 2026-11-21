@@ -21,6 +21,7 @@ def app_state(monkeypatch):
     old = {"chat": CHAT, "addr": OWNER, "build": "old-build", "locale": "en", "sent": time.time() - 3600,
            "serial": 0, "epoch": "test-epoch", "access_session": ""}
     monkeypatch.setitem(state.data, "apps", {"100": old})
+    monkeypatch.setitem(state.data, "chat_interfaces", {})
     monkeypatch.setattr(state, "save", lambda: None)
     monkeypatch.setattr(config, "BOT_EPOCH", "test-epoch")
     monkeypatch.setattr(config, "BOT_EPOCH_STRICT", True)
@@ -107,7 +108,7 @@ def test_two_welcome_texts_after_a_transient_lookup_failure_are_deduplicated(app
     miniapp.welcome(CHAT, "en")
     miniapp.point_to_app(CHAT, "es")
     apps = [text for text, kwargs in sent if kwargs.get("viewtype") == "Webxdc"]
-    assert len(apps) == 1 and "Welcome" in apps[0]
+    assert apps == [""]
     assert "201" in state.data["apps"]
     assert any("no se ha eliminado" in text for text, kwargs in sent if not kwargs.get("viewtype"))
 

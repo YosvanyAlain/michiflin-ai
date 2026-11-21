@@ -13,7 +13,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 
 ## Qué ofrece
 
-- **Una miniapp para todo.** El bot envía una app WebXDC en el primer contacto, con una bienvenida que explica cómo usarla, y todo se hace ahí: inicio, IA, web, apps, descargas y ajustes. La primera vez que se abre muestra una introducción breve. Al chat solo llegan los archivos y medios entregados.
+- **Miniapp privada, entrega silenciosa.** El bot entrega un solo archivo WebXDC, sin bienvenida. Abre directamente y usa el idioma del sistema salvo elección explícita. Si escribes por chat, puedes elegir miniapp o comandos/chat; recuerda la elección por chat privado.
 - **Un agente que no necesita IA.** Escribe normal o pega un enlace; el agente busca, lee las fuentes y arma la respuesta con frases citadas, además de calculadora, clima, tasas, traducción y resúmenes. Nunca llama a un modelo de IA, así que no toca ninguna cuota.
 - **Un agente, dos modos.** En la misma vista puedes elegir sin cuota de modelos o con IA/API; este último permite selección automática o un modelo exacto, hasta cuatro pasos y adjuntos compatibles. Puede consumir cuota o saldo y no inicia sesiones, envía mensajes ni ejecuta código por su cuenta. El chat automático anterior permanece accesible como historial.
 - **IA gratuita mediante proveedores remotos.** Reparte las consultas entre planes gratuitos, con cuotas por modelo y relevo automático. Incluye SambaNova opcional; sus topes publicados para el nivel gratuito se registran de forma conservadora y pueden cambiar ([detalle y fuentes](docs/AI_PROVIDERS.md)). Cada modelo en pausa dice por qué: límite alcanzado, clave rechazada o ya no es gratis, y el bot avisa cuando un modelo se detiene o vuelve. Puedes elegir el modelo exacto de cada imagen. Cada chat de modelo muestra el logo de su creador y acepta los adjuntos que ese modelo puede leer: fotos, PDF y documentos, y audio en Gemini.
@@ -73,7 +73,9 @@ El servidor de trabajo **no es almacenamiento permanente ni está incluido en el
 
 ## Uso del chat
 
-Por defecto todo funciona **solo desde la miniapp**: lo que se escriba en el chat recibe una respuesta corta que apunta a la app, y `/app` envía una copia nueva. Las notas de voz, fotos y documentos enviados al chat se siguen procesando.
+El bot entrega únicamente la miniapp privada, sin texto de bienvenida. Si escribes directamente, explica las opciones sin ejecutar la primera solicitud. Elige `/comandos` para activar chat y consultar las funciones disponibles, o `/app` para la miniapp. Recuerda la elección por chat privado; `/modo` permite cambiar después. No se analiza ni se borra un adjunto antes de elegir, ni se reejecuta el mensaje bloqueado.
+
+La biblioteca, Live y los editores locales requieren la miniapp: no todas sus funciones tienen equivalente por comandos. El idioma del chat utiliza tu preferencia o el idioma detectado de tu mensaje, no el del propietario. Los controles autenticados de seguridad y las importaciones firmadas del kit mantienen sus verificaciones. Consulta el [comportamiento de las interfaces](docs/silent-onboarding.md).
 
 El ajuste **Uso del chat** → *App y comandos* activa el modo clásico, con comandos en español e inglés (`/ayuda`, `/web`, `/buscar`, `/bajar`, `/ia`, `/traducir`, `/clima`, `/tasa`, `/ajustes`…). La lista completa está en la [guía](docs/GUIDE.md#classic-chat-mode).
 
@@ -85,7 +87,7 @@ Si se autoriza la recuperación por correo, una dirección permitida puede cambi
 
 ## Control del acceso
 
-Con las invitaciones automáticas activadas, quien complete la invitación privada y la verificación cifrada recibe acceso ordinario y una sola bienvenida con la miniapp, sin aprobación individual ni comandos. Cuando el idioma aún no se conoce, el mismo mensaje ofrece instrucciones breves en español e inglés; si ya se conoce la preferencia, utiliza ese idioma. Tras abrir la miniapp, su interfaz puede adaptarse al idioma del dispositivo. El propietario puede cerrar o reabrir el acceso desde **Administración → Control de acceso · OWNER_ONLY**, con confirmación. Las aperturas pueden ser temporales o permanecer hasta el cierre; la política y los vínculos se respaldan de forma cifrada. Si falla el respaldo de un cierre, este sigue activo localmente, pero no se garantiza tras reiniciar hasta corregirlo. `MAINTENANCE_MODE` prevalece. Una entrega ya pasada al core de correo podría completarse.
+Con las invitaciones automáticas activadas, quien complete la invitación privada y la verificación cifrada recibe acceso ordinario y un solo adjunto miniapp sin texto, sin aprobación individual ni comandos. Al abrirla, su interfaz usa el idioma del sistema salvo una preferencia explícita guardada. El propietario puede cerrar o reabrir el acceso desde **Administración → Control de acceso · OWNER_ONLY**, con confirmación. Las aperturas pueden ser temporales o permanecer hasta el cierre; la política y los vínculos se respaldan de forma cifrada. Si falla el respaldo de un cierre, este sigue activo localmente, pero no se garantiza tras reiniciar hasta corregirlo. `MAINTENANCE_MODE` prevalece. Una entrega ya pasada al core de correo podría completarse.
 
 El administrador puede revocar o bloquear una cuenta sin borrar su historial. Una cuenta bloqueada necesita desbloqueo y una nueva verificación; una revocación simple permite volver a entrar con la invitación. Un cambio de clave de un invitado requiere repetir SecureJoin y una miniapp nueva; los trabajos y datos de la instancia anterior no se trasladan solos. El modo anterior de aprobación individual sigue disponible cuando la admisión por invitación está desactivada. Consulta el [detalle del control de acceso](docs/ACCESS_CONTROL.md).
 

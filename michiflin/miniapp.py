@@ -182,11 +182,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
                   "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
                   "this new instance has separate storage.")
     else:
-        text = tr(locale,
-            "👋 ¡Bienvenido a Michiflin AI! Abre la miniapp para empezar.\n\n"
-            "Para invitar a alguien, comparte el enlace del bot, no el archivo.",
-            "👋 Welcome to Michiflin AI! Open the miniapp to get started.\n\n"
-            "To invite someone, share the bot's contact link, not this file.")
+        text = ""  # first delivery is the attachment only, with no welcome caption
     if config.REVOKE_LEGACY_MINIAPPS and updated:
         text += "\n\n" + tr(locale,
             "Las miniapps anteriores ya no se conectan; sus datos locales se conservan.",
@@ -203,7 +199,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             "report it without deleting the chat or reinstalling Delta Chat.")
     # A first contact has not reported its device language yet. Use a short
     # Spanish fallback, never the owner's preference or a duplicate translation.
-    advisory = maintenance.text(locale)
+    advisory = maintenance.text(locale) if updated or recovery_revision else ""
     if advisory:
         text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
@@ -303,9 +299,12 @@ def point_to_app(chat_id: int, locale: str) -> None:
 
 
 def welcome(chat_id: int, locale: str) -> None:
-    """First contact: one concise localized app message; Spanish if unknown."""
+    """First contact: one attachment, no caption; the app detects system language."""
     if maintenance.silent_active():
         return
+    from . import interaction
+    if chat.sender() and interaction.record(chat_id).get("mode") == "full":
+        return  # an explicit chat-only choice also suppresses recovery auto-welcomes
     with _upgrade_lock:
         # A new build, a repeated secure-join, or a renewed grant is not
         # permission to create another app. A historical registration blocks
@@ -2169,6 +2168,8 @@ def op_settings(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     changes = args.get("set") if isinstance(args.get("set"), dict) else {}
     if args.get("reset"):
         state.reset_own_settings()
+        from . import interaction
+        interaction.choose(chat_id, str(state.setting("chat_mode")), sync_setting=False)
     for key, value in changes.items():
         if key not in commands.SETTINGS:
             continue
@@ -2179,6 +2180,9 @@ def op_settings(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         parsed = parser(str(value).lower())
         if parsed is None or not state.set_setting(key, parsed):
             raise AppError(tr(locale, "Valor no válido.", "Invalid value."))
+        if key == "chat_mode":
+            from . import interaction
+            interaction.choose(chat_id, str(parsed), sync_setting=False)
     if "pin" in args:
         pin = str(args.get("pin") or "")
         state.set_setting("ai_pin", pin if pin in ai.provider_keys() else "")

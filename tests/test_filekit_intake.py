@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from michiflin import access, admin, app, chat, config, filekit, filekit_transfer, miniapp, progress, state
+from michiflin import access, admin, app, chat, config, filekit, filekit_transfer, interaction, miniapp, progress, state
 
 
 class FileKitIntakeTests(unittest.TestCase):
@@ -22,7 +22,8 @@ class FileKitIntakeTests(unittest.TestCase):
         # those thread/global contexts from leaking into later test modules.
         self.addCleanup(chat.set_sender, chat.sender())
         self.addCleanup(app.queue.set_locale, app.queue._locale)
-        patches = [mock.patch.object(config, "JOB_ROOT", self.root / "jobs"), mock.patch.object(config, "MIN_FREE_DISK_BYTES", 0),
+        patches = [mock.patch.object(interaction, "record", return_value={"mode": "full"}),
+                   mock.patch.object(config, "JOB_ROOT", self.root / "jobs"), mock.patch.object(config, "MIN_FREE_DISK_BYTES", 0),
                    mock.patch.object(access, "session_stamp", return_value="test-session"),
                    mock.patch.object(state, "work_interrupted", return_value=False),
                    mock.patch.object(state, "check_work_allowed"), mock.patch.object(state, "get_kill_switch", return_value=False),

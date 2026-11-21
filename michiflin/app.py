@@ -27,7 +27,7 @@ from deltachat2 import (
     events,
 )
 
-from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, links, live_web, maintenance, miniapp, names, net, perf, profile, progress, queue, rates_monitor, state, weather_home
+from . import access, admin, agent, ai, browser, chat, coder, commands, config, filekit, filekit_transfer, handover, identity_guard, interaction, links, live_web, maintenance, miniapp, names, net, perf, profile, progress, queue, rates_monitor, state, weather_home
 from .util import language_signal, tr
 
 log = logging.getLogger("michiflin")
@@ -63,13 +63,16 @@ MAINTENANCE_NOTICE_GAP = 6 * 3600
 
 def _locale(text: str, chat_id: int) -> str:
     """Fixed language, else the command's spelling, else the text, else this chat's last clear language."""
-    mode = state.setting("language")
+    person = state.acting_as()
+    with state.lock:
+        own = state.data["prefs"].get(person, {}) if person else state.data["settings"]
+        mode = own.get("language") if isinstance(own, dict) else None
     if mode in {"es", "en"}:
         return mode
     found = names.locale_of(text) or language_signal(text)
     if found:
         _last_locale[chat_id] = found
-    return found or _last_locale.get(chat_id, "es")
+    return found or _last_locale.get(chat_id) or miniapp.observed_locale(chat_id) or "es"
 
 
 def _welcome_locale(chat_id: int) -> str:
@@ -113,7 +116,7 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
             has_file = bool(getattr(msg, "file", None))
             parsed = commands.parse((text or "").strip()) if not has_file else None
             key = parsed[0] if parsed else ""
-            safe = key in {"app", "kill_switch", "nauta_strict", "estado", "health"}
+            safe = key in {"app", "chat_commands", "mode", "kill_switch", "nauta_strict", "estado", "health"}
             if admin.is_admin(address) and (key in {"owner_only", "maintenance"} or
                     (key == "admin" and parsed and parsed[1] and names.word_key(parsed[1][0]) in {"allow", "remove", "block"})):
                 safe = True  # owner controls stay available in app-only mode and during pauses
@@ -121,9 +124,11 @@ def _process(msg: Any, text: str, locale: str, address: str) -> None:
             if not safe and (was_killed or state.work_interrupted(address, generation)):
                 chat.text(chat_id, miniapp.maintenance_message(locale) if state.maintenance_interrupted(generation) else miniapp.kill_message(locale))
                 return
-            # Emergency/status commands remain available even in app-only chat mode.
-            if not has_file and state.setting("chat_mode") == "app" and not safe:
-                miniapp.point_to_app(chat_id, locale)
+            # Mode selection precedes paid work or attachment analysis. A signed
+            # file-kit import is an existing app request, not a chat-mode opt-in;
+            # its own token/session checks below still apply in full.
+            app_import = has_file and filekit_transfer.is_import_caption(text)
+            if not app_import and interaction.guard(chat_id, locale, safe=safe):
                 return
             with nullcontext() if safe else state.guard_work(address, generation):
                 if has_file and filekit_transfer.is_import_caption(text):

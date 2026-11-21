@@ -70,7 +70,7 @@ jobs:
           python -m unittest discover -s tests -p test_new_features.py -v
           python -m unittest discover -s tests -p test_ai_music.py -v
           python -m unittest tests.test_backup_maintenance -v
-          python -m pytest -q tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py tests/test_mobile_library_backend.py tests/test_public_private_release.py tests/test_contact_invitation_repair.py tests/test_short_welcome.py
+          python -m pytest -q tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py tests/test_mobile_library_backend.py tests/test_public_private_release.py tests/test_contact_invitation_repair.py tests/test_short_welcome.py tests/test_chat_interface_choice.py
           python -m unittest tests.test_github_handover -v
           python -m unittest tests.test_social_accounts -v
           python -m unittest tests.test_personal_maintenance -v
