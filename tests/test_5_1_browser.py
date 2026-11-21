@@ -33,8 +33,13 @@ def test_mobile_agent_layout_settings_and_maintenance_are_explicit(language, wid
         assert page.locator(".composer button[aria-label]").count() >= 2  # attachment and send
 
         page.locator("#gear").click()
+        page.locator('[data-setting-section="privacy"]').click()
         page.locator(".mode-killswitch").wait_for(state="visible")
         assert page.evaluate("window.__sentUpdates.filter(x => ['kill_switch','nauta_strict'].includes(x.payload?.op)).length") == 0
+        # Administration now lives in the dedicated support category, not on
+        # the settings landing page. Exercise the real categorized navigation.
+        page.locator("#gear").click()
+        page.locator('[data-setting-section="support"]').click()
         page.get_by_text("Administración" if language == "es" else "Administration", exact=True).first.click()
         holder = page.locator(".maintenance-settings")
         holder.wait_for(state="visible")

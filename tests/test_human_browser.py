@@ -403,7 +403,11 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                                         'emit({"kind": "error", "error": "human_unavailable", '
                                         '"fixture_error": str(exc) if isinstance(exc, ValueError) '
                                         'and str(exc) in {"display", "browser", "focus"} '
-                                        'else type(exc).__name__})\n        except Exception:', 1)
+                                        'else ("xdotool_" + exc.cmd[1] if isinstance(exc, subprocess.CalledProcessError) '
+                                        'and isinstance(exc.cmd, list) and len(exc.cmd) > 1 '
+                                        'and exc.cmd[0] == "xdotool" and exc.cmd[1] in '
+                                        '{"getwindowfocus", "windowraise", "windowfocus", "key"} '
+                                        'else type(exc).__name__))})\n        except Exception:', 1)
                     Path(dst).write_text(text, encoding="utf-8")
                     return dst
                 return original_copy(src, dst, *args, **kwargs)
