@@ -112,3 +112,33 @@ def test_registry_is_fail_closed_and_needs_no_retired_implementation(monkeypatch
     assert not app_compat.published_build('test-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES)
     for package in ['e8a104c', 'ec7e67e', 'pre-refresh']:
         assert {p.name for p in (Path(app_compat.__file__).parent / 'compat' / package).iterdir()} == {'manifest.json'}
+
+
+def test_video_job_authorizes_opaque_archive_cleanup_only_after_delivery(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'RETAIN_DOWNLOADED_MEDIA', False)
+    monkeypatch.setattr(config, 'JOB_ROOT', tmp_path)
+    with mock.patch.object(chat, 'discard_delivered_media') as discard:
+        queue._discard_completed_download({'id': '12', 'kind': 'video', 'status': 'done', 'messages': [99]})
+        discard.assert_called_once_with([99], include_archives=True)
+        discard.reset_mock()
+        queue._discard_completed_download({'id': '12', 'kind': 'video', 'status': 'sending', 'messages': [99]})
+        discard.assert_not_called()
+
+
+@pytest.mark.parametrize('authorized,exists', [(False, True), (True, False)])
+def test_completed_media_archive_requires_explicit_origin(monkeypatch, tmp_path, authorized, exists):
+    monkeypatch.setattr(config, 'RETAIN_DOWNLOADED_MEDIA', False)
+    monkeypatch.setattr(config, 'CONFIG_DIR', tmp_path)
+    path = tmp_path / 'accounts' / 'test-blobs' / 'opaque.7z.001'
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'synthetic-packed-video')
+    msg = SimpleNamespace(file=str(path), state=26, file_mime='application/octet-stream')
+    rpc = mock.Mock()
+    rpc.get_message.return_value = msg
+    rpc.get_chatlist_entries.return_value = [10]
+    rpc.get_message_ids.return_value = [1]
+    monkeypatch.setattr(chat, '_bot', SimpleNamespace(rpc=rpc))
+    monkeypatch.setattr(chat, '_accid', 1)
+    chat.discard_delivered_media([1], include_archives=authorized)
+    assert path.exists() is exists
+    rpc.delete_messages_for_all.assert_not_called()

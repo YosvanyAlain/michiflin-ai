@@ -389,7 +389,12 @@ def _discard_completed_download(job: dict[str, Any]) -> None:
     base = folder(job)
     if not base.is_symlink() and base.resolve().parent == config.JOB_ROOT.resolve():
         shutil.rmtree(base, ignore_errors=True)
-    chat.discard_delivered_media(job.get("messages") or [])
+    if job.get("kind") in {"video", "audio"}:
+        # Packed video/audio parts may have only a .7z.001 or opaque blob name.
+        # The authenticated completed job, not a guessed extension, proves origin.
+        chat.discard_delivered_media(job.get("messages") or [], include_archives=True)
+    else:
+        chat.discard_delivered_media(job.get("messages") or [])
 
 
 def _status(job: dict[str, Any], line: str, timer: bool = True) -> None:

@@ -359,7 +359,7 @@ def prune_history(max_age: int = 3600, per_chat: int = 400, keep: set[int] | Non
     return removed
 
 
-def discard_delivered_media(message_ids: list[int]) -> int:
+def discard_delivered_media(message_ids: list[int], *, include_archives: bool = False) -> int:
     """Remove only this bot's delivered audio/video blobs; keep messages and pending sends."""
     if config.RETAIN_DOWNLOADED_MEDIA or not ready() or not message_ids:
         return 0
@@ -372,7 +372,8 @@ def discard_delivered_media(message_ids: list[int]) -> int:
                 path = Path(str(getattr(msg, "file", "") or ""))
                 value = getattr(msg, "state", 0)
                 if (int(getattr(value, "value", value) or 0) in DELIVERED
-                        and is_downloaded_media(str(path), getattr(msg, "file_mime", "") or "")
+                        and (is_downloaded_media(str(path), getattr(msg, "file_mime", "") or "")
+                             or (include_archives and path.suffix.lower() not in {".xdc", ".asc"}))
                         and account_blob(path, config.CONFIG_DIR)):
                     candidates.add(path)
             if not candidates:
