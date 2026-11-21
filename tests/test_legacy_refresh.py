@@ -21,6 +21,7 @@ def test_saved_rates_and_upcoming_forecast_use_banner_space_without_requests(eng
             days:dates.map(date=>({date,code:0,high:30,low:23}))}}});
           goTab('home');
         }""")
+        page.wait_for_function("viewReady()")
         before = page.evaluate("window.__sentUpdates.length")
         search_y = page.locator(".searchbox").bounding_box()["y"]
         page.locator(".home-banner-dot").nth(1).click()

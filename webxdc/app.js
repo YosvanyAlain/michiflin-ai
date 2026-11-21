@@ -126,7 +126,7 @@ function chrome() {
   $("#view").addEventListener("scroll", checkNotices, { passive: true });
   $("#view").addEventListener("toggle", checkNotices, true);
   // Dynamic viewport units can settle one frame after the resize event.
-  window.addEventListener("resize", () => requestAnimationFrame(checkNotices));
+  window.addEventListener("resize", () => requestAnimationFrame(() => { checkNotices(); bus.emit("home-layout"); }));
   activity();
   jobBadge();
 }
@@ -1476,6 +1476,7 @@ function saveRateObservation(data) {
   const at = Number(data && data.at), value = Number(data && data.rates && data.rates.USD);
   if (!Number.isFinite(at) || at <= 0 || at > now() + 300 || !Number.isFinite(value) || value <= 0 || data.stale) return;
   const saved = store.get("rates.observations", []);
+  if (Array.isArray(saved) && saved.some((point) => point && point.at === at && point.value === value)) return;
   const points = (Array.isArray(saved) ? saved : []).filter((point) => point && Number.isFinite(point.at) &&
     Number.isFinite(point.value) && point.value > 0 && point.at >= now() - 7 * 86400 && point.at < at);
   if (Array.isArray(saved) && saved.some((point) => point && point.at > at)) return;
@@ -1581,13 +1582,26 @@ function homeCarousel() {
     title: t(key), onclick: () => { active = index; draw(); } }));
   const root = h("section", { class: "home-carousel", "aria-label": t("home_banners") }, slot,
     h("div", { class: "home-banner-controls", role: "group", "aria-label": t("home_banners") }, dots));
+  const reserveSpace = () => {
+    if (!slot.isConnected || !slot.clientWidth) return;
+    // Measure all three real local-data layouts at this exact width, not just
+    // the previously visible slide. Text zoom, six rates and a forecast must
+    // not make controls jump when the person changes banners.
+    const probe = h("div", { class: "home-banner-slot home-banner-measure", "aria-hidden": "true", inert: "" });
+    probe.style.width = `${slot.clientWidth}px`;
+    root.append(probe);
+    try {
+      let height = 0;
+      for (const slide of slides) {
+        const node = slide(); probe.append(node);
+        height = Math.max(height, node.offsetHeight);
+        node.remove();
+      }
+      slot.style.minHeight = `${height}px`;
+    } finally { probe.remove(); }
+  };
   const draw = () => {
-    // Keep the richer greeting from moving the search field and shortcuts
-    // whenever the carousel rotates. min-height still permits text reflow.
-    if (slot.isConnected) {
-      const height = slot.getBoundingClientRect().height;
-      if (height > 0) slot.style.minHeight = `${Math.ceil(height)}px`;
-    }
+    reserveSpace();
     fill(slot, slides[active]());
     dots.forEach((dot, index) => {
       dot.classList.toggle("on", index === active);
@@ -1597,6 +1611,8 @@ function homeCarousel() {
   };
   const refresh = () => { if (!slot.contains(document.activeElement)) draw(); };
   ["hello", "rates", "weather_home"].forEach((kind) => bus.on(kind, refresh));
+  bus.on("home-layout", reserveSpace);
+  requestAnimationFrame(reserveSpace);
   const rotate = () => {
     if (!root.isConnected) return;
     const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
