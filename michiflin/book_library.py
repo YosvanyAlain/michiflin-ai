@@ -26,6 +26,7 @@ SOURCES = {'gutenberg', 'openlibrary', 'archive', 'google', 'standard', 'wikisou
 MAX_DOCUMENT = 8_000_000
 MAX_TEXT = 3_000_000
 _cache: dict[str, tuple[float, object]] = {}
+_source_pause: dict[str, float] = {}
 
 
 class BookError(ValueError):
@@ -97,7 +98,17 @@ def search(source: str, query: str, page: int = 1, language: str = '') -> dict:
                     has_more = has_more or bool(result.get('more'))
         result = {'books': books, 'page': page, 'more': has_more, 'unavailable': unavailable}
     else:
-        books, more = _search(source, query, page, language)
+        if time.monotonic() < _source_pause.get(source, 0):
+            raise BookError('source_temporarily_unavailable')
+        try:
+            books, more = _search(source, query, page, language)
+        except Exception as exc:
+            response = getattr(exc, 'response', None)
+            if response is not None and getattr(response, 'status_code', 0) in {403, 429}:
+                retry = str(response.headers.get('Retry-After', '300'))
+                wait = max(60, min(3600, int(retry))) if retry.isdigit() else 300
+                _source_pause[source] = time.monotonic() + wait
+            raise
         result = {'books': books, 'page': page, 'more': more, 'unavailable': []}
     _cache[cache_key] = (time.monotonic(), result)
     while len(_cache) > 64:

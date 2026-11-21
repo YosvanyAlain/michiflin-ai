@@ -79,7 +79,8 @@ def _enabled(rpc, account: int, chat_id: int) -> bool:
         return False
     info = rpc.get_basic_chat_info(account, chat_id)
     kind = str(getattr(info.chat_type, 'value', info.chat_type))
-    return kind == 'Group' and getattr(info, 'is_encrypted', False) is True and owner_present(rpc, account, chat_id)
+    return (kind == 'Group' and getattr(info, 'is_encrypted', False) is True
+            and not getattr(info, 'is_contact_request', False) and owner_present(rpc, account, chat_id))
 
 
 def _send(rpc, account: int, chat_id: int, answer: str, *, control: bool = False) -> None:
@@ -91,7 +92,9 @@ def _send(rpc, account: int, chat_id: int, answer: str, *, control: bool = False
 
 def offer(bot, account: int, message, info) -> bool:
     global _active_count
-    if os.getenv('GROUP_PUBLIC_TOOLS', '0') != '1' or getattr(info, 'is_encrypted', False) is not True or getattr(message, 'file', None):
+    if (os.getenv('GROUP_PUBLIC_TOOLS', '0') != '1' or getattr(info, 'is_encrypted', False) is not True
+            or str(getattr(info.chat_type, 'value', info.chat_type)) != 'Group'
+            or getattr(message, 'show_padlock', False) is not True or getattr(message, 'file', None)):
         return False
     parsed = parse(str(message.text or ''))
     if not parsed:
@@ -102,6 +105,8 @@ def offer(bot, account: int, message, info) -> bool:
         if command in {'enable', 'disable'}:
             if not owner_verified(rpc, account, int(message.from_id)):
                 return False
+            if command == 'enable' and getattr(info, 'is_contact_request', False):
+                rpc.accept_chat(account, chat_id)  # only the already-pinned owner may admit this group
             with state.lock:
                 state.data.setdefault('public_groups', {})[str(chat_id)] = {'enabled': command == 'enable', 'updated': time.time()}
                 state.save()

@@ -178,7 +178,7 @@ def test_group_activation_requires_real_owner_and_membership_stays_encrypted(mon
     monkeypatch.setattr(groups.chat, '_recent_out', [])
     bot = SimpleNamespace(rpc=rpc)
     info = SimpleNamespace(is_encrypted=True, chat_type='Group')
-    message = SimpleNamespace(text='/michiflin activar', file=None, chat_id=42, from_id=9)
+    message = SimpleNamespace(text='/michiflin activar', file=None, chat_id=42, from_id=9, show_padlock=True)
     assert not groups.offer(bot, 1, message, info)
     rpc.send_msg.assert_not_called()
     assert not state.data['public_groups']
@@ -219,3 +219,16 @@ def test_old_experimental_command_is_not_registered():
     from michiflin import commands
     assert 'ping' not in commands.COMMANDS
     assert commands.parse('/status') is not None
+
+
+def test_plaintext_group_message_cannot_activate_or_trigger_tools(monkeypatch):
+    monkeypatch.setenv('GROUP_PUBLIC_TOOLS', '1')
+    verified = mock.Mock(return_value=True)
+    monkeypatch.setattr(groups, 'owner_verified', verified)
+    rpc = mock.Mock()
+    message = SimpleNamespace(text='/michiflin activar', file=None, chat_id=42, from_id=9, show_padlock=False)
+    info = SimpleNamespace(is_encrypted=True, chat_type='Group', is_contact_request=True)
+    assert not groups.offer(SimpleNamespace(rpc=rpc), 1, message, info)
+    verified.assert_not_called()
+    rpc.accept_chat.assert_not_called()
+    rpc.send_msg.assert_not_called()
