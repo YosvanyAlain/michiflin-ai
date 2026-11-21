@@ -1,0 +1,19 @@
+# Private miniapp and explicit chat choice
+
+First private SecureJoin delivery is one WebXDC attachment with an empty caption. No welcome or maintenance caption is appended to that first attachment. Maintenance remains enforced and visible inside the app; explicit update/recovery notices are unchanged. Existing per-instance delivery deduplication, recipient verification, revoked-instance handling, invitation identity and encrypted history remain unchanged.
+
+The existing client uses `navigator.languages`/`navigator.language` for automatic language (Spanish/English; unsupported locales fall back to English). Explicit client language overrides remain respected. Before the app reports a language, chat replies use the recipient's own saved preference or detected message/command language; a global owner's language is not evidence of the recipient's system language. New guest settings start with language `auto` and chat mode `app`; other operational defaults retain the existing policy. Existing saved explicit preferences are not reset.
+
+An ordinary private message or command before choosing an interface gets the recipient-language explanation, not execution. Subsequent undecided messages get a short choice reminder rather than the full explanation. Attachments are neither analyzed nor deleted before selection. `/commands` (English) and `/comandos` (Spanish) explicitly enable normal chat dispatch and show paged help; the blocked original message is never replayed. `/app` selects miniapp mode and explicitly delivers it; `/mode` or `/modo` displays the choices, with `app`/`chat` arguments switching directly. Explicit app/command settings and app settings reset also update the chat decision.
+
+Decisions are persisted in the existing encrypted state, keyed by sender and private chat, and additionally bound to the access grant and bot epoch. They are not authorization grants. Existing authenticated emergency/status/admin controls bypass the interface gate, never authorization. Signed file-kit import attachments keep their existing explicit request validation and preserve the original. Groups still use the separate restricted public-tools path, never chat selection or AI.
+
+## Audited command scope
+
+At this revision the canonical dispatcher registers 56 command keys: 50 non-admin-specific keys and 6 admin-only keys (some of the 50 still enforce ownership, access, quota or resource restrictions). The existing help coverage test checks that every registered key except the low-level `send` helper appears in Spanish and English help, and keeps help pages to 18 lines. The chat interface uses the real command dispatcher, not a new agent with enlarged permissions.
+
+Chat supports existing web/search, download and queue, translation/summary/transcription, AI/image, utility, notes and settings commands subject to their original checks. The library, Live and local editors are miniapp interfaces without equivalent complete command interfaces. Help explicitly says these require the miniapp: this release does **not** promise all miniapp functions over commands. Selecting chat does not donate personal APIs, remove provider consent, grant admin privileges, or change group policy.
+
+## Regression verification
+
+`tests/test_chat_interface_choice.py` covers no pre-choice AI/attachment processing/deletion, real calculator dispatch after explicit selection, no message replay, independent chats/senders/grants/epochs, rejected recipients, persistence, mode/settings/reset synchronization, interrupted-work controls, failed persistence, chat-only bootstrap suppression, guest language defaults, and the actual client system-language functions executed in Node. Silent-caption and invitation/delivery tests preserve binding and no-duplicate assertions. Full CI retains all five original suites.

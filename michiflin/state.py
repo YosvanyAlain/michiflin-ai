@@ -42,6 +42,7 @@ data: dict[str, Any] = {
     "apps": {},
     "people": {},
     "prefs": {},
+    "chat_interfaces": {},  # explicit per-private-chat interface choices, not access grants
     "notes": {},
     "link_queue": {},
     "link_seq_q": 0,
@@ -178,15 +179,22 @@ def can_change(key: str) -> bool:
     return not acting_as() or key in PERSONAL
 
 
+def _personal_defaults() -> dict[str, Any]:
+    values = {key: _shared(key) for key in PERSONAL}
+    # Interface and language are personal choices, never inherited owner consent.
+    values.update(language="auto", chat_mode="app")
+    return values
+
+
 def own_settings() -> None:
-    """Give the acting person their own copy, starting from the current shared values."""
+    """Copy operational defaults, but start language and chat choice independently."""
     address = acting_as()
     if not address:
         return
     with lock:
         if address in data["prefs"]:
             return
-        data["prefs"][address] = {key: _shared(key) for key in PERSONAL}
+        data["prefs"][address] = _personal_defaults()
     _save_soon()
 
 
@@ -201,6 +209,11 @@ def reset_own_settings() -> None:
 def forget_person(address: str) -> None:
     with lock:
         data["prefs"].pop((address or "").lower(), None)
+        prefix = (address or "").strip().lower() + ":"
+        records = data.setdefault("chat_interfaces", {})
+        for key in list(records):
+            if key.startswith(prefix):
+                records.pop(key, None)
     _save_soon()
 
 
@@ -210,7 +223,7 @@ def set_setting(key: str, value: Any) -> bool:
     address = acting_as()
     with lock:
         if address:
-            data["prefs"].setdefault(address, {key: _shared(key) for key in PERSONAL})[key] = value
+            data["prefs"].setdefault(address, _personal_defaults())[key] = value
         else:
             data["settings"][key] = value
     save()

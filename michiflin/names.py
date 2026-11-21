@@ -7,6 +7,8 @@ from __future__ import annotations
 # Canonical key -> (Spanish, English). The key is the internal handler name.
 COMMANDS: dict[str, tuple[str, str]] = {
     "help": ("ayuda", "help"),
+    "chat_commands": ("comandos", "commands"),
+    "mode": ("modo", "mode"),
     "app": ("app", "app"),
     "web": ("web", "web"),
     "more": ("mas", "more"),

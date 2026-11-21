@@ -329,14 +329,15 @@ def help_pages(locale: str, owner: bool) -> list[str]:
             f"{c('invitacion')} – " + t("tu enlace de invitación, para copiar", "your invitation link, ready to copy"),
         ]))
     index = [
+        t("Funciones disponibles por comandos; /app vuelve a la miniapp.",
+          "Available command features; /app returns to the miniapp."),
+        t("La biblioteca, Live y los editores locales requieren la miniapp; no se anuncian aquí como comandos.",
+          "The library, Live and local editors require the miniapp; they are not advertised as commands here."),
+        f"{c('chat_commands')} / {c('mode')} – " + t("solo chat / cambiar modo", "chat only / change mode"),
         t("Escríbeme normal o envía un enlace; yo decido qué hacer.", "Write normally or send a link; I decide what to do."),
-        t("Ej.: «qué es la fotosíntesis», «videos de recetas cubanas», «clima en Holguín». Para dibujos usa /img.",
-          "E.g.: «what is photosynthesis», «videos of Cuban recipes», «weather in Havana». For pictures use /img."),
-        "",
         f"{c('app')} – " + t("abre la miniapp con todo a mano", "open the mini app with everything at hand"),
         t("Los recibos de lectura dependen de Delta Chat y la red; leer no significa terminar una tarea.",
           "Read receipts depend on Delta Chat and the network; reading does not mean a task is complete."),
-        "",
         t("Secciones:", "Sections:"),
     ]
     index += [f"{c('help', number)} {title}" for number, (title, _lines) in enumerate(sections, start=2)]
@@ -352,7 +353,7 @@ def help_pager(locale: str, page: int = 1, owner: bool = False) -> pager.Pager:
     return pager.Pager("❓ " + tr(locale, "Ayuda", "Help"), pages, locale, "help", index=max(0, min(page, len(pages)) - 1))
 
 
-@command("help", "start", "h", "menu", "comandos", "commands")
+@command("help", "start", "h", "menu")
 def cmd_help(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     value = (args[0] if args else rest).strip()
     page = int(value) if value.isdigit() else 1
@@ -371,9 +372,28 @@ def cmd_previous(chat_id: int, args: list[str], rest: str, locale: str) -> None:
 
 @command("app", "miniapp", "aplicacion")
 def cmd_app(chat_id: int, args: list[str], rest: str, locale: str) -> None:
-    from . import miniapp
-
+    from . import interaction, miniapp
+    interaction.choose(chat_id, "app")
     miniapp.send_app(chat_id, locale)
+
+
+@command("chat_commands")
+def cmd_chat_commands(chat_id: int, args: list[str], rest: str, locale: str) -> None:
+    from . import interaction
+    interaction.choose(chat_id, "full")
+    cmd_help(chat_id, args, rest, locale)
+
+
+@command("mode")
+def cmd_mode(chat_id: int, args: list[str], rest: str, locale: str) -> None:
+    from . import interaction
+    choice = _text(args, rest).strip().casefold()
+    if choice in {"app", "miniapp"}:
+        cmd_app(chat_id, [], "", locale)
+    elif choice in {"chat", "comandos", "commands", "full", "completo"}:
+        cmd_chat_commands(chat_id, [], "", locale)
+    else:
+        chat.text(chat_id, interaction.menu(locale))
 
 
 # ---------------------------------------------------------------------------
@@ -700,6 +720,9 @@ def cmd_settings(chat_id: int, args: list[str], rest: str, locale: str) -> None:
         if parsed is None or not state.set_setting(key, parsed):
             chat.text(chat_id, tr(locale, f"⚠️ Valor no válido. Opciones: {options}", f"⚠️ Invalid value. Options: {options}"))
             return
+        if key == "chat_mode":
+            from . import interaction
+            interaction.choose(chat_id, str(parsed), sync_setting=False)
         chat.text(chat_id, f"✅ {setting_name(locale, key)} = {display(key, locale)}")
         return
     if key:

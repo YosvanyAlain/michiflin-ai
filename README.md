@@ -16,7 +16,7 @@
 
 ## Highlights
 
-- **One mini app for everything.** The bot sends one WebXDC message with a short welcome on first contact. It uses the known chat or app language; when unknown, the same message has brief Spanish and English instructions. The app adapts to the device language when opened. Home, AI, web, apps, downloads and settings live there; a brief introduction runs the first time. The chat also carries delivered media and files.
+- **Private mini app, silent delivery.** The bot sends one WebXDC attachment with no welcome caption on first contact. It opens directly and follows the device language unless explicitly changed. Direct chat messages offer miniapp or explicit command/chat use; the choice is remembered for that private chat. The chat also carries delivered media and files.
 - **An agent that needs no AI.** Write normally or paste a link; the agent searches, reads the sources and builds the answer from them, with cited sentences, plus calculator, weather, rates, translation and summaries. It never calls an AI model, so it touches no quota.
 - **One agent, two modes.** The same agent offers a no-model-quota mode and an optional AI/API mode. The latter can select an exact model or automatic routing, plan up to four steps with public tools, and handle supported attachments. AI/provider quotas may apply; it does not log in, send messages or execute code on its own. The previous automatic chat remains accessible as legacy history.
 - **Free hosted AI.** Routes across free tiers (Gemini, Groq, Mistral, SambaNova, Z.AI, OpenRouter, Cloudflare, BazaarLink, OrcaRouter, plus the keyless LLM7 and Kilo gateways) with per-model quotas and automatic fallback. SambaNova's documented free-tier caps are tracked conservatively; see [provider notes](docs/AI_PROVIDERS.md). Each model shows why it is paused: limit reached, key rejected or no longer free, and the bot notifies you when a model stops or comes back. Pick the exact image model or let it choose. Each model chat shows its maker's mark and takes the attachments that model can read: photos, PDF and documents, and audio on Gemini.
@@ -58,10 +58,11 @@ If minimal request tracking cannot be saved, the app warns and does not send the
 
 ## Chat usage
 
-By default the bot works **only through the mini app**. It sends one app when a contact first connects; text in the chat can point back to that app. When an update is needed, request and confirm one in **Settings → Synchronization**, if available. Each app message has separate local storage: keep the existing instance until its important data have been checked or migrated. Files sent to the chat (voice notes, photos, documents) are still processed.
+The bot initially delivers only the private miniapp, with no welcome text. If you write directly, it explains the two interfaces without executing that first request. Choose `/commands` (Spanish: `/comandos`) to enable chat and see the available commands, or `/app` for the miniapp. The choice is remembered per authorized private chat. `/mode` (Spanish: `/modo`) lets you switch later; no blocked message is replayed. Attachments are not analyzed or deleted before you choose.
 
-Setting `chat` to `full` (or `CHAT_MODE=full` as the default) restores classic chat mode, where every feature is also a bilingual command. The command list is in the [guide](docs/GUIDE.md#classic-chat-mode).
+The miniapp follows system language unless explicitly changed. Chat replies use your own saved language or detected message/command language, not the owner's preference. Existing signed file-kit imports and authenticated emergency/status controls retain their own checks. Setting a shared `CHAT_MODE` default is not a recipient's explicit chat choice.
 
+The command interface covers the existing registered tools, not every miniapp feature: the library, Live and local editors require the miniapp. See the [command guide](docs/GUIDE.md#classic-chat-mode) and [interface behavior](docs/silent-onboarding.md). Each app message has separate local storage; preserve important local data before replacing an instance.
 ### Settings
 
 The owner can change bot settings in the mini app or with `/settings NAME VALUE` in classic chat mode (Spanish name in parentheses). Per-person settings apply to authorized guests; invitation admission does not grant administrative settings.
