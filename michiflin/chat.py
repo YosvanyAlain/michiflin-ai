@@ -380,10 +380,15 @@ def discard_delivered_media(message_ids: list[int]) -> int:
             # A content-addressed blob may also back a newer outgoing message.
             for chat_id in _bot.rpc.get_chatlist_entries(_accid, None, None, None):
                 for msg_id in _bot.rpc.get_message_ids(_accid, chat_id, False, False):
-                    msg = _bot.rpc.get_message(_accid, msg_id)
-                    value = getattr(msg, "state", 0)
+                    try:
+                        msg = _bot.rpc.get_message(_accid, msg_id)
+                        value, file = getattr(msg, "state", 0), getattr(msg, "file", "")
+                    except ValueError:
+                        # Old informational enums are irrelevant to file safety.
+                        raw = _bot.rpc.transport.call("get_message", _accid, msg_id)
+                        value, file = raw.get("state", 0), raw.get("file", "")
                     if int(getattr(value, "value", value) or 0) in PENDING_OUT:
-                        candidates.discard(Path(str(getattr(msg, "file", "") or "")))
+                        candidates.discard(Path(str(file or "")))
             removed = 0
             for path in candidates:
                 if account_blob(path, config.CONFIG_DIR):

@@ -66,9 +66,13 @@ def prepare(root: Path) -> dict:
         stale = []
         for chat_id in rpc.get_chatlist_entries(account, None, None, None):
             for msg_id in rpc.get_message_ids(account, chat_id, False, False):
-                message = rpc.get_message(account, msg_id)
-                view = str(getattr(message.view_type, 'value', message.view_type))
-                if int(message.state) in {18, 20} and view != 'Webxdc':
+                # Historical info-message enums can outlive the Python enum
+                # schema. Only raw storage fields are needed for this audit.
+                message = rpc.transport.call('get_message', account, msg_id)
+                if not isinstance(message, dict):
+                    raise ValueError('invalid message storage metadata')
+                view = str(message.get('view_type', ''))
+                if int(message.get('state') or 0) in {18, 20} and view != 'Webxdc':
                     stale.append(int(msg_id))
         if stale:
             rpc.delete_messages(account, stale)
