@@ -323,6 +323,13 @@ jobs:
             echo "::warning::Owner history was not exported; all legacy copies remain untouched."
           fi
 
+      - name: Restore the owner-authorized contact invitation once
+        if: ${{ github.ref == 'refs/heads/main' && vars.INVITATION_REPAIR_REVISION != '' && vars.INVITATION_REPAIR_REVISION == github.sha }}
+        env:
+          INVITATION_REPAIR_REVISION: ${{ vars.INVITATION_REPAIR_REVISION }}
+          INVITATION_REPAIR_LINK: ${{ secrets.INVITATION_REPAIR_LINK }}
+        run: python tools/repair_contact_invitation_once.py
+
       - name: Back up configured account
         run: python state_backup.py save
 
