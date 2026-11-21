@@ -320,7 +320,8 @@ def test_existing_app_displays_local_answer_in_original_bubble_footer(monkeypatc
             page.locator("#view .composer button.primary").click()
             bubble = page.locator(".bubble.bot").last
             bubble.locator(".rich").get_by_text(answer, exact=True).wait_for(state="visible")
-            assert bubble.locator(".rich").inner_text() == answer
+            # WebKit may include the paragraph's presentation newline.
+            assert bubble.locator(".rich").inner_text().strip() == answer
             assert bubble.locator(".bubble-foot small.muted").inner_text() == signature
             assert bubble.locator(".bubble-foot").bounding_box()["y"] > bubble.locator(".rich").bounding_box()["y"]
             assert bubble.locator(".bubble-foot small").evaluate("e => parseFloat(getComputedStyle(e).fontSize)") < \

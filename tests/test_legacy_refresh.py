@@ -22,13 +22,16 @@ def test_saved_rates_and_upcoming_forecast_use_banner_space_without_requests(eng
           goTab('home');
         }""")
         before = page.evaluate("window.__sentUpdates.length")
+        search_y = page.locator(".searchbox").bounding_box()["y"]
         page.locator(".home-banner-dot").nth(1).click()
+        assert abs(page.locator(".searchbox").bounding_box()["y"] - search_y) <= 2
         assert page.locator(".rate-banner-values > span").count() == 6
         assert page.locator(".rate-banner-values").get_by_text("CAD", exact=True).is_visible()
         assert not page.locator(".rate-banner-values").get_by_text("BTC", exact=True).count()
         assert page.locator(".rate-sparkline polyline").get_attribute("points").count(" ") == 1
         assert page.evaluate("store.get('rates.observations',[]).length") == 2
         page.locator(".home-banner-dot").nth(2).click()
+        assert abs(page.locator(".searchbox").bounding_box()["y"] - search_y) <= 2
         assert page.locator(".forecast-day").count() == 4
         assert all(day > page.evaluate("new Date().toISOString().slice(0,10)")
                    for day in page.locator(".forecast-day time").evaluate_all("nodes=>nodes.map(n=>n.dateTime)"))
@@ -138,3 +141,24 @@ def test_job_handoff_failure_is_retryable_and_ready_has_notification(monkeypatch
     assert "Lista para enviar" in calls[-1][-1]
     miniapp._on_job(job, {"status": "ready"})
     assert len(calls) == 2
+
+
+def test_exact_pre_refresh_package_remains_epoch_bound(monkeypatch, tmp_path):
+    import shutil
+    from michiflin import app_compat, config
+
+    monkeypatch.setattr(config, "BOT_EPOCH", "test-epoch")
+    old = app_compat.pre_refresh_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES)
+    assert old == "55cacec817"
+    assert miniapp.compatible_build({"build": old})
+    assert miniapp.discloses_infobars({"build": old})
+    monkeypatch.setattr(config, "BOT_EPOCH", "different-epoch")
+    assert not miniapp.compatible_build({"build": old})
+    monkeypatch.setattr(config, "BOT_EPOCH", "test-epoch")
+    archived = tmp_path / "archive"
+    shutil.copytree(app_compat._PRE_REFRESH, archived)
+    monkeypatch.setattr(app_compat, "_PRE_REFRESH", archived)
+    with (archived / "app.js").open("a") as stream:
+        stream.write("\n// synthetic alteration\n")
+    assert app_compat.pre_refresh_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES) == ""
+    assert not miniapp.compatible_build({"build": old})

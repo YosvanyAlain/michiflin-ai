@@ -1141,7 +1141,7 @@ function replySheet(reply) {
 const JOB_OUTCOMES = Object.freeze({ ready: ["notice_ready", "ok"], done: ["notice_done", "ok"],
   failed: ["notice_failed", "bad"], cancelled: ["notice_cancelled", "info"] });
 
-function setJobs(jobs, notifyUnknown = false) {
+function setJobs(jobs, notifyUnknown = true) {
   if (!Array.isArray(jobs)) return;
   const previous = new Map(cache.jobs.map((job) => [String(job.id), job]));
   const changes = [];
@@ -1201,7 +1201,7 @@ async function sync(force, quiet = false) {
       if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) { store.set("rates", data.rates_summary); saveRateObservation(data.rates_summary); }
     }
     if (data.weather_home) saveWeatherHome(data.weather_home);
-    setJobs(data.jobs);
+    setJobs(data.jobs, false);
     bus.emit("rates");
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));

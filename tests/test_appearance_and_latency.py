@@ -184,7 +184,7 @@ def test_text_contrast_across_styles_accents_and_light_dark(engine):
           function contrast(a,b){const x=lum(a),y=lum(b);return (Math.max(x,y)+.05)/(Math.min(x,y)+.05);}
           function blend(f,b){const a=f[3]??1;return b.map((value,i)=>i<3?f[i]*a+value*(1-a):1);}
           const rows=[];
-          for(const style of ['michiflin','material','pixel','ocean'])
+          for(const style of ['michiflin','material','ocean'])
             for(const theme of ['light','dark'])
               for(const accent of ['style','teal','violet','blue','rose']) {
                 prefs.style=style;prefs.theme=theme;prefs.accent=accent;applyLook();
@@ -206,7 +206,7 @@ def test_text_contrast_across_styles_accents_and_light_dark(engine):
               }
           button.remove();noMotion.remove();return rows;
         }""")
-        assert len(measurements) == 40
+        assert len(measurements) == 30
         for row in measurements:
             assert min(row['text'], row['muted'], row['nav'], row['button']) >= 4.5, row
         assert errors == []

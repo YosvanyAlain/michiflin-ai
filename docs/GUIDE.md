@@ -40,7 +40,7 @@ Text written in the chat itself only gets a short reply pointing to the app. Fil
 - **Status chips:** time until the next server restart, items in the queue and the last update.
 - **Shortcuts:** the most used apps, one tap away.
 
-Appearance follows the device (light or dark) unless changed in Settings. Choose one of 14 visual styles: Michiflin, Material You-inspired, Pixel Art, Ocean, Pearl, Onyx, Emerald, Sapphire, Amethyst, Ruby, Copper, Arctic, Mocha or Aurora. Light, dark and system modes and independent accents work with every style. Material You does not automatically read the device's colors. Animated decorations respect reduced-motion settings, and the weather scene uses the saved observation without an extra query.
+Appearance follows the device (light or dark) unless changed in Settings. Choose one of 13 visual styles: Michiflin, Material You-inspired, Ocean, Pearl, Onyx, Emerald, Sapphire, Amethyst, Ruby, Copper, Arctic, Mocha or Aurora. Light, dark and system modes and independent accents work with every style. Material You does not automatically read the device's colors. Animated decorations respect reduced-motion settings, and the weather scene uses the saved observation without an extra query.
 
 ## AI
 
@@ -238,3 +238,11 @@ The safe default is owner-only; the operator can instead enable automatic access
 <p align="center">
   <img src="media/en/desktop-home.png" width="640" alt="Mini app on desktop">
 </p>
+
+### Home refresh and download outcomes
+
+The default Michiflin palette restores its original teal. The local vector mascot has matching seated and running poses; the finite startup scene respects reduced motion and never waits for mail. The rates banner adds CAD, MXN and TRX only when the source actually provides them, plus a bounded USD chart built solely from observations already received on this device. No observations or prices are invented. The weather banner uses the saved forecast for up to four future days in the provider's timezone, without a separate weather request.
+
+Download badges cover **ready to send**, **done**, **failed** and **cancelled** outcomes, not just background activity. A sync reconciles missed transitions, timestamps prevent older pushes from rolling back newer results, and persisted event codes suppress duplicates. Quiet recovery runs only while unfinished work exists and yields to deliberate actions. Email transport can still delay a result; a badge cannot precede receipt of that result.
+
+The exact source snapshots in `michiflin/compat/` are retained solely to verify already-sent package fingerprints and preserve their access to the same bot. They are not included in newly built miniapps. An updated miniapp is a separate WebXDC instance; previous copies and their local data must not be deleted to install it.

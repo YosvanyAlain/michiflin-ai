@@ -1593,7 +1593,7 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
   60% { transform: translateX(4px) rotate(15deg); } 75%, 100% { transform: translateX(27px) rotate(100deg); } }
 
 /* Fill the shared banner footprint with data, not wide empty columns. */
-.home-banner-slot > :is(.hero, .rate-banner, .weather-banner) { min-height: 284px; }
+.home-banner-slot > :is(.hero, .rate-banner, .weather-banner) { min-height: 328px; }
 .rate-banner, .weather-banner { gap: 13px; padding: 20px; }
 .rate-banner-top { flex-wrap: wrap; }
 .rate-banner-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
@@ -1642,3 +1642,9 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
   .splash-runner { left: calc(50% - 80px); }
   .home-hero .hero-art .mascot { animation: none !important; }
 }
+
+:root[data-style="michiflin"] {
+  --premium-edge: var(--accent-soft);
+  --premium-glow: var(--accent-softer);
+}
+:root[data-style="michiflin"] :is(.top, .tabs, .rail) { background-image: none; }
