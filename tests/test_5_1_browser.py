@@ -102,6 +102,8 @@ def test_nested_model_and_image_selection_with_legacy_history_preserved(language
         assert page.evaluate("prefs.agentModel") == "test:alpha"
         assert page.evaluate("store.get('chat.auto')[0].text") == "legacy preserved"
         page.evaluate("go('images')")
+        assert not page.locator(".image-model-picker").evaluate("node=>node.open")
+        page.locator(".image-model-picker > summary").click()
         page.locator(".image-provider > summary").click()
         assert page.locator(".image-provider .image-family").count() == 2
         assert page.get_by_text("1 modelo" if language == "es" else "1 model", exact=True).count() == 2
