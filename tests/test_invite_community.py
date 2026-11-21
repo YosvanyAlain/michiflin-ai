@@ -225,7 +225,7 @@ def test_maintenance_and_explicit_ban_override_invitation(monkeypatch):
     assert community.admit_from_securejoin(rpc, 1, 15) and admin.is_allowed(ALICE)
 
 
-def test_unknown_language_gets_one_bilingual_app_and_restart_does_not_duplicate(monkeypatch):
+def test_unknown_language_gets_one_short_fallback_app_and_restart_does_not_duplicate(monkeypatch):
     assert community.admit_from_securejoin(Rpc(), 1, 15)
     chat.set_sender(ALICE)
     monkeypatch.setattr(miniapp, "_verified_binding", lambda _entry: True)
@@ -238,8 +238,9 @@ def test_unknown_language_gets_one_bilingual_app_and_restart_does_not_duplicate(
     monkeypatch.setattr(chat, "send", send)
     miniapp.welcome(21, "")
     assert len(sends) == 1
-    assert "¡Hola!" in sends[0][1] and "Hi!" in sends[0][1]
-    assert "Descarga" in sends[0][1] and "Download" in sends[0][1] and "/app" not in sends[0][1]
+    assert "¡Bienvenido" in sends[0][1] and "Welcome" not in sends[0][1]
+    assert len(sends[0][1]) < 180 and "/app" not in sends[0][1]
+    assert "comparte el enlace del bot, no el archivo" in sends[0][1]
     assert sends[0][2]["viewtype"] == "Webxdc"
     # A legacy pending secondary welcome must never be sent after the upgrade.
     state.data["apps"]["101"]["welcome_secondary_pending"] = True
@@ -250,7 +251,7 @@ def test_unknown_language_gets_one_bilingual_app_and_restart_does_not_duplicate(
     assert len(sends) == 1 and len(state.data["apps"]) == 1
 
 
-@pytest.mark.parametrize("language,expected,other", [("es", "¡Hola!", "Hi!"), ("en", "Hi!", "¡Hola!")])
+@pytest.mark.parametrize("language,expected,other", [("es", "¡Bienvenido", "Welcome"), ("en", "Welcome", "¡Bienvenido")])
 def test_known_language_gets_one_localized_welcome(monkeypatch, language, expected, other):
     assert community.admit_from_securejoin(Rpc(), 1, 15)
     chat.set_sender(ALICE)
@@ -264,7 +265,7 @@ def test_known_language_gets_one_localized_welcome(monkeypatch, language, expect
     assert sent[0][1]["viewtype"] == "Webxdc" and "/app" not in sent[0][0]
 
 
-def test_unknown_welcome_includes_both_maintenance_notices_in_one_message(monkeypatch):
+def test_unknown_welcome_includes_only_the_fallback_maintenance_notice(monkeypatch):
     assert community.admit_from_securejoin(Rpc(), 1, 15)
     chat.set_sender(ALICE)
     monkeypatch.setattr(miniapp, "_verified_binding", lambda _entry: True)
@@ -274,7 +275,7 @@ def test_unknown_welcome_includes_both_maintenance_notices_in_one_message(monkey
     sent = []
     monkeypatch.setattr(chat, "send", lambda _chat, text, **kwargs: sent.append((text, kwargs)) or 101)
     miniapp.welcome(21, "")
-    assert len(sent) == 1 and "Pausa de prueba" in sent[0][0] and "Test pause" in sent[0][0]
+    assert len(sent) == 1 and "Pausa de prueba" in sent[0][0] and "Test pause" not in sent[0][0]
 
 
 def test_new_guest_language_is_not_guessed_from_the_owners_setting(monkeypatch):

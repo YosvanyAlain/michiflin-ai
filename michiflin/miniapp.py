@@ -171,7 +171,8 @@ def _verified_binding(entry: dict[str, Any]) -> bool:
 
 
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None,
-             bilingual_welcome: bool = False, recovery_revision: str = "") -> int:
+             recovery_revision: str = "") -> int:
+    locale = locale if locale in {"es", "en"} else "es"
     recipient = address or chat.sender()
     if not _verified_binding({"chat": chat_id, "addr": recipient}):
         return 0
@@ -181,14 +182,15 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
                   "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
                   "this new instance has separate storage.")
     else:
-        spanish = ("👋 ¡Hola! Soy Michiflin AI. Descarga esta miniapp y ábrela con «Iniciar» o su icono. "
-                   "Dentro encontrarás IA, web, descargas y ajustes; las respuestas llegan por correo.")
-        english = ("👋 Hi! I'm Michiflin AI. Download this mini app, then open it with “Start” or its icon. "
-                   "Inside you'll find AI, web, downloads and settings; replies arrive by email.")
-        text = spanish + "\n\n" + english if bilingual_welcome else tr(locale, spanish, english)
-    if config.REVOKE_LEGACY_MINIAPPS:
-        text += "\n\n" + tr(locale, "Las miniapps anteriores han sido retiradas y ya no se comunican con el bot. Se conservan sus archivos y datos locales. Usa esta nueva miniapp solo en este chat; comparte el enlace de contacto del bot, no el archivo.",
-                                 "Previous miniapps have been retired and can no longer communicate with the bot. Their files and local data are preserved. Use this new miniapp only in this chat; share the bot contact link, not the file.")
+        text = tr(locale,
+            "👋 ¡Bienvenido a Michiflin AI! Abre la miniapp para empezar.\n\n"
+            "Para invitar a alguien, comparte el enlace del bot, no el archivo.",
+            "👋 Welcome to Michiflin AI! Open the miniapp to get started.\n\n"
+            "To invite someone, share the bot's contact link, not this file.")
+    if config.REVOKE_LEGACY_MINIAPPS and updated:
+        text += "\n\n" + tr(locale,
+            "Las miniapps anteriores ya no se conectan; sus datos locales se conservan.",
+            "Previous miniapps no longer connect; their local data is preserved.")
     if recovery_revision:
         if not re.fullmatch(r"[0-9a-f]{40}", recovery_revision):
             return 0
@@ -199,13 +201,11 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             "Requested connection recovery: open this mini app from THIS message. Previous copies were not "
             "deleted and their data is not moved automatically. If this one does not respond either, "
             "report it without deleting the chat or reinstalling Delta Chat.")
-    # An unknown-language first welcome still needs to carry the maintenance
-    # notice for both audiences, without creating another chat message.
-    languages = ("es", "en") if bilingual_welcome and not updated else (locale,)
-    for language in languages:
-        advisory = maintenance.text(language)
-        if advisory:
-            text += "\n\n🛠️ " + advisory
+    # A first contact has not reported its device language yet. Use a short
+    # Spanish fallback, never the owner's preference or a duplicate translation.
+    advisory = maintenance.text(locale)
+    if advisory:
+        text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}
     if config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         def interrupted_or_changed() -> bool:
@@ -303,7 +303,7 @@ def point_to_app(chat_id: int, locale: str) -> None:
 
 
 def welcome(chat_id: int, locale: str) -> None:
-    """First contact: one app message; use both languages only if unknown."""
+    """First contact: one concise localized app message; Spanish if unknown."""
     if maintenance.silent_active():
         return
     with _upgrade_lock:
@@ -312,10 +312,7 @@ def welcome(chat_id: int, locale: str) -> None:
         # delivery but does not itself grant the old instance any access.
         if _bound_apps(chat_id) or _registered_app_for_sender(chat_id):
             return
-        if locale in {"es", "en"}:
-            send_app(chat_id, locale)
-        else:
-            send_app(chat_id, "es", bilingual_welcome=True)
+        send_app(chat_id, locale if locale in {"es", "en"} else "es")
 
 
 def _instance(msg_id: int) -> dict[str, Any] | None:
