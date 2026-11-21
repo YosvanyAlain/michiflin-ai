@@ -121,7 +121,7 @@ def test_extended_local_profile_keeps_token_check_and_larger_bounded_output(monk
     assert result.status == 'ok'
     payload = calls[-1][1]
     assert payload['max_tokens'] == budget and payload['t_max_predict_ms'] == 90000
-    assert bool(any(p == '/tokenize' for p, _ in calls)) == coding
+    assert any(p == '/tokenize' for p, _ in calls)
 
 
 @pytest.mark.parametrize('raw,accepted', [
@@ -186,3 +186,28 @@ def test_pinned_model_downloader_ranges_and_fail_closed(monkeypatch, tmp_path, f
         downloader.download('https://huggingface.co/example/reviewed', len(data), digest, path)
         assert path.read_bytes() == data and len(calls) == 4
     assert not list(tmp_path.glob('model.partial.*')) and len(calls) <= 4
+
+
+def test_extended_chat_accepts_larger_input_without_silent_cutting(monkeypatch):
+    monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '1')
+    question = 'Consulta extensa. ' * 300
+    with mock.patch.object(local_ai, 'complete_messages', return_value=local_ai.Result('ok', 'Respuesta')) as infer:
+        assert local_ai.complete(question, 'es').status == 'ok'
+    assert infer.call_args.args[0][-1]['content'] == question.strip()
+    assert local_ai.complete('x' * 12001, 'es').status == 'long_input'
+    monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '0')
+    assert local_ai.complete(question, 'es').status == 'long_input'
+
+
+def test_extended_chat_refuses_oversized_template_before_inference(monkeypatch):
+    monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '1')
+    monkeypatch.setattr(local_ai, 'ready', lambda: True)
+    calls = []
+    def http(path, payload, timeout):
+        calls.append(path)
+        if path == '/apply-template': return {'prompt': 'large synthetic template'}
+        if path == '/tokenize': return {'tokens': [1] * 6000}
+        raise AssertionError('overflow must not reach inference')
+    with mock.patch.object(local_ai, '_http', side_effect=http):
+        got = local_ai.complete_messages([{'role': 'user', 'content': 'Texto'}], sender='guest@example.test')
+    assert got.status == 'long_context' and '/v1/chat/completions' not in calls
