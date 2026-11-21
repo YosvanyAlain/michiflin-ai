@@ -189,7 +189,7 @@ small { font-size: 12.5px; }
 }
 .view > * { width: 100%; max-width: 820px; align-self: center; flex-shrink: 0; }
 #gear.on { color: var(--accent); background: var(--accent-soft); }
-.view.enter { opacity: 0; transform: translateY(8px); }
+.view.enter { opacity: 1; transform: none; } /* Content must stay visible if a WebView callback fails. */
 
 .tabs {
   display: flex; justify-content: space-around; gap: 2px;

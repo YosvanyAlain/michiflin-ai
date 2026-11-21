@@ -14,6 +14,9 @@ const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform 
 const TOUCH = matchMedia("(pointer: coarse)").matches;
 
 const cache = Object.assign({ version: "", admin: false, models: null, health: null, settings: null, jobs: [], maintenance_notice: null, lang: "", at: 0 }, store.get("cache", {}));
+// Cached jobs are hints, not an authoritative queue; validate before chrome()
+// uses them. Keep the original stored record until a real snapshot replaces it.
+cache.jobs = Array.isArray(cache.jobs) ? cache.jobs.filter(job => job && typeof job === "object" && typeof job.status === "string") : [];
 const memo = new Map();
 const VIEWS = {};
 // Keep the latest request markers in memory as well: local storage may reject
@@ -222,13 +225,30 @@ function back() {
 }
 
 function render(scroll = 0) {
+  try { renderView(scroll); }
+  catch (_) {
+    // Local UI recovery only: no paid request, retry, reset or data deletion.
+    const main = $("#view");
+    main.className = "view";
+    fill(main, card(h("h2", { "data-ui-recovery": "view" }, t("view_failed_title")),
+      h("p", { role: "alert" }, t("view_failed_body")),
+      h("div", { class: "row wrap" },
+        h("button", { class: "btn", onclick: () => goTab("home") }, t("tab_home")),
+        h("button", { class: "btn", onclick: () => goTab("settings") }, t("tab_settings"))),
+      h("p", { class: "muted small" }, t("view_failed_help"))));
+    $("#title").textContent = t("view_failed_title");
+    openingNoticeKey = "";
+  }
+}
+
+function renderView(scroll = 0) {
   // Replacing the view before its pending first paint cannot count as seeing
   // the reply. Publish its durable badge even if the old rAF never resumes.
   const hadPendingPaint = pendingNoticePaint.size > 0;
   pendingNoticePaint.clear();
   visibleNoticeCheck = null;
   const revision = ++renderRevision;
-  FileKitUI.stop();
+  if (typeof FileKitUI !== "undefined") FileKitUI.stop();
   if (window.BookShelf) window.BookShelf.stopSpeech();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
@@ -3699,7 +3719,7 @@ VIEWS.downloads = {
     let drawJobs = null;
     ["jobs", "maintenance"].forEach((kind) => bus.on(kind, () => { if (drawJobs) drawJobs(); }));
     const draw = (which) => {
-      FileKitUI.stop();
+      if (typeof FileKitUI !== "undefined") FileKitUI.stop();
       const kitOptions = which === "kit" ? pendingJob : {};
       if (which === "kit") pendingJob = {};
       current.params = { section: which };
@@ -4524,9 +4544,11 @@ function boot() {
   applyLook(); chrome(); pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
   setInterval(recoverJobSnapshot, 60000);
-  if (!window.webxdc) { fill($("#view"), failure(t("no_webxdc"))); return; }
+  if (!window.webxdc) { $("#view").className = "view"; fill($("#view"), failure(t("no_webxdc"))); window.__michiflinBootReady = true; return; }
   goTab(current.view);
-  Promise.resolve(window.webxdc.setUpdateListener(update => bridge.receive(update), bridge.startSerial())).then(() => {
+  window.__michiflinBootReady = true;
+  // Hosts may throw synchronously, reject, or be offline; none should erase UI.
+  Promise.resolve().then(() => window.webxdc.setUpdateListener(update => bridge.receive(update), bridge.startSerial())).then(() => {
     bus.emit("images"); hello(true); bridge.watchExpiry();
   }).catch(() => toast(t("sync"), "bad"));
 }

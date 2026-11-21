@@ -116,7 +116,13 @@ const store = {
   get(key, fallback) {
     try {
       const raw = localStorage.getItem("mf." + key);
-      return raw === null ? fallback : JSON.parse(raw);
+      const value = raw === null ? fallback : JSON.parse(raw);
+      // A valid JSON value can still have the wrong shape after an interrupted
+      // write/import. Ignore that cache entry; never erase unrelated user data.
+      if (Array.isArray(fallback) && !Array.isArray(value)) return fallback;
+      if (fallback && typeof fallback === "object" && !Array.isArray(fallback) &&
+          (!value || typeof value !== "object" || Array.isArray(value))) return fallback;
+      return value;
     } catch (error) {
       return fallback;
     }

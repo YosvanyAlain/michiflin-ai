@@ -2,6 +2,9 @@
 
 const I18N = {
   es: {
+    view_failed_title: "No se pudo abrir esta sección",
+    view_failed_body: "El dispositivo no pudo mostrar esta vista. Puedes abrir otra sección; no se borraron tus datos ni se repitió la solicitud.",
+    view_failed_help: "Si continúa, pide una miniapp nueva con /app en el chat privado. Código: vista-local.",
     op_books: "Biblioteca",
     op_public_groups: "Grupos públicos",
     op_youtube_thumbs: "Miniaturas de YouTube",
@@ -1283,6 +1286,9 @@ const I18N = {
     estado_killed: "Kill switch ACTIVO",
   },
   en: {
+    view_failed_title: "This section could not open",
+    view_failed_body: "The device could not display this view. You can open another section; your data was not deleted and the request was not repeated.",
+    view_failed_help: "If this continues, request a fresh miniapp with /app in the private chat. Code: local-view.",
     op_books: "Book library",
     op_public_groups: "Public groups",
     op_youtube_thumbs: "YouTube thumbnails",
