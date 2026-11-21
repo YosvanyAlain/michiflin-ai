@@ -12,6 +12,13 @@ from michiflin import config, filekit, filekit_rar_native, filekit_transfer
 from tests.test_webxdc_browser import browser_fixture, screenshot_if_requested, sync_playwright
 
 
+def wait_for_sheet_focus(page):
+    # openSheet schedules initial focus in requestAnimationFrame. WebKit can
+    # otherwise move focus away in the middle of fill(), losing typed input.
+    page.wait_for_function("document.querySelector('#sheet')?.classList.contains('open')")
+    page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+
+
 @unittest.skipUnless(sync_playwright, "playwright is not installed")
 class FileKitUiTests(unittest.TestCase):
     def test_offline_tree_edit_undo_archive_and_join_in_both_languages(self):
@@ -42,12 +49,14 @@ class FileKitUiTests(unittest.TestCase):
                 page.wait_for_function("async()=>await (await FileKitStore.get('/uno.txt')).blob.text()==='cambio dos'")
                 page.locator('[data-kit-path="/uno.txt"] input').check()
                 page.locator('[data-kit-action=archive-create]').click()
+                wait_for_sheet_focus(page)
                 page.locator('#sheet input[type=password]').fill('clave-sintetica')
                 page.locator('[data-kit-action=run-archive]').click()
                 page.wait_for_selector('[data-kit-path="/Paquete.zip"]', timeout=30000)
                 page.locator('[data-kit-path="/uno.txt"] input').uncheck()
                 page.locator('[data-kit-path="/Paquete.zip"] input').check()
                 page.locator('[data-kit-action=archive-extract]').click()
+                wait_for_sheet_focus(page)
                 page.locator('#sheet input[type=password]').fill('clave-sintetica')
                 page.locator('[data-kit-action=run-archive]').click()
                 page.wait_for_selector('[data-kit-path="/Paquete - archivos"]', timeout=30000)
@@ -88,7 +97,9 @@ class FileKitUiTests(unittest.TestCase):
                 master.check()
                 self.assertEqual(page.locator('.kit-row input:checked').count(), 3)  # root children; not hidden descendants
                 page.locator('[data-kit-action=rename]').click()
+                wait_for_sheet_focus(page)
                 page.locator('[data-kit-bulk=value]').fill('prefijo-')
+                page.wait_for_function("document.querySelector('.kit-bulk-preview')?.textContent.includes('prefijo-otro.txt')")
                 self.assertIn('prefijo-otro.txt', page.locator('.kit-bulk-preview').inner_text())
                 page.locator('[data-kit-bulk=submit]').click()
                 page.wait_for_selector('[data-kit-path="/prefijo-otro.txt"]')
