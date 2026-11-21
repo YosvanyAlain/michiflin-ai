@@ -47,7 +47,9 @@ def _registered_build(epoch: str, app_dir: str, files: tuple[str, ...], source_d
             return ""
         for name, digest in expected.items():
             if name not in replaced and hashlib.sha256((Path(app_dir) / name).read_bytes()).hexdigest() != digest:
-                return ""
+                archived = _MOBILE_BEFORE / name
+                if name not in _MOBILE_REPLACED or not archived.is_file() or hashlib.sha256(archived.read_bytes()).hexdigest() != digest:
+                    return ""
         build = entry["builds"].get(hashlib.sha256(epoch.encode()).hexdigest(), "")
         return build if isinstance(build, str) and len(build) == 10 and all(c in "0123456789abcdef" for c in build) else ""
     except (OSError, TypeError, ValueError, UnicodeError, KeyError, AttributeError):
@@ -102,3 +104,12 @@ def audit_base_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
 def pre_refresh_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """Recognize the unmodified package already in the owner's chat. Never served anew."""
     return _registered_build(epoch, app_dir, files, _PRE_REFRESH, _PRE_REFRESH_REPLACED, "pre-refresh")
+
+
+_MOBILE_BEFORE = Path(__file__).resolve().parent / "compat" / "mobile-before"
+_MOBILE_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", "core.js", "i18n.js", "live.js"}
+
+
+def mobile_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """Keep the owner's existing app working while the mobile refresh is installed."""
+    return _pinned_build(epoch, app_dir, files, _MOBILE_BEFORE, _MOBILE_REPLACED)

@@ -14,7 +14,13 @@ concurrency:
 jobs:
   offline-tests:
     runs-on: ubuntu-latest
-    # The browser matrix includes both engines plus visibility/race regressions.
+    name: Tests (${{ matrix.suite }})
+    # Keep every existing check, but do not cancel the tail of the browser
+    # suite at the former single-job 40-minute ceiling.
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [logic, browser, filekit]
     timeout-minutes: 40
     env:
       CONFIG_DIR: /tmp/michiflin-test/config
@@ -57,13 +63,14 @@ jobs:
         run: python -m playwright install --with-deps chromium webkit
 
       - name: Logic and isolated-language tests
+        if: matrix.suite == 'logic'
         run: |
           python -m unittest discover -s tests -p test_logic.py -v
           python -m unittest tests.test_safety -v
           python -m unittest discover -s tests -p test_new_features.py -v
           python -m unittest discover -s tests -p test_ai_music.py -v
           python -m unittest tests.test_backup_maintenance -v
-          python -m pytest -q tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py
+          python -m pytest -q tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py tests/test_mobile_library_backend.py
           python -m unittest tests.test_github_handover -v
           python -m unittest tests.test_social_accounts -v
           python -m unittest tests.test_personal_maintenance -v
@@ -74,22 +81,27 @@ jobs:
           MICHIFLIN_SANDBOX_TESTS=1 python -m pytest -q tests/test_graphical_saved.py
 
       - name: Translation resilience
+        if: matrix.suite == 'logic'
         run: python -m unittest tests.test_translation_fallback -v
 
       - name: WebXDC behavior and package tests
+        if: matrix.suite == 'logic'
         run: python tests/test_webxdc.py
 
       - name: WebXDC browser smoke test
+        if: matrix.suite == 'browser'
         run: |
           python -m unittest tests.test_webxdc_browser -v
           python -m pytest -q tests/test_inline_answer_browser.py tests/test_5_1_browser.py tests/test_offline_owner_data.py tests/test_premium_ui.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py
 
       - name: Slow-mail forms, accessible dialogs and pre-audit compatibility
+        if: matrix.suite == 'browser'
         run: |
-          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py
+          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py
           ruff check tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py --select F,E9
 
       - name: File kit, encrypted bridge and isolated archive worker
+        if: matrix.suite == 'filekit'
         env:
           MICHIFLIN_WEBKIT_TESTS: "1"
           MICHIFLIN_SANDBOX_TESTS: "1"
@@ -98,9 +110,12 @@ jobs:
           python -m unittest tests.test_filekit_store tests.test_filekit_crypto tests.test_filekit_archive tests.test_filekit_remote_archive tests.test_filekit_rar_native tests.test_filekit_ui tests.test_translation_ui -v
 
       - name: Static checks
+        if: matrix.suite == 'logic'
         run: |
           ruff check michiflin state_backup.py bot.py tools/local_gguf_health.py tools/build_manual.py tools/clean_owner_identity.py tools/github_native_guard.py tools/cutover_identity_once.py tools/profile_carryover_once.py tools/export_owner_history_once.py tools/restore_owner_history.py tools/retire_legacy_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_summary_inline.py tests/test_inline_answer.py tests/test_inline_answer_browser.py tests/test_fair_local_ai.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_clean_owner_identity.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_human_browser.py tests/test_graphical_saved.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py tests/test_weather_home.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_translation_fallback.py tests/test_translation_ui.py tests/test_premium_ui.py tests/test_email_key_recovery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py tests/test_filekit*.py --select F,E9
           python -m compileall -q michiflin state_backup.py bot.py tools/local_gguf_health.py tools/build_manual.py tools/clean_owner_identity.py tools/github_native_guard.py tools/cutover_identity_once.py tools/profile_carryover_once.py tools/export_owner_history_once.py tools/restore_owner_history.py tools/retire_legacy_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_summary_inline.py tests/test_inline_answer.py tests/test_inline_answer_browser.py tests/test_fair_local_ai.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_clean_owner_identity.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_human_browser.py tests/test_graphical_saved.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py tests/test_weather_home.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_translation_fallback.py tests/test_translation_ui.py tests/test_premium_ui.py tests/test_email_key_recovery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py tests/test_filekit*.py
+          ruff check tests/test_mobile_library*.py tools/deliver_owner_refresh.py tools/lightweight_recovery.py --select F,E9
+          python -m compileall -q tests/test_mobile_library_backend.py tests/test_mobile_library_browser.py tools/deliver_owner_refresh.py tools/lightweight_recovery.py
           node tests/coder_history.js
           node tests/live_web.js
           for file in webxdc/*.js; do node --check "$file"; done

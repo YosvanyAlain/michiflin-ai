@@ -322,15 +322,21 @@ UNITS: dict[str, tuple[str, float]] = {
     "m2": ("area", 1.0), "km2": ("area", 1e6), "ha": ("area", 10_000.0), "hectarea": ("area", 10_000.0), "hectárea": ("area", 10_000.0), "acre": ("area", 4046.8564224),
     "caballeria": ("area", 134_202.0), "caballería": ("area", 134_202.0), "caballerias": ("area", 134_202.0),
 }
+UNITS.update({"kib": ("data", 1024.0), "mib": ("data", 1024.0**2), "gib": ("data", 1024.0**3),
+              "s": ("duration", 1.0), "min": ("duration", 60.0), "h": ("duration", 3600.0), "day": ("duration", 86400.0)})
 TEMPERATURES = {"c": "c", "°c": "c", "celsius": "c", "f": "f", "°f": "f", "fahrenheit": "f", "k": "k", "kelvin": "k"}
 _CONVERT = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s*([^\s\d]+)\s+(?:a|en|to|in)\s+([^\s]+)\s*$", re.I)
 
 
 def convert(value: float, source: str, target: str) -> float | None:
+    if not math.isfinite(value):
+        return None
     source, target = source.lower(), target.lower()
     if source in TEMPERATURES and target in TEMPERATURES:
         a, b = TEMPERATURES[source], TEMPERATURES[target]
         celsius = value if a == "c" else (value - 32) * 5 / 9 if a == "f" else value - 273.15
+        if celsius < -273.15000001:
+            return None
         return celsius if b == "c" else celsius * 9 / 5 + 32 if b == "f" else celsius + 273.15
     first, second = UNITS.get(source), UNITS.get(target)
     if not first or not second or first[0] != second[0]:

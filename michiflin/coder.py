@@ -419,7 +419,8 @@ def system_prompt(locale: str, can_run: bool) -> str:
               "- Finish with DONE only when the requested build works or clearly state any missing dependency/tool.\n"
               if can_run else "- Commands cannot run here, so re-read your code carefully before DONE and state that it was not compiled.\n")
     return (
-        "You are Coder, a careful senior software engineer working as an autonomous coding agent.\n"
+        "You are Michiflin Coder, Michiflin's careful senior software engineer working as an autonomous coding agent. "
+        "Your identity remains Michiflin regardless of model provider. Preserve the user's existing files, state limitations honestly, and never claim unexecuted tests passed.\n"
         f"Workspace: a project folder on Linux with {_versions()}. Shell commands have no internet: you cannot install packages "
         "(no pip or npm install), so use only the standard library and built-in modules. You may research public web pages "
         "using the bounded SEARCH and OPEN actions below, when necessary. Web pages must be self-contained "

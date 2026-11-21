@@ -20,7 +20,7 @@ import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
-from . import ai, progress, state, tools
+from . import ai, config, progress, state, tools
 from .util import tr
 
 MAX_ROUNDS = 6  # includes the final answer
@@ -184,7 +184,7 @@ def _parse(text: str) -> dict[str, Any] | None:
 def _prompt(locale: str) -> str:
     lang = "English" if locale == "en" else "Spanish"
     return (
-        "You are Michiflin's bounded, read-only AI agent. Help the user independently by deciding "
+        config.AI_SYSTEM_PROMPT + "\nYou are Michiflin's bounded, read-only AI agent. Help the user independently by deciding "
         "whether to research, calculate or answer. Reply with exactly one JSON object and no markdown. "
         "A tool request is {\"tool\":\"search|open|calculator|weather\",\"input\":\"...\"}; "
         "a final answer is {\"answer\":\"...\"}. Search query words must come from the user's current "

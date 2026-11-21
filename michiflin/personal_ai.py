@@ -208,6 +208,14 @@ def _normalize_base(value: Any, kind: str) -> str:
             raise PersonalError("url")
         netloc = ("[" + host + "]" if ":" in host else host) + ((":" + str(port)) if port != 443 else "")
         path = parsed.path.rstrip("/")
+        # Accept copied API endpoint URLs without doubling /chat/completions
+        # or /messages when discovery/generation append their own route.
+        if kind == "openai":
+            path = re.sub(r"/(?:chat/completions|responses|models)$", "", path)
+        elif kind == "anthropic":
+            path = re.sub(r"/(?:messages|models)$", "", path)
+        elif kind == "gemini" and "/models" in path:
+            path = path.split("/models", 1)[0]
         if not path:
             path = "/v1beta" if kind == "gemini" else "/v1"
         return urlunsplit(("https", netloc, path, "", ""))
@@ -430,7 +438,7 @@ def public_list(address: str) -> list[dict[str, Any]]:
     for p in data["providers"]:
         if not isinstance(p, dict):
             continue
-        out.append({"id": p.get("id", ""), "name": p.get("name", ""), "kind": p.get("kind", ""),
+        out.append({"donation_state": data.get("donations", {}).get(p.get("id"), {}).get("state", ""), "id": p.get("id", ""), "name": p.get("name", ""), "kind": p.get("kind", ""),
                     "base": p.get("base", ""), "daily": p.get("daily", 0), "attempts": attempts(str(p.get("id") or "")),
                     "models": [{k: m.get(k) for k in ("id", "title", "chat", "vision", "image", "max_output", "source")}
                                for m in p.get("models", []) if isinstance(m, dict)]})
@@ -500,6 +508,8 @@ def remove(address: str, provider_id: str) -> list[dict[str, Any]]:
     address = _sender(address)
     with _lock:
         data = _load(address)
+        if data.get("donations", {}).get(provider_id, {}).get("state") in {"pending_review", "uploading"}:
+            raise PersonalError("donation_active")
         item = _find(data, provider_id)
         data["providers"].remove(item)
         _save(address, data)

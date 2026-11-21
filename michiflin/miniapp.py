@@ -36,7 +36,7 @@ log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
-    "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
+    "utilities.js", "books.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
     "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
@@ -93,6 +93,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
         return False
     if value == app_build():
         return True
+    mobile_previous = app_compat.mobile_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if mobile_previous and value == mobile_previous:
+        return True
     previous_current = app_compat.pre_refresh_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if previous_current and value == previous_current:
         return True
@@ -115,6 +118,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
+    mobile_previous = app_compat.mobile_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if mobile_previous and value == mobile_previous:
+        return True
     previous_current = app_compat.pre_refresh_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     audit_base = app_compat.audit_base_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     published = app_compat.published_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
@@ -765,7 +771,7 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
     _send_status(instance_id, {"t": "ack", "re": rid})
 
 
-WORK_OPS = {"ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
+WORK_OPS = {"books", "ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
             "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
@@ -1570,6 +1576,13 @@ def op_personal_ai(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     try:
         if action == "status":
             return {"providers": personal_ai.public_list(address)}
+        if action == "donate":
+            from . import api_donations
+            return {**api_donations.donate(address, _clean(args.get("provider"))[:100], consent=args.get("consent"),
+                version=args.get("consent_version"), daily=args.get("daily")), "providers": personal_ai.public_list(address)}
+        if action == "revoke_donation":
+            from . import api_donations
+            return {**api_donations.revoke(address, _clean(args.get("provider"))[:100]), "providers": personal_ai.public_list(address)}
         if action == "handshake":
             return personal_ai.handshake(address)
         if action == "add":
@@ -1589,6 +1602,12 @@ def op_personal_ai(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     except (personal_ai.PersonalError, OSError) as exc:
         code = str(exc) if isinstance(exc, personal_ai.PersonalError) else "vault"
         messages = {
+            "donation_active": ("Retira primero la aportación de esta API para poder eliminarla.", "Withdraw this API donation before deleting it."),
+            "consent_required": ("Se requiere consentimiento expreso y un límite válido; no se donó ninguna clave.", "Explicit consent and a valid limit are required; no key was donated."),
+            "donation_private_repo": ("El repositorio de destino no está comprobado como privado; no se subió la clave.", "The destination repository is not verified private; the key was not uploaded."),
+            "donation_unavailable": ("El almacenamiento privado de aportes no está configurado.", "Private donation storage is not configured."),
+            "donation_storage": ("No se pudo confirmar el almacenamiento o retiro privado. La clave no se publica en código ni registros.", "Private storage or withdrawal could not be confirmed. Keys are not published in code or logs."),
+            "donation_verification": ("No se pudo verificar la copia cifrada; la API no se activó.", "The encrypted copy could not be verified; the API was not activated."),
             "key_unavailable": ("El servidor no tiene una WEB_SESSION_KEY estable y segura; no se guardó la clave.",
                                 "The server lacks a stable, secure WEB_SESSION_KEY; the key was not stored."),
             "vault": ("No se pudo abrir o guardar la bóveda cifrada.", "Could not open or save the encrypted vault."),
@@ -2352,3 +2371,31 @@ def op_admin(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         message = tr(locale, "Ya hay una prueba en marcha.", "A test is already running.") if result.get("busy") else tr(locale, "Prueba terminada.", "Test finished.")
     return admin.snapshot() | {"usage": usage.report(), "perf": perf.snapshot(), "maintenance_notice": maintenance.get(), "message": message.replace("🔄 ", "").replace("⚠️ ", "")}
 
+
+
+@op("youtube_thumbs")
+def op_youtube_thumbs(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    from .public_media import youtube_thumbnails
+    try:
+        return youtube_thumbnails(args.get("ids"), str(args.get("quality") or "low"))
+    except ValueError:
+        raise AppError(tr(locale, "Miniaturas no disponibles.", "Thumbnails unavailable.")) from None
+
+
+@op("books")
+def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    from . import book_library, public_media
+    action = str(args.get("do") or "search")
+    try:
+        if action == "search":
+            return book_library.search(str(args.get("source") or "gutenberg"), _clean(args.get("q"))[:200], args.get("page", 1), str(args.get("language") or "")[:5])
+        if action == "archive_files":
+            return {"downloads": book_library.archive_download(str(args.get("id") or ""))}
+        if action == "download":
+            return book_library.reading_copy(str(args.get("url") or ""), str(args.get("format") or ""))
+        if action == "cover":
+            return {"data": public_media.image_data(str(args.get("url") or ""), "low", cover=True)}
+        raise ValueError("action")
+    except Exception:
+        raise AppError(tr(locale, "No se pudo leer la fuente o el libro. Puede no estar disponible, protegido o superar el límite de tamaño.",
+                          "The source or book could not be read. It may be unavailable, protected or exceed the size limit.")) from None

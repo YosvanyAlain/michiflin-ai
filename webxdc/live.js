@@ -8,12 +8,7 @@ function liveSite(value) {
   if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443")) throw new Error("bad_url");
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   const matches = (domain) => host === domain || host.endsWith("." + domain);
-  const groups = [
-    ["youtube", ["youtube.com", "youtu.be", "youtube-nocookie.com"]], ["facebook", ["facebook.com", "fb.watch"]],
-    ["tiktok", ["tiktok.com"]], ["instagram", ["instagram.com"]], ["deepseek", ["deepseek.com"]],
-    ["arena", ["arena.ai"]], ["zai", ["z.ai"]],
-  ];
-  for (const [name, domains] of groups) if (domains.some(matches)) return name;
+  if (["youtube.com", "youtu.be", "youtube-nocookie.com"].some(matches)) return "youtube";
   return "host:" + host;
 }
 

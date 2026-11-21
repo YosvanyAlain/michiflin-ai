@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Michiflin AI</title>
+<link rel="stylesheet" href="app.css">
+<script src="webxdc.js"></script>
+</head>
+<body>
+<div id="splash" aria-hidden="true">
+  <div class="splash-track">
+    <span class="splash-runner"></span>
+    <svg class="splash-yarn" viewBox="0 0 50 50"><path d="M24 39q19 8 24-3"/><circle cx="23" cy="24" r="16"/><path d="M12 13q21 2 25 18M8 24q21-10 29 3M12 35q-1-18 17-26M20 39q-3-17 15-27"/></svg>
+  </div>
+  <div class="splash-name"><span>Michiflin</span> <b>AI</b></div>
+  <div class="load"><i></i></div>
+</div>
+<div id="app" class="shell">
+  <nav id="rail" class="rail"></nav>
+  <div class="stage">
+    <header class="top">
+      <button id="back" class="icon-btn" hidden></button>
+      <h1 id="title"></h1>
+      <span id="activity" class="activity" hidden></span>
+      <button id="gear" class="icon-btn"></button>
+    </header>
+    <main id="view"></main>
+  </div>
+  <nav id="tabs" class="tabs"></nav>
+</div>
+<div id="sheet" class="sheet" hidden></div>
+<div id="toasts" class="toasts"></div>
+<script src="i18n.js"></script>
+<script src="core.js"></script>
+<script src="qr.js"></script>
+<script src="mp4.js"></script>
+<script src="brands.js"></script>
+<script src="filekit-store.js"></script>
+<script src="vendor/noble/filekit-crypto.js"></script>
+<script src="filekit-join.js"></script>
+<script src="filekit.js"></script>
+<script src="app.js"></script>
+<script src="live.js"></script>
+<script src="coder.js"></script>
+</body>
+</html>

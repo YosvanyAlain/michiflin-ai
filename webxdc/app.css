@@ -430,7 +430,7 @@ button.chip:active { transform: scale(0.96); }
 .hero h2 { margin: 0 0 6px; font-size: 24px; }
 .hero p { margin: 0; opacity: 0.92; max-width: 36ch; }
 .hero-art .ic { width: 86px; height: 86px; stroke: rgba(255, 255, 255, 0.9); stroke-width: 1.2; animation: float 5s ease-in-out infinite; }
-.hero-art circle { fill: var(--amber); stroke: none; }
+.hero-art .ic circle { fill: var(--amber); stroke: none; }
 .link-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
 .link-card > * + * { margin-top: 0; }
 .link-card small { display: block; color: var(--muted); }
@@ -471,7 +471,7 @@ details summary { display: flex; align-items: center; gap: 10px; list-style: non
 details summary::-webkit-details-marker { display: none; }
 details summary > .ic:first-child { color: var(--accent); }
 .caret { margin-left: auto; transition: transform 0.25s; color: var(--muted); }
-details[open] .caret { transform: rotate(180deg); }
+details[open] > summary > .caret { transform: rotate(180deg); }
 
 /* AI */
 .space-card { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
@@ -982,7 +982,7 @@ details[open] .caret { transform: rotate(180deg); }
 .rate-about summary, .rate-history-table summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
 .rate-about summary { padding: 15px; }
 .rate-about summary .caret, .rate-history-table summary .caret { margin-left: auto; }
-.rate-about[open] summary .caret, .rate-history-table[open] summary .caret { transform: rotate(180deg); }
+.rate-about[open] > summary > .caret, .rate-history-table[open] > summary > .caret { transform: rotate(180deg); }
 .rate-about > .stack { padding: 0 15px 15px; }
 .rate-about p { margin: 0; color: var(--muted); font-size: 13.5px; }
 .rate-source-url { display: block; color: var(--muted); overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
@@ -1493,7 +1493,7 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .fold-head .caret { margin-left: 0; }
 .fold > .fold-body { display: none; }
 .fold.open > .fold-body { display: block; }
-.fold.open .fold-head .caret { transform: rotate(180deg); }
+.fold.open > .fold-head > .caret { transform: rotate(180deg); }
 
 
 /* Creator Studio family: deliberate hierarchy, quiet surfaces, local artwork.
@@ -1652,3 +1652,41 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .home-carousel { position: relative; }
 .home-banner-measure { position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; z-index: -1; }
 .home-banner-measure * { animation: none !important; transition: none !important; }
+
+.home-brand-mark img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+
+/* Mobile discovery is persistent rather than a toast that can be missed. */
+.scroll-discovery { position: fixed; z-index: 38; bottom: calc(76px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; gap: 7px; align-items: center; padding: 8px 13px; border: 1px solid var(--border); border-radius: 24px; background: var(--surface); color: var(--accent); box-shadow: var(--shadow-1); font: inherit; font-size: 12px; white-space: nowrap; }
+.scroll-discovery[hidden] { display: none; }
+.pending-compact-list { display: flex; flex-direction: column; gap: 4px; max-height: 52dvh; overflow-y: auto; }
+.pending-compact-row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.pending-compact-row b { display: block; font-size: 13px; }
+.pending-compact-row small { font-size: 11px; }
+.pending-compact-row .icon-btn { width: 44px; height: 44px; min-height: 44px; }
+.pending-diagnostics { font-size: 12px; margin-top: 8px; }
+.pending-diagnostics > summary, .image-model-picker > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.image-model-picker > .chips { margin-top: 12px; }
+@media (min-width: 900px) { .scroll-discovery { bottom: 20px; } }
+
+.local-tool-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow: auto; font-size: 13px; }
+
+.video-preview { min-width: 104px; min-height: 72px; overflow: hidden; }
+.video-preview img { width: 100%; height: 100%; max-height: 180px; object-fit: cover; }
+
+.book-shelf { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 12px; align-items: stretch; }
+.book-card { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px; }
+.book-cover { width: 100%; aspect-ratio: 2/2.6; display: grid; place-items: center; background: var(--accent-soft); border-radius: 8px; overflow: hidden; }
+.book-cover .ic { width: 42px; height: 42px; color: var(--accent); }
+.book-cover img { width: 100%; height: 100%; object-fit: contain; }
+.book-title { font-size: 14px; line-height: 1.35; margin: 0; overflow-wrap: anywhere; }
+.book-card > p { margin: 0; }
+.book-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; padding-top: 5px; }
+.book-actions .btn { flex: 1; min-width: 0; padding-inline: 8px; }
+.book-reader-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; position: sticky; top: 0; background: var(--bg); padding: 8px 0; z-index: 2; }
+.book-reading { max-width: 760px; margin: auto; font-size: clamp(17px, 2.2vw, 21px); line-height: 1.8; overflow-wrap: anywhere; user-select: text; }
+.book-reading p { margin: 0 0 1em; white-space: pre-wrap; }
+
+.brand-label { font-size: 8px; font-weight: 750; line-height: 1.1; text-align: center; overflow-wrap: anywhere; padding: 2px; background: var(--accent-soft); color: var(--text); }
+.local-tool-card > summary { display: flex; gap: 8px; align-items: center; }
+
+.mascot-glasses circle { stroke: #4d7e79; stroke-width: 2.5; }

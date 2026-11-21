@@ -183,6 +183,9 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     info = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
     kind = getattr(info, "chat_type", "")
     if str(getattr(kind, "value", kind)) != "Single":
+        if str(getattr(kind, "value", kind)) == "Group":
+            from . import group_tools
+            group_tools.offer(bot, accid, msg, info)
         return None
     text = (msg.text or "").strip()
     if not text and not getattr(msg, "file", None):
@@ -433,8 +436,9 @@ def _start_cursor(bot: Any, accid: int) -> None:
 # Graceful stop: work in progress finishes, outgoing mail leaves, state is saved, then the core stops.
 # ---------------------------------------------------------------------------
 def _busy() -> int:
+    from . import group_tools
     with _intake_lock:
-        return len(_chat_busy)
+        return len(_chat_busy) + group_tools.busy()
 
 
 _stopped = threading.Event()

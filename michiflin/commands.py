@@ -587,7 +587,7 @@ def cmd_ai(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     chat.text(chat_id, agent.ask(chat_id, text, locale))
 
 
-@command("image", "imagen", "image", "dibuja", "draw")
+@command("image", "imagen", "dibuja", "draw")
 def cmd_image(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     text = _text(args, rest)
     if not text:
@@ -1045,7 +1045,7 @@ def cmd_kill_switch(chat_id: int, args: list[str], rest: str, locale: str) -> No
 # ---------------------------------------------------------------------------
 # F1: One-line health summary
 # ---------------------------------------------------------------------------
-@command("estado", "status", "ping")
+@command("estado", "status")
 def cmd_estado(chat_id: int, args: list[str], rest: str, locale: str) -> None:
     address = chat.sender()
     active = queue.active_count()

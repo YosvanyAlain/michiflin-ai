@@ -133,4 +133,8 @@ def unlinked(value: str) -> str:
 
 
 def strip_thinking(text: str) -> str:
-    return re.sub(r"(?is)<think>.*?</think>", "", text or "").strip()
+    value = text or ""
+    # A token-limited reasoning prefix is not a final answer or executable code.
+    if value.lstrip().lower().startswith("<think>") and "</think>" not in value.lower():
+        return ""
+    return re.sub(r"(?is)<think>.*?</think>", "", value).strip()

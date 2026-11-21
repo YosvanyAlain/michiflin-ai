@@ -229,6 +229,7 @@ function render(scroll = 0) {
   visibleNoticeCheck = null;
   const revision = ++renderRevision;
   FileKitUI.stop();
+  if (window.BookShelf) window.BookShelf.stopSpeech();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
   // Direct navigation can also open an unread result. Resolve just one; a
@@ -239,7 +240,7 @@ function render(scroll = 0) {
   }
   bus.local = [];
   $("#title").classList.toggle("home-title", current.view === "home");
-  fill($("#title"), current.view === "home" ? h("span", { class: "home-brand-mark", "aria-hidden": "true" }, icon("cat")) : null,
+  fill($("#title"), current.view === "home" ? h("span", { class: "home-brand-mark", "aria-hidden": "true" }, h("img", { src: BOT_PORTRAIT, alt: "" })) : null,
     definition.title(current.params));
   $("#back").hidden = trail.length === 0;
   const tab = definition.tab || current.view;
@@ -305,18 +306,23 @@ function opLabel(op) {
 }
 
 function pendingSheet() {
-  const pending = bridge.pending();
-  const rows = Object.entries(pending).sort((a, b) => b[1].ts - a[1].ts).map(([id, meta]) =>
-    h("div", { class: "list-row" },
-      h("i", { class: "spinner" }),
-      h("div", { class: "grow" }, h("b", {}, opLabel(meta.op)), h("small", { class: "muted" }, ...pendingState(meta))),
-      meta.p ? h("button", { class: "icon-btn tiny", title: t("retry"), "aria-label": t("retry"), onclick: () => { if (bridge.resend(id)) toast(t("retry_sent"), "ok"); closeSheet(); } }, icon("refresh")) : null,
-      h("button", { class: "icon-btn tiny", title: t("cancel"), "aria-label": t("cancel"), onclick: () => { bridge.forget(id); closeSheet(); } }, icon("close"))));
-  openSheet(t("pending_title"), [
-    h("p", { class: "muted small" }, t("pending_hint")),
-    rows.length ? rows : h("p", { class: "empty" }, t("pending_none")),
-    syncTools(closeSheet),
-  ]);
+  const entries = Object.entries(bridge.pending()).sort((a, b) => b[1].ts - a[1].ts);
+  let limit = 6;
+  const rows = h("div", { class: "pending-compact-list" });
+  const more = h("button", { class: "btn ghost small wide", onclick: () => { limit += 6; draw(); } }, t("pending_more"));
+  const draw = () => {
+    fill(rows, ...entries.slice(0, limit).map(([id, meta]) => h("div", { class: "pending-compact-row" },
+      h("i", { class: "spinner" }), h("div", { class: "grow" }, h("b", {}, opLabel(meta.op)),
+        h("small", { class: "muted" }, ...pendingState(meta))),
+      meta.p ? iconButton("refresh", t("retry"), () => { if (bridge.resend(id)) toast(t("retry_sent"), "ok"); closeSheet(); }) : null,
+      iconButton("close", t("cancel"), () => { bridge.forget(id); closeSheet(); }))));
+    more.hidden = entries.length <= limit;
+  };
+  draw();
+  openSheet(t("pending_title") + " · " + entries.length, [rows,
+    entries.length ? more : h("p", { class: "empty" }, t("pending_none")),
+    h("details", { class: "pending-diagnostics" }, h("summary", {}, t("pending_advanced"), icon("down", "caret")),
+      h("p", { class: "muted small" }, t("pending_hint")), syncTools(closeSheet))]);
 }
 
 // Repair tools: shown in the pending sheet and in Settings, so a stuck sync never needs a deleted chat.
@@ -1237,6 +1243,7 @@ const TILES = [
   ["weather", "tile_weather", "weather"],
   ["news", "tile_news", "news"],
   ["tools", "tile_tools", "tools"],
+  ["file", "tile_books", "books"],
   ["health", "tile_health", "health"],
   ["notes", "tile_notes", "notes"],
 ];
@@ -1952,11 +1959,35 @@ VIEWS.personal_ai = {
       } catch (error) { key.value = ""; if (!error.cancelled) toast(error.message, "bad"); }
       finally { addButton.disabled = false; }
     } }, icon("plus"), t("personal_add"));
-    add(form, h("label", { class: "stack small" }, t("personal_name"), name),
-      h("label", { class: "stack small" }, t("personal_url"), base),
-      h("label", { class: "stack small" }, t("personal_protocol"), kind),
-      h("label", { class: "stack small" }, t("personal_key"), key),
-      h("label", { class: "stack small" }, t("personal_daily"), daily), addButton);
+    const presets = [
+      ["custom", "Otro / OpenAI-compatible", "", "auto"], ["openai", "OpenAI", "https://api.openai.com/v1", "openai"],
+      ["gemini", "Google Gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini"],
+      ["anthropic", "Anthropic", "https://api.anthropic.com/v1", "anthropic"],
+      ["openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openai"],
+      ["groq", "Groq", "https://api.groq.com/openai/v1", "openai"],
+      ["mistral", "Mistral", "https://api.mistral.ai/v1", "openai"],
+      ["deepseek", "DeepSeek", "https://api.deepseek.com/v1", "openai"],
+      ["xai", "xAI", "https://api.x.ai/v1", "openai"],
+      ["together", "Together AI", "https://api.together.xyz/v1", "openai"],
+      ["fireworks", "Fireworks AI", "https://api.fireworks.ai/inference/v1", "openai"],
+      ["cerebras", "Cerebras", "https://api.cerebras.ai/v1", "openai"],
+      ["sambanova", "SambaNova", "https://api.sambanova.ai/v1", "openai"]
+    ];
+    const advanced = h("details", { class: "personal-advanced", open: true },
+      h("summary", {}, lang() === "en" ? "Endpoint, protocol and local limit" : "Dirección, protocolo y límite local", icon("down", "caret")),
+      h("div", { class: "stack" }, h("label", {}, t("personal_name"), name),
+        h("label", {}, t("personal_url"), base), h("label", {}, t("personal_protocol"), kind),
+        h("label", {}, t("personal_daily"), daily)));
+    const preset = select("custom", presets.map(item => [item[0], item[1]]), value => {
+      const choice = presets.find(item => item[0] === value);
+      name.value = value === "custom" ? "" : choice[1]; base.value = choice[2]; protocol = choice[3]; kind.value = protocol;
+      advanced.open = value === "custom";
+    });
+    add(form, h("label", { class: "stack small" }, lang() === "en" ? "1 · Choose your provider" : "1 · Elige tu proveedor", preset),
+      h("label", { class: "stack small" }, lang() === "en" ? "2 · Paste your private API key" : "2 · Pega tu clave API privada", key),
+      advanced, h("p", { class: "muted small" }, lang() === "en" ?
+        "Model discovery reads metadata, not paid test generations. Capabilities may need manual configuration. Provider prices and limits still apply." :
+        "El descubrimiento lee metadatos, no genera contenido de prueba con cobro. Algunas capacidades requieren configuración manual. Siguen aplicando los precios y límites del proveedor."), addButton);
 
     const perform = async (args, button) => {
       if (button) button.disabled = true;
@@ -1999,6 +2030,37 @@ VIEWS.personal_ai = {
         name: label.value.trim(), daily: Number(limit.value || 0) }, save) }, icon("check"), t("personal_save"));
       const refresh = h("button", { class: "btn ghost", onclick: () => perform({ do: "refresh", provider: provider.id }, refresh) },
         icon("refresh"), t("personal_refresh"));
+      const contributed = ["pending_review", "uploading"].includes(provider.donation_state);
+      const donate = h("button", { class: "btn ghost", onclick: () => {
+        const es = lang() !== "en";
+        if (contributed) return (async () => {
+          if (await confirmBox(es ? "Retirar aportación" : "Withdraw donation", es ?
+            "Se eliminará la copia cifrada del repositorio privado. Tu proveedor personal se conserva. Para invalidar copias ya vistas, revoca o rota la clave también en el proveedor." :
+            "The encrypted private-repository copy will be deleted. Your personal provider remains. Revoke or rotate the key at the provider to invalidate any previously viewed copy.", t("confirm")))
+            await perform({ do: "revoke_donation", provider: provider.id }, donate);
+        })();
+        const consent = h("input", { type: "checkbox" });
+        const limit = field({ type: "number", min: 1, max: 1000, value: "20" });
+        const submit = h("button", { class: "btn primary", disabled: true, onclick: async () => {
+          if (!consent.checked) return;
+          const dailyLimit = Number(limit.value);
+          if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 1000) return;
+          if (!await confirmBox(es ? "Confirmar donación voluntaria" : "Confirm voluntary donation", es ?
+            "Autorizas compartir esta clave con el dueño del bot para su revisión. No es necesario donar para usar tu API personal." :
+            "You authorize sharing this key with the bot owner for review. Donation is not required to use your personal API.", t("confirm"))) return;
+          closeSheet();
+          await perform({ do: "donate", provider: provider.id, consent: true, consent_version: "api-donation-v1", daily: dailyLimit }, donate);
+        } }, es ? "Donar voluntariamente" : "Donate voluntarily");
+        consent.addEventListener("change", () => { submit.disabled = !consent.checked; });
+        openSheet(es ? "Aportar API al bot · opcional" : "Contribute API to bot · optional", [
+          h("p", {}, es ? "La clave que ya guardaste se copiará cifrada a un repositorio comprobado como privado. El dueño del bot puede descifrarla. Nunca se publicará en código, registros ni grupos." :
+            "Your already-saved key will be copied, encrypted, to a repository verified private. The bot owner can decrypt it. It will never be published in code, logs or groups."),
+          h("p", { class: "note warn" }, es ? "Quedará pendiente de revisión, no activa automáticamente. Su uso futuro podría gastar tu saldo. El límite solicitado al bot no sustituye el presupuesto del proveedor. Crea una clave separada con tope de gasto y sin permisos administrativos." :
+            "It stays pending review, not automatically active. Future use could spend your balance. The requested bot limit does not replace the provider budget. Create a separate key with a spending cap and no administrative permissions."),
+          h("label", { class: "stack small" }, es ? "Límite diario solicitado para revisión" : "Requested daily limit for review", limit),
+          h("label", { class: "row" }, consent, es ? "Soy titular, sus términos permiten compartirla y consiento voluntariamente este uso. Puedo retirar el aporte y revocar la clave en el proveedor." :
+            "I own this key, its terms permit sharing, and I voluntarily consent. I can withdraw the donation and revoke the key at the provider."), submit]);
+      } }, lang() === "en" ? (contributed ? "Withdraw donation" : "Contribute API · optional") : (contributed ? "Retirar aporte" : "Aportar API · opcional"));
       const remove = h("button", { class: "btn ghost danger-text", onclick: async () => {
         if (await confirmBox(t("personal_remove"), t("personal_remove_body"), t("delete")))
           await perform({ do: "remove", provider: provider.id }, remove);
@@ -2008,7 +2070,7 @@ VIEWS.personal_ai = {
           t("personal_attempts", { n: provider.attempts })),
         h("label", { class: "stack small" }, t("personal_name"), label),
         h("label", { class: "stack small" }, t("personal_daily"), limit),
-        h("div", { class: "row wrap" }, save, refresh, remove),
+        h("div", { class: "row wrap" }, save, refresh, donate, remove),
         h("details", { class: "personal-models" }, h("summary", {}, t("personal_models", { n: (provider.models || []).length })), details));
     };
     function draw(providers) {
@@ -2382,12 +2444,25 @@ function imageSourceLabel(key) {
   return found ? found.label : t("img_auto");
 }
 
+function imageModelMark(source) {
+  const text = `${source.key || ""} ${source.label || ""}`.toLowerCase();
+  const name = /flux/.test(text) ? "flux" : /z.?image/.test(text) ? "zimage" :
+    /leonardo|lucid|phoenix/.test(text) ? "leonardo" : /sdxl|diffusion|dreamshaper|juggernaut|albedo/.test(text) ? "stability" : "";
+  const family = imageFamily(source);
+  if (!Object.prototype.hasOwnProperty.call(BRANDS, name))
+    return h("span", { class: "brand brand-label", title: source.label || family }, family);
+  const mark = brandMark(name);
+  mark.title = family;
+  return mark;
+}
+
 function imageFamily(source) {
   if (source.personal) return t("img_family_personal");
   const name = `${source.key || ""} ${source.label || ""}`.toLowerCase();
   if (/flux/.test(name)) return "FLUX";
   if (/sdxl|stable.diffusion|dreamshaper|juggernaut|albedo/.test(name)) return "Stable Diffusion";
   if (/z.?image/.test(name)) return "Z-Image";
+  if (/leonardo|lucid|phoenix/.test(name)) return "Leonardo AI";
   return t("img_family_other");
 }
 
@@ -2487,7 +2562,12 @@ VIEWS.images = {
     const drawQuotas = () => {
       const list = (cache.models && cache.models.images) || [];
       if (prefs.imageModel && !list.some((source) => source.key === prefs.imageModel)) prefs.imageModel = "";
-      const pick = (key) => { prefs.imageModel = key; savePrefs(); drawQuotas(); if (key.startsWith("horde:")) toast(t("img_horde_slow")); };
+      const selected = $("#image-model-selection"), identity = $("#image-model-identity");
+      if (selected) selected.textContent = t("choose_image_model", { name: imageSourceLabel(prefs.imageModel || "") });
+      if (identity) fill(identity, prefs.imageModel ? imageModelMark(list.find(source => source.key === prefs.imageModel) || {}) : icon("swap"));
+      const pick = (key) => { prefs.imageModel = key; savePrefs(); drawQuotas();
+        const picker = $(".image-model-picker"); if (picker) picker.open = false;
+        if (key.startsWith("horde:")) toast(t("img_horde_slow")); };
       const groups = new Map();
       for (const source of list) {
         const provider = source.key.split(":")[0];
@@ -2508,7 +2588,7 @@ VIEWS.images = {
           const providerNames = { cf: "Cloudflare", hf: "Hugging Face", ovh: "OVHcloud", horde: "AI Horde", pollinations: "Pollinations" };
           const providerName = providerNames[provider] || (sources[0].personal ? String(sources[0].label || "").split(" · ")[0] : provider.toUpperCase());
           return h("details", { class: "card image-provider wide" },
-            h("summary", {}, icon("image"), h("b", { class: "grow" }, providerName), h("small", { class: "muted" }, modelCount(sources.length)), icon("down", "caret")),
+            h("summary", {}, brandMark(({ cf: "cloudflare", hf: "huggingface", ovh: "ovh", horde: "aihorde", pollinations: "pollinations" })[provider] || ""), h("b", { class: "grow" }, providerName), h("small", { class: "muted" }, modelCount(sources.length)), icon("down", "caret")),
             h("div", { class: "provider-body stack" }, [...families.entries()].map(([family, options]) =>
               h("details", { class: "image-family" },
                 h("summary", {}, h("b", { class: "grow" }, family), h("small", { class: "muted" }, modelCount(options.length)), icon("down", "caret")),
@@ -2516,7 +2596,7 @@ VIEWS.images = {
                   const resting = source.cooldown > now();
                   return h("button", { class: "model-choice", "aria-pressed": String(prefs.imageModel === source.key),
                     onclick: () => (resting ? toast(t("img_resting", { time: fmtTime(source.cooldown) }), "bad") : pick(source.key)) },
-                    icon("image"), h("span", { class: "grow" }, h("b", {}, source.label), h("small", { class: "muted" }, resting ? t("img_resting", { time: fmtTime(source.cooldown) }) :
+                    imageModelMark(source), h("span", { class: "grow" }, h("b", {}, source.label), h("small", { class: "muted" }, resting ? t("img_resting", { time: fmtTime(source.cooldown) }) :
                       (source.personal ? t("personal_model_badge") : t("local_used_of", { n: source.used, m: source.daily })))), prefs.imageModel === source.key ? icon("check") : null);
                 }))))));
         }),
@@ -2548,10 +2628,13 @@ VIEWS.images = {
     bus.on("images", draw);
     bus.on("models", drawQuotas);
     bus.on("quota", drawQuotas);
+    const picker = h("details", { class: "image-model-picker card" },
+      h("summary", {}, h("span", { id: "image-model-identity" }, icon("swap")), h("b", { class: "grow", id: "image-model-selection" }, t("choose_image_model", { name: imageSourceLabel(prefs.imageModel || "") })), icon("down", "caret")), quotas);
     add(main, contextHelp(t("image_sources_note")), card(area, h("div", { class: "row end" }, h("button", { class: "btn primary", onclick: () => {
       const prompt = area.value.trim();
-      if (prompt && createImage(prompt)) area.value = "";
-    } }, icon("image"), t("generate")))), failures, section(t("img_model"), quotas), waiting, section(t("gallery"), gallery));
+      if (prompt && createImage(prompt)) { area.value = ""; picker.open = false;
+        requestAnimationFrame(() => waiting.scrollIntoView({ block: "nearest", behavior: "smooth" })); }
+    } }, icon("image"), t("generate")))), picker, waiting, failures, section(t("gallery"), gallery));
     drawQuotas();
     draw();
   },
@@ -2753,9 +2836,53 @@ function youtubeUrl(value) {
   } catch (error) { return false; }
 }
 
+const youtubeThumbCache = new Map();
+let youtubeThumbQueue = [], youtubeThumbTimer = 0;
+function youtubeThumbnail(item) {
+  const art = h("div", { class: "video-art video-preview" }, icon("youtube"));
+  let identifier = "";
+  try { const u = new URL(item.url); identifier = u.hostname === "youtu.be" ? u.pathname.slice(1).split("/")[0] : u.searchParams.get("v") || u.pathname.split("/").pop(); } catch (_) {}
+  if (!/^[A-Za-z0-9_-]{11}$/.test(identifier)) return art;
+  art.dataset.videoId = identifier; art.dataset.videoTitle = item.title || "YouTube";
+  const quality = store.get("youtube.thumbnailQuality", "low"), key = identifier + ":" + quality;
+  const apply = (data) => { if (data && art.isConnected) fill(art, h("img", { src: data, alt: item.title || "YouTube", loading: "lazy", decoding: "async" })); };
+  const load = () => {
+    if (youtubeThumbCache.has(key)) return apply(youtubeThumbCache.get(key));
+    youtubeThumbQueue.push({ identifier, quality, key, apply });
+    clearTimeout(youtubeThumbTimer);
+    youtubeThumbTimer = setTimeout(flushYoutubeThumbnails, 100);
+  };
+  if (window.IntersectionObserver) {
+    const observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) { observer.disconnect(); load(); } }, { root: $("#view"), rootMargin: "80px" });
+    observer.observe(art);
+  } else setTimeout(load, 0);
+  return art;
+}
+async function flushYoutubeThumbnails() {
+  const queue = youtubeThumbQueue.splice(0);
+  for (const quality of ["low", "medium", "high"]) {
+    const selected = queue.filter(item => item.quality === quality);
+    const ids = [...new Set(selected.map(item => item.identifier))];
+    for (let offset = 0; offset < ids.length; offset += 6) {
+      const batch = ids.slice(offset, offset + 6);
+      try {
+        const result = await bridge.call("youtube_thumbs", { ids: batch, quality });
+        for (const image of result.images || []) {
+          const key = image.id + ":" + quality;
+          if (typeof image.data === "string" && image.data.startsWith("data:image/jpeg;base64,")) {
+            youtubeThumbCache.set(key, image.data);
+            while (youtubeThumbCache.size > 72) youtubeThumbCache.delete(youtubeThumbCache.keys().next().value);
+            selected.filter(item => item.identifier === image.id).forEach(item => item.apply(image.data));
+          }
+        }
+      } catch (_) { /* A missing thumbnail never hides the video or its actions. */ }
+    }
+  }
+}
+
 function youtubeCard(item, audioOnly = false) {
   return h("article", { class: "card video" },
-    h("div", { class: "video-art" }, icon(audioOnly ? "audio" : "youtube")),
+    audioOnly ? h("div", { class: "video-art" }, icon("audio")) : youtubeThumbnail(item),
     h("div", { class: "video-body" }, h("b", {}, plain(item.title)),
       h("small", { class: "muted" }, [item.source || "YouTube", item.snippet, item.date].filter(Boolean).join(" · ")),
       h("div", { class: "chips" },
@@ -2859,6 +2986,13 @@ VIEWS.youtube = {
     add(main, h("div", { class: "search-field" }, icon("youtube"), input,
       h("button", { class: "btn primary small", onclick: submit }, t("go"))),
       h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
+    add(main, h("label", { class: "row small" }, t("yt_quality"), select(store.get("youtube.thumbnailQuality", "low"),
+      [["low", t("quality_low")], ["medium", t("quality_medium")], ["high", t("quality_high")]], quality => {
+        store.set("youtube.thumbnailQuality", quality);
+        document.querySelectorAll(".video-preview[data-video-id]").forEach(node => {
+          node.replaceWith(youtubeThumbnail({ url: "https://youtu.be/" + node.dataset.videoId, title: node.dataset.videoTitle }));
+        });
+      })));
     if (params.q) youtubePages(box, params.q, false, params.resultPage || 1);
     else add(box, empty(t("youtube_hint"), "youtube"));
   },
@@ -3422,7 +3556,7 @@ VIEWS.tools = {
   render(main, params) {
     const args = params.tool && typeof params.arg === "string" ? { name: params.tool, arg: params.arg } : null;
     const last = args ? { name: args.name, args, key: "tool" + JSON.stringify(args) } : store.get("tool.last", null);
-    add(main, h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
+    add(main, window.LocalUtilities.mount(), h("p", { class: "muted small" }, t("utilities_hint")), ...UTILITIES.map(([name, iconName, title, hint]) => {
       const box = h("div");
       if (last && last.name === name && last.args && (last.key === baseResultKey(openingNoticeKey) || resultMemoHas(last.key) || savedResult(last.key) || resultPending(last.key))) {
         fetchView(box, "tool", last.args, (data) => fill(box, card(rich(data.text, hooksFor()))));
@@ -4355,3 +4489,28 @@ function boot() {
 }
 
 boot();
+
+
+(function installScrollDiscovery() {
+  const view = $("#view");
+  const cue = h("button", { id: "scroll-discovery", class: "scroll-discovery", hidden: true,
+    type: "button", onclick: () => view.scrollBy({ top: Math.max(160, view.clientHeight * .72),
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" }) }, icon("down"), h("span", {}, t("more_below")));
+  document.body.append(cue);
+  let frame = 0;
+  const update = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
+    cue.hidden = current.view === "live_web" || view.scrollHeight - view.clientHeight - view.scrollTop < 36;
+    cue.querySelector("span").textContent = t("more_below");
+  }); };
+  view.addEventListener("scroll", update, { passive: true });
+  view.addEventListener("toggle", update, true);
+  window.addEventListener("resize", update);
+  new MutationObserver(update).observe(view, { childList: true, subtree: true });
+  if (window.ResizeObserver) new ResizeObserver(update).observe(view);
+  update();
+})();
+
+VIEWS.books = {
+  tab: "apps", title: () => t("tile_books"),
+  render(main, params) { window.BookShelf.mount(main, params); }
+};

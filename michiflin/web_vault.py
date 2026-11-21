@@ -45,18 +45,8 @@ def site_of(url: str) -> str:
     if not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in host.split(".")):
         raise VaultError("bad_url")
     # The same service may use its canonical, mobile or short video hostname.
-    groups = {
-        "youtube": ("youtube.com", "youtu.be", "youtube-nocookie.com"),
-        "facebook": ("facebook.com", "fb.watch"),
-        "tiktok": ("tiktok.com",),
-        "instagram": ("instagram.com",),
-        "deepseek": ("deepseek.com",),
-        "arena": ("arena.ai",),
-        "zai": ("z.ai",),
-    }
-    for name, domains in groups.items():
-        if any(host == domain or host.endswith("." + domain) for domain in domains):
-            return name
+    if any(host == domain or host.endswith("." + domain) for domain in ("youtube.com", "youtu.be", "youtube-nocookie.com")):
+        return "youtube"
     # Generic websites are separated by exact hostname. Two unrelated hosts
     # must not be grouped by an improvised public-suffix calculation.
     return "host:" + host
@@ -110,6 +100,19 @@ def load(owner: str, site: str) -> dict[str, Any] | None:
     target = _path(owner, site)
     try:
         if not target.is_file():
+            # One-time migration only: the new UI has no promoted site aliases.
+            legacy_domains = {"facebook.com": "facebook", "fb.watch": "facebook", "tiktok.com": "tiktok",
+                              "instagram.com": "instagram", "deepseek.com": "deepseek", "arena.ai": "arena", "z.ai": "zai"}
+            host = site[5:] if site.startswith("host:") else ""
+            legacy = next((name for domain, name in legacy_domains.items() if host == domain or host.endswith("." + domain)), "")
+            if legacy:
+                previous = load(owner, legacy)
+                if previous is not None:
+                    save(owner, site, previous)
+                    if load(owner, site) != previous:
+                        raise VaultError("vault")
+                    _path(owner, legacy).unlink(missing_ok=True)
+                    return previous
             return None
         raw = target.read_bytes()
         if len(raw) > MAX_STATE_BYTES * 2:
