@@ -319,6 +319,7 @@ MODULES = {
     "mail_profiles.py": "Aplica perfiles de entrega verificados por buzón y límites de tamaño por parte.",
     "maintenance.py": "Aviso del dueño en dos idiomas, activación y desactivación de la pausa operativa.",
     "media.py": "Inspección y descarga de medios públicos mediante yt-dlp; disponibilidad depende de cada fuente.",
+    "media_retention.py": "Identifica copias locales de audio y vídeo y limita su limpieza a adjuntos del propio bot, sin tocar claves, documentos ni archivos originales.",
     "media_worker.py": "Trabajador de medios privados que usa solo la sesión del usuario autorizado en el sandbox.",
     "miniapp.py": "Construye la WebXDC, vincula cada instancia al chat y atiende operaciones y actualizaciones.",
     "music.py": "Consulta metadatos públicos de música de Internet Archive y conserva las declaraciones de licencia.",
