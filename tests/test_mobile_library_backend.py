@@ -279,3 +279,23 @@ def test_group_weather_never_uses_personal_home_or_saves_a_user_city(monkeypatch
 def test_group_rates_never_present_saved_data_as_a_fresh_quote(monkeypatch):
     monkeypatch.setattr(groups.tools, 'rates_snapshot', lambda: {'rates': {'USD': 325, 'EUR': 350}, 'stale': True, 'at': 100})
     assert 'Última lectura guardada' in groups.public_answer('rates', '')
+
+
+def test_cover_redirects_only_to_known_public_image_hosts(monkeypatch):
+    from PIL import Image
+    buffer = io.BytesIO(); Image.new('RGB', (80, 120), '#102127').save(buffer, 'JPEG')
+    first = mock.Mock(status_code=302, headers={'Location': 'https://archive.org/download/public/cover.jpg'})
+    final = mock.Mock(status_code=200, headers={})
+    request = mock.Mock(side_effect=[first, final])
+    monkeypatch.setattr(public_media.net, 'request', request)
+    monkeypatch.setattr(public_media.net, 'read_limited', lambda *args: buffer.getvalue())
+    result = public_media.image_data('https://covers.openlibrary.org/b/id/777-M.jpg', cover=True)
+    assert result.startswith('data:image/jpeg;base64,') and request.call_count == 2
+    first.close.assert_called_once(); final.close.assert_called_once()
+    malicious = mock.Mock(status_code=302, headers={'Location': 'https://127.0.0.1/private'})
+    request = mock.Mock(return_value=malicious)
+    monkeypatch.setattr(public_media.net, 'request', request)
+    with pytest.raises(ValueError):
+        public_media.image_data('https://covers.openlibrary.org/b/id/778-M.jpg', cover=True)
+    assert request.call_count == 1
+    malicious.close.assert_called_once()

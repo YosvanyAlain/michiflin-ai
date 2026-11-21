@@ -6,7 +6,7 @@ import io
 import re
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from PIL import Image, UnidentifiedImageError
 from . import net
@@ -18,25 +18,38 @@ COVER_HOSTS = {'covers.openlibrary.org', 'books.google.com', 'books.googleuserco
 
 
 def image_data(url: str, quality: str = 'low', *, cover: bool = False) -> str:
-    host = (urlsplit(url).hostname or '').lower()
-    allowed = COVER_HOSTS if cover else {'i.ytimg.com'}
-    parsed = urlsplit(url)
-    if (parsed.scheme != 'https' or host not in allowed or parsed.username or parsed.password
-            or parsed.port not in (None, 443)):
-        raise ValueError('image_source')
+    def validate(value: str) -> None:
+        parsed = urlsplit(value)
+        host = (parsed.hostname or '').lower()
+        allowed = COVER_HOSTS if cover else {'i.ytimg.com'}
+        trusted_archive = cover and host.endswith('.archive.org')
+        if (parsed.scheme != 'https' or (host not in allowed and not trusted_archive)
+                or parsed.username or parsed.password or parsed.port not in (None, 443)):
+            raise ValueError('image_source')
+    validate(url)
     key = (url, quality)
     with _lock:
         hit = _cache.get(key)
         if hit and time.monotonic() - hit[0] < 3600:
             return hit[1]
-    response = net.request('GET', url, stream=True, follow_redirects=False, timeout=(8, 15))
-    try:
-        response.raise_for_status()
-        if 300 <= response.status_code < 400:
-            raise ValueError('image_redirect')
-        raw = net.read_limited(response, 600_000)
-    finally:
-        response.close()
+    current = url
+    for _ in range(4):
+        validate(current)
+        response = net.request('GET', current, stream=True, follow_redirects=False, timeout=(8, 15))
+        try:
+            response.raise_for_status()
+            if 300 <= response.status_code < 400:
+                if not cover or not response.headers.get('Location'):
+                    raise ValueError('image_redirect')
+                current = urljoin(current, response.headers['Location'])
+                validate(current)  # only known public cover hosts, never arbitrary redirects
+                continue
+            raw = net.read_limited(response, 600_000)
+            break
+        finally:
+            response.close()
+    else:
+        raise ValueError('image_redirect_limit')
     try:
         with Image.open(io.BytesIO(raw)) as image:
             if image.width * image.height > 12_000_000:
