@@ -704,7 +704,10 @@ def test_slow_view_fade_eventually_acknowledges_without_early_read(engine):
         deliver(page, rid, {"engine": "web", "results": [{"title": "Respuesta de transición", "url": "https://example.test/fade"}]})
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid)
         page.wait_for_function("viewReady()")
-        page.add_style_tag(content=".view.enter { transition: none !important; } .view:not(.enter) { transition: opacity 1.2s linear !important; }")
+        # Production deliberately starts visible: a missing animation callback
+        # must not hide the entire app. Inject the legacy fade explicitly here
+        # to keep testing unread protection while content really is invisible.
+        page.add_style_tag(content=".view.enter { opacity: 0 !important; transition: none !important; } .view:not(.enter) { opacity: 1 !important; transition: opacity 1.2s linear !important; }")
         page.locator('.tab[data-tab="web"]:visible').click()
         page.wait_for_timeout(350)
         assert page.evaluate("Number(getComputedStyle(document.querySelector('#view')).opacity)") < 0.5
