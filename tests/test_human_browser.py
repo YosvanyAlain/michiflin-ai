@@ -407,7 +407,8 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                                         'and isinstance(exc.cmd, list) and len(exc.cmd) > 1 '
                                         'and exc.cmd[0] == "xdotool" and exc.cmd[1] in '
                                         '{"getwindowfocus", "windowraise", "windowfocus", "key"} '
-                                        'else type(exc).__name__))})\n        except Exception:', 1)
+                                        'else type(exc).__name__)})\n        except Exception:', 1)
+                    compile(text, str(dst), "exec")
                     Path(dst).write_text(text, encoding="utf-8")
                     return dst
                 return original_copy(src, dst, *args, **kwargs)
