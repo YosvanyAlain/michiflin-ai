@@ -28,15 +28,24 @@ def diagnose(root: Path) -> dict:
     files = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
                  and any(isinstance(t, ast.Name) and t.id == 'APP_FILES' for t in n.targets))
     digest = hashlib.sha256(f'epoch:{epoch}'.encode())
+    release = os.getenv('MINIAPP_RELEASE', '')
+    strict = os.getenv('REVOKE_LEGACY_MINIAPPS', '0').lower() in {'1', 'true', 'yes', 'on'}
+    if release:
+        digest.update(f'miniapp-release:{release}'.encode())
     for name in files:
         digest.update(name.encode() + (ROOT / 'webxdc' / name).read_bytes())
-    allowed = {digest.hexdigest()[:10]}
-    for fn in [app_compat.audit_base_build, app_compat.published_build, app_compat.latest_build,
-               app_compat.recent_build, app_compat.previous_build]:
-        value = fn(epoch, str(ROOT / 'webxdc'), files)
-        if value:
-            allowed.add(value)
+    current = digest.hexdigest()[:10]
+    allowed = {current}
+    if not strict:
+        for fn in [app_compat.audit_base_build, app_compat.published_build, app_compat.latest_build,
+                   app_compat.recent_build, app_compat.previous_build]:
+            value = fn(epoch, str(ROOT / 'webxdc'), files)
+            if value:
+                allowed.add(value)
     result = {'schema': 1, 'read_only': True, 'mail_io_started': False,
+              'revocation_enabled': strict, 'current_release_bindings': 0,
+              'release_opening_checkpointed': data.get('public_access_release') == 'private-invites-20261119-v1',
+              'invite_policy_open': isinstance(data.get('invite_policy'), dict) and data['invite_policy'].get('closed') is False,
               'database_count': len(databases), 'app_bindings': len(apps),
               'clean_marker_present': bool(marker), 'apps_core_present': 0,
               'apps_core_missing_or_deleted': 0, 'apps_core_wrong_type': 0,
@@ -59,7 +68,8 @@ def diagnose(root: Path) -> dict:
             if not str(key).isdigit() or not isinstance(entry, dict):
                 continue
             result['apps_other_epoch'] += bool(entry.get('epoch') and entry.get('epoch') != epoch)
-            result['apps_incompatible_build'] += entry.get('build') not in allowed
+            result['apps_incompatible_build'] += entry.get('build') not in allowed or (strict and entry.get('epoch') != epoch)
+            result['current_release_bindings'] += entry.get('build') == current and entry.get('epoch') == epoch
             result['apps_owner_recipient'] += str(entry.get('addr', '')).casefold() == owner
             row = db.execute('SELECT type,chat_id,deleted,param FROM msgs WHERE id=?', (int(key),)).fetchone()
             if not row or row[2]:
