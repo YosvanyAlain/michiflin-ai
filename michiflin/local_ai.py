@@ -323,7 +323,8 @@ def _system(locale: str) -> str:
 
 def _history(history: list[Any] | None, anchor: tuple[str, str] | None = None) -> list[dict[str, str]]:
     valid: list[tuple[str, str]] = []
-    for turn in (history or [])[-6:]:
+    extended = _flag("LOCAL_GGUF_EXTENDED")
+    for turn in (history or [])[-(12 if extended else 6):]:
         if not isinstance(turn, list) or len(turn) != 2 or turn[0] not in {"user", "assistant"} or not isinstance(turn[1], str):
             continue
         if turn[0] == "assistant" and any(marker in turn[1] for marker in _WEB_MARKERS):
@@ -333,7 +334,7 @@ def _history(history: list[Any] | None, anchor: tuple[str, str] | None = None) -
             valid.append((turn[0], text))
 
     prefix: list[dict[str, str]] = []
-    remaining = 1600
+    remaining = 6000 if extended else 1600
     continuing = False
     if anchor and anchor[0] and anchor[1] and not any(marker in anchor[1] for marker in _WEB_MARKERS):
         origin, original_first = _excerpt(anchor[0].strip(), 600, 395), anchor[1].strip()
@@ -350,7 +351,7 @@ def _history(history: list[Any] | None, anchor: tuple[str, str] | None = None) -
             remaining, continuing = max(0, 2400 - len(origin) - len(first)), True
     accepted: list[dict[str, str]] = []
     for role, text in reversed(valid):
-        cap = 1200 if continuing and role == "assistant" else 600
+        cap = 1800 if extended else (1200 if continuing and role == "assistant" else 600)
         head = 350 if cap > 600 else (245 if role == "assistant" else 395)
         text = _excerpt(text, min(cap, remaining), head)
         if text:
@@ -609,7 +610,7 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
     question = (question or "").strip()
     if not question:
         return Result("empty")
-    if len(question) > 3000:
+    if len(question) > (12000 if _flag("LOCAL_GGUF_EXTENDED") and not research else 3000):
         return Result("long_input")
     state.check_work_allowed()
     if research:
@@ -634,7 +635,7 @@ def complete(question: str, locale: str, history: list[Any] | None = None, *, re
             _research_slots.release()
     messages: list[dict[str, str]] = [{"role": "system", "content": _system(locale)}]
     messages.extend(_history(history, anchor=anchor if answer_inline.is_continue(question) else None))
-    messages.append({"role": "user", "content": question[:3000]})
+    messages.append({"role": "user", "content": question})
     return complete_messages(messages, sender=sender, on_wait=on_wait, on_start=on_start)
 
 
@@ -668,7 +669,7 @@ def complete_messages(messages: list[dict[str, str]], *, sender: str = "",
         request = {"messages": messages, "temperature": 0.3, "max_tokens": budget, "stream": False,
                    "t_max_predict_ms": milliseconds, "chat_template_kwargs": {"enable_thinking": False}}
         try:
-            if coding:
+            if coding or extended:
                 # Count the exact template and preserve every input token. Leave 160
                 # tokens for template/server differences before output.
                 rendered = _http("/apply-template", request, 12).get("prompt")
@@ -745,8 +746,8 @@ def display(result: Result, locale: str) -> str:
         return tr(locale, "🔒 La consulta parece contener datos privados; no la envié al buscador. Reformúlala sin esos datos.",
                   "🔒 The query appears to contain private data; I did not send it to search. Rephrase without those details.")
     if result.status == "long_input":
-        return tr(locale, "⚠️ La consulta local supera 3000 caracteres. Divídela en partes.",
-                  "⚠️ The local request exceeds 3000 characters. Split it into parts.")
+        return tr(locale, "⚠️ La consulta supera el límite de entrada del perfil local. Divídela en partes.",
+                  "⚠️ The request exceeds the local profile input limit. Split it into parts.")
     if result.status == "long_query":
         return tr(locale, "🔎 Para buscar, envía una consulta de hasta 200 caracteres sin datos privados.",
                   "🔎 For web search, send a query of up to 200 characters without private data.")

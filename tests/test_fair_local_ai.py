@@ -228,4 +228,8 @@ def test_failed_startup_artifact_contains_only_safe_diagnostics():
     assert "gguf-*-status.log" in artifact and "raw.log" not in artifact
     assert "retention-days: 1" in artifact and "continue-on-error: true" in artifact
     script = (root / "tools/local_gguf_session.sh").read_text()
-    assert script.count("--retry 2") == 2
+    assert script.count("--retry 2") == 1  # engine only; model ranges are fetched once
+    assert 'python3 download.py' in script
+    downloader = (root / "tools/download_pinned_model.py").read_text()
+    assert 'ThreadPoolExecutor(max_workers=workers)' in downloader
+    assert "response.status != 206" in downloader and 'check.hexdigest() != digest' in downloader
