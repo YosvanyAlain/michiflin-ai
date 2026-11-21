@@ -123,3 +123,19 @@ def test_api_presets_and_donation_have_separate_explicit_consent():
         page.locator('.sheet input[type=checkbox]').check()
         assert submit.is_enabled()
         assert errors == []
+
+
+def test_base64_local_tool_preserves_long_unicode_input_without_truncation():
+    with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
+        page.wait_for_function('cache.at > 0 && !syncing')
+        page.evaluate("go('tools')")
+        box = page.locator('.local-utilities details').filter(has=page.get_by_text('Base64', exact=True))
+        box.locator('summary').click()
+        value = 'ñMichi🐈' * 5500
+        before = page.evaluate('window.__sentUpdates.length')
+        box.locator('textarea').fill(value)
+        box.get_by_role('button', name='Usar herramienta', exact=True).click()
+        decoded = box.locator('pre').evaluate("node=>new TextDecoder().decode(Uint8Array.from(atob(node.textContent),c=>c.charCodeAt(0)))")
+        assert decoded == value
+        assert page.evaluate('window.__sentUpdates.length') == before
+        assert errors == []

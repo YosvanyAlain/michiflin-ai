@@ -36,7 +36,12 @@ window.LocalUtilities = {
             }
             output = chosen.join("");
           }
-          if (key === "base64") output = btoa(String.fromCharCode(...new TextEncoder().encode(text.slice(0, 30000))));
+          if (key === "base64") {
+            const bytes = new TextEncoder().encode(text); let binary = "";
+            for (let offset = 0; offset < bytes.length; offset += 8192)
+              binary += String.fromCharCode(...bytes.subarray(offset, offset + 8192));
+            output = btoa(binary);
+          }
           if (key === "url") {
             const url = new URL(text.trim());
             if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) throw new Error("URL");
