@@ -326,6 +326,7 @@ MODULES = {
     "media.py": "Inspección y descarga de medios públicos mediante yt-dlp; disponibilidad depende de cada fuente.",
     "media_retention.py": "Identifica copias locales de audio y vídeo y limita su limpieza a adjuntos del propio bot, sin tocar claves, documentos ni archivos originales.",
     "media_worker.py": "Trabajador de medios privados que usa solo la sesión del usuario autorizado en el sandbox.",
+    "interaction.py": "Elección explícita de miniapp o comandos por chat privado, ligada a remitente, permiso y época; bloquea ejecución y adjuntos antes de elegir sin otorgar acceso.",
     "miniapp.py": "Construye la WebXDC, vincula cada instancia al chat y atiende operaciones y actualizaciones.",
     "music.py": "Consulta metadatos públicos de música de Internet Archive y conserva las declaraciones de licencia.",
     "names.py": "Nombres y alias de comandos en español e inglés.",
