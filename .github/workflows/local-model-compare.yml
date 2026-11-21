@@ -1,0 +1,45 @@
+name: Compare local models without bot identity
+on:
+  push:
+    branches: [mejorar-ia-local-20261119]
+    paths:
+      - tools/local_gguf_session.sh
+      - tools/benchmark_local_model.py
+      - .github/workflows/local-model-compare.yml
+permissions:
+  contents: read
+concurrency:
+  group: local-model-compare-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    name: Local model (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [legacy, qwen35]
+    env:
+      LOCAL_GGUF_VARIANT: ${{ matrix.variant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and prepare isolated pinned engine and weights
+        run: bash tools/local_gguf_session.sh prepare
+      - name: Start authenticated isolated inference
+        run: bash tools/local_gguf_session.sh start
+      - name: Real inference on synthetic questions only
+        run: python3 tools/benchmark_local_model.py
+      - name: Save synthetic answers and narrow checks for review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-benchmark-${{ matrix.variant }}
+          path: local-benchmark.json
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Stop and remove only this job's isolated model
+        if: always()
+        run: bash tools/local_gguf_session.sh stop

@@ -14,6 +14,17 @@ ENGINE_URL='https://github.com/ggml-org/llama.cpp/releases/download/b11960/llama
 ENGINE_SHA='31cc3a6bc638ac6c48dc4b1b74888f1eaadf3d14227c1e5f67daf9a49541d97a'
 MODEL_URL='https://huggingface.co/mradermacher/Huihui-Qwen3-4B-Instruct-2507-abliterated-GGUF/resolve/c9e90669eeb205d5af35c28a3e9983fc9293c2ec/Huihui-Qwen3-4B-Instruct-2507-abliterated.Q4_K_M.gguf?download=true'
 MODEL_SHA='b1324e2f1bd2e0610d591f54f93e38d90b187f69d1f215f4cace349eade678d7'
+MODEL_BYTES=2497281312
+# Fixed, reviewed variants only; no caller-supplied URLs or arbitrary engines.
+case "${LOCAL_GGUF_VARIANT:-legacy}" in
+  legacy) ;;
+  qwen35)
+    MODEL_URL='https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf?download=true'
+    MODEL_SHA='00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4'
+    MODEL_BYTES=2740937888 ;;
+  *) echo 'SAFE_GGUF_VARIANT_REFUSED'; exit 1 ;;
+esac
+
 
 cleanup() {
   # The directory's marker binds deletion to files made by this job; never
@@ -61,7 +72,7 @@ prepare() {
   # Download and unpack as a separate UID with an empty environment. This
   # preparation runs before any bot state is restored on the runner.
   sudo -u "$USER_NAME" env -i HOME="$WORK" PATH='/usr/bin:/bin' \
-    WORK="$WORK" ENGINE_URL="$ENGINE_URL" ENGINE_SHA="$ENGINE_SHA" MODEL_URL="$MODEL_URL" MODEL_SHA="$MODEL_SHA" \
+    WORK="$WORK" ENGINE_URL="$ENGINE_URL" ENGINE_SHA="$ENGINE_SHA" MODEL_URL="$MODEL_URL" MODEL_SHA="$MODEL_SHA" MODEL_BYTES="$MODEL_BYTES" \
     bash -c '
       set -euo pipefail; umask 077; cd "$WORK"
       echo SAFE_GGUF_ENGINE_DOWNLOAD
@@ -72,7 +83,7 @@ prepare() {
       rm -f engine.tar.gz
       echo SAFE_GGUF_MODEL_DOWNLOAD
       curl --fail --location --silent --show-error --retry 2 --retry-max-time 420 --connect-timeout 25 --max-time 420 "$MODEL_URL" -o model.partial
-      test "$(wc -c < model.partial)" -eq 2497281312
+      test "$(wc -c < model.partial)" -eq "$MODEL_BYTES"
       printf "%s  model.partial\n" "$MODEL_SHA" | sha256sum --check --status
       mv model.partial model.gguf
     '
