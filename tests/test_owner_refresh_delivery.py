@@ -80,3 +80,14 @@ def test_wrong_revision_or_shared_access_never_starts_io(fixture, monkeypatch, p
         tool.deliver()
     fixture.io.assert_not_called()
     fixture.send.assert_not_called()
+
+
+def test_open_private_chats_release_still_delivers_only_to_existing_owner(fixture, monkeypatch):
+    monkeypatch.setattr(config, 'OWNER_ONLY', False)
+    monkeypatch.setattr(config, 'INVITE_AUTO_ACCESS', True)
+    monkeypatch.setattr(config, 'REVOKE_LEGACY_MINIAPPS', True)
+    report = tool.deliver()
+    assert report['delivery'] == 'delivered'
+    assert fixture.send.call_args.args == (42, 'es')
+    assert fixture.send.call_args.kwargs['address'] == 'owner@example.invalid'
+    fixture.rpc.add_account.assert_not_called()

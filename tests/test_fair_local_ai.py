@@ -196,7 +196,7 @@ def test_action_test_workflow_is_fail_closed_and_preserves_handover():
     root = Path(__file__).resolve().parents[1]
     workflow = (root / ".github/workflows/michiflin.yml").read_text()
     labels = ("Prepare isolated local AI test", "Restore state", "Verify backup recovery",
-              "Start isolated local AI test", "Local AI test ready", "Private session",
+              "Start isolated local AI test", "Local AI test ready", "Private chats and restricted public group tools",
               "Clean temporary local AI test", "Next session")
     offsets = [workflow.index("- name: " + label) for label in labels]
     assert offsets == sorted(offsets)

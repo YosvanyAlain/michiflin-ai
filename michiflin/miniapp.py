@@ -81,6 +81,8 @@ def app_build() -> str:
     """Content hash of the app source and deployment epoch; other epochs are treated as foreign."""
     digest = hashlib.sha256()
     digest.update(f"epoch:{config.BOT_EPOCH}".encode())
+    if config.MINIAPP_RELEASE:
+        digest.update(f"miniapp-release:{config.MINIAPP_RELEASE}".encode())
     for name in APP_FILES:
         digest.update(name.encode() + (APP_DIR / name).read_bytes())
     return digest.hexdigest()[:10]
@@ -89,6 +91,8 @@ def app_build() -> str:
 def compatible_build(entry: dict[str, Any]) -> bool:
     """Admit only this package and the exact previously tested builds."""
     value = entry.get("build")
+    if config.REVOKE_LEGACY_MINIAPPS:
+        return bool(entry.get("epoch") == config.BOT_EPOCH and value == app_build())
     if not isinstance(value, str) or not value:
         return False
     if value == app_build():
@@ -121,6 +125,8 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
+    if config.REVOKE_LEGACY_MINIAPPS:
+        return compatible_build(entry)
     polish_previous = app_compat.polish_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if polish_previous and value == polish_previous:
         return True
@@ -180,6 +186,9 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
         english = ("👋 Hi! I'm Michiflin AI. Download this mini app, then open it with “Start” or its icon. "
                    "Inside you'll find AI, web, downloads and settings; replies arrive by email.")
         text = spanish + "\n\n" + english if bilingual_welcome else tr(locale, spanish, english)
+    if config.REVOKE_LEGACY_MINIAPPS:
+        text += "\n\n" + tr(locale, "Las miniapps anteriores han sido retiradas y ya no se comunican con el bot. Se conservan sus archivos y datos locales. Usa esta nueva miniapp solo en este chat; comparte el enlace de contacto del bot, no el archivo.",
+                                 "Previous miniapps have been retired and can no longer communicate with the bot. Their files and local data are preserved. Use this new miniapp only in this chat; share the bot contact link, not the file.")
     if recovery_revision:
         if not re.fullmatch(r"[0-9a-f]{40}", recovery_revision):
             return 0
@@ -310,9 +319,11 @@ def welcome(chat_id: int, locale: str) -> None:
 
 
 def _instance(msg_id: int) -> dict[str, Any] | None:
-    """Known instance of this deployment; old builds can sync and request an update explicitly."""
+    """Known instance; a release revocation denies old builds, even read-only recovery."""
     entry = _apps().get(str(msg_id))
-    if entry is None:
+    if not isinstance(entry, dict):
+        return None
+    if config.REVOKE_LEGACY_MINIAPPS and not compatible_build(entry):
         return None
     # Another deployment's packages must not drive this bot at all.
     epoch = entry.get("epoch")
@@ -671,7 +682,18 @@ def _dispatch_handle(instance_id: int, entry: dict[str, Any], request: dict[str,
             _dispatch_release(str(request.get("_dispatch_ticket") or ""))
 
 
+def _release_allows(instance_id: int, admitted: dict[str, Any]) -> bool:
+    """A request cannot claim another build or survive replacement of its binding."""
+    if not config.REVOKE_LEGACY_MINIAPPS:
+        return True
+    current = _instance(instance_id)
+    return bool(current and compatible_build(admitted) and all(
+        current.get(key) == admitted.get(key) for key in ("chat", "addr", "epoch", "build", "access_session")))
+
+
 def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
+    if not _release_allows(instance_id, entry):
+        return
     rid = str(request.get("id", ""))[:40]
     if not rid:
         return
@@ -744,7 +766,7 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 def _status_allowed(instance_id: int) -> bool:
     """Recheck epoch, access grant and verified contact at the actual handoff."""
-    if not (config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
+    if not (config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True  # preserve existing deployments until a deliberate cutover
     try:
         entry = _instance(instance_id)
@@ -757,12 +779,16 @@ def _status_allowed(instance_id: int) -> bool:
 
 
 def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
-    if config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
+    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+        return False
+    if config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         return chat.send_update(instance_id, payload, notify, interrupted=lambda: not _status_allowed(instance_id))
     return chat.send_update(instance_id, payload, notify) if notify else chat.send_update(instance_id, payload)
 
 
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
+    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+        return
     if entry is not None and (not access.bound_allowed(entry) or not _verified_binding(entry)):
         return
     if (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS) and entry is None:
@@ -837,6 +863,8 @@ class _InlineContinuation:
 
 
 def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> None:
+    if not _release_allows(instance_id, entry):
+        return
     admitted_entry = dict(entry)  # retain the original grant and epoch across worker delays
     rid = str(request.get("id", ""))[:40]
     locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
@@ -846,7 +874,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     address = str(entry.get("addr", "")).strip().lower()
 
     def reply(data: Any, error: str = "") -> None:
-        if access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry):
+        if _release_allows(instance_id, entry) and access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry):
             respond(instance_id, rid, data, error)
 
     if not access.bound_allowed(entry) or not _verified_binding(entry):
@@ -898,6 +926,8 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     def run() -> Any:
         # Re-check when a worker actually starts: revocation can happen after
         # an app request was admitted but before it leaves the executor queue.
+        if not _release_allows(instance_id, entry):
+            raise AppError(tr(locale, "Miniapp retirada.", "Retired miniapp."))
         if not access.bound_allowed(entry) or not admin.is_allowed(address) or not _verified_binding(entry):
             raise AppError(tr(locale, "Acceso revocado.", "Access revoked."))
         if not config.service_access_allowed(address):
@@ -1099,6 +1129,8 @@ def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") 
 
 
 def respond(instance_id: int, rid: str, data: Any, error: str = "", *, code: str = "") -> None:
+    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+        return
     body = {"t": "res", "re": rid, "ok": not error, "data": data, "error": error}
     if code:
         body["code"] = code

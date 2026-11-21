@@ -67,6 +67,10 @@ BOT_EPOCH = env("BOT_EPOCH") or env("RUNNING_SHA", "local")[:12]
 # A newly provisioned identity must reject even legacy bindings with no epoch.
 # Keep compatibility with existing instances until the owner verifies a cutover.
 BOT_EPOCH_STRICT = env("BOT_EPOCH_STRICT", "0").lower() in {"1", "true", "yes", "on"}
+# Explicit release cutover: keep archived messages, reject every older package.
+REVOKE_LEGACY_MINIAPPS = env("REVOKE_LEGACY_MINIAPPS", "0").lower() in {"1", "true", "yes", "on"}
+# Separate package generation: revokes old miniapps without changing account/job epochs.
+MINIAPP_RELEASE = env("MINIAPP_RELEASE")
 # Optional fail-closed guard for a new identity. Configure the owner's public
 # primary OpenPGP fingerprint independently before enabling it.
 BOT_VERIFIED_CONTACTS_ONLY = env("BOT_VERIFIED_CONTACTS_ONLY", "0").lower() in {"1", "true", "yes", "on"}

@@ -1,5 +1,7 @@
 # Michiflin: segunda revisión móvil
 
+> Actualización posterior del dueño: el lanzamiento abre los chats privados mediante el enlace de contacto y revoca las miniapps anteriores. Véase `PUBLIC_PRIVATE_RELEASE.md`; esa política sustituye la compatibilidad operativa descrita en esta revisión.
+
 Esta revisión sustituye los requisitos anteriores de mascota al arrancar y selector de calidad de miniaturas. El código local parte de `ffc62f2ae43d7730e44de9c97da08db07d7bbbf3`. Preparar estos archivos no equivale a desplegarlos.
 
 ## Cambios

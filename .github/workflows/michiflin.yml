@@ -5,6 +5,11 @@ on:
     - cron: "5 */6 * * *"
   workflow_dispatch:
     inputs:
+      deliver_owner_refresh:
+        description: "Deliver this release once to the existing verified owner's private chat"
+        required: false
+        type: boolean
+        default: true
       send_owner_documents:
         description: "Send the requested source ZIP and PDF to the verified owner once"
         required: false
@@ -38,18 +43,19 @@ jobs:
       # Explicit backup admin; email-based rekeying is a separately opted-in risk.
       OWNER_BACKUP_ADDRESS: ${{ secrets.OWNER_BACKUP_ADDRESS }}
       EMAIL_KEY_RECOVERY: ${{ vars.EMAIL_KEY_RECOVERY || '0' }}
-      # The clean identity stayed private while it was being seeded and sealed.
-      # That seeding is long finished and the owner has opened the bot, so the
-      # repository variables now decide access on their own. Both still default
-      # to closed, so an unset variable can never open the bot by accident.
-      OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}
-      INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}
+      # Owner-authorized public contact link, never a public shared miniapp.
+      # Everyone joins their own encrypted private chat; admin powers stay private.
+      OWNER_ONLY: "0"
+      INVITE_AUTO_ACCESS: "1"
+      REVOKE_LEGACY_MINIAPPS: "1"
+      MINIAPP_RELEASE: "public-private-20261119-v1"
+      PUBLIC_ACCESS_RELEASE: "private-invites-20261119-v1"
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # Explicit owner-authorized recovery; only the one exact deployment may send.
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
-      OWNER_UI_REFRESH_REVISION: ${{ vars.OWNER_UI_REFRESH_REVISION }}
+      OWNER_UI_REFRESH_REVISION: ${{ github.event.inputs.deliver_owner_refresh == 'true' && github.sha || vars.OWNER_UI_REFRESH_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # A separately verified candidate is imported only for an exact reviewed revision.
@@ -428,16 +434,19 @@ jobs:
           echo "LOCAL_GGUF_TEST_UNAVAILABLE=1" >> "$GITHUB_ENV"
           echo "::warning::Local AI was not verified; explicit extractive research remains available."
 
+      - name: Apply the owner-requested public private-chat cutover once
+        run: python tools/open_private_invite_access.py
+
       - name: Deliver the exact owner-requested UI refresh once
-        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION }}
+        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION || github.event.inputs.deliver_owner_refresh == 'true' }}
         run: |
           if ! python tools/deliver_owner_refresh.py; then
-            echo "::warning::Automatic owner update deferred; existing instances and explicit /app remain available."
+            echo "::warning::Automatic owner update deferred; retired instances remain blocked. Use /app in the verified private chat."
           fi
           python state_backup.py save
 
       - name: Save safe owner update receipt
-        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION }}
+        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION || github.event.inputs.deliver_owner_refresh == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: owner-refresh-receipt
@@ -445,7 +454,7 @@ jobs:
           retention-days: 3
           if-no-files-found: ignore
 
-      - name: Private session
+      - name: Private chats and restricted public group tools
         shell: bash
         run: |
           set +e
