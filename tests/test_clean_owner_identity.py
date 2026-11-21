@@ -208,8 +208,9 @@ def test_clean_workflow_access_fails_closed_and_keeps_the_clean_storage():
     """
     workflow = (clean.Path(__file__).resolve().parents[1] / ".github/workflows/michiflin.yml").read_text()
     # Owner-controlled access, defaulting to closed when the variable is absent.
-    assert "OWNER_ONLY: ${{ vars.OWNER_ONLY || '1' }}" in workflow
-    assert "INVITE_AUTO_ACCESS: ${{ vars.INVITE_AUTO_ACCESS || '0' }}" in workflow
+    assert 'OWNER_ONLY: "0"' in workflow
+    assert 'INVITE_AUTO_ACCESS: "1"' in workflow
+    assert 'REVOKE_LEGACY_MINIAPPS: "1"' in workflow
     # The epoch must no longer decide access at all.
     assert "CLEAN_IDENTITY_EPOCH != '' && '1'" not in workflow
     # Storage and keys stay bound to the clean epoch.

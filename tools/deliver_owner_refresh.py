@@ -20,8 +20,10 @@ def deliver() -> dict:
     from michiflin import chat, config, miniapp, state
     revision = os.getenv('OWNER_UI_REFRESH_REVISION', '')
     running = os.getenv('RUNNING_SHA', '')
+    private_release = config.OWNER_ONLY and not config.INVITE_AUTO_ACCESS
+    public_release = not config.OWNER_ONLY and config.INVITE_AUTO_ACCESS and config.REVOKE_LEGACY_MINIAPPS
     if (not re.fullmatch('[0-9a-f]{40}', revision) or revision != running
-            or not config.OWNER_ONLY or config.INVITE_AUTO_ACCESS or not config.OWNER_ADDRESS):
+            or not (private_release or public_release) or not config.OWNER_ADDRESS):
         raise ValueError('owner refresh is not armed for this exact revision')
     state.load()
     entries = [entry for entry in miniapp._apps().values() if isinstance(entry, dict)
