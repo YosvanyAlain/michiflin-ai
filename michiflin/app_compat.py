@@ -113,3 +113,12 @@ _MOBILE_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js", 
 def mobile_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """Keep the owner's existing app working while the mobile refresh is installed."""
     return _pinned_build(epoch, app_dir, files, _MOBILE_BEFORE, _MOBILE_REPLACED)
+
+
+_POLISH_BEFORE = Path(__file__).resolve().parent / "compat" / "polish-before"
+_POLISH_REPLACED = {"i18n.js", "index.html", "app.css", "app.js", "core.js", "brands.js", "books.js", "utilities.js"}
+
+
+def polish_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """The exact mobile/library app already delivered, never shipped anew."""
+    return _pinned_build(epoch, app_dir, files, _POLISH_BEFORE, _POLISH_REPLACED)

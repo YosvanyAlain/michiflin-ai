@@ -4,14 +4,10 @@ from tests.test_webxdc_browser import browser_fixture
 
 
 @pytest.mark.parametrize('engine,width', [('chromium', 320), ('webkit', 390)])
-def test_black_rescue_cat_matches_profile_and_scroll_is_discoverable(engine, width):
+def test_direct_home_without_logos_and_scroll_is_discoverable(engine, width):
     with browser_fixture('es', {'width': width, 'height': 844}, engine=engine) as (page, errors):
         page.wait_for_function('cache.at > 0 && viewReady()')
-        assert page.locator('.home-brand-mark img').get_attribute('src').startswith('data:image/png;base64,')
-        assert page.locator('.mascot-seated .mascot-glasses').count() == 1
-        assert '#f5b846' in page.locator('.mascot-seated').inner_html()
-        assert '#eaaa68' not in page.locator('.mascot-seated').inner_html()
-        assert page.locator('.mascot-seated .mascot-glasses circle').first.evaluate('n=>getComputedStyle(n).fill') == 'none'
+        assert page.locator('#splash, .intro-overlay, .mascot, .home-brand-mark').count() == 0
         cue = page.locator('#scroll-discovery')
         cue.wait_for(state='visible')
         before = page.locator('#view').evaluate('node=>node.scrollTop')
@@ -96,8 +92,8 @@ def test_local_utilities_never_send_text_to_server():
         page.wait_for_function('cache.at > 0 && !syncing')
         page.evaluate("go('tools')")
         before = page.evaluate('window.__sentUpdates.length')
-        row = page.locator('.local-utilities details').filter(has=page.get_by_text('Formatear JSON', exact=True))
-        row.locator('summary').click()
+        page.locator('.utility-tile').filter(has_text='Formatear JSON').click()
+        row = page.locator('.utility-workspace')
         row.locator('textarea').fill('{"private":"device only"}')
         row.get_by_role('button', name='Usar herramienta', exact=True).click()
         assert 'device only' in row.locator('pre').inner_text()
@@ -129,8 +125,8 @@ def test_base64_local_tool_preserves_long_unicode_input_without_truncation():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         page.wait_for_function('cache.at > 0 && !syncing')
         page.evaluate("go('tools')")
-        box = page.locator('.local-utilities details').filter(has=page.get_by_text('Base64', exact=True))
-        box.locator('summary').click()
+        page.locator('.utility-tile').filter(has_text='Base64').click()
+        box = page.locator('.utility-workspace')
         value = 'ñMichi🐈' * 5500
         before = page.evaluate('window.__sentUpdates.length')
         box.locator('textarea').fill(value)

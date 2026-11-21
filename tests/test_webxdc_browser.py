@@ -128,6 +128,7 @@ BRIDGE = r"""
       default: return {};
     }
   };
+  window.__fixtureResponseFor = responseFor;
   window.__sentUpdates = [];
   window.__fixtureResponses = [];
   window.__serial = 0;
@@ -253,9 +254,12 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)
-                page.locator(".intro-overlay").wait_for(state="visible", timeout=10000)
-                page.locator(".intro-overlay .btn.ghost").first.click()
-                page.locator(".intro-overlay").wait_for(state="detached", timeout=5000)
+                if legacy_package:
+                    page.locator(".intro-overlay").wait_for(state="visible", timeout=10000)
+                    page.locator(".intro-overlay .btn.ghost").first.click()
+                    page.locator(".intro-overlay").wait_for(state="detached", timeout=5000)
+                else:
+                    page.wait_for_function("cache.at > 0 && !syncing && viewReady()")
                 try:
                     yield page, errors
                 finally:
@@ -1038,6 +1042,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     page.locator("#gear").click()
                 else:
                     page.locator('#rail [data-tab="settings"]').click()
+                page.locator('[data-setting-section="privacy"]').click()
                 sent_modes = page.evaluate("window.__sentUpdates.filter(x => ['kill_switch','nauta_strict'].includes(x.payload?.op)).length")
                 self.assertEqual(sent_modes, 0, "opening settings must not send mode operations")
                 self.assertEqual(page.get_by_role("button", name="Estado" if language == "es" else "Status", exact=True).count(), 0)
@@ -1099,6 +1104,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     page.locator("#gear").click()
                 else:
                     page.locator('#rail [data-tab="settings"]').click()
+                page.locator('[data-setting-section="support"]').click()
                 label = "Administración" if language == "es" else "Administration"
                 page.get_by_role("button", name=label, exact=False).first.click()
                 page.get_by_text("pending@example.org").wait_for(state="visible")
@@ -1132,6 +1138,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                             page.locator("#gear").click()
                         else:
                             page.locator('#rail [data-tab="settings"]').click()
+                        page.locator('[data-setting-section="support"]').click()
                         label = "Administración" if language == "es" else "Administration"
                         page.get_by_role("button", name=label, exact=False).first.click()
                         card = page.locator(".owner-access")
@@ -1381,6 +1388,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertEqual(page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'youtube_search').map(x => x.payload.args.page)"), [1, 2, 3])
                 screenshot_if_requested(page, language + "-youtube-more")
                 page.locator('.tab[data-tab="settings"]:visible, #gear:visible').first.click()
+                page.locator('[data-setting-section="support"]').click()
                 page.get_by_text("Administración" if language == "es" else "Administration", exact=True).first.click()
                 notice = page.locator(".maintenance-settings")
                 notice.wait_for(state="visible")
@@ -1453,9 +1461,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                     page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                     page.wait_for_function("document.querySelector('#title')?.textContent.length > 0", timeout=15000)
                     page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)
-                    page.locator(".intro-overlay").wait_for(state="visible", timeout=10000)
-                    page.locator(".intro-overlay .btn.ghost").first.click()
-                    page.locator(".intro-overlay").wait_for(state="detached", timeout=5000)
+                    page.wait_for_function("cache.at > 0 && !syncing")
+                    self.assertEqual(page.locator(".intro-overlay,#splash").count(), 0)
 
                     for tab in ("ai", "web", "apps", "downloads"):
                         page.locator(f'#tabs [data-tab="{tab}"]').click()

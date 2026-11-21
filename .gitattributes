@@ -6,3 +6,6 @@ michiflin/compat/618c355/* -text -whitespace
 michiflin/compat/582d273/* -text -whitespace
 michiflin/compat/e8a104c/* -text -whitespace
 michiflin/compat/ec7e67e/* -text -whitespace
+
+# Exact package preceding the second mobile review.
+michiflin/compat/polish-before/* -text -whitespace

@@ -12,7 +12,7 @@ def test_home_actions_and_progressive_search(engine, language):
     with browser_fixture(language, {"width": 320, "height": 568}, engine=engine) as (page, errors):
         page.emulate_media(reduced_motion="reduce")
         page.locator("#splash").wait_for(state="detached")
-        assert page.locator(".home-brand-mark").is_visible()
+        assert page.locator(".home-brand-mark").count() == 0
         assert page.locator(".home-hero h2").inner_text() == (
             "¿Qué quieres hacer hoy?" if language == "es" else "What will you do today?")
         assert not page.locator(".home-search-options").evaluate("node => node.open")

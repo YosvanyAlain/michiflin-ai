@@ -1,6 +1,27 @@
 "use strict";
 window.BookShelf = (() => {
   let speechRevision = 0;
+  const coverPending = new Map(), coverQueue = [];
+  let coverBusy = 0;
+  const recentCovers = new Map(store.get("books.coverCache", []).filter(([, value]) => Date.now() - value.at < 86400000));
+  function pumpCovers() {
+    while (coverBusy < 2 && coverQueue.length) { const task = coverQueue.shift(); coverBusy++;
+      bridge.call("books", { do: "cover", url: task.url }).then(response => {
+        if (typeof response.data !== "string" || !response.data.startsWith("data:image/jpeg;base64,")) throw new Error("cover");
+        recentCovers.set(task.url, { data: response.data, at: Date.now() });
+        while (recentCovers.size > 24) recentCovers.delete(recentCovers.keys().next().value);
+        store.set("books.coverCache", [...recentCovers]); task.resolve(response.data);
+      }).catch(task.reject).finally(() => { coverBusy--; coverPending.delete(task.url); pumpCovers(); });
+    }
+  }
+  function coverData(url) {
+    const hit = recentCovers.get(url); if (hit) return Promise.resolve(hit.data);
+    if (!coverPending.has(url)) {
+      const promise = new Promise((resolve, reject) => coverQueue.push({ url, resolve, reject }));
+      coverPending.set(url, promise); pumpCovers();
+    }
+    return coverPending.get(url);
+  }
   const text = (es, en) => lang() === "en" ? en : es;
   const stopSpeech = () => { speechRevision++; if (window.speechSynthesis) speechSynthesis.cancel(); };
   const database = () => new Promise((resolve, reject) => {
@@ -22,13 +43,13 @@ window.BookShelf = (() => {
   const remove = id => operation("readwrite", store => store.delete(id));
   const exportText = book => exportSheet(new Blob([book.title + "\n" + (book.authors || []).join(", ") + "\n\n" + book.text], { type: "text/plain;charset=utf-8" }), niceName(book.title, "libro") + ".txt");
   function cover(book) {
-    const box = h("div", { class: "book-cover", "aria-label": book.title }, icon("file"));
+    const box = h("div", { class: "book-cover", "aria-label": book.title }, icon("book"));
     if (!book.cover_url) return box;
     const load = async () => {
       try {
-        const response = await bridge.call("books", { do: "cover", url: book.cover_url });
-        if (box.isConnected && typeof response.data === "string" && response.data.startsWith("data:image/jpeg;base64,"))
-          fill(box, h("img", { src: response.data, alt: book.title, loading: "lazy", decoding: "async" }));
+        if (!box.isConnected) return;
+        const data = await coverData(book.cover_url);
+        if (box.isConnected) fill(box, h("img", { src: data, alt: book.title, loading: "lazy", decoding: "async" }));
       } catch (_) { /* A catalogue entry must remain usable without its cover. */ }
     };
     if (window.IntersectionObserver) {
@@ -93,10 +114,10 @@ window.BookShelf = (() => {
     let active = params.tab === "saved" ? "saved" : "catalogue";
     const shelf = h("div", { class: "book-shelf" });
     const status = h("p", { class: "muted small", role: "status" });
-    const query = field({ type: "search", placeholder: text("Título, autor o tema", "Title, author or topic"), value: params.q || "" });
+    const query = field({ type: "search", placeholder: text("Título, autor o tema", "Title, author or topic"), value: params.q || store.get("books.query", "") });
     let source = store.get("books.source", "gutenberg"), page = 1;
     const sourcePicker = select(source, [["all", text("Todos los catálogos", "All catalogues")], ["gutenberg", "Project Gutenberg"], ["openlibrary", "Open Library"],
-      ["archive", "Internet Archive"], ["google", "Google Books · gratuitos"], ["standard", "Standard Ebooks"], ["wikisource", "Wikisource"], ["web", text("Buscar en la web", "Search the web")]], value => { source = value; page = 1; store.set("books.source", value); });
+      ["archive", "Internet Archive"], ["google", "Google Books · gratuitos"], ["standard", "Standard Ebooks"], ["wikisource", "Wikisource"], ["web", text("Buscar en la web", "Search the web")]], value => { source = value; page = 1; store.set("books.source", value); search(); });
     const more = h("button", { class: "btn ghost wide", hidden: true, onclick: () => { page++; search(true); } }, text("Más libros", "More books"));
     const details = book => openSheet(book.title, [h("p", {}, (book.authors || []).join(", ")),
       h("p", { class: "muted small" }, book.source + " · " + book.access),
@@ -104,6 +125,7 @@ window.BookShelf = (() => {
       h("p", { class: "note" }, text("Descargar guarda una copia de lectura en esta miniapp. EPUB/PDF se convierten a texto. No se eluden préstamos ni DRM. Comprueba los derechos en tu país.", "Download saves a reading copy in this miniapp. EPUB/PDF are converted to text. Loans and DRM are never bypassed. Check rights in your country.")),
       h("a", { class: "btn ghost", href: book.url, target: "_blank", rel: "noopener noreferrer" }, text("Ficha y formatos originales", "Record and original formats"))]);
     const addBook = book => {
+      if (!local.has(book.id) && !(book.downloads || []).some(item => ["txt", "epub", "pdf", "html", "htm"].includes(item.format))) return;
       const button = h("button", { class: "btn primary small", onclick: async () => {
         if (local.has(book.id)) return reader(local.get(book.id));
         button.disabled = true;
@@ -132,32 +154,41 @@ window.BookShelf = (() => {
       } }, icon("trash"), t("delete")));
       add(shelf, card);
     };
-    const search = async (append = false) => {
+    const search = async (append = false, force = false) => {
       const version = ++revision;
       status.textContent = t("searching");
       if (!append) shelf.replaceChildren();
       more.hidden = true;
       try {
-        const response = await bridge.call("books", { do: "search", source, q: query.value.trim(), page, language: "" });
+        const args = { do: "search", source, q: query.value.trim(), page, language: "" };
+        store.set("books.query", args.q);
+        const key = JSON.stringify(args), recent = store.get("books.catalogueCache", []);
+        const hit = recent.find(item => item.key === key && Date.now() - item.at < 600000);
+        status.classList.add("book-sync"); status.setAttribute("aria-busy", "true");
+        status.textContent = text("Sincronizando catálogo…", "Syncing catalogue…");
+        const response = hit && !force ? hit.data : await bridge.call("books", args);
+        if (!hit || force) store.set("books.catalogueCache", [{ key, data: response, at: Date.now() }, ...recent.filter(item => item.key !== key)].slice(0, 6));
+        status.classList.remove("book-sync"); status.removeAttribute("aria-busy");
         if (!main.isConnected || version !== revision || active !== "catalogue") return;
         (response.books || []).forEach(addBook);
         more.hidden = !response.more;
         status.textContent = response.unavailable?.length ? text("Algunas fuentes no respondieron: ", "Some sources did not respond: ") + response.unavailable.join(", ") : (response.books?.length ? "" : t("no_results"));
-      } catch (_) { if (version === revision) status.textContent = text("La fuente no respondió. Prueba otro catálogo o la búsqueda web.", "The source did not respond. Try another catalogue or web search."); }
+      } catch (_) { status.classList.remove("book-sync"); status.removeAttribute("aria-busy"); if (version === revision) status.textContent = text("La fuente no respondió. Prueba otro catálogo o la búsqueda web.", "The source did not respond. Try another catalogue or web search."); }
     };
     const controls = h("div", { class: "stack" });
     // askBox owns its own field in older clients; keep a clear explicit search form.
-    fill(controls, sourcePicker, h("div", { class: "row" }, query, h("button", { class: "btn primary", onclick: () => { page = 1; search(); } }, icon("search"), t("search"))));
+    fill(controls, sourcePicker, h("div", { class: "row" }, query, h("button", { class: "btn primary", onclick: () => { page = 1; search(); } }, icon("search"), t("search")), h("button", { class: "icon-btn", "aria-label": t("refresh"), onclick: () => { page = 1; search(false, true); } }, icon("refresh"))));
     query.addEventListener("keydown", event => { if (event.key === "Enter") { page = 1; search(); } });
     const drawTab = async value => {
       stopSpeech(); active = value; revision++; shelf.replaceChildren(); more.hidden = true; controls.hidden = value !== "catalogue"; status.textContent = "";
+      if (value === "catalogue") { page = 1; search(); }
       if (value === "saved") { for (const book of local.values()) addBook(book); if (!local.size) status.textContent = text("Todavía no hay libros descargados en esta instancia.", "No downloaded books in this instance yet."); }
     };
-    add(main, h("p", { class: "note" }, text("Biblioteca de fuentes públicas. No todos los resultados permiten descargar; las copias guardadas pertenecen a esta instancia de la miniapp.", "Library of public sources. Not every result is downloadable; saved copies belong to this miniapp instance.")),
+    add(main, h("p", { class: "note" }, text("Libros con copia de lectura descargable. Los préstamos y fichas sin descarga no se muestran. Las copias guardadas pertenecen a esta miniapp.", "Books with downloadable reading copies. Loans and records without downloads are hidden. Saved copies belong to this miniapp instance.")),
       segmented(active, [["catalogue", text("Explorar", "Explore")], ["saved", text("Mi biblioteca", "My library")]], drawTab), controls, status, shelf, more);
     try { local = new Map((await all()).map(book => [book.id, book])); } catch (_) { status.textContent = text("Almacenamiento local no disponible. No se afirmará que un libro fue guardado.", "Local storage unavailable. Books will not be reported as saved."); }
     if (active === "saved") drawTab("saved");
     else search();
   }
-  return { mount, stopSpeech, all };
+  return { mount, stopSpeech, all, clearCache() { recentCovers.clear(); store.del("books.coverCache"); store.del("books.catalogueCache"); } };
 })();

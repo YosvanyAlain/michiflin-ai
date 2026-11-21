@@ -84,7 +84,7 @@ function brandOf(model, provider) {
   for (const text of [(model && model.title) || "", (model && model.id) || ""]) {
     for (const [pattern, name] of BRAND_RULES) if (pattern.test(text)) return name;
   }
-  return (!model && PROVIDER_BRANDS[provider && provider.key]) || "";
+  return (model && (model.title || model.id)) || PROVIDER_BRANDS[provider && provider.key] || (provider && provider.name) || "AI";
 }
 
 function brandMark(name, extra = "") {
@@ -100,7 +100,9 @@ function brandMark(name, extra = "") {
     holder.appendChild(image);
   } else {
     holder.classList.add("brand-generic");
-    holder.appendChild(icon("ai"));
+    holder.classList.add("brand-name");
+    holder.title = name || "AI";
+    holder.textContent = String(name || "AI").replace(/[^\p{L}\p{N} ]/gu, " ").trim().split(/\s+/).map(word => word[0]).join("").slice(0, 3).toUpperCase();
   }
   return holder;
 }

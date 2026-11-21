@@ -38,7 +38,17 @@ def owner_verified(rpc, account: int, contact_id: int) -> bool:
 
 
 def owner_present(rpc, account: int, chat_id: int) -> bool:
-    return any(owner_verified(rpc, account, int(cid)) for cid in rpc.get_chat_contacts(account, chat_id))
+    record = state.data.get('public_groups', {}).get(str(chat_id), {})
+    approved_key = record.get('owner_key', '') if isinstance(record, dict) else ''
+    for cid in rpc.get_chat_contacts(account, chat_id):
+        if owner_verified(rpc, account, int(cid)):
+            return True
+        if approved_key:
+            contact = rpc.get_contact(account, int(cid))
+            if (str(contact.address or '').casefold() == config.OWNER_ADDRESS.casefold()
+                    and identity_guard.contact_fingerprint(rpc, account, int(cid)) == approved_key):
+                return True
+    return False
 
 
 def parse(text: str) -> tuple[str, str] | None:
@@ -122,7 +132,25 @@ def offer(bot, account: int, message, info) -> bool:
     try:
         if command in {'enable', 'disable'}:
             if not owner_verified(rpc, account, int(message.from_id)):
-                return False
+                # Legacy identities may have no global owner pin. Do not
+                # silently weaken verification: request explicit private-app approval.
+                contact = rpc.get_contact(account, int(message.from_id))
+                if command != 'enable' or str(contact.address or '').casefold() != config.OWNER_ADDRESS.casefold():
+                    return False
+                if not identity_guard.contact_fingerprint(rpc, account, int(message.from_id)):
+                    return False
+                with state.lock:
+                    groups = state.data.setdefault('public_groups', {})
+                    previous = groups.get(str(chat_id), {})
+                    if time.time() - float(previous.get('requested', 0)) < 60:
+                        return True
+                    if len(groups) >= 20 and str(chat_id) not in groups:
+                        return False
+                    groups[str(chat_id)] = {**previous, 'enabled': False, 'requested': time.time(),
+                                            'title': str(getattr(info, 'name', '') or '')[:120]}
+                    state.save()
+                _send(rpc, account, chat_id, 'Michiflin · Confirma la activación desde mi miniapp en el chat individual: Ajustes → Grupos públicos. Solo búsqueda sin IA, tasas y clima.', control=True)
+                return True
             if command == 'enable' and getattr(info, 'is_contact_request', False):
                 rpc.accept_chat(account, chat_id)  # only the already-pinned owner may admit this group
             with state.lock:
@@ -131,6 +159,13 @@ def offer(bot, account: int, message, info) -> bool:
             _send(rpc, account, chat_id, 'Michiflin · herramientas públicas del grupo ' + ('activadas.' if command == 'enable' else 'desactivadas.'), control=True)
             return True
         if not _enabled(rpc, account, chat_id):
+            if owner_verified(rpc, account, int(message.from_id)):
+                with _lock:
+                    if time.monotonic() - _last.get(chat_id, 0) < 10:
+                        return True
+                    _last[chat_id] = time.monotonic()
+                _send(rpc, account, chat_id, 'Michiflin · Este grupo aún no está activado. Escribe /michiflin activar. Herramientas públicas: /buscar, /tasas y /clima.', control=True)
+                return True
             return False
         with _lock:
             if time.monotonic() - _last.get(chat_id, 0) < 3 or not _slots.acquire(blocking=False):
@@ -161,3 +196,47 @@ def offer(bot, account: int, message, info) -> bool:
         return True
     except Exception:
         return False
+
+
+def manage(private_chat: int, args: dict) -> dict:
+    """Approval is accepted only through the owner's encrypted individual app."""
+    if chat.sender().casefold() != config.OWNER_ADDRESS.casefold():
+        raise ValueError('owner_required')
+    rpc, account = chat.rpc(), chat.account()
+    info = rpc.get_basic_chat_info(account, private_chat)
+    if str(getattr(info.chat_type, 'value', info.chat_type)) != 'Single' or getattr(info, 'is_encrypted', False) is not True:
+        raise ValueError('private_encrypted_chat_required')
+    action = args.get('do', 'status')
+    if action in {'enable', 'disable'}:
+        group_id = int(args.get('id', 0))
+        record = state.data.get('public_groups', {}).get(str(group_id))
+        if not isinstance(record, dict):
+            raise ValueError('unknown_group')
+        if action == 'enable':
+            if os.getenv('GROUP_PUBLIC_TOOLS', '0') != '1':
+                raise ValueError('groups_disabled')
+            if not record.get('enabled') and time.time() - float(record.get('requested', 0)) > 86400:
+                raise ValueError('request_expired')
+            group = rpc.get_basic_chat_info(account, group_id)
+            if str(getattr(group.chat_type, 'value', group.chat_type)) != 'Group' or group.is_encrypted is not True:
+                raise ValueError('encrypted_group_required')
+            peers = set(rpc.get_chat_contacts(account, private_chat)) & set(rpc.get_chat_contacts(account, group_id))
+            owner = next((int(cid) for cid in peers if str(rpc.get_contact(account, cid).address or '').casefold() == config.OWNER_ADDRESS.casefold()), 0)
+            fingerprint = identity_guard.contact_fingerprint(rpc, account, owner) if owner else ''
+            if not fingerprint:
+                raise ValueError('owner_key_required')
+            if getattr(group, 'is_contact_request', False):
+                rpc.accept_chat(account, group_id)
+            record = {**record, 'enabled': True, 'owner_key': fingerprint, 'updated': time.time()}
+        else:
+            record = {**record, 'enabled': False, 'updated': time.time()}
+        with state.lock:
+            state.data.setdefault('public_groups', {})[str(group_id)] = record
+            state.save()
+        _send(rpc, account, group_id, 'Michiflin · herramientas públicas del grupo ' + ('activadas. /ayuda' if action == 'enable' else 'desactivadas.'), control=True)
+    elif action != 'status':
+        raise ValueError('action')
+    return {'available': os.getenv('GROUP_PUBLIC_TOOLS', '0') == '1', 'groups': [
+        {'id': int(gid), 'title': str(row.get('title') or 'Grupo ' + gid)[:120], 'enabled': bool(row.get('enabled')),
+         'pending': not row.get('enabled') and time.time() - float(row.get('requested', 0)) < 86400}
+        for gid, row in list(state.data.get('public_groups', {}).items())[-20:] if isinstance(row, dict)]}

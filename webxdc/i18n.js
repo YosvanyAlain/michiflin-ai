@@ -3,6 +3,7 @@
 const I18N = {
   es: {
     op_books: "Biblioteca",
+    op_public_groups: "Grupos públicos",
     op_youtube_thumbs: "Miniaturas de YouTube",
     tile_books: "Biblioteca",
     more_below: "Más opciones abajo",
@@ -1283,6 +1284,7 @@ const I18N = {
   },
   en: {
     op_books: "Book library",
+    op_public_groups: "Public groups",
     op_youtube_thumbs: "YouTube thumbnails",
     tile_books: "Book library",
     more_below: "More options below",
