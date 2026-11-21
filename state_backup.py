@@ -186,6 +186,10 @@ def archive(source: Path) -> bytes:
 
 def _skip_bulky(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
     """Leave out sent/received attachment copies and temporary files; keys and databases stay."""
+    if os.getenv("STATE_BACKUP_INCLUDE_MEDIA", "1") == "0" and member.isfile() and "-blobs/" in member.name:
+        from michiflin.media_retention import is_downloaded_media
+        if is_downloaded_media(member.name):
+            return None
     if (os.getenv("STATE_BACKUP_INCLUDE_BLOBS", "0") != "1" and member.isfile()
             and "-blobs/" in member.name and member.size > MAX_BLOB_BYTES):
         return None

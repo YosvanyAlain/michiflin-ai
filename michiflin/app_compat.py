@@ -1,9 +1,9 @@
 """Fail-closed compatibility for exact previously shipped WebXDC packages.
 
-Only files changed by a later package are archived. Every other source file is
-verified against the pinned manifest before its epoch-specific hash is returned.
-A package is identified by its own manifest, so files that later packages added
-are skipped; every file the package did ship must still exist and match.
+The oldest non-retired sources retain exact source verification. Later packages
+use independently calculated, pinned fingerprints for the deployed epoch so
+retired theme implementations do not need to remain in this source tree.
+Unknown epochs and modified manifests fail closed.
 """
 from __future__ import annotations
 
@@ -24,6 +24,34 @@ _AUDIT_BASE_REPLACED = {"index.html", "app.css", "app.js", "core.js", "i18n.js"}
 
 _PRE_REFRESH = Path(__file__).resolve().parent / "compat" / "pre-refresh"
 _PRE_REFRESH_REPLACED = {'app.css', 'core.js', 'i18n.js', 'app.js', 'index.html'}
+
+
+_KNOWN_BUILDS = Path(__file__).resolve().parent / "compat" / "known-builds.json"
+_KNOWN_BUILDS_SHA256 = "282a177ae427159bb09e739bfe609ef9614a8d53b0d694c1ff30121cedcd7104"
+
+
+def _registered_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str], package: str) -> str:
+    try:
+        raw = _KNOWN_BUILDS.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != _KNOWN_BUILDS_SHA256:
+            return ""
+        registry = json.loads(raw)
+        if registry.get("version") != 1:
+            return ""
+        entry = registry["packages"][package]
+        manifest = (source_dir / "manifest.json").read_bytes()
+        if hashlib.sha256(manifest).hexdigest() != entry["manifest_sha256"]:
+            return ""
+        expected = json.loads(manifest)
+        if not isinstance(expected, dict) or not expected or not set(expected) <= set(files):
+            return ""
+        for name, digest in expected.items():
+            if name not in replaced and hashlib.sha256((Path(app_dir) / name).read_bytes()).hexdigest() != digest:
+                return ""
+        build = entry["builds"].get(hashlib.sha256(epoch.encode()).hexdigest(), "")
+        return build if isinstance(build, str) and len(build) == 10 and all(c in "0123456789abcdef" for c in build) else ""
+    except (OSError, TypeError, ValueError, UnicodeError, KeyError, AttributeError):
+        return ""
 
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
@@ -63,14 +91,14 @@ def latest_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
 
 def published_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """The exact e8a104c package, or empty when it cannot be verified."""
-    return _pinned_build(epoch, app_dir, files, _PUBLISHED, _PUBLISHED_REPLACED)
+    return _registered_build(epoch, app_dir, files, _PUBLISHED, _PUBLISHED_REPLACED, "e8a104c")
 
 
 def audit_base_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """Preserve the exact package shipped before the local QA corrections."""
-    return _pinned_build(epoch, app_dir, files, _AUDIT_BASE, _AUDIT_BASE_REPLACED)
+    return _registered_build(epoch, app_dir, files, _AUDIT_BASE, _AUDIT_BASE_REPLACED, "ec7e67e")
 
 
 def pre_refresh_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """Recognize the unmodified package already in the owner's chat. Never served anew."""
-    return _pinned_build(epoch, app_dir, files, _PRE_REFRESH, _PRE_REFRESH_REPLACED)
+    return _registered_build(epoch, app_dir, files, _PRE_REFRESH, _PRE_REFRESH_REPLACED, "pre-refresh")

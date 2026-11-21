@@ -379,6 +379,17 @@ def _verified_target(job: dict[str, Any]) -> bool:
 def _finish_job(job: dict[str, Any], outcome: str) -> None:
     if _verified_target(job):
         progress.finish_job(job.get("source_msg", 0), outcome)
+        _discard_completed_download(job)
+
+
+def _discard_completed_download(job: dict[str, Any]) -> None:
+    if (config.RETAIN_DOWNLOADED_MEDIA or job.get("status") != "done" or job.get("inflight")
+            or not re.fullmatch(r"[0-9a-z]+", str(job.get("id", "")))):
+        return
+    base = folder(job)
+    if not base.is_symlink() and base.resolve().parent == config.JOB_ROOT.resolve():
+        shutil.rmtree(base, ignore_errors=True)
+    chat.discard_delivered_media(job.get("messages") or [])
 
 
 def _status(job: dict[str, Any], line: str, timer: bool = True) -> None:
@@ -1263,7 +1274,11 @@ def cleanup() -> None:
             jobs().pop(job["id"], None)
     for job in expired:
         shutil.rmtree(folder(job), ignore_errors=True)
-    # Delivered files are kept for re-sends until disk gets tight.
+    if not config.RETAIN_DOWNLOADED_MEDIA:
+        for job in list(jobs().values()):
+            if access.job_allowed(job):
+                _discard_completed_download(job)
+    # In retention mode, delivered files remain available until disk gets tight.
     if free_disk() < config.MIN_FREE_DISK_BYTES * 2:
         with state.lock:
             done = sorted((job for job in jobs().values() if job["status"] == "done"

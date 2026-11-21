@@ -245,4 +245,9 @@ The default Michiflin palette restores its original teal. The local vector masco
 
 Download badges cover **ready to send**, **done**, **failed** and **cancelled** outcomes, not just background activity. A sync reconciles missed transitions, timestamps prevent older pushes from rolling back newer results, and persisted event codes suppress duplicates. Quiet recovery runs only while unfinished work exists and yields to deliberate actions. Email transport can still delay a result; a badge cannot precede receipt of that result.
 
-The exact source snapshots in `michiflin/compat/` are retained solely to verify already-sent package fingerprints and preserve their access to the same bot. They are not included in newly built miniapps. An updated miniapp is a separate WebXDC instance; previous copies and their local data must not be deleted to install it.
+Compatibility metadata in `michiflin/compat/` preserves access for already-sent packages. Packages with retired themes retain only independently verified, epoch-bound fingerprints and manifests, not their obsolete implementation. Earlier snapshots without that theme remain for exact legacy browser regression tests. None of these are included in newly built miniapps. An updated miniapp is a separate WebXDC instance; previous copies and their local data must not be deleted to install it.
+
+
+### Lightweight download retention
+
+The owner deployment disables downloaded-media retention. Audio/video copies are excluded from new account snapshots; identity databases, keys, app instances, settings, notes and documents are retained. Completed download work directories and confirmed delivered audio/video blobs are released locally, never from the recipient's device. Pending sends retain their bytes until completion. A restored older queue is held for explicit review rather than automatically replayed.

@@ -177,6 +177,9 @@ def _screen(bot: Any, accid: int, msg: Any) -> tuple | None:
     """Decide whether a message needs work; raises on transient RPC failures so it is retried later."""
     if msg.from_id in (0, 1, 2) or getattr(msg, "is_info", False):
         return None
+    recovery = state.data.get("flags", {}).get("lightweight_recovery", {})
+    if isinstance(recovery, dict) and str(getattr(msg, "id", "")) in recovery.get("skip_message_ids", []):
+        return None  # old uncheckpointed work requires a new explicit request
     info = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
     kind = getattr(info, "chat_type", "")
     if str(getattr(kind, "value", kind)) != "Single":

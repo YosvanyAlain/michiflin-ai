@@ -27,7 +27,7 @@ def test_pre_audit_archive_cannot_be_silently_modified(monkeypatch, tmp_path):
     monkeypatch.setattr(app_compat, '_AUDIT_BASE', archive)
     monkeypatch.setattr(config, 'BOT_EPOCH', 'test-epoch')
     assert app_compat.audit_base_build('test-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES) == 'c8a5f423ba'
-    with (archive / 'core.js').open('a') as handle:
+    with (archive / 'manifest.json').open('a') as handle:
         handle.write('\n// tampering\n')
     assert app_compat.audit_base_build('test-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES) == ''
     assert not miniapp.compatible_build({'build': 'c8a5f423ba'})

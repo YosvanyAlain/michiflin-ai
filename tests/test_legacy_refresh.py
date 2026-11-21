@@ -159,7 +159,7 @@ def test_exact_pre_refresh_package_remains_epoch_bound(monkeypatch, tmp_path):
     archived = tmp_path / "archive"
     shutil.copytree(app_compat._PRE_REFRESH, archived)
     monkeypatch.setattr(app_compat, "_PRE_REFRESH", archived)
-    with (archived / "app.js").open("a") as stream:
+    with (archived / "manifest.json").open("a") as stream:
         stream.write("\n// synthetic alteration\n")
     assert app_compat.pre_refresh_build("test-epoch", str(miniapp.APP_DIR), miniapp.APP_FILES) == ""
     assert not miniapp.compatible_build({"build": old})

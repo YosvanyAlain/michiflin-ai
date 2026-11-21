@@ -26,7 +26,7 @@ def test_published_package_is_rejected_if_archived_bytes_change(monkeypatch, tmp
     shutil.copytree(app_compat._PUBLISHED, archive)
     monkeypatch.setattr(app_compat, '_PUBLISHED', archive)
     assert app_compat.published_build('test-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES) == '4ac9c2697e'
-    with (archive / 'app.js').open('a', encoding='utf-8') as handle:
+    with (archive / 'manifest.json').open('a', encoding='utf-8') as handle:
         handle.write('\n// synthetic tampering\n')
     assert app_compat.published_build('test-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES) == ''
     assert not miniapp.compatible_build({'build': '4ac9c2697e'})

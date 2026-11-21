@@ -156,6 +156,9 @@ MEDIA_PROXY = env("MEDIA_PROXY")
 WEB_PROXY = env("WEB_PROXY", MEDIA_PROXY)
 YTDLP_COOKIES = env("YTDLP_COOKIES")
 
+# The owner may discard completed local download copies, not pending delivery bytes.
+RETAIN_DOWNLOADED_MEDIA = env("RETAIN_DOWNLOADED_MEDIA", "1") != "0"
+
 # Runtime paths.
 CONFIG_DIR = Path(env("CONFIG_DIR", str(Path.home() / ".config" / APP_NAME)))
 STATE_FILE = CONFIG_DIR / "michiflin-state.json"

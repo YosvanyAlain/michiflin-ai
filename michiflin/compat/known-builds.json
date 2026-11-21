@@ -1,0 +1,26 @@
+{
+  "packages": {
+    "e8a104c": {
+      "builds": {
+        "4c8ee9fd255406951b3d1f9d18e876e19c547567a56e62ce3a552b4ebe6a801c": "4ac9c2697e",
+        "510b573070c1a5f4860a0d633ad4c54c7c6c0b185e0b0a358730e78db73ed789": "7ebe605e11"
+      },
+      "manifest_sha256": "596ffd6ed4786fb413a859503721fd7222e082f2b936bfba7662c35d1bce2b16"
+    },
+    "ec7e67e": {
+      "builds": {
+        "4c8ee9fd255406951b3d1f9d18e876e19c547567a56e62ce3a552b4ebe6a801c": "c8a5f423ba",
+        "510b573070c1a5f4860a0d633ad4c54c7c6c0b185e0b0a358730e78db73ed789": "f4476e3293"
+      },
+      "manifest_sha256": "04b0a44e253ff0aed84b9f4422786c17ec4711c8149ef38ecdf8426a9db553b9"
+    },
+    "pre-refresh": {
+      "builds": {
+        "4c8ee9fd255406951b3d1f9d18e876e19c547567a56e62ce3a552b4ebe6a801c": "55cacec817",
+        "510b573070c1a5f4860a0d633ad4c54c7c6c0b185e0b0a358730e78db73ed789": "c7b23ef76b"
+      },
+      "manifest_sha256": "eb8197e97842068f359aad978b9fb888acfd86181cd0c70de5e49b51893da93c"
+    }
+  },
+  "version": 1
+}

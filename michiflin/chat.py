@@ -357,3 +357,39 @@ def prune_history(max_age: int = 3600, per_chat: int = 400, keep: set[int] | Non
     except Exception as exc:
         log.warning("history prune failed: %s", exc)
     return removed
+
+
+def discard_delivered_media(message_ids: list[int]) -> int:
+    """Remove only this bot's delivered audio/video blobs; keep messages and pending sends."""
+    if config.RETAIN_DOWNLOADED_MEDIA or not ready() or not message_ids:
+        return 0
+    from .media_retention import account_blob, is_downloaded_media
+    try:
+        with _lock:
+            candidates = set()
+            for msg_id in message_ids:
+                msg = _bot.rpc.get_message(_accid, int(msg_id))
+                path = Path(str(getattr(msg, "file", "") or ""))
+                value = getattr(msg, "state", 0)
+                if (int(getattr(value, "value", value) or 0) in DELIVERED
+                        and is_downloaded_media(str(path), getattr(msg, "file_mime", "") or "")
+                        and account_blob(path, config.CONFIG_DIR)):
+                    candidates.add(path)
+            if not candidates:
+                return 0
+            # A content-addressed blob may also back a newer outgoing message.
+            for chat_id in _bot.rpc.get_chatlist_entries(_accid, None, None, None):
+                for msg_id in _bot.rpc.get_message_ids(_accid, chat_id, False, False):
+                    msg = _bot.rpc.get_message(_accid, msg_id)
+                    value = getattr(msg, "state", 0)
+                    if int(getattr(value, "value", value) or 0) in PENDING_OUT:
+                        candidates.discard(Path(str(getattr(msg, "file", "") or "")))
+            removed = 0
+            for path in candidates:
+                if account_blob(path, config.CONFIG_DIR):
+                    path.unlink()
+                    removed += 1
+            return removed
+    except Exception as exc:
+        log.warning("local media cleanup deferred (%s)", type(exc).__name__)
+        return 0
