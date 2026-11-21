@@ -27,6 +27,9 @@ jobs:
       MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
       STATE_BACKUP_PASSPHRASE: ${{ secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE'] }}
       OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      # Match the current runtime generation; old packages remain stored but revoked.
+      REVOKE_LEGACY_MINIAPPS: "1"
+      MINIAPP_RELEASE: "public-private-20261119-v1"
       SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
     steps:
