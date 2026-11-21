@@ -56,9 +56,13 @@ def test_image_outside_viewport_keeps_badge_until_seen(engine, failed):
           cache.models.images=Array.from({length:10},(_,i)=>({key:'test'+i+':model',label:'Modelo '+i,used:0,daily:10}));
           go('images');}""")
         page.wait_for_function("viewReady()&&imagesReadyToAcknowledge")
-        rid = page.evaluate("""failed=>{const m=document.querySelector('#view');
-          m.scrollTop=failed?m.scrollHeight:0;createImage('Imagen fuera del encuadre');
-          return Object.entries(bridge.pending()).find(([,x])=>x.op==='image')[0];}""", failed)
+        # Results intentionally moved next to the prompt and no longer sit
+        # below ten expanded model rows. Make this fixture genuinely offscreen
+        # without reverting the compact UI or changing notification assertions.
+        page.add_style_tag(content="#view .image-model-picker { margin-bottom: 1400px; }")
+        rid = page.evaluate("""()=>{document.querySelector('#view').scrollTop=0;
+          createImage('Imagen fuera del encuadre');
+          return Object.entries(bridge.pending()).find(([,x])=>x.op==='image')[0];}""")
         deliver(page, rid, IMAGE, "Fallo fuera del encuadre" if failed else "")
         page.wait_for_function("id=>imagesReadyToAcknowledge && !!document.querySelector('[data-image-id=\"'+id+'\"]')", arg=rid)
         selector = f'[data-image-id="{rid}"]'
@@ -654,7 +658,11 @@ def test_opening_a_closed_utility_marks_its_now_visible_result(engine):
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid)
         assert not details.get_by_text("Resultado en sección cerrada", exact=False).first.is_visible()
         details.locator("summary").click()
-        details.get_by_text("Resultado en sección cerrada", exact=False).first.wait_for(state="visible")
+        result = details.get_by_text("Resultado en sección cerrada", exact=False).first
+        result.wait_for(state="visible")
+        # Expanded is not the same as in the viewport when local tools are
+        # above this utility. Only actual exposure may acknowledge the result.
+        result.scroll_into_view_if_needed()
         page.wait_for_function("id=>!store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid, timeout=3000)
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='tool').length") == 1
         assert errors == []

@@ -390,6 +390,20 @@ class HumanBrowserSandboxTests(unittest.TestCase):
                                   '"fixture_error": str(exc) if isinstance(exc, ValueError) else type(exc).__name__})')
                     self.assertIn(catch, text)
                     text = text.replace(catch, diagnostic, 1)
+                    # Synthetic-only startup diagnostics. Production still emits
+                    # its bounded generic error, never URLs or raw exceptions.
+                    startup_catch = 'except Exception:\n        # Never print a traceback'
+                    self.assertIn(startup_catch, text)
+                    text = text.replace(startup_catch,
+                                        'except Exception as exc:\n        # Never print a traceback', 1)
+                    startup_emit = ('emit({"kind": "error", "error": "human_unavailable"})\n'
+                                    '        except Exception:')
+                    self.assertIn(startup_emit, text)
+                    text = text.replace(startup_emit,
+                                        'emit({"kind": "error", "error": "human_unavailable", '
+                                        '"fixture_error": str(exc) if isinstance(exc, ValueError) '
+                                        'and str(exc) in {"display", "browser", "focus"} '
+                                        'else type(exc).__name__})\n        except Exception:', 1)
                     Path(dst).write_text(text, encoding="utf-8")
                     return dst
                 return original_copy(src, dst, *args, **kwargs)
