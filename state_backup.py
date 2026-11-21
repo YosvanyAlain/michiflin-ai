@@ -47,6 +47,9 @@ ITERATIONS = 480_000
 # The Git data API accepts blobs up to 100 MB; the contents API only about 1 MB.
 MAX_BACKUP_BYTES = 90_000_000
 MAX_CONTENTS_BACKUP_BYTES = 950_000
+# Releases are not Git blobs: retain complete attachments with a separate,
+# bounded limit. Download incrementally and stop before buffering beyond it.
+MAX_RELEASE_BACKUP_BYTES = 256_000_000
 # Attachment copies above this size are not needed to resume the account.
 MAX_BLOB_BYTES = 200_000
 RELEASE_TAG = "michiflin-state-releases-v1"
@@ -509,11 +512,26 @@ def _verify_plaintext(plaintext: bytes) -> None:
 
 def _download_asset(token: str, repo: str, asset_id: int) -> bytes:
     response = requests.get(f"{_repo_base(repo)}/releases/assets/{asset_id}",
-                            headers={**headers(token), "Accept": "application/octet-stream"}, timeout=180)
-    response.raise_for_status()
-    if len(response.content) > MAX_BACKUP_BYTES:
-        raise ValueError("remote backup exceeds the safe size limit")
-    return response.content
+                            headers={**headers(token), "Accept": "application/octet-stream"},
+                            timeout=180, stream=True)
+    try:
+        response.raise_for_status()
+        declared = response.headers.get("Content-Length")
+        if declared is not None:
+            try:
+                length = int(declared)
+            except (TypeError, ValueError):
+                raise ValueError("remote backup has an invalid length") from None
+            if length < 0 or length > MAX_RELEASE_BACKUP_BYTES:
+                raise ValueError("remote backup exceeds the safe release size limit")
+        result = io.BytesIO()
+        for chunk in response.iter_content(chunk_size=1024 * 1024):
+            if result.tell() + len(chunk) > MAX_RELEASE_BACKUP_BYTES:
+                raise ValueError("remote backup exceeds the safe release size limit")
+            result.write(chunk)
+        return result.getvalue()
+    finally:
+        response.close()
 
 
 def _mark_ready(token: str, repo: str) -> None:
@@ -582,8 +600,8 @@ def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True
         _verify_clean_origin(plaintext)
     salt = os.urandom(SALT_BYTES)
     encrypted = MAGIC + salt + fernet_from(passphrase, salt).encrypt(plaintext)
-    if len(encrypted) > MAX_BACKUP_BYTES:
-        raise ValueError("encrypted state is too large; previous backups were kept")
+    if len(encrypted) > MAX_RELEASE_BACKUP_BYTES:
+        raise ValueError("encrypted state exceeds the safe release size limit; previous backups were kept")
     release = _ensure_release(token, repo)
     rid = release["id"]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(8) + ".bin"
