@@ -15,13 +15,13 @@ from tests.test_webxdc_browser import browser_fixture, screenshot_if_requested
 def test_styles_cover_navigation_icons_brands_banners_and_views(language, engine, width):
     with browser_fixture(language, {'width': width, 'height': 844}, engine=engine, touch=width < 900) as (page, errors):
         page.wait_for_function('cache.at > 0')
-        assert page.evaluate("Object.keys(ICONS).filter(k=>k!=='catpixel'&&k!=='catfullpixel'&&!PIXEL_ICONS[k])") == []
+        assert page.evaluate("VISUAL_STYLES.length") == 13
         # The source art must not change color, filter or require network just
         # because the surrounding frame adopts a look.
         official = page.evaluate("brandMark('gemini').querySelector('img').getAttribute('src')")
         assert official.startswith('data:image/')
         banners = {}
-        for style in ('michiflin', 'material', 'pixel', 'ocean'):
+        for style in ('michiflin', 'material', 'ocean'):
             for theme in ('light', 'dark'):
                 page.evaluate("x=>{prefs.style=x.style;prefs.theme=x.theme;prefs.accent='style';applyLook()}", {'style': style, 'theme': theme})
                 for tab in ('home', 'ai', 'web', 'apps', 'downloads', 'settings'):
@@ -35,14 +35,7 @@ def test_styles_cover_navigation_icons_brands_banners_and_views(language, engine
                         assert 'on' in (nav.get_attribute('class') or '')
                         icon = nav.locator('.ic')
                     assert icon.is_visible()
-                    if style == 'pixel':
-                        assert icon.evaluate("e=>getComputedStyle(e).strokeLinecap") == 'square'
-                        assert icon.locator('.icon-normal').evaluate("e=>getComputedStyle(e).display") == 'none'
-                        assert icon.locator('.icon-pixel').evaluate("e=>getComputedStyle(e).display") != 'none'
-                        if tab != 'settings' or width >= 900:
-                            assert float(icon.evaluate("e=>parseFloat(getComputedStyle(e).borderTopLeftRadius)")) <= 3
-                    else:
-                        assert icon.evaluate("e=>getComputedStyle(e).strokeLinecap") == 'round'
+                    assert icon.evaluate("e=>getComputedStyle(e).strokeLinecap") == 'round'
                     assert page.evaluate("document.querySelector('#view').scrollWidth <= document.querySelector('#view').clientWidth")
                 page.evaluate("""() => { const old=document.querySelector('#look-test-brand'); if(old) old.remove();
                   const brand=brandMark('gemini');brand.id='look-test-brand';document.body.appendChild(brand); }""")
@@ -50,9 +43,7 @@ def test_styles_cover_navigation_icons_brands_banners_and_views(language, engine
                 assert mark.locator('img').get_attribute('src') == official
                 assert mark.locator('img').evaluate('e=>getComputedStyle(e).filter') == 'none'
                 radius = float(mark.evaluate('e=>parseFloat(getComputedStyle(e).borderTopLeftRadius)'))
-                if style == 'pixel':
-                    assert radius <= 3
-                elif style == 'material':
+                if style == 'material':
                     assert radius >= 16
                 elif style == 'ocean':
                     assert radius >= 13
@@ -66,7 +57,7 @@ def test_styles_cover_navigation_icons_brands_banners_and_views(language, engine
             if width == 390:
                 screenshot_if_requested(page, 'complete-look-' + style)
         # All three regular home banners, including rates, reflect each look.
-        for style in ('material', 'pixel', 'ocean'):
+        for style in ('material', 'ocean'):
             assert all(a != b for a, b in zip(banners[style], banners['michiflin'])), (style, banners)
         assert errors == []
 
@@ -76,7 +67,7 @@ def test_system_scheme_matches_light_and_dark_in_all_looks(engine, width):
     with browser_fixture('en', {'width': width, 'height': 844}, engine=engine, touch=width < 900) as (page, errors):
         page.wait_for_function('cache.at > 0')
         variables = """() => {const s=getComputedStyle(document.documentElement);return ['--bg','--surface','--text','--muted','--accent'].map(k=>s.getPropertyValue(k).trim())}"""
-        for style in ('michiflin', 'material', 'pixel', 'ocean'):
+        for style in ('michiflin', 'material', 'ocean'):
             for scheme in ('light', 'dark'):
                 page.emulate_media(color_scheme=scheme)
                 page.evaluate("v=>{prefs.style=v;prefs.theme='system';prefs.accent='style';applyLook()}", style)

@@ -289,6 +289,9 @@ def test_paged_media_notice_from_home_opens_exact_page_or_error(view, fail):
           title:'Elemento '+(i+1),url:'https://youtube.com/watch?v=fixture'+(i+1)}));
           go(name,name==='music'?{q:'consulta',provider:'youtube'}:{q:'consulta'});}""", view)
         page.get_by_text('Elemento 15', exact=True).wait_for(state='visible')
+        # A locator being attached is not proof that the first page survived a
+        # visible paint. Complete that prerequisite before testing page 2.
+        page.wait_for_function('name=>!store.get("notices",[]).some(n=>n.unread&&n.target?.view===name)', arg=view)
         if fail:
             page.evaluate('window.__failNext.youtube_search=1')
         page.get_by_role('button', name='Mostrar más resultados').click()

@@ -98,9 +98,7 @@ const ICONS = {
   clip: '<path d="m21 11.5-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9"/>',
   more: '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
   cat: '<path d="M5.6 10.4 L6.9 5.4 L10.5 7.6 Q12 7.2 13.5 7.6 L17.1 5.4 L18.4 10.4 Q19.2 14.9 16.2 17.7 Q14.4 19.4 12 19.4 Q9.6 19.4 7.8 17.7 Q4.8 14.9 5.6 10.4 Z"/><circle cx="9.7" cy="12" r="1.5"/><circle cx="14.3" cy="12" r="1.5"/><path d="M11.35 14 L12.65 14 L12 14.75 Z" fill="currentColor" stroke="none"/><path d="M10.7 15.1 Q12 16.4 13.3 15.1"/>',
-  catpixel: '<path class="px-body" d="M2 2h2v2h-2zM20 2h2v2h-2zM2 4h4v2h-4zM18 4h4v2h-4zM2 6h6v2h-6zM16 6h6v2h-6zM2 8h20v2h-20zM2 10h20v2h-20zM2 12h20v2h-20zM2 14h20v2h-20zM2 16h20v2h-20zM4 18h16v2h-16zM6 20h12v2h-12z"/><path class="px-face" d="M6 10h4v2h-4zM14 10h4v2h-4zM6 12h4v2h-4zM14 12h4v2h-4zM10 14h4v2h-4z"/>',
   catfull: '<path d="M8.5 6.8 L8.1 3.3 L11 5.2 Q12 5 13 5.2 L15.9 3.3 L15.5 6.8 Q16.9 8.1 16.9 9.7 Q16.9 12.5 12 12.5 Q7.1 12.5 7.1 9.7 Q7.1 8.1 8.5 6.8 Z"/><path d="M9 12.4 Q7.3 15.3 7.5 18.6 Q7.6 20.6 9.5 20.6 L14.6 20.6 Q16.5 20.6 16.4 18.6 Q16.2 15.3 15 12.4"/><path d="M16.3 20.4 Q20.7 20.2 20.3 16.4 Q20.1 14.6 18.6 14.5"/><path d="M10.5 20.6 L10.5 18.7 M13.6 20.6 L13.6 18.7"/><circle cx="10.3" cy="9.5" r="0.95"/><circle cx="13.7" cy="9.5" r="0.95"/><path d="M11.4 10.9 L12.6 10.9 L12 11.6 Z" fill="currentColor" stroke="none"/><path d="M10.9 11.9 Q12 12.8 13.1 11.9"/>',
-  catfullpixel: '<path class="px-body" d="M4 2h2v2h-2zM18 2h2v2h-2zM4 4h4v2h-4zM16 4h4v2h-4zM4 6h16v2h-16zM4 8h16v2h-16zM4 10h16v2h-16zM6 12h12v2h-12zM6 14h12v2h-12zM20 14h2v2h-2zM6 16h12v2h-12zM20 16h2v2h-2zM6 18h16v2h-16zM4 20h4v2h-4zM10 20h4v2h-4zM16 20h4v2h-4z"/><path class="px-face" d="M6 8h4v2h-4zM14 8h4v2h-4z"/>',
   notes: '<rect x="4" y="3" width="16" height="19" rx="3"/><path d="M8 2v3M16 2v3M8 10h8M8 14h8M8 18h5"/>',
   links: '<path d="M10.5 13.5a4.5 4.5 0 0 0 6.4 0l2.6-2.6a4.5 4.5 0 0 0-6.4-6.4l-1.5 1.5"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4 0l-2.6 2.6a4.5 4.5 0 0 0 6.4 6.4l1.5-1.5"/>',
   nauta: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6M4 17l5-4M20 17l-5-4"/>',
@@ -108,89 +106,59 @@ const ICONS = {
   status: '<circle cx="12" cy="12" r="9"/><path d="M5 12h3l2-4 3 8 2-4h4"/>',
 };
 
-// Pixel variants for the interface icons. The multicolour cat is already
-// pixel art. Both paths stay in the SVG so appearance changes are immediate
-// and work offline.
-const PIXEL_ICONS = {
-  home: '<path d="M3 10h2V8h2V6h2V4h6v2h2v2h2v2h2M5 10v10h5v-6h4v6h5V10"/>',
-  ai: '<path d="M10 3h4v3h3v3h3v4h-3v3h-3v3h-4v-3H7v-3H4V9h3V6h3z"/><path d="M19 17h2v2h-2z"/>',
-  web: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM3 12h18M10 4 8 8v8l2 4M14 4l2 4v8l-2 4"/>',
-  apps: '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/>',
-  downloads: '<path d="M10 3h4v9h4v2h-2v2h-2v2h-4v-2H8v-2H6v-2h4zM4 20h16"/>',
-  settings: '<path d="M9 3h6v2h3v2h2v3h2v4h-2v3h-2v2h-3v2H9v-2H6v-2H4v-3H2v-4h2V7h2V5h3zM9 9h6v6H9z"/>',
-  back: '<path d="M15 4h-3v3H9v3H6v4h3v3h3v3h3M7 12h12"/>',
-  next: '<path d="M9 4h3v3h3v3h3v4h-3v3h-3v3H9M17 12H5"/>',
-  search: '<path d="M7 3h7v2h3v3h1v6h-1v3h-3v1H7v-1H4v-3H3V8h1V5h3zM17 17h2v2h2v2"/>',
-  image: '<path d="M3 3h18v18H3zM6 17h2v-2h2v-2h3v2h2v2h2v2M8 7h3v3H8z"/>',
-  youtube: '<path d="M4 5h16v2h2v10h-2v2H4v-2H2V7h2zM10 8v8h2v-1h2v-2h2v-2h-2V9h-2V8z"/>',
-  audio: '<path d="M10 5h3V4h7v12h-3v-2h-4V8h4M10 5v13H8v2H4v-4h6"/>',
-  news: '<path d="M4 3h15v15h2v3H6v-2H4zM8 7h7v3H8zM8 13h7M8 17h7"/>',
-  rates: '<path d="M4 4h8v2h2v7h-2v2H4v-2H2V6h2zM10 16h2v2h2v2h7v-2h1v-7h-5M7 7v5M5 9h4"/>',
-  weather: '<path d="M5 11V9h2V7h3V5h5v2h2v3h2v2h2v5h-2v2H5v-2H3v-4h2z"/>',
-  translate: '<path d="M3 5h10M8 3v2M5 8h2v2h2v2h2v2h2M12 8h-2v2H8v2H6v2H4M14 20l3-9h2l3 9M15 17h6"/>',
-  tools: '<path d="M5 3h14v18H5zM8 6h8v3H8zM8 12h1M12 12h1M16 12h1M8 16h1M12 16h1M16 16h1"/>',
-  chat: '<path d="M5 4h14v2h2v10h-2v2h-8v2H6v2H3v-4h2v-2H3V6h2z"/>',
-  file: '<path d="M5 3h9v2h2v2h2v2h2v12H5zM14 3v6h6"/>',
-  folder: '<path d="M3 5h7v2h11v13H3z"/>',
-  health: '<path d="M3 12h4v-2h2V6h2v12h2v-4h2v-2h6"/>',
-  notes: '<path d="M4 4h16v17H4zM8 2v4M16 2v4M8 10h8M8 14h8M8 18h5"/>',
-  bolt: '<path d="M12 3h4v5h4v3h-3v3h-3v3h-3v3H8v-7H4v-3h3V7h3V4h2z"/>',
-  bell: '<path d="M9 4h6v2h3v8h2v3H4v-3h2V6h3zM10 20h4"/>',
-  clock: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 7v5h4"/>',
-  close: '<path d="M5 5h2v2h2v2h2v2h2V9h2V7h2V5h2M5 19h2v-2h2v-2h2v-2h2v2h2v2h2v2h2"/>',
-  qr: '<path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM5 5h3v3H5zM16 5h3v3h-3zM5 16h3v3H5zM14 14h3v3h-3zM19 14h2v2h-2zM14 19h2v2h-2zM19 19h2v2h-2z"/>',
-  refresh: '<path d="M5 10V7h2V5h9v2h2v3h3V4M19 14v3h-2v2H8v-2H6v-3H3v6"/>',
-  send: '<path d="M3 10h3V8h4V6h4V4h4V2h3v6h-2v4h-2v4h-2v4h-3v2h-2v-7H7v-2H3zM10 15l8-9"/>',
-  cat: '<path d="M4 4h3v2h3v2h4V6h3V4h3v6h1v6h-2v3h-3v2H8v-2H5v-3H3v-6h1zM7 11h3v3H7zM14 11h3v3h-3z"/>',
-  catfull: '<path d="M7 12V6h2v2h6V6h2v6h-1v7H8v-7z"/><path d="M10 10h2v2h-2zM14 10h2v2h-2z"/><path d="M16 17h3v-4M9 19v2h2v-2M13 19v2h2v-2"/>',
-  alert: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 7v6M12 17h1"/>',
-  ban: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM6 6l12 12"/>',
-  book: '<path d="M3 4h7v2h2v14h-2v-2H3zM21 4h-7v2h-2v14h2v-2h7z"/>',
-  camera: '<path d="M3 7h5V5h2V3h4v2h2v2h5v13H3zM9 10h6v6H9z"/>',
-  check: '<path d="M4 12h3v3h3v2h2v-3h2v-2h2v-2h2V8h2V6h1"/>',
-  clip: '<path d="M16 6V4H8v2H6v12h2v2h8v-2h2V8h-2v9H9V8h4v7"/>',
-  cloudfog: '<path d="M5 11V9h2V7h3V5h5v2h2v3h2v2h2v2H3v-3zM5 17h14M7 20h12"/>',
-  cloudrain: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM7 17v3M12 17v3M17 17v3"/>',
-  cloudsnow: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM7 17v4M5 19h4M16 17v4M14 19h4"/>',
-  cloudstorm: '<path d="M5 10V8h2V6h3V4h5v2h2v3h2v2h2v3H3v-4zM12 15h3l-2 3h2l-4 4v-3H9z"/>',
-  code: '<path d="M8 5H6v2H4v2H2v6h2v2h2v2h2M16 5h2v2h2v2h2v6h-2v2h-2v2h-2M14 3l-4 18"/>',
-  copy: '<path d="M8 8h12v13H8zM5 16H3V3h12v2"/>',
-  down: '<path d="M5 9h2v2h2v2h2v2h2v-2h2v-2h2V9h2"/>',
-  drop: '<path d="M11 3h2v3h2v3h2v3h2v5h-2v3H7v-3H5v-5h2V9h2V6h2z"/>',
-  help: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM9 8V7h6v2h-2v2h-1v2M12 17h1"/>',
-  info: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM12 11v6M12 7h1"/>',
-  join: '<path d="M12 3 3 7l9 4 9-4zM3 12l9 4 9-4M3 17l9 4 9-4"/>',
-  killswitch: '<path d="M11 3h2v9h-2zM7 5H5v2H3v10h2v2h3v2h8v-2h3v-2h2V7h-2V5h-2"/>',
-  link: '<path d="M10 14h4v-2h2v-2h2V8h-2V6h-4v2h-2M14 10h-4v2H8v2H6v2h2v2h4v-2h2"/>',
-  links: '<path d="M10 14h4v-2h2v-2h2V8h-2V6h-4v2h-2M14 10h-4v2H8v2H6v2h2v2h4v-2h2"/>',
-  moon: '<path d="M15 3h-4v2H8v2H6v3H4v6h2v3h3v2h7v-2h3v-2h2v-3h-5v-2h-2V8h1z"/>',
-  more: '<path d="M4 11h2v2H4zM11 11h2v2h-2zM18 11h2v2h-2z"/>',
-  nauta: '<path d="M3 5h18v14H3zM4 7h2v2h2v2h2v2h4v-2h2V9h2V7h2"/>',
-  open: '<path d="M13 4h7v7M20 4l-9 9M18 13v7H4V6h7"/>',
-  pause: '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>',
-  pdf: '<path d="M5 3h9v2h2v2h2v2h2v12H5zM14 3v6h6M8 13h8M8 17h6"/>',
-  pin: '<path d="M9 3h6v2h2v5h2v2H5v-2h2V5h2zM12 12v9"/>',
-  play: '<path d="M7 4h3v2h3v2h3v2h3v4h-3v2h-3v2h-3v2H7z"/>',
-  plus: '<path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7z"/>',
-  share: '<path d="M4 12v8h16v-8M8 7h2V5h2V3h2v2h2v2M13 4v12"/>',
-  shield: '<path d="M11 3h2v2h4v2h3v7h-2v3h-2v2h-3v2h-2v-2H8v-2H6v-3H4V7h3V5h4z"/>',
-  status: '<path d="M8 3h8v2h3v3h2v8h-2v3h-3v2H8v-2H5v-3H3V8h2V5h3zM5 12h3v-2h2V8h2v8h2v-4h5"/>',
-  subtitles: '<path d="M3 5h18v14H3zM6 9h5M6 13h5M13 9h5M13 13h5"/>',
-  sun: '<path d="M9 8h6v2h2v4h-2v2H9v-2H7v-4h2zM12 2v3M12 19v3M2 12h3M19 12h3M4 4l2 2M18 18l2 2M20 4l-2 2M6 18l-2 2"/>',
-  swap: '<path d="M4 7h15M16 4h3v3h2v2h-2v2h-3M20 17H5M8 14H5v3H3v2h2v2h3"/>',
-  trash: '<path d="M5 6h14M9 6V3h6v3M7 7v13h10V7M10 10v7M14 10v7"/>',
-  up: '<path d="M5 15h2v-2h2v-2h2V9h2v2h2v2h2v2h2"/>',
-  user: '<path d="M9 3h6v2h2v5h-2v2H9v-2H7V5h2zM6 20v-3h2v-2h8v2h2v3z"/>',
-  video: '<path d="M3 3h18v18H3zM7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/>',
-  wind: '<path d="M3 7h12V5h3v2h-2M2 12h17v2h-2M3 17h9v2h-2"/>',
-};
-
 function icon(name, extra = "") {
   const holder = document.createElement("span");
   const key = Object.prototype.hasOwnProperty.call(ICONS, name) ? name : "info";
-  const normal = ICONS[key], pixel = PIXEL_ICONS[key];
-  const art = pixel ? `<g class="icon-normal">${normal}</g><g class="icon-pixel">${pixel}</g>` : normal;
+  const art = ICONS[key];
   holder.innerHTML = `<svg class="ic ${extra}" viewBox="0 0 24 24" aria-hidden="true">${art}</svg>`;
+  return holder.firstChild;
+}
+
+// Original local vector artwork: the same ginger cat, mint collar and cream
+// markings in both poses. No external images, fonts or animation runtime.
+function mascot(pose = "seated") {
+  const seated = `<ellipse cx="81" cy="183" rx="53" ry="9" fill="#082e2a" opacity=".16"/>
+    <g stroke="#653e32" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M110 161c41 12 41-38 21-38-14 0-15 13-8 18" fill="none" stroke="#df8c4c" stroke-width="17"/>
+      <path d="M56 91c-15 20-23 50-19 73 3 15 19 18 43 18s39-5 41-18c4-26-8-56-22-73" fill="#eaaa68"/>
+      <path d="M72 102c-13 16-14 35-12 64h39c2-30-1-48-14-65" fill="#fff0d9" stroke="none"/>
+      <path d="M55 144l1 32c-9 1-12 10 0 10h14c5 0 7-6 7-11v-24M100 144l-1 32c10 1 12 10 0 10H85c-5 0-7-6-7-11v-24" fill="#fff0d9"/>
+      <path d="M46 53 42 14c13 1 24 13 30 22m16 0c10-17 19-22 31-22l-5 40" fill="#eaaa68"/>
+      <path d="m49 26 3 25 17-10m23-1 20-14-4 25" fill="#e8a4a0" stroke="none"/>
+      <path d="M42 52c9-17 61-20 76 0 8 11 7 31-2 42-16 18-56 18-73-1-9-10-11-30-1-41Z" fill="#efb879"/>
+      <path d="m72 39 8 17 9-17" fill="#cc7f43" stroke="none"/>
+      <path d="M45 77c7-6 15-5 22 1 8-11 21-11 29 0 6-6 16-7 22-1-1 22-22 29-38 29S47 99 45 77" fill="#fff2df" stroke="none"/>
+      <path class="mascot-eyes" d="M54 68q6-7 12 0m28 0q6-7 12 0" fill="none" stroke-width="4"/>
+      <path d="m74 80 6 6 6-6Z" fill="#b76c6b" stroke="none"/>
+      <path d="M80 86v5m-8 0q8 7 16 0M49 81l-18-3m18 10-18 4m81-11 18-3m-18 10 18 4" fill="none" stroke-width="2"/>
+      <path d="M52 106q27 11 54-1l-2 8q-24 10-50 0Z" fill="#4cbfa8" stroke-width="2"/>
+      <circle cx="80" cy="116" r="6" fill="#f8ce6d" stroke-width="2"/>
+      <path d="M42 130l9 4m-11 8 9 3m60-15-9 4m12 8-9 3" stroke="#c37b43"/>
+    </g>`;
+  const running = `<g class="cat-tail" fill="none" stroke="#df8c4c" stroke-width="14" stroke-linecap="round"><path d="M56 82C10 92 4 43 26 42"/></g>
+    <g stroke="#653e32" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path class="cat-back-leg rear" d="M78 90 66 112 39 121q-8 10 7 10l34-10 19-26" fill="#d79254"/>
+      <path class="cat-front-leg rear" d="m141 92 7 24 23 10q10 9 14 0l-22-24-4-25" fill="#fff0d9"/>
+      <path d="M57 62q31-19 75-6c23 8 34 32 18 48-18 13-75 9-95-4-13-11-10-25 2-38Z" fill="#eaaa68"/>
+      <path d="M103 92q33 8 49-6l-2 16c-12 14-37 10-52 8Z" fill="#fff0d9" stroke="none"/>
+      <path class="cat-back-leg" d="M75 90 91 113 73 127q-4 9 9 9l29-19-16-29" fill="#efb879"/>
+      <path class="cat-front-leg" d="m140 90-9 23 10 19q11 8 13-2l-5-17 17-22" fill="#fff0d9"/>
+      <g class="cat-running-head">
+        <path d="m135 42 2-32q15 3 22 20m16 0 24-13-5 32" fill="#efb879"/>
+        <path d="m143 22 1 21 13-9m23 1 13-10-3 18" fill="#e8a4a0" stroke="none"/>
+        <path d="M134 44c15-17 48-15 62 0 10 10 11 29 3 40-14 19-48 20-64 2-10-11-11-29-1-42Z" fill="#efb879"/>
+        <path d="m159 32 8 14 8-13" fill="#cc7f43" stroke="none"/>
+        <path d="M138 69c10-5 18-1 22 3q12-12 24-1c10-5 16-3 18 2-1 20-21 25-35 25-17 0-28-11-29-19" fill="#fff2df" stroke="none"/>
+        <path d="m146 58 7 1m29-1 7-1" stroke-width="4"/>
+        <path d="m164 73 6 5 6-5Z" fill="#b76c6b" stroke="none"/>
+        <path d="m170 79 0 5m-6 0q6 6 12 0m-33-10-17-2m19 10-17 3m66-11 18-2m-19 10 18 3" fill="none" stroke-width="2"/>
+        <path d="M141 94q20 10 44-1l-4 8q-17 8-37 0Z" fill="#4cbfa8" stroke-width="2"/>
+        <circle cx="167" cy="104" r="5" fill="#f8ce6d" stroke-width="2"/>
+      </g>
+      <path d="m69 64 8 12m6-16 7 11m6-12 5 10" stroke="#c37b43"/>
+    </g>`;
+  const holder = document.createElement("span"), moving = pose === "running";
+  holder.innerHTML = `<svg class="mascot mascot-${moving ? "running" : "seated"}" viewBox="${moving ? "0 0 230 150" : "0 0 160 200"}" aria-hidden="true">${moving ? running : seated}</svg>`;
   return holder.firstChild;
 }
 
@@ -220,7 +188,7 @@ const store = {
 
 // One shared catalogue keeps the saved preference and the accessible selector in sync.
 const VISUAL_STYLES = Object.freeze([
-  "michiflin", "material", "pixel", "ocean", "pearl", "onyx", "emerald", "sapphire",
+  "michiflin", "material", "ocean", "pearl", "onyx", "emerald", "sapphire",
   "amethyst", "ruby", "copper", "arctic", "mocha", "aurora"
 ]);
 const prefs = Object.assign({ lang: "auto", theme: "system", style: "michiflin", accent: "style", engine: "web" }, store.get("prefs", {}));
@@ -248,6 +216,7 @@ function t(key, vars) {
 }
 
 function applyLook() {
+  if (!VISUAL_STYLES.includes(prefs.style)) { prefs.style = "michiflin"; savePrefs(); }
   document.documentElement.dataset.theme = ["system", "light", "dark"].includes(prefs.theme) ? prefs.theme : "system";
   document.documentElement.dataset.style = VISUAL_STYLES.includes(prefs.style) ? prefs.style : "michiflin";
   document.documentElement.dataset.accent = ["style", "teal", "violet", "blue", "rose"].includes(prefs.accent) ? prefs.accent : "style";

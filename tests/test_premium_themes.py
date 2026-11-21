@@ -24,7 +24,7 @@ def test_premium_selector_is_bilingual_accessible_and_persistent(language, engin
         accent_label = "Color de acento" if language == "es" else "Accent color"
         styles = page.get_by_label(style_label)
         options = styles.locator("option").evaluate_all("items => items.map(item => [item.value,item.textContent])")
-        assert len(options) == len(set(key for key, _ in options)) == 14
+        assert len(options) == len(set(key for key, _ in options)) == 13
         for key, names in PREMIUM.items():
             assert [key, names[language == "en"]] in options
             styles.select_option(key)  # exercise the actual accessible setting
@@ -112,7 +112,7 @@ def test_system_modes_and_explicit_accent_override_all_styles(engine):
             .map(k=>c.getPropertyValue(k).trim()).concat(c.colorScheme)}"""
         for scheme in ("light", "dark"):
             page.emulate_media(color_scheme=scheme)
-            for style in ("michiflin", "material", "pixel", "ocean", *PREMIUM):
+            for style in ("michiflin", "material", "ocean", *PREMIUM):
                 for accent in ("style", "teal", "violet", "blue", "rose"):
                     page.evaluate("x=>{prefs.style=x[0];prefs.accent=x[1];prefs.theme='system';applyLook()}", [style, accent])
                     system = page.evaluate(variables)
@@ -154,7 +154,7 @@ def test_premium_looks_apply_across_tabs_without_overflow(engine, width, height)
             before = page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='weather').length")
             page.emulate_media(reduced_motion="no-preference")
             page.locator('.home-banner-dot').nth(0).click()
-            assert page.locator('.hero-art .ic:not(.pixel-mascot)').evaluate("e=>getComputedStyle(e).animationName") != "none"
+            assert page.locator('.hero-art .mascot').evaluate("e=>getComputedStyle(e).animationName") != "none"
             page.locator('.home-banner-dot').nth(1).click()
             assert page.locator('.rate-banner').evaluate("e=>getComputedStyle(e,'::after').animationName") != "none"
             page.locator('.home-banner-dot').nth(2).click()
@@ -166,7 +166,7 @@ def test_premium_looks_apply_across_tabs_without_overflow(engine, width, height)
             page.locator('.home-banner-dot').nth(1).click()
             assert page.locator('.rate-banner').evaluate("e=>getComputedStyle(e,'::after').animationName") == "none"
             page.locator('.home-banner-dot').nth(0).click()
-            assert page.locator('.hero-art .ic:not(.pixel-mascot)').evaluate("e=>getComputedStyle(e).animationName") == "none"
+            assert page.locator('.hero-art .mascot').evaluate("e=>getComputedStyle(e).animationName") == "none"
             assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='weather').length") == before
         assert len(seen_palettes) == len(PREMIUM)
         assert errors == []

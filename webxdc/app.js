@@ -731,7 +731,22 @@ function scheduleInPlaceNoticeRead(retries = 2) {
 }
 
 function markInlineVisibleNoticesRead() {
-  if (current.view !== "home") scheduleInPlaceNoticeRead();
+  if (current.view === "home" || !resultsVisible() || !viewReady()) return;
+  // A reply may arrive during the view's fade. Once its exact request-bound
+  // node is actually exposed, use the same two-frame check as an in-place
+  // arrival instead of leaving a stale badge until a later navigation.
+  const list = store.get("notices", []);
+  let changed = false;
+  for (const item of list) {
+    if (!item.unread || item.observeInPlace || !item.resultId || !samePlace(item.target)) continue;
+    const node = noticeNode(item);
+    if (node && node.dataset.resultId === String(item.resultId) && elementInView(node)) {
+      item.observeInPlace = true; changed = true;
+      if (deferredNoticeId === item.id) deferredNoticeId = "";
+    }
+  }
+  if (changed) store.set("notices", list);
+  scheduleInPlaceNoticeRead();
 }
 
 function confirmPendingNoticePaint(id) {
@@ -785,7 +800,7 @@ function revealVisibleNotices() {
 }
 
 function notice(text, kind = "info", options = {}) {
-  const code = /^(?:collaboration|local-ai)-[0-9]+$/.test(options.code || "") ? options.code : "";
+  const code = /^(?:(?:collaboration|local-ai)-[0-9]+|job-[a-zA-Z0-9_.-]{1,200})$/.test(options.code || "") ? options.code : "";
   const seen = store.get("noticeCodes", []);
   if (code && seen.includes(code)) return;
   const list = store.get("notices", []);
@@ -818,7 +833,7 @@ function notice(text, kind = "info", options = {}) {
   let readKept = 0;
   const keep = list.filter((entry) => entry.unread || readKept++ < 30);
   const stored = store.set("notices", keep);
-  if (stored && code) store.set("noticeCodes", [...seen, code].slice(-20));
+  if (stored && code) store.set("noticeCodes", [...seen, code].slice(-256));
   bus.emit("notices");
   if (provisional && stored) confirmPendingNoticePaint(item.id);
   else pendingNoticePaint.delete(item.id);
@@ -1055,7 +1070,7 @@ function reflectAppVisibility() {
   // Keep the displayed selection when backgrounded: clearing it would consume
   // another unread result with the same destination on resume. A new reply
   // received while hidden selects itself in notice() instead.
-  if (!hidden) revealVisibleNotices();
+  if (!hidden) { revealVisibleNotices(); recoverJobSnapshot(); }
 }
 document.addEventListener("visibilitychange", reflectAppVisibility);
 document.documentElement.classList.toggle("app-hidden", document.visibilityState === "hidden");
@@ -1123,18 +1138,46 @@ function replySheet(reply) {
 // ---------------------------------------------------------------------------
 // Data from the bot.
 // ---------------------------------------------------------------------------
-function setJobs(jobs) {
-  cache.jobs = jobs;
+const JOB_OUTCOMES = Object.freeze({ ready: ["notice_ready", "ok"], done: ["notice_done", "ok"],
+  failed: ["notice_failed", "bad"], cancelled: ["notice_cancelled", "info"] });
+
+function setJobs(jobs, notifyUnknown = false) {
+  if (!Array.isArray(jobs)) return;
+  const previous = new Map(cache.jobs.map((job) => [String(job.id), job]));
+  const changes = [];
+  cache.jobs = jobs.filter((job) => job && job.id != null && typeof job.status === "string").map((job) => {
+    const before = previous.get(String(job.id));
+    // A late in-flight push/snapshot must not undo a newer result. Untimestamped
+    // legacy records still work, but can never overwrite a timestamped record.
+    if (before && Number(before.updated) > Number(job.updated || 0)) return before;
+    if (JOB_OUTCOMES[job.status] && (!before || before.status !== job.status) && (before || notifyUnknown)) changes.push(job);
+    return job;
+  }).slice(-25);
+  for (const job of changes) {
+    const [label, kind] = JOB_OUTCOMES[job.status];
+    const code = `job-${String(job.id).replace(/[^a-zA-Z0-9_.-]/g, "_")}-${job.status}-${Number(job.created) || 0}-${Number(job.updated) || 0}`;
+    notice(t(label, { name: job.title }), kind, { code, category: "downloads", target: { view: "downloads", params: {} }, job });
+  }
+  // Persist the notice before the reconciled cache. A crash between writes can
+  // replay the transition, but its durable event code prevents a second badge.
   saveCache();
   jobBadge();
   bus.emit("jobs");
 }
 
 function upsertJob(job) {
-  const jobs = cache.jobs.filter((item) => item.id !== job.id);
+  if (!job || job.id == null || typeof job.status !== "string") return;
+  const jobs = cache.jobs.filter((item) => String(item.id) !== String(job.id));
   jobs.push(job);
   jobs.sort((a, b) => Number(a.id) - Number(b.id));
-  setJobs(jobs.slice(-25));
+  setJobs(jobs, true);
+}
+
+// Push is the fast path. A quiet, bounded snapshot recovers a lost push only
+// while real work is pending; never poll finished jobs or repeat user actions.
+function recoverJobSnapshot() {
+  if (document.visibilityState === "hidden" || now() - Number(cache.at || 0) < 60 || quietRefreshBusy()) return;
+  if (cache.jobs.some((job) => !["ready", "done", "failed", "cancelled"].includes(job.status))) hello(true, true);
 }
 
 let syncing = null;
@@ -1150,14 +1193,15 @@ async function sync(force, quiet = false) {
     const data = await bridge.call("hello");
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
-      jobs: data.jobs, maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
+      maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
     saveCache();
     rateDerivedApproved = data.rates_derived_allowed === true;
     if (data.rates_summary && data.rates_summary.rates) {
       const currentRates = store.get("rates", null);
-      if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) store.set("rates", data.rates_summary);
+      if (!currentRates || Number(data.rates_summary.at) >= Number(currentRates.at)) { store.set("rates", data.rates_summary); saveRateObservation(data.rates_summary); }
     }
     if (data.weather_home) saveWeatherHome(data.weather_home);
+    setJobs(data.jobs);
     bus.emit("rates");
     jobBadge();
     ["models", "health", "settings", "jobs", "hello"].forEach((kind) => bus.emit(kind));
@@ -1175,14 +1219,7 @@ bridge.pushes.maintenance = (data) => {
   if (data && data.active) notice(lang() === "en" ? data.en : data.es, "warn");
 };
 
-bridge.pushes.job = (job) => {
-  const previous = cache.jobs.find((item) => item.id === job.id);
-  upsertJob(job);
-  if (!previous || previous.status !== job.status) {
-    if (job.status === "done") notice(t("notice_done", { name: job.title }), "ok", { category: "downloads", target: { view: "downloads", params: {} }, job });
-    else if (job.status === "failed") notice(t("notice_failed", { name: job.title }), "bad", { category: "downloads", target: { view: "downloads", params: {} }, job });
-  }
-};
+bridge.pushes.job = upsertJob;
 
 bridge.watchers.add(activity);
 bridge.watchers.add(() => bus.emit("bridge"));
@@ -1311,6 +1348,7 @@ function refreshSharedRates() {
   sharedRateRefresh = bridge.call("rates").then((data) => {
     rateDerivedApproved = data.derived_allowed === true;
     store.set("rates", data);
+    saveRateObservation(data);
     bus.emit("rates");
     return data;
   }).catch((error) => {
@@ -1432,6 +1470,64 @@ function weatherBannerArt(current) {
     scene === "storm" ? icon("bolt", "scene-bolt") : null);
 }
 
+// Retain only real, bounded observations already received from the bot. A
+// stale fallback or redraw cannot manufacture a new point or a fresh timestamp.
+function saveRateObservation(data) {
+  const at = Number(data && data.at), value = Number(data && data.rates && data.rates.USD);
+  if (!Number.isFinite(at) || at <= 0 || at > now() + 300 || !Number.isFinite(value) || value <= 0 || data.stale) return;
+  const saved = store.get("rates.observations", []);
+  const points = (Array.isArray(saved) ? saved : []).filter((point) => point && Number.isFinite(point.at) &&
+    Number.isFinite(point.value) && point.value > 0 && point.at >= now() - 7 * 86400 && point.at < at);
+  if (Array.isArray(saved) && saved.some((point) => point && point.at > at)) return;
+  points.push({ at, value });
+  store.set("rates.observations", points.slice(-48), true);
+}
+
+function rateObservationChart(data) {
+  saveRateObservation(data);
+  const saved = store.get("rates.observations", []);
+  const points = (Array.isArray(saved) ? saved : []).filter((point) => point && Number.isFinite(point.at) &&
+    Number.isFinite(point.value) && point.value > 0 && point.at >= now() - 7 * 86400).slice(-48);
+  const box = h("span", { class: "rate-observations" }, h("small", {}, t("home_rates_readings")));
+  if (points.length < 2) {
+    add(box, h("span", { class: "rate-chart-empty" }, icon("rates"), t("home_rates_need_readings")));
+    return box;
+  }
+  const values = points.map((point) => point.value), min = Math.min(...values), max = Math.max(...values);
+  const first = points[0], last = points[points.length - 1];
+  const ns = "http://www.w3.org/2000/svg", svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 280 68"); svg.setAttribute("class", "rate-sparkline");
+  svg.setAttribute("role", "img"); svg.setAttribute("aria-label", `${t("home_rates_readings")}: ${fmtRate(first.value)} → ${fmtRate(last.value)} CUP`);
+  const polyline = document.createElementNS(ns, "polyline");
+  polyline.setAttribute("points", points.map((point) => `${4 + 272 * (point.at - first.at) / (last.at - first.at || 1)},${max === min ? 34 : 58 - 48 * (point.value - min) / (max - min)}`).join(" "));
+  svg.append(polyline);
+  add(box, svg, h("span", { class: "rate-chart-scale" }, h("small", {}, `${fmtRate(min)}–${fmtRate(max)} CUP`),
+    h("small", {}, `${fmtTime(first.at)} → ${fmtTime(last.at)}`)));
+  return box;
+}
+
+function homeForecast(data) {
+  if (!data || !Array.isArray(data.days)) return null;
+  let today;
+  try {
+    const parts = new Intl.DateTimeFormat("en", { timeZone: data.timezone || undefined, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const part = (name) => parts.find((value) => value.type === name).value;
+    today = `${part("year")}-${part("month")}-${part("day")}`;
+  } catch (_error) { today = new Date().toISOString().slice(0, 10); }
+  const seen = new Set();
+  const days = data.days.filter((day) => {
+    if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day.date || "") || day.date <= today || seen.has(day.date)) return false;
+    const date = new Date(day.date + "T12:00:00Z");
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== day.date) return false;
+    seen.add(day.date); return true;
+  }).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 4);
+  return h("span", { class: "home-forecast" }, h("small", { class: "forecast-heading" }, t("home_weather_next")),
+    days.length ? h("span", { class: "forecast-days" }, days.map((day) => h("span", { class: "forecast-day", title: `${day.date} · ${weatherDescription(day)}` },
+      h("time", { datetime: day.date }, new Date(day.date + "T12:00:00Z").toLocaleDateString(lang(), { weekday: "short", timeZone: "UTC" })),
+      icon(weatherIcon(day.code, true)), h("span", {}, h("b", {}, weatherValue(day.high, "°")), " / ", weatherValue(day.low, "°"))))) :
+      h("small", { class: "forecast-empty" }, t("home_weather_no_future")));
+}
+
 function homeWeatherBanner() {
   const saved = weatherHome();
   const last = validWeatherLast(saved.last) ? saved.last : null;
@@ -1446,6 +1542,7 @@ function homeWeatherBanner() {
       h("div", { class: "weather-banner-copy" }, h("small", {}, data.place.label),
         h("div", {}, h("strong", {}, weatherValue(currentWeather.temp, "°C")), h("span", {}, weatherDescription(currentWeather))))) :
       h("div", { class: "weather-banner-copy" }, h("b", {}, saved.city), h("small", {}, t("weather_banner_empty"))),
+    homeForecast(data),
     h("span", { class: "rate-banner-foot" }, last ? [t(old ? "weather_banner_old" : "weather_banner_saved"), " · ", fmtTime(last.at)] : t("weather_source")));
 }
 
@@ -1453,13 +1550,15 @@ function homeRatesBanner() {
   const data = store.get("rates", null);
   const valid = data && data.rates && typeof data.rates === "object";
   const stale = valid && (data.stale || now() - Number(data.at || 0) > 2 * Number(data.refresh_seconds || 300));
-  const picks = valid ? ["USD", Number(data.rates.EUR) > 0 ? "EUR" : "ECU", "MLC"].filter((code) => Number(data.rates[code]) > 0) : [];
+  const picks = valid ? ["USD", Number(data.rates.EUR) > 0 ? "EUR" : "ECU", "MLC", "CAD", "MXN", "TRX"].filter((code) => Number.isFinite(Number(data.rates[code])) && Number(data.rates[code]) > 0) : [];
   return h("button", { class: `rate-banner${stale ? " is-stale" : ""}`, onclick: () => go("rates") },
     h("div", { class: "rate-banner-top" }, h("span", { class: "rate-kicker" }, icon("rates"), t("rates_banner_title")),
       h("span", { class: "rate-banner-brand" }, "elTOQUE · ", t("rates_open_tool"), icon("next"))),
-    picks.length ? h("div", { class: "rate-banner-values" }, picks.map((code) =>
-      h("span", {}, h("small", {}, rateDisplayCode(code)), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
-      h("span", { class: "rate-banner-empty" }, t("rates_banner_empty")),
+    h("span", { class: "rate-banner-grid" },
+      picks.length ? h("span", { class: "rate-banner-values" }, picks.map((code) =>
+        h("span", {}, h("small", {}, rateDisplayCode(code)), h("b", {}, fmtRate(data.rates[code])), h("small", {}, "CUP")))) :
+        h("span", { class: "rate-banner-empty" }, t("rates_banner_empty")),
+      valid ? rateObservationChart(data) : null),
     h("span", { class: "rate-banner-foot" }, valid ? [t(stale ? "rates_saved_status" : "rates_live_status"), " · ", fmtTime(data.at), " · ", since(data.at)] : t("rates_banner_sub")));
 }
 
@@ -1470,7 +1569,7 @@ function homeCarousel() {
     () => h("div", { class: "hero home-hero" },
       h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, greeting()),
         h("h2", {}, t("home_headline")), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art", "aria-hidden": "true" }, icon("catfull"), icon("catfullpixel", "pixel-mascot")),
+      h("div", { class: "hero-art", "aria-hidden": "true" }, mascot("seated")),
       h("div", { class: "hero-actions" },
         h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
         h("button", { class: "hero-action", onclick: () => go("web") }, icon("web"), t("home_explore")))),
@@ -4199,16 +4298,17 @@ function onboarding(force = false) {
 // ---------------------------------------------------------------------------
 // Paint the shell promptly; the existing snapshot stays usable while a slow
 // mail-backed sync continues in the background. Do not wait minutes for hello.
-const SPLASH_MIN = 700;
-const SPLASH_MAX = 1600;
+const SPLASH_MIN = 2300;
+const SPLASH_MAX = 2400;
 
 function boot() {
   applyLook();
   chrome();
   pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
+  setInterval(recoverJobSnapshot, 60000);
   const splash = $("#splash");
-  if (splash) splash.prepend(icon("catpixel", "splash-pixel"));
+  if (splash) fill($(".splash-runner", splash), mascot("running"));
   const started = performance.now();
   let gone = false;
   const hide = () => {
@@ -4218,7 +4318,7 @@ function boot() {
       splash.classList.add("gone");
       setTimeout(() => { splash.remove(); revealVisibleNotices(); }, 250);
       onboarding();
-    }, Math.max(0, SPLASH_MIN - (performance.now() - started)));
+    }, Math.max(0, (matchMedia("(prefers-reduced-motion: reduce)").matches ? 100 : SPLASH_MIN) - (performance.now() - started)));
   };
   setTimeout(hide, SPLASH_MAX);
   if (!window.webxdc) {

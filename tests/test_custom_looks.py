@@ -72,13 +72,13 @@ def test_classic_styles_light_dark_accent_persist_and_fit(engine, width):
         page.evaluate("go('settings')")
         styles = page.get_by_label("Estilo visual")
         accents = page.get_by_label("Color de acento")
-        assert styles.locator("option").count() == 14  # four classic looks and ten premium palettes
+        assert styles.locator("option").count() == 13  # three classic looks and ten premium palettes
         assert accents.locator("option").count() == 5
         # Narrow iPhone screens must show the entire setting label, not hide it
         # underneath the system/light/dark segmented control.
         label = page.get_by_text("Apariencia", exact=True)
         assert label.evaluate("e => e.scrollWidth <= e.clientWidth")
-        for style in ("michiflin", "material", "pixel", "ocean"):
+        for style in ("michiflin", "material", "ocean"):
             styles.select_option(style)
             for theme in ("light", "dark"):
                 page.evaluate("theme => {prefs.theme=theme;applyLook();}", theme)
@@ -133,7 +133,7 @@ def test_real_weather_codes_drive_offline_art_and_reduced_motion():
         page.locator(".home-banner-dot").nth(1).click()
         assert page.locator(".rate-banner").evaluate("e=>getComputedStyle(e,'::after').animationName") == "none"
         page.locator(".home-banner-dot").nth(0).click()
-        assert page.locator(".hero-art .ic:not(.pixel-mascot)").evaluate("e=>getComputedStyle(e).animationName") == "none"
+        assert page.locator(".hero-art .mascot").evaluate("e=>getComputedStyle(e).animationName") == "none"
         page.evaluate("""() => { const w=weatherHome(); w.last.data.current={code:0,is_day:0,temp:23,description:'Despejado'};
           store.set('weatherHome',w); bus.emit('weather_home'); }""")
         page.locator(".home-banner-dot").nth(2).click()

@@ -56,6 +56,7 @@ _instance_locks: dict[int, threading.Lock] = {}
 # Welcome and explicitly requested recovery must decide and hand off together.
 _upgrade_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
+_job_marks_lock = threading.Lock()
 # Exact pending pages stay only in process memory, isolated by app, grant and recipient.
 _inline_pages = answer_inline.InlinePages()
 Op = Callable[[int, dict[str, Any], str], Any]
@@ -92,6 +93,9 @@ def compatible_build(entry: dict[str, Any]) -> bool:
         return False
     if value == app_build():
         return True
+    previous_current = app_compat.pre_refresh_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
+    if previous_current and value == previous_current:
+        return True
     audit_base = app_compat.audit_base_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if audit_base and value == audit_base:
         return True
@@ -111,11 +115,12 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
+    previous_current = app_compat.pre_refresh_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     audit_base = app_compat.audit_base_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     published = app_compat.published_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     latest = app_compat.latest_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     recent = app_compat.recent_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
-    return bool(isinstance(value, str) and value and (value == app_build() or (audit_base and value == audit_base)
+    return bool(isinstance(value, str) and value and (value == app_build() or (previous_current and value == previous_current) or (audit_base and value == audit_base)
                 or (published and value == published) or (latest and value == latest) or (recent and value == recent)))
 
 
@@ -1168,16 +1173,26 @@ def _on_job(job: dict[str, Any], values: dict[str, Any]) -> None:
     total = int(job.get("size") or job.get("size_est") or 0)
     half = 1 if job["status"] == "downloading" and total and int(job.get("progress") or 0) * 2 >= total else 0
     mark = (f"{job['status']}:{int(bool(job.get('hold')))}:{job.get('sent', 0)}:{len(job.get('todo') or [])}", half)
-    if _job_marks.get(job["id"]) == mark:
-        return
-    _job_marks[job["id"]] = mark
-    locale = job.get("locale", "es")
-    notify = ""
-    if job["status"] == "done" and "status" in values:
-        notify = tr(locale, f"Listo: {job.get('name') or job['title']}", f"Done: {job.get('name') or job['title']}")
-    elif job["status"] == "failed" and "status" in values:
-        notify = tr(locale, f"Falló: {job.get('name') or job['title']}", f"Failed: {job.get('name') or job['title']}")
-    push(int(job["chat"]), "job", job_view(job, locale), notify)
+    # Queue acceptance is not a delivery receipt. Do not suppress a later retry
+    # when there was no eligible app or the local handoff failed.
+    with _job_marks_lock:
+        if _job_marks.get(job["id"]) == mark:
+            return
+        locale = job.get("locale", "es")
+        notify = ""
+        if "status" in values:
+            name = job.get("name") or job["title"]
+            if job["status"] == "ready":
+                notify = tr(locale, f"Lista para enviar: {name}", f"Ready to send: {name}")
+            elif job["status"] == "done":
+                notify = tr(locale, f"Listo: {name}", f"Done: {name}")
+            elif job["status"] == "failed":
+                notify = tr(locale, f"Falló: {name}", f"Failed: {name}")
+            elif job["status"] == "cancelled":
+                notify = tr(locale, f"Cancelada: {name}", f"Cancelled: {name}")
+        if push(int(job["chat"]), "job", job_view(job, locale), notify):
+            _job_marks[job["id"]] = mark
+
 
 
 queue.LISTENERS.append(_on_job)

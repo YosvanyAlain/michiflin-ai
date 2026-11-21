@@ -49,7 +49,7 @@ BRIDGE = r"""
     next_at: Date.now() / 1000 + 21600, interval: 21600 };
   const responseFor = (request) => {
     switch (request.op) {
-      case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: [],
+      case "hello": return { version: "browser-smoke", session: window.__fixtureSession, admin: !!window.__fixtureAdmin, models, health, settings, jobs: window.__jobs || [],
         modes: { kill_switch: {active:window.__modes.kill_switch}, nauta_strict: {active:window.__modes.nauta_strict, part_mb:3} },
         maintenance_notice: {active:false, es:"Mensaje de mantenimiento", en:"Maintenance message", revision:0, expires:0},
         weather_home: window.__weatherHome };

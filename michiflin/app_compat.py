@@ -22,6 +22,9 @@ _PUBLISHED_REPLACED = {"index.html", "app.css", "app.js", "brands.js", "coder.js
 _AUDIT_BASE = Path(__file__).resolve().parent / "compat" / "ec7e67e"
 _AUDIT_BASE_REPLACED = {"index.html", "app.css", "app.js", "core.js", "i18n.js"}
 
+_PRE_REFRESH = Path(__file__).resolve().parent / "compat" / "pre-refresh"
+_PRE_REFRESH_REPLACED = {'app.css', 'core.js', 'i18n.js', 'app.js', 'index.html'}
+
 
 def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
     try:
@@ -66,3 +69,8 @@ def published_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
 def audit_base_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """Preserve the exact package shipped before the local QA corrections."""
     return _pinned_build(epoch, app_dir, files, _AUDIT_BASE, _AUDIT_BASE_REPLACED)
+
+
+def pre_refresh_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """Recognize the unmodified package already in the owner's chat. Never served anew."""
+    return _pinned_build(epoch, app_dir, files, _PRE_REFRESH, _PRE_REFRESH_REPLACED)
