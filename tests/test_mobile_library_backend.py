@@ -232,3 +232,32 @@ def test_plaintext_group_message_cannot_activate_or_trigger_tools(monkeypatch):
     verified.assert_not_called()
     rpc.accept_chat.assert_not_called()
     rpc.send_msg.assert_not_called()
+
+
+def test_pdf_reading_copy_extracts_all_pages_with_actual_bounded_child(monkeypatch):
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+    writer = PdfWriter()
+    for text in ['First page', 'Last page']:
+        page = writer.add_blank_page(300, 300)
+        font = DictionaryObject({NameObject('/Type'): NameObject('/Font'), NameObject('/Subtype'): NameObject('/Type1'), NameObject('/BaseFont'): NameObject('/Helvetica')})
+        page[NameObject('/Resources')] = DictionaryObject({NameObject('/Font'): DictionaryObject({NameObject('/F1'): writer._add_object(font)})})
+        stream = DecodedStreamObject()
+        stream.set_data(('BT /F1 12 Tf 20 250 Td (' + text + ') Tj ET').encode())
+        page[NameObject('/Contents')] = writer._add_object(stream)
+    raw = io.BytesIO(); writer.write(raw)
+    monkeypatch.setattr(books, '_fetch', lambda *args: (raw.getvalue(), 'application/pdf'))
+    result = books.reading_copy('https://example.org/book.pdf', 'pdf')
+    assert result['complete'] and 'First page' in result['text'] and 'Last page' in result['text']
+    assert '\\n' not in result['text']
+
+
+def test_epub_missing_spine_cannot_be_reported_as_complete(monkeypatch):
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, 'w') as archive:
+        archive.writestr('META-INF/container.xml', '<container><rootfile full-path="book.opf"/></container>')
+        archive.writestr('book.opf', '<package xmlns="http://www.idpf.org/2007/opf"><manifest><item id="a" href="ok.xhtml"/></manifest><spine><itemref idref="a"/><itemref idref="missing"/></spine></package>')
+        archive.writestr('ok.xhtml', '<p>Only one chapter</p>')
+    monkeypatch.setattr(books, '_fetch', lambda *args: (data.getvalue(), 'application/epub+zip'))
+    with pytest.raises(books.BookError, match='epub_structure'):
+        books.reading_copy('https://example.org/book.epub', 'epub')

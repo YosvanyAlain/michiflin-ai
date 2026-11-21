@@ -122,7 +122,8 @@ window.BookShelf = (() => {
           status.textContent = text("Libro guardado para leer sin conexión en esta miniapp.", "Book saved for offline reading in this miniapp.");
         } catch (_) { status.textContent = text("No se pudo descargar o guardar. Puede ser un catálogo, préstamo, formato protegido, límite de tamaño o almacenamiento. Consulta la ficha original.", "Could not download or save. This may be a catalogue, loan, protected format, size limit or storage limit. Check the original record."); }
         finally { button.disabled = false; }
-      } }, local.has(book.id) ? text("Abrir", "Open") : text("Descargar", "Download"));
+      } }, local.has(book.id) ? text("Abrir", "Open") :
+        ((book.downloads || []).length || book.archive_id ? text("Descargar", "Download") : text("Consultar acceso", "Check access")));
       const card = h("article", { class: "card book-card" }, cover(book), h("h3", { class: "book-title" }, book.title),
         h("p", { class: "muted small" }, (book.authors || []).join(", ")), h("span", { class: "tag" }, book.source),
         h("div", { class: "book-actions" }, button, h("button", { class: "btn ghost small", onclick: () => details(book) }, text("Detalles", "Details"))));

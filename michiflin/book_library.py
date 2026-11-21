@@ -16,7 +16,7 @@ import os
 import tempfile
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import quote, urlencode, urljoin, urlsplit
+from urllib.parse import quote, unquote, urlencode, urljoin, urlsplit
 
 from bs4 import BeautifulSoup
 from defusedxml import ElementTree as ET
@@ -272,8 +272,12 @@ def reading_copy(url: str, format: str) -> dict:
             prefix = package.rpartition('/')[0]
             parts = []
             for name in names:
-                if not name or name.startswith('/') or '..' in name.split('/'):
-                    continue
+                if not isinstance(name, str):
+                    raise BookError('epub_structure')
+                parsed = urlsplit(name)
+                name = unquote(parsed.path)
+                if not name or parsed.scheme or parsed.netloc or name.startswith('/') or '..' in name.split('/'):
+                    raise BookError('epub_structure')  # never claim an incomplete spine is complete
                 path = prefix + '/' + name if prefix else name
                 soup = BeautifulSoup(archive.read(path), 'html.parser')
                 for tag in soup(['script', 'style', 'iframe', 'object', 'svg']):
