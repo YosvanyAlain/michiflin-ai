@@ -1,0 +1,42 @@
+{
+  "source": "current webxdc sources",
+  "bridge": "tests.test_webxdc_browser.BRIDGE",
+  "synthetic": true,
+  "physical_device_test": false,
+  "clips_are_held_frames": true,
+  "languages": {
+    "es": {
+      "viewport": [
+        390,
+        844
+      ],
+      "desktop": [
+        1440,
+        900
+      ],
+      "clips": [
+        "clip-tour",
+        "clip-web",
+        "clip-download",
+        "clip-join"
+      ]
+    },
+    "en": {
+      "viewport": [
+        390,
+        844
+      ],
+      "desktop": [
+        1440,
+        900
+      ],
+      "clips": [
+        "clip-tour",
+        "clip-web",
+        "clip-download",
+        "clip-join"
+      ]
+    }
+  },
+  "renderer_source_sha256": "47f9a28416c1fc2c732c04538549dded55ad24fefc5e41a56289319d7e993fbb"
+}

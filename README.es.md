@@ -1,6 +1,6 @@
 # Michiflin AI (español)
 
-**Tu internet por correo.** Michiflin AI es un bot privado de [Delta Chat](https://delta.chat) que busca, lee páginas web, responde con modelos de IA gratuitos, crea imágenes y descarga archivos, y lo entrega todo como mensajes pequeños en el chat. Está pensado para buzones con poca cuota y conexiones lentas y caras.
+**Tu internet por correo.** Michiflin AI es un bot privado de [Delta Chat](https://delta.chat) que busca, lee páginas web, ofrece respuestas opcionales de proveedores de IA, crea imágenes y descarga archivos, y lo entrega todo como mensajes pequeños en el chat. Está pensado para buzones con poca cuota y conexiones lentas y caras.
 
 Este documento es un anexo breve. La documentación completa está en inglés: [README](README.md) y [guía de uso](docs/GUIDE.md).
 
@@ -14,7 +14,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 ## Qué ofrece
 
 - **Miniapp privada, entrega silenciosa.** El bot entrega un solo archivo WebXDC, sin bienvenida. Abre directamente y usa el idioma del sistema salvo elección explícita. Si escribes por chat, puedes elegir miniapp o comandos/chat; recuerda la elección por chat privado.
-- **Un agente que no necesita IA.** Escribe normal o pega un enlace; el agente busca, lee las fuentes y arma la respuesta con frases citadas, además de calculadora, clima, tasas, traducción y resúmenes. Nunca llama a un modelo de IA, así que no toca ninguna cuota.
+- **Un agente que no necesita IA.** En el agente sin cuota de modelos, escribe normal o pega un enlace; el agente busca, lee las fuentes y arma la respuesta con frases citadas, además de calculadora, clima, tasas, traducción y resúmenes. Nunca llama a un modelo de IA, así que no toca ninguna cuota.
 - **Un agente, dos modos.** En la misma vista puedes elegir sin cuota de modelos o con IA/API; este último permite selección automática o un modelo exacto, hasta cuatro pasos y adjuntos compatibles. Puede consumir cuota o saldo y no inicia sesiones, envía mensajes ni ejecuta código por su cuenta. El chat automático anterior permanece accesible como historial.
 - **IA gratuita mediante proveedores remotos.** Reparte las consultas entre planes gratuitos, con cuotas por modelo y relevo automático. Incluye SambaNova opcional; sus topes publicados para el nivel gratuito se registran de forma conservadora y pueden cambiar ([detalle y fuentes](docs/AI_PROVIDERS.md)). Cada modelo en pausa dice por qué: límite alcanzado, clave rechazada o ya no es gratis, y el bot avisa cuando un modelo se detiene o vuelve. Puedes elegir el modelo exacto de cada imagen. Cada chat de modelo muestra el logo de su creador y acepta los adjuntos que ese modelo puede leer: fotos, PDF y documentos, y audio en Gemini.
 - **Navegación ligera.** Las páginas llegan como texto compacto con enlaces que se tocan. PDF y capturas nítidas a pedido. Búsqueda en la web, noticias, videos o Wikipedia con el buscador normal (sin límites), o cambia la barra al buscador avanzado cuando necesites mejores resultados.
@@ -34,14 +34,14 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/clip-tour.gif" width="260" alt="Recorrido por la miniapp">
   <img src="docs/media/es/clip-web.gif" width="260" alt="Buscar y leer una página">
 </p>
-<p align="center"><sub>Recorrido 5.5 actualizado con datos sintéticos (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>)</sub></p>
+<p align="center"><sub>Recorrido de la interfaz actual · datos simulados visibles (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>)</sub></p>
 
 | Pestaña | Para qué sirve |
 |---|---|
 | **Inicio** | Buscador, accesos directos, estado de la cola y tiempo hasta el próximo reinicio |
 | **IA** | Agente unificado en dos modos, estudio de imágenes y tarjetas de modelos por proveedor y categoría |
 | **Web** | Resultados del buscador elegido, lector, historial, PDF, captura y descarga |
-| **Apps** | YouTube, traductor, tasa, clima, noticias, utilidades, estado y administración |
+| **Apps** | YouTube, biblioteca, traductor, tasa, clima, noticias, utilidades, estado y administración autorizada |
 | **Descargas** | Cola, enlaces guardados y kit integrado: copias locales, servidor temporal, selección, acciones masivas, comprimidos y unión |
 | **Ajustes** | Idioma, apariencia, estilo visual y acento; buscador, modo Nauta, Kill switch y ajustes del bot |
 
@@ -62,14 +62,22 @@ En **Ajustes → Sincronización** se muestran los últimos tiempos observados d
 
 ## Descargas y kit de archivos
 
-<p align="center"><img src="docs/media/es/clip-download.gif" width="260" alt="Iniciar una descarga"></p>
-<p align="center"><sub>Descarga de ejemplo (<a href="docs/media/es/clip-download.mp4">MP4</a>, acelerado). El unidor antiguo ahora está integrado en el kit; el vídeo antiguo de unión ya no representa la interfaz actual.</sub></p>
+<p align="center"><img src="docs/media/es/clip-download.gif" width="260" alt="Estados simulados de la cola"></p>
+<p align="center"><sub>Cola de ejemplo con datos simulados (<a href="docs/media/es/clip-download.mp4">MP4</a>). El recorrido de unión actual muestra el kit integrado.</sub></p>
 
 En **Descargas → Kit de archivos** trabaja con copias de Android o iOS: importa, organiza, selecciona por carpeta, previsualiza renombrados masivos y deshaz cambios. Los nombres largos pueden recorrerse. Las copias locales pertenecen a esa instancia y el sistema puede recuperarlas; los originales del teléfono no se cambian automáticamente.
 
 El unidor integrado ordena partes numeradas y comprueba huecos conocidos. Si conoces la huella SHA-256 original, puedes comprobarla; sin el total o la huella no se puede saber siempre si falta la última parte. La unión de partes crudas también puede ejecutarse por bloques en el servidor temporal para reconstruir un RAR. La unión/remux de medios compatibles permanece en el dispositivo. ZIP y 7z están disponibles con los límites de la plataforma; el servidor puede listar RAR compatibles, incluso cifrados y multipartes, y extraer únicamente lo seleccionado cuando el motor y los recursos lo permiten. Los archivos sólidos pueden requerir procesar datos anteriores. Consulta [pasos, privacidad y límites](docs/FILE_KIT.md).
 
 El servidor de trabajo **no es almacenamiento permanente ni está incluido en el respaldo del estado**. Exporta y verifica las copias importantes; guardar piezas en Archivos, y no en Fotos, ayuda a conservar sus nombres. Las pruebas automatizadas con Chromium y WebKit no sustituyen una prueba en teléfonos físicos.
+
+## Si la miniapp abre en blanco
+
+Cierra esa vista y escribe `/app` en el mismo chat privado autorizado. Abre **el adjunto nuevo**: volver a abrir uno anterior no actualiza su JavaScript. No borres el chat, limpies los datos ni reinstales como primer intento; puede haber trabajo guardado solo en esa instancia.
+
+La corrección aísla errores de vista, valida la cola en caché y tolera funciones de voz no disponibles. Si continúa, comunica las versiones de Android, Delta Chat y Android System WebView, junto al código visible; nunca compartas invitaciones ni claves. Las pruebas de navegador no certifican todos los teléfonos. [Alcance de las pruebas](docs/ANDROID_STARTUP.md).
+
+Los recorridos usan el renderizador actual, un puente sin conexión con datos simulados y fotogramas sostenidos: no representan velocidad del correo, disponibilidad real de proveedores ni una prueba física. [Cómo regenerarlos](docs/media/README.md).
 
 ## Uso del chat
 
@@ -81,7 +89,7 @@ El ajuste **Uso del chat** → *App y comandos* activa el modo clásico, con com
 
 ## Instalación
 
-La configuración y la puesta en marcha se describen en el [README](README.md#configuration). El valor seguro del workflow es `OWNER_ONLY=1` y `INVITE_AUTO_ACCESS=0`. Para habilitar invitaciones, el operador configura `OWNER_ONLY=0` y `INVITE_AUTO_ACCESS=1`; se exige `OWNER_ADDRESS`, se conserva el administrador de respaldo si está configurado y no se reactivan listas antiguas. Las claves de IA son opcionales; los proveedores reciben las consultas y el código, por lo que no debes incluir contraseñas ni claves privadas.
+La configuración y la puesta en marcha se describen en el [README](README.md#configuration). La configuración segura general es `OWNER_ONLY=1` y `INVITE_AUTO_ACCESS=0`. El workflow de este despliegue habilita expresamente `OWNER_ONLY=0` y `INVITE_AUTO_ACCESS=1`; se exige `OWNER_ADDRESS`, se conserva el administrador de respaldo si está configurado y no se reactivan listas antiguas. Las claves de IA son opcionales; los proveedores reciben las consultas y el código, por lo que no debes incluir contraseñas ni claves privadas.
 
 Si se autoriza la recuperación por correo, una dirección permitida puede cambiar de clave sin demostrar la anterior. **Una dirección suplantada podría obtener sus permisos**, aunque el transporte esté cifrado. En el modo de invitación esa recuperación se limita a los administradores; los invitados deben verificar su nueva clave con SecureJoin. Los trabajos del chat antiguo y el almacenamiento de la miniapp anterior se conservan, pero no se trasladan automáticamente.
 
@@ -93,7 +101,7 @@ El administrador puede revocar o bloquear una cuenta sin borrar su historial. Un
 
 ## Seguridad y pausa
 
-El dueño puede activar **Mantenimiento y aviso** en Administración, personalizar el aviso en español e inglés, elegir una duración de hasta un año o finalizarlo manualmente. Está desactivado por defecto y solo se modifica al guardar explícitamente. Las tareas se detienen de forma cooperativa; las personas autorizadas ven el aviso al interactuar, sin envíos masivos, y la cola puede continuar, sin cambiar permisos ni pausas individuales. Una solicitud, cobro o entrega ya iniciados pueden terminar. Abrir una instancia anterior no envía automáticamente otra. Si necesitas una actualización y está disponible, solicítala y confírmala en Ajustes → Sincronización. Algunas versiones anteriores exactas siguen siendo compatibles; las desconocidas se rechazan. Conserva la anterior hasta comprobar sus datos: el almacenamiento es independiente y la migración no está demostrada.
+El dueño puede activar **Mantenimiento y aviso** en Administración, personalizar el aviso en español e inglés, elegir una duración de hasta un año o finalizarlo manualmente. Está desactivado por defecto y solo se modifica al guardar explícitamente. Las tareas se detienen de forma cooperativa; las personas autorizadas ven el aviso al interactuar, sin envíos masivos, y la cola puede continuar, sin cambiar permisos ni pausas individuales. Una solicitud, cobro o entrega ya iniciados pueden terminar. Abrir una instancia anterior no envía automáticamente otra. Si necesitas una actualización y está disponible, solicítala y confírmala en Ajustes → Sincronización. Este despliegue activa `REVOKE_LEGACY_MINIAPPS=1`: los paquetes anteriores, incluso reenviados, no pueden comunicarse con el bot. Conservar el historial no conserva ese acceso. Pide `/app` en el chat privado verificado y abre el adjunto nuevo; los datos locales no se trasladan automáticamente.
 
 En **Ajustes → Kill switch** o con `/kill_switch sí|no` se bloquean nuevas solicitudes y se interrumpen cooperativamente descargas y empaquetado; los trabajos quedan en cola. Al desactivar, la cola puede continuar, pero hay que repetir las consultas de IA/agente interrumpidas. No se puede retirar una petición ya enviada a un proveedor, una lectura de red puede tardar hasta su timeout y una parte que ya entra en la entrega a Delta Chat puede llegar. Se registra la intención de envío y, ante una entrega incierta, se pausa en vez de reenviar a ciegas. Una copia de seguridad desactualizada o una interrupción del transporte impiden garantizar ausencia absoluta de duplicados: revisa el chat antes de repetir. No se purga el buzón de salida ni el estado histórico automáticamente.
 
