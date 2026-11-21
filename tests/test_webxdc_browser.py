@@ -188,7 +188,7 @@ BRIDGE = r"""
 @contextmanager
 def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False,
                     real_filekit: bool = False, engine: str = "chromium", touch: bool = False,
-                    legacy_package: bool | str = False, delivery_handler=None):
+                    legacy_package: bool | str = False, delivery_handler=None, init_script: str = ""):
     """Fake Delta bridge; optionally connect UI to Python handlers, never a live bot."""
     from michiflin import app_compat
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
@@ -251,6 +251,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                 browser = getattr(playwright, engine).launch(**({"args": ["--no-sandbox"]} if engine == "chromium" else {}))
                 page = browser.new_page(viewport=viewport, locale=language, has_touch=touch)
                 page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()}; window.__realDelivery = {str(bool(delivery_handler)).lower()};")
+                if init_script:
+                    page.add_init_script(init_script)
                 page.on("pageerror", lambda error: errors.append(str(error)))
                 page.goto(f"http://127.0.0.1:{server.server_port}/index.html", wait_until="domcontentloaded")
                 page.wait_for_function("window.__sentUpdates.some(x => x.payload?.op === 'hello')", timeout=10000)

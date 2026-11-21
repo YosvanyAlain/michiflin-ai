@@ -23,7 +23,13 @@ window.BookShelf = (() => {
     return coverPending.get(url);
   }
   const text = (es, en) => lang() === "en" ? en : es;
-  const stopSpeech = () => { speechRevision++; if (window.speechSynthesis) speechSynthesis.cancel(); };
+  const stopSpeech = () => {
+    speechRevision++;
+    // Some embedded Android clients expose a partial/denied speech API.
+    // Optional accessibility cleanup must never prevent every view opening.
+    try { const voice = window.speechSynthesis; if (voice && typeof voice.cancel === "function") voice.cancel(); }
+    catch (_) { /* Reader export remains available without speech. */ }
+  };
   const database = () => new Promise((resolve, reject) => {
     const request = indexedDB.open("michiflin-reading-library-v1", 1);
     request.onupgradeneeded = () => request.result.createObjectStore("books", { keyPath: "id" });
@@ -82,7 +88,10 @@ window.BookShelf = (() => {
       store.set("book.page." + book.id, page);
       main.scrollTop = 0;
     };
-    const canSpeak = !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
+    let canSpeak = false;
+    try { canSpeak = !!(window.speechSynthesis && window.SpeechSynthesisUtterance &&
+      typeof window.speechSynthesis.speak === "function" && typeof window.speechSynthesis.getVoices === "function"); }
+    catch (_) { /* Denied speech must not prevent reading/exporting the text. */ }
     const read = h("button", { class: "btn primary small", disabled: !canSpeak, onclick: () => {
       stopSpeech(); const revision = speechRevision;
       const parts = pages.slice(page).join("\n").match(/[\s\S]{1,1400}/g) || [];
@@ -99,7 +108,9 @@ window.BookShelf = (() => {
         };
         speechSynthesis.speak(utterance);
       };
-      speak(0);
+      try { speak(0); }
+      catch (_) { toast(text("La voz del cliente no está disponible. Exporta el texto para el lector del sistema.",
+        "Client speech is unavailable. Export the text for your system reader."), "bad"); }
     } }, icon("audio"), text("Leer en voz alta", "Read aloud"));
     fill(main, h("button", { class: "btn ghost small", onclick: () => { stopSpeech(); go("books", { tab: "saved" }); } }, icon("back"), text("Mi biblioteca", "My library")),
       h("h2", {}, book.title), h("p", { class: "muted" }, (book.authors || []).join(", ")),
