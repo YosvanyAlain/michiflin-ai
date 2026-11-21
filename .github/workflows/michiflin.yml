@@ -49,6 +49,7 @@ jobs:
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # Explicit owner-authorized recovery; only the one exact deployment may send.
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
+      OWNER_UI_REFRESH_REVISION: ${{ vars.OWNER_UI_REFRESH_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # A separately verified candidate is imported only for an exact reviewed revision.
@@ -425,6 +426,23 @@ jobs:
           bash tools/local_gguf_session.sh stop || true
           echo "LOCAL_GGUF_TEST_UNAVAILABLE=1" >> "$GITHUB_ENV"
           echo "::warning::Local AI was not verified; explicit extractive research remains available."
+
+      - name: Deliver the exact owner-requested UI refresh once
+        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION }}
+        run: |
+          if ! python tools/deliver_owner_refresh.py; then
+            echo "::warning::Automatic owner update deferred; existing instances and explicit /app remain available."
+          fi
+          python state_backup.py save
+
+      - name: Save safe owner update receipt
+        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: owner-refresh-receipt
+          path: owner-refresh-receipt.json
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: Private session
         shell: bash
