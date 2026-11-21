@@ -56,3 +56,42 @@ def test_oversized_release_is_not_uploaded_pruned_or_marked_ready(monkeypatch):
     post.assert_not_called()
     prune.assert_not_called()
     ready.assert_not_called()
+
+
+def test_release_upload_larger_than_git_limit_is_downloaded_and_verified(monkeypatch):
+    monkeypatch.setattr(backup, 'MAX_BACKUP_BYTES', 1)
+    monkeypatch.setattr(backup, 'MAX_RELEASE_BACKUP_BYTES', 1024)
+    uploaded = {}
+    def upload(*args, **kwargs):
+        uploaded['bytes'] = kwargs['data']
+        return mock.Mock(json=lambda: {'id': 123})
+    def rename(*args, **kwargs):
+        return mock.Mock(json=lambda: {'id': 123, 'name': kwargs['json']['name'], 'state': 'uploaded'})
+    with mock.patch.object(backup, '_assert_private'), \
+         mock.patch.object(backup, 'archive', return_value=b'complete-synthetic-state'), \
+         mock.patch.object(backup, '_ensure_release', return_value={'id': 7}), \
+         mock.patch.object(backup.requests, 'post', side_effect=upload), \
+         mock.patch.object(backup.requests, 'patch', side_effect=rename), \
+         mock.patch.object(backup, '_download_asset', side_effect=lambda *args: uploaded['bytes']), \
+         mock.patch.object(backup, '_verify_plaintext') as verify, \
+         mock.patch.object(backup, '_mark_ready') as ready, \
+         mock.patch.object(backup, '_prune') as prune:
+        backup._save_release('synthetic', 'owner/private', 'synthetic-test-key', rotate=False)
+    assert len(uploaded['bytes']) > backup.MAX_BACKUP_BYTES
+    verify.assert_called_once_with(b'complete-synthetic-state')
+    ready.assert_called_once()
+    prune.assert_not_called()
+
+
+def test_attachment_policy_is_not_reduced_to_fit_the_old_limit(monkeypatch, tmp_path):
+    import io
+    import tarfile
+    monkeypatch.setenv('STATE_BACKUP_INCLUDE_BLOBS', '1')
+    source = tmp_path / 'state'
+    attachment = source / 'accounts' / 'synthetic-blobs' / 'attachment.bin'
+    attachment.parent.mkdir(parents=True)
+    content = b'synthetic-attachment-' * 20000
+    assert len(content) > backup.MAX_BLOB_BYTES
+    attachment.write_bytes(content)
+    with tarfile.open(fileobj=io.BytesIO(backup.archive(source)), mode='r:gz') as archive:
+        assert archive.extractfile('michiflin/accounts/synthetic-blobs/attachment.bin').read() == content
