@@ -1,4 +1,4 @@
-name: Read-only sync diagnosis
+name: Private disposable visitor verification
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ concurrency:
 jobs:
   inspect-backup:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       CONFIG_DIR: ${{ github.workspace }}/.sync-diagnostic-state
       GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
@@ -54,12 +54,13 @@ jobs:
               raise SystemExit(1)
           print('ISOLATED_SNAPSHOT_RESTORED_NO_MAIL_IO')
           PY
-      - name: Counts and booleans only
-        run: python tools/diagnose_sync_snapshot.py > "$RUNNER_TEMP/sync-diagnostic.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Disposable visitor with safe boolean-only result
+        run: python tools/probe_silent_private_visitor.py
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sync-diagnostic-counts
-          path: ${{ runner.temp }}/sync-diagnostic.json
+          name: silent-private-visitor-result
+          path: ${{ runner.temp }}/silent-visitor-result.json
           retention-days: 1
           if-no-files-found: error
       - name: Remove isolated private copy
