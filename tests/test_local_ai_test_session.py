@@ -106,3 +106,19 @@ def test_real_extractor_ranks_the_exact_preflight_fixture_before_synthesis(monke
     assert 'no está confirmado' in result.text and '[S1]' in result.text
     assert infer.called
     assert ('Síntesis de IA local' in result.text) == available
+
+
+def test_development_runs_have_fixed_duration_choices_and_do_not_multiply_model_downloads():
+    root = Path(__file__).resolve().parents[1]
+    runtime = (root / '.github/workflows/michiflin.yml').read_text()
+    compare = (root / '.github/workflows/local-model-compare.yml').read_text()
+    assert "options: ['1', '2', '3']" in runtime
+    assert 'case "$LOCAL_AI_TEST_HOURS" in' in runtime
+    assert 'SESSION_DURATION_SECONDS=10800' in runtime
+    assert 'SESSION_DURATION_SECONDS=7200' in runtime
+    assert 'SESSION_DURATION_SECONDS=3600' in runtime
+    assert 'include_legacy:' in compare and 'max-parallel: 1' in compare
+    assert "|| '[\"qwen35\"]'" in compare
+    assert 'cache: pip' in compare and 'actions/cache' not in compare
+    assert 'smoke_local_hybrid.py' in compare
+    assert 'playwright install' not in compare

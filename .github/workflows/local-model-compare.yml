@@ -1,6 +1,12 @@
 name: Compare local models without bot identity
 on:
   workflow_dispatch:
+    inputs:
+      include_legacy:
+        description: "Compare against the older model too; leave off for cheaper candidate-only regressions"
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -13,8 +19,9 @@ jobs:
     timeout-minutes: 40
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        variant: [legacy, qwen35]
+        variant: ${{ fromJSON(inputs.include_legacy && '["qwen35","legacy"]' || '["qwen35"]') }}
     env:
       LOCAL_GGUF_VARIANT: ${{ matrix.variant }}
       LOCAL_GGUF_EXTENDED: '1'
@@ -22,10 +29,32 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install application dependencies without browser downloads
+        run: python -m pip install -r requirements.txt
       - name: Verify and prepare isolated pinned engine and weights
         run: bash tools/local_gguf_session.sh prepare
       - name: Start authenticated isolated inference
         run: bash tools/local_gguf_session.sh start
+      - name: Configure actual application paths for synthetic hybrid checks
+        run: |
+          echo "LOCAL_GGUF_ENABLED=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_ACTIONS_TEST=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
+          echo "LOCAL_WEB_SYNTHESIS=1" >> "$GITHUB_ENV"
+          echo "LOCAL_AGENT_COORDINATOR=1" >> "$GITHUB_ENV"
+      - name: Actual hybrid code and synthetic-only rejection diagnostics
+        env:
+          CONFIG_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/config
+          JOB_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/jobs
+          PREVIEW_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/preview
+          MICHIFLIN_SYNTHETIC_PREFLIGHT_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight
+          LOCAL_HYBRID_REPORT: ${{ runner.temp }}/local-hybrid-preflight.json
+        run: python tools/smoke_local_hybrid.py
       - name: Real inference on synthetic questions only
         run: python3 tools/benchmark_local_model.py
       - name: Save synthetic answers and narrow checks for review
@@ -33,7 +62,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: local-benchmark-${{ matrix.variant }}
-          path: local-benchmark.json
+          path: |
+            local-benchmark.json
+            ${{ runner.temp }}/local-hybrid-preflight.json
           if-no-files-found: ignore
           retention-days: 3
       - name: Stop and remove only this job's isolated model

@@ -1,0 +1,44 @@
+{
+  "name": "agentes-estables-20261119",
+  "source_revision": "5da5d2bb4e42f9bce3f6c37ac5f24a92860c4da0",
+  "accepted_live_test": 44969439206,
+  "model": "Qwen3.5-4B Q4_K_M",
+  "profile": {
+    "LOCAL_GGUF_VARIANT": "qwen35",
+    "LOCAL_GGUF_EXTENDED": "1",
+    "LOCAL_WEB_SYNTHESIS": "1",
+    "LOCAL_AGENT_COORDINATOR": "1",
+    "context_tokens": 6144
+  },
+  "runtime_note": "Accepted code and profile, not a promise of permanent hosting. Existing Actions test is one hour; recurring inference activation remains off.",
+  "preserve": [
+    "per-person API quota",
+    "exact provider choice",
+    "private history isolation",
+    "extractive fallback for unaccepted synthesis",
+    "owner-only collaboration authorization"
+  ],
+  "files": {
+    "michiflin/local_ai.py": "7ac349462b46b6499f49f1f3b84936a9d06a69405b5f4702ebd8d0eea1414980",
+    "michiflin/smart_agent.py": "d6c6c49c7fd6dbb8e69b3933bc5289bc1d8decfaa5349531231ce4228bc889a4",
+    "michiflin/fair_local_ai.py": "2d0aebda52e096039c432845765d220bf6274c2bf1c88f442144f7b9604b874b",
+    "michiflin/collab_agent.py": "9d4b8a13789ef8f31ca674c05cac14bfc7986f03be99196b73c3ff4343ee81b8",
+    "michiflin/agent.py": "06fe46b85fab13be330a69f9597a615ae0d26ad35dac30cfaa257d453c911eda",
+    "tools/local_gguf_session.sh": "fb81fe3424497b6d230e7bede000c296cb73d7ba3c81fc2a3983969b3c2c9331"
+  },
+  "functions": {
+    "michiflin/ai.py": {
+      "_allowance": "ff8c70ab3d221f65df25aa07febb46bd54204fa66a55f3857b254da91d1961ca",
+      "_settle": "f40bde82bc4ed8380abf85d261bb3183a91f271ff77422f1f2162c8f7e55bde6",
+      "complete": "b8be4e2940cbc7e5bd5702eb70390b1fc684fb7dc88d2c0ba4e11ec270ce7826",
+      "complete_exact": "74cbea5dc69caf8ff3a5a065d22338cca4c3b573aba8242ca5c8eb841a8c9a9b"
+    },
+    "michiflin/miniapp.py": {
+      "op_ask": "1f8f8e0cf265451f3f72c97a0f309af4104c9a7c1fddd7fa7dcdd0012b8784f3"
+    },
+    "michiflin/images.py": {
+      "generate": "426e78ce6fb753871368e1a22ef30873ef988bf29f26ecb5e4e26eac10e01786",
+      "_generate": "b59659db693974b9f15df28fe377b5aa12c875df2d63c05c1ee73660baacaa07"
+    }
+  }
+}

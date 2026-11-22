@@ -15,7 +15,7 @@ Para la sesión seleccionada se activa:
 - Perfil de entrada y salida ampliado.
 - Síntesis local de extractos web públicos, con comprobaciones de formato y alternativa extractiva.
 - Planificador local para el agente Con IA/API. Las consultas externas de las personas conservan el consentimiento y la cuota de cada persona. Una selección explícita de modelo evita el planificador.
-- Duración de servicio del bot acotada a **3600 segundos**, además de la preparación y el cierre. La disponibilidad real puede ser menor por fallos o cierre anticipado. Descarga, preparación y pruebas previas no forman parte de esa hora.
+- Duración de servicio del bot acotada a **1, 2 o 3 horas**, elegidas expresamente para la prueba, además de la preparación y el cierre. El valor inicial sigue siendo una hora. `local_ai_test_hours` o la variable `LOCAL_AI_TEST_HOURS` permiten escoger uno de esos tres valores fijos; cualquier otro valor vuelve a una hora. La disponibilidad real puede ser menor por fallos o cierre anticipado. Descarga, preparación y pruebas previas no forman parte de esa hora.
 
 No se habilitan shell, escrituras, sesiones web privadas ni facultades de administrador para el modelo.
 
