@@ -73,7 +73,8 @@ def test_ai_pending_and_unread_badges_open_actual_chat_and_clear(engine):
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
         assert "1 sin leer" in ai_tab.get_attribute("aria-label")
         page.locator('.tab[data-tab="home"]:visible').click()
-        notice = page.locator("button.notice").filter(has_text="Agente").first
+        page.locator("#notifications-toggle").click()
+        notice = page.locator("button.notice-center-main").filter(has_text="Agente").first
         notice.click()
         assert page.evaluate("current.view") == "chat"
         assert "SIMULATED agent answer" in page.locator("#view").inner_text()
@@ -103,7 +104,8 @@ def test_search_survives_navigation_and_lost_waiter_without_repeating(target):
         assert tab.locator(".tab-badge").is_hidden()
         page.wait_for_function("name => store.get('notices',[]).some(x=>x.unread && x.text.includes(name))", arg=notice_text)
         assert "1 sin leer" in tab.get_attribute("aria-label")
-        page.locator("button.notice").filter(has_text=notice_text).first.click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text=notice_text).first.click()
         page.get_by_text("Resultado sintético", exact=True).first.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
         page.wait_for_function("name=>!store.get('notices',[]).some(n=>n.unread && n.target?.view===name)", arg=target)
@@ -119,7 +121,8 @@ def test_expired_search_notice_does_not_silently_repeat_the_request():
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("store.get('notices',[]).some(n=>n.target?.view==='results')")
         page.evaluate("() => { memo.clear(); store.del(RESULT_CACHE_KEY); }")
-        page.locator("button.notice").filter(has_text="consulta web está lista").click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text="consulta web está lista").click()
         page.get_by_text("El resultado guardado ya no está disponible", exact=False).wait_for(state="visible")
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='search').length") == 1
         # Expiration is now shown in the original destination, not merely as
@@ -214,7 +217,8 @@ def test_other_tool_results_are_visible_without_silent_requery(feature):
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("name => store.get('notices',[]).some(n=>n.unread && n.text.includes(name))", arg=notice_text)
-        page.locator("button.notice").filter(has_text=notice_text).first.click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text=notice_text).first.click()
         result = page.locator(".weather-place").get_by_text(expected, exact=False) if feature == "weather" else page.get_by_text(expected, exact=False).first
         result.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
@@ -446,11 +450,13 @@ def test_two_unread_utility_results_are_individually_locatable():
         world_time.locator("button").click()
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("store.get('notices',[]).filter(n=>n.unread && n.target?.view==='tools').length===2")
-        page.locator("button.notice").filter(has_text="Conversor de unidades").click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text="Conversor de unidades").click()
         assert page.evaluate("current.params.tool") == "convert"
         assert page.locator(".utility-output").get_by_text("smoke test result").is_visible()
         page.locator('.tab[data-tab="home"]:visible').click()
-        page.locator("button.notice").filter(has_text="Hora en el mundo").click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text="Hora en el mundo").click()
         assert page.evaluate("current.params.tool") == "time"
         assert page.locator(".utility-output").get_by_text("smoke test result").is_visible()
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='tool').length") == 2
@@ -477,7 +483,8 @@ def test_failed_background_request_shows_error_without_hidden_retry(feature):
         page.wait_for_function("op => window.__sentUpdates.some(x=>x.payload?.op===op)", arg=op)
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("feature => store.get('notices',[]).some(n=>n.unread && n.kind==='bad' && n.target?.view===feature)", arg=feature)
-        page.locator("button.notice.bad").filter(has_text="terminó con error").click()
+        page.locator("#notifications-toggle").click()
+        page.locator("button.notice-center-main").filter(has_text="terminó con error").click()
         assert page.evaluate("current.view") == feature
         page.get_by_text("SIMULATED network uncertainty", exact=False).first.wait_for(state="visible")
         assert page.evaluate("op => window.__sentUpdates.filter(x=>x.payload?.op===op).length", op) == 1
