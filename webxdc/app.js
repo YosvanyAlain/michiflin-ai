@@ -135,7 +135,7 @@ function chrome() {
 }
 
 // Navigation badges report unread results only, never a request still running.
-// Home summarizes other tabs; opening Home does not mark those results as read.
+// The top-right bell summarizes unread notices; section badges remain independent.
 const badgeCounts = {};
 function pendingTarget(meta) {
   const ctx = meta.ctx || {};
@@ -149,7 +149,7 @@ function pendingTarget(meta) {
 function notificationCounts() {
   const counts = Object.fromEntries(TABS.map(({ id }) => [id, { pending: 0, unread: 0 }]));
   for (const item of store.get("notices", [])) {
-    if (item.unread && !pendingNoticePaint.has(item.id) && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
+    if (item.unread && !item.hidden && !pendingNoticePaint.has(item.id) && counts[item.category || "home"]) counts[item.category || "home"].unread += 1;
   }
   for (const meta of Object.values(bridge.pending())) {
     const target = pendingTarget(meta);
@@ -169,7 +169,7 @@ function jobBadge() {
   const counts = notificationCounts();
   document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     const id = tab.dataset.tab, count = counts[id] || { pending: 0, unread: 0 };
-    const total = count.unread, node = $(".tab-badge", tab);
+    const total = id === "home" ? 0 : count.unread, node = $(".tab-badge", tab);
     if (!node) return;
     node.hidden = total === 0;
     node.textContent = total > 99 ? "99+" : String(total);
@@ -195,11 +195,11 @@ function goTab(tab) {
   activeNoticeId = "";
   current = { view: tab, params: {} };
   store.set("tab", tab);
-  // Home remains the overview of all notices. In another section, open the
+  // The bell is the overview of notices. In another section, open the
   // newest unread result in that section rather than stranding its badge on
   // the section's empty landing page. Other unread notices remain available.
   const item = tab === "home" ? null : store.get("notices", []).find((entry) =>
-    entry.unread && (entry.category || "home") === tab && entry.target);
+    entry.unread && !entry.hidden && (entry.category || "home") === tab && entry.target);
   if (item && openNotice(item, tab)) return;
   render();
 }
@@ -277,7 +277,7 @@ function renderView(scroll = 0) {
   if (tab !== "home") {
     const next = h("button", { class: "btn ghost small pending-notices", hidden: true, onclick: () => goTab(tab) });
     const drawNext = () => {
-      const count = store.get("notices", []).filter((item) => item.unread && !pendingNoticePaint.has(item.id) && (item.category || "home") === tab && item.target).length;
+      const count = store.get("notices", []).filter((item) => item.unread && !item.hidden && !pendingNoticePaint.has(item.id) && (item.category || "home") === tab && item.target).length;
       next.hidden = count === 0;
       if (count) fill(next, icon("bell"), t("notification_next", { n: count }));
     };
@@ -845,7 +845,7 @@ function notice(text, kind = "info", options = {}) {
   const visible = viewVisible && !inline;
   item.unread = options.local !== true && !visible;
   item.observeInPlace = !!(item.unread && inline && viewVisible);
-  const provisional = item.observeInPlace || (item.unread && !target && current.view === "home" && resultsVisible() && viewReady());
+  const provisional = item.observeInPlace;
   if (provisional) pendingNoticePaint.add(item.id);
   list.unshift(item);
   // Select a reply that arrived in this view while it was covered; an inline
@@ -935,7 +935,7 @@ function shortcutMatch(view, fallback, target) {
 function shortcutCount(view, fallback = {}) {
   const matches = (target) => shortcutMatch(view, fallback, target);
   return {
-    unread: store.get("notices", []).filter((item) => item.unread && !pendingNoticePaint.has(item.id) && matches(item.target)).length,
+    unread: store.get("notices", []).filter((item) => item.unread && !item.hidden && !pendingNoticePaint.has(item.id) && matches(item.target)).length,
     pending: Object.values(bridge.pending()).map(pendingTarget).filter((item) => item && matches(item.target)).length,
   };
 }
@@ -1276,6 +1276,7 @@ const TILES = [
   ["book", "tile_books", "books"],
   ["health", "tile_health", "health"],
   ["notes", "tile_notes", "notes"],
+  ["chat", "tile_social", "social"],
 ];
 
 function tiles(extra = [], omit = []) {
@@ -1356,7 +1357,7 @@ function noticeList() {
     const list = store.get("notices", []);
     fill(box, ...(list.length ? list.map((item) => {
       const open = item.target && VIEWS[item.target.view] ? () => openNotice(item) : null;
-      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread && !pendingNoticePaint.has(item.id) ? "unread" : ""}`,
+      return h(open ? "button" : "div", { class: `list-row notice ${item.kind} ${item.unread && !item.hidden && !pendingNoticePaint.has(item.id) ? "unread" : ""}`,
         "data-notice-id": item.id, onclick: open, "aria-label": open ? `${item.text} · ${t("notification_open")}` : null },
         icon(item.kind === "ok" ? "check" : item.kind === "bad" ? "alert" : "bell"),
         h("span", { class: "grow" }, item.text), h("small", { class: "muted" }, fmtTime(item.ts)), open ? icon("next") : null);
@@ -1369,7 +1370,7 @@ function noticeList() {
     const byId = new Map(store.get("notices", []).map((item) => [item.id, item]));
     for (const row of box.querySelectorAll(".notice[data-notice-id]")) {
       const item = byId.get(row.dataset.noticeId);
-      if (item) row.classList.toggle("unread", !!item.unread && !pendingNoticePaint.has(item.id));
+      if (item) row.classList.toggle("unread", !!item.unread && !item.hidden && !pendingNoticePaint.has(item.id));
     }
   });
   draw();
@@ -1677,21 +1678,12 @@ VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
     const status = h("div", { class: "chips home-status" });
-    const advisory = h("div");
     const drawStatus = () => fill(status, ...statusChips());
-    const drawAdvisory = () => {
-      const item = cache.maintenance_notice;
-      fill(advisory, item && item.active ? h("p", { class: "note warn", role: "status" }, icon("info"),
-        h("span", { class: "grow" }, (lang() === "en" ? item.en : item.es) + " " + t("maintenance_queue_active"))) : null);
-    };
     ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
-    ["hello", "maintenance"].forEach((kind) => bus.on(kind, drawAdvisory));
-    drawStatus(); drawAdvisory();
+    drawStatus();
     add(main,
-      homeCarousel(), status, advisory, searchBox({}, false, true),
+      homeCarousel(), status, searchBox({}, false, true),
       section(t("shortcuts"), tiles([], ["health", "rates"])),
-      section(null, headRow(t("notices"), iconButton("trash", t("clear"), () => { store.set("notices", []); bus.emit("notices"); })),
-        contextHelp(t("notification_privacy")), noticeList()),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
   },

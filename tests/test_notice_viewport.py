@@ -467,17 +467,13 @@ def test_general_notice_visible_in_home_then_leaving_before_paint_stays_unread(e
         page.wait_for_function("cache.at>0&&!syncing")
         page.locator("#splash").wait_for(state="detached", timeout=8000)
         page.emulate_media(reduced_motion="reduce")
-        page.evaluate("goTab('home');notice('Aviso de referencia','info')")
-        page.wait_for_function("viewReady()")
+        page.evaluate("goTab('home');notice('Aviso de referencia','info');notificationCenter()")
         page.locator('.notice').filter(has_text="Aviso de referencia").scroll_into_view_if_needed()
         page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso de referencia').unread")
-        before_exit = page.evaluate("""()=>{notice('Aviso fugaz','info');
-          const item=store.get('notices',[]).find(n=>n.text==='Aviso fugaz');
-          const visible=elementInView(noticeNode(item));goTab('ai');return visible;}""")
-        assert before_exit
+        page.evaluate("notice('Aviso fugaz','info');closeSheet();goTab('ai')")
         assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso fugaz').unread")
-        page.locator('.tab[data-tab="home"]:visible .tab-badge').wait_for(state="visible")
-        page.locator('.tab[data-tab="home"]:visible').click()
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
+        page.locator('#notifications-toggle').click()
         page.locator('.notice').filter(has_text="Aviso fugaz").scroll_into_view_if_needed()
         page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso fugaz').unread")
         assert errors == []

@@ -632,6 +632,16 @@ def _save_release(token: str, repo: str, passphrase: str, *, rotate: bool = True
         raise RuntimeError("verified backup could not be marked ready; old copies were kept")
     _mark_ready(token, repo)
     print(f"[backup] encrypted and verified snapshot saved ({len(encrypted) // 1024} KB)")
+    # Drive is additional only. A mirror failure cannot invalidate the verified
+    # primary, but keeps every previous primary snapshot until recovery works.
+    import drive_backup
+    if drive_backup.enabled():
+        try:
+            drive_backup.mirror(encrypted, final_name, passphrase)
+            print("[backup] additional Drive snapshot encrypted, downloaded and recovery-verified")
+        except (requests.RequestException, ValueError, tarfile.TarError, sqlite3.Error, OSError, RuntimeError, KeyError) as exc:
+            rotate = False
+            print(f"[backup] additional Drive copy deferred ({exc.__class__.__name__}); primary copies preserved")
     if rotate:
         try:
             _prune(token, repo, rid, asset_id, passphrase)

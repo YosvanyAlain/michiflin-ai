@@ -16,11 +16,6 @@ on:
         type: choice
         options: ['1', '2', '3']
         default: '1'
-      deliver_owner_refresh:
-        description: "Deliver this release once to the existing verified owner's private chat"
-        required: false
-        type: boolean
-        default: true
       send_owner_documents:
         description: "Send the requested source ZIP and PDF to the verified owner once"
         required: false
@@ -42,6 +37,13 @@ jobs:
     timeout-minutes: 358
     env:
       CONFIG_DIR: ${{ github.workspace }}/.michiflin-state
+      # Additional only; Arena's Drive connection does not grant runner credentials.
+      # Opt-in, free storage only; incomplete grants stay inactive, primary kept.
+      DRIVE_BACKUP_ENABLED: ${{ vars.DRIVE_BACKUP_ENABLED || '0' }}
+      GOOGLE_DRIVE_CLIENT_ID: ${{ secrets.GOOGLE_DRIVE_CLIENT_ID }}
+      GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
+      GOOGLE_DRIVE_REFRESH_TOKEN: ${{ secrets.GOOGLE_DRIVE_REFRESH_TOKEN }}
+      GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
       BOT_TIMEZONE: America/Havana
       SESSION_DURATION_SECONDS: "19200"
       # User-authorized, temporary test. Set repository variable to 0 to opt out
@@ -75,7 +77,6 @@ jobs:
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # Explicit owner-authorized recovery; only the one exact deployment may send.
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
-      OWNER_UI_REFRESH_REVISION: ${{ github.event.inputs.deliver_owner_refresh == 'true' && github.sha || vars.OWNER_UI_REFRESH_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # A separately verified candidate is imported only for an exact reviewed revision.
@@ -514,23 +515,6 @@ jobs:
 
       - name: Apply the owner-requested public private-chat cutover once
         run: python tools/open_private_invite_access.py
-
-      - name: Deliver the exact owner-requested UI refresh once
-        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION || github.event.inputs.deliver_owner_refresh == 'true' }}
-        run: |
-          if ! python tools/deliver_owner_refresh.py; then
-            echo "::warning::Automatic owner update deferred; retired instances remain blocked. Use /app in the verified private chat."
-          fi
-          python state_backup.py save
-
-      - name: Save safe owner update receipt
-        if: ${{ github.sha == vars.OWNER_UI_REFRESH_REVISION || github.event.inputs.deliver_owner_refresh == 'true' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: owner-refresh-receipt
-          path: owner-refresh-receipt.json
-          retention-days: 3
-          if-no-files-found: ignore
 
       - name: Private chats and restricted public group tools
         shell: bash

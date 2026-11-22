@@ -145,12 +145,13 @@ def _cookies() -> str:
 YOUTUBE = re.compile(r"(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$", re.I)
 # Fallback clients for streams YouTube refuses (HTTP 403 / SABR-only formats).
 YOUTUBE_CLIENTS = ("", "android", "web_embedded")
-FINAL_ERRORS = {"private", "unavailable", "geo", "unsupported", "too_large", "disk_full"}
+FINAL_ERRORS = {"private", "unavailable", "geo", "unsupported", "too_large", "disk_full", "ffmpeg_missing", "rate_limited"}
 
 def _options(proxy: str = "") -> dict[str, Any]:
     options: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
+        "js_runtimes": {"deno": {}, "node": {}},
         "noplaylist": True,
         "socket_timeout": 45,
         "retries": 5,
@@ -241,9 +242,9 @@ def inspect(url: str) -> MediaInfo:
                 # Neither the upstream URL nor provider errors (which can
                 # contain private media URLs or cookies) belong in logs.
                 log.info("media inspect via %s failed: %s", "proxy" if route else "direct", error_code(exc))
-                if error_code(exc) == "bot_check":
+                if error_code(exc) in {"bot_check", "rate_limited"}:
                     # Do not switch routes or identities to evade a provider challenge.
-                    raise ValueError("bot_check") from None
+                    raise ValueError(error_code(exc)) from None
         if info is None:
             raise ValueError(error_code(last))
     if info.get("_type") == "playlist":
@@ -273,11 +274,34 @@ def inspect(url: str) -> MediaInfo:
 
 def error_code(exc: Exception | None) -> str:
     text = str(exc or "").lower()
-    if "disk_full" in text:
+    if "disk_full" in text or "no space left on device" in text or "errno 28" in text:
         return "disk_full"
     if any(marker in text for marker in ("sign in to confirm", "not a bot", "captcha", "verify you are human",
                                          "verify you're human", "confirm you're human", "anti-bot")):
         return "bot_check"
+    # Preserve gateway categories verbatim: proxy_unavailable must never be
+    # mistaken for unavailable *content*. No URLs or raw provider text escapes.
+    known = {"bot_check", "private", "unavailable", "geo", "unsupported", "too_large", "disk_full",
+             "ytdlp_missing", "vault", "proxy_unavailable", "proxy_invalid", "isolation_unavailable",
+             "network", "http_forbidden", "rate_limited", "format_unavailable", "ffmpeg_missing", "javascript_missing"}
+    if text in known:
+        return text
+    if any(marker in text for marker in ("connection refused", "proxyerror", "proxy error", "socks5", "socks error")):
+        return "proxy_unavailable" if "proxy" in text or "socks" in text else "network"
+    if any(marker in text for marker in ("timed out", "timeout", "name resolution", "getaddrinfo", "network is unreachable",
+                                         "network unavailable", "network not available", "connection reset", "unable to connect", "failed to resolve", "nodename nor servname", "tls handshake",
+                                         "certificate_verify_failed", "temporary failure in name")):
+        return "network"
+    if "http error 429" in text or "too many requests" in text:
+        return "rate_limited"
+    if "http error 403" in text or "403 forbidden" in text:
+        return "http_forbidden"
+    if "ffmpeg" in text and ("not found" in text or "not installed" in text):
+        return "ffmpeg_missing"
+    if "requested format is not available" in text or "no video formats found" in text:
+        return "format_unavailable"
+    if "javascript runtime" in text and ("no supported" in text or "not found" in text):
+        return "javascript_missing"
     if "private" in text or "login" in text or "sign in" in text:
         return "private"
     if "unavailable" in text or "removed" in text or "not available" in text:
@@ -397,6 +421,12 @@ def describe_error(code: str, locale: str) -> str:
 
     messages = {
         "bot_check": ("el sitio pidió verificación. Complétala personalmente en un navegador aceptado; hacerlo en otro dispositivo no siempre autoriza al servidor", "the site requested verification. Complete it yourself in an accepted browser; doing so on another device does not always authorize the server"),
+        "network": ("falló la conexión, DNS o TLS; esto no demuestra un bloqueo ni un fallo de WARP", "connection, DNS or TLS failed; this does not prove a provider block or a WARP failure"),
+        "http_forbidden": ("el servidor rechazó la solicitud con HTTP 403; no demuestra por sí solo que WARP haya fallado", "the server refused the request with HTTP 403; this alone does not prove a WARP failure"),
+        "rate_limited": ("el sitio limitó las solicitudes (HTTP 429); espera antes de volver a intentarlo", "the site rate-limited requests (HTTP 429); wait before trying again"),
+        "format_unavailable": ("no hay un formato compatible disponible para esta solicitud", "no compatible format is available for this request"),
+        "ffmpeg_missing": ("falta FFmpeg para preparar el audio o vídeo", "FFmpeg is missing for audio or video processing"),
+        "javascript_missing": ("falta un intérprete JavaScript compatible para el extractor", "a supported JavaScript runtime is missing for the extractor"),
         "private": ("el contenido es privado o requiere iniciar sesión", "the content is private or requires login"),
         "unavailable": ("el contenido no está disponible", "the content is unavailable"),
         "geo": ("el contenido está bloqueado por región", "the content is region-blocked"),

@@ -29,14 +29,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, text_social, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
-    "utilities.js", "books.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
+    "utilities.js", "books.js", "social.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
     "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
@@ -55,6 +55,7 @@ _PERSON_LIMITS = {"normal": 8, "owner": 16, "owner_work": 32, "pause": 2}
 _instance_locks: dict[int, threading.Lock] = {}
 # Welcome and explicitly requested recovery must decide and hand off together.
 _upgrade_lock = threading.Lock()
+_update_notice_lock = threading.Lock()
 _job_marks: dict[str, tuple[str, int]] = {}
 _job_marks_lock = threading.Lock()
 # Exact pending pages stay only in process memory, isolated by app, grant and recipient.
@@ -92,7 +93,8 @@ def compatible_build(entry: dict[str, Any]) -> bool:
     """Admit only this package and the exact previously tested builds."""
     value = entry.get("build")
     if config.REVOKE_LEGACY_MINIAPPS:
-        return bool(entry.get("epoch") == config.BOT_EPOCH and value == app_build())
+        return bool(entry.get("epoch") == config.BOT_EPOCH and value and (value == app_build() or value == app_compat.community_previous_build(
+            config.BOT_EPOCH, config.MINIAPP_RELEASE, str(APP_DIR), APP_FILES)))
     if not isinstance(value, str) or not value:
         return False
     if value == app_build():
@@ -183,10 +185,6 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
                   "this new instance has separate storage.")
     else:
         text = ""  # first delivery is the attachment only, with no welcome caption
-    if config.REVOKE_LEGACY_MINIAPPS and updated:
-        text += "\n\n" + tr(locale,
-            "Las miniapps anteriores ya no se conectan; sus datos locales se conservan.",
-            "Previous miniapps no longer connect; their local data is preserved.")
     if recovery_revision:
         if not re.fullmatch(r"[0-9a-f]{40}", recovery_revision):
             return 0
@@ -800,7 +798,7 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
 
 
 WORK_OPS = {"books", "ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
-            "youtube_account", "facebook_account", "tiktok_account", "filekit"}
+            "youtube_account", "facebook_account", "tiktok_account", "filekit", "social"}
 AI_OPS = {"ask", "image", "code"}
 KILL_SAFE_OPS = {"public_groups", "hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 2100}
@@ -937,7 +935,7 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         actual_args.pop("_collab_scope", None)  # never trust a client-supplied project identity
         actual_args.pop("_collab_task", None)
         actual_args.pop("_app_instance_id", None)
-        if op == "reinstall":
+        if op in {"reinstall", "hello", "repair"}:
             actual_args["_app_instance_id"] = instance_id  # verified server context, never from the app
         inline_key: tuple[int, str, str] | None = None
         if op in {"hello", "repair", "models", "ask", "image", "code", "personal_ai"}:
@@ -1466,6 +1464,9 @@ def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         weather = weather_home.view(chat.sender(), locale)
     except weather_home.WeatherHomeError:
         weather = None  # do not break the entire app if weather state cannot be saved
+    instance_id = int(args.get('_app_instance_id') or 0)
+    if instance_id:
+        announce_optional_update(instance_id)
     return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
             "maintenance_notice": maintenance.get(), "rates_summary": tools.saved_rates_snapshot(), "weather_home": weather,
@@ -2450,3 +2451,40 @@ def op_public_groups(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     except Exception:
         raise AppError(tr(locale, "No se pudo confirmar. Usa la miniapp del dueño en su chat individual cifrado; debe estar presente en el grupo con la misma clave. Repite /michiflin activar si la solicitud venció.",
                           "Could not confirm. Use the owner's encrypted individual miniapp; the same owner key must be present in the group. Repeat /michiflin activar if the request expired.")) from None
+
+
+def announce_optional_update(instance_id: int) -> None:
+    """Notify the existing instance only; never send a replacement miniapp."""
+    with _update_notice_lock:
+        with state.lock:
+            entry = _apps().get(str(instance_id))
+            build_id = app_build()
+            if not isinstance(entry, dict) or entry.get('build') == build_id or entry.get('optional_update_notice') == build_id:
+                return
+        if not _status_allowed(instance_id):
+            return
+        sent = _send_status(instance_id, {"t": "push", "kind": "notice", "data": {
+            "kind": "info", "es": "Hay una actualización disponible. Tú decides: Ajustes → Sincronización → Pedir app nueva. Esta miniapp y sus datos se conservan.",
+            "en": "An update is available. Your choice: Settings → Sync → Get a new app. This miniapp and its data are kept."}})
+        if sent:
+            with state.lock:
+                entry['optional_update_notice'] = build_id
+                state._save_soon()
+
+
+@op("social")
+def op_social(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    try:
+        return text_social.operate(chat.sender(), args)
+    except text_social.SocialError as exc:
+        labels = {
+            'denied': ('Acceso no autorizado.', 'Access denied.'),
+            'suspended': ('Tu acceso a la comunidad está suspendido.', 'Community access is suspended.'),
+            'alias_taken': ('Ese alias ya está en uso.', 'That alias is taken.'),
+            'rate_limit': ('Espera unos segundos; máximo 20 publicaciones cada 10 minutos.', 'Wait a few seconds; at most 20 posts per 10 minutes.'),
+            'conflict': ('El texto cambió. Actualiza antes de editar.', 'The text changed. Refresh before editing.'),
+            'capacity': ('La comunidad alcanzó su capacidad; no se ha borrado el historial.', 'Community capacity reached; history was not deleted.'),
+            'not_found': ('Publicación no disponible.', 'Post unavailable.'),
+        }
+        es, en = labels.get(str(exc), ('Revisa los campos de texto, alias y opciones.', 'Check text, alias and options.'))
+        raise AppError(tr(locale, es, en)) from None

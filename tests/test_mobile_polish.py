@@ -1,6 +1,7 @@
 """Second owner review: compact UI, explicit group approval, no live mail."""
 import copy
 import hashlib
+import json
 from types import SimpleNamespace
 from unittest import mock
 
@@ -108,7 +109,10 @@ def test_library_search_omits_catalogue_only_records(monkeypatch):
 def test_exact_pre_polish_package_is_preserved():
     epoch='test-polish-epoch'
     digest=hashlib.sha256(('epoch:'+epoch).encode())
+    manifest=json.loads((app_compat._POLISH_BEFORE/'manifest.json').read_text())
     for name in miniapp.APP_FILES:
+        if name not in manifest:
+            continue  # new assets never belonged to the archived package
         source=app_compat._POLISH_BEFORE if name in app_compat._POLISH_REPLACED else miniapp.APP_DIR
         digest.update(name.encode()+(source/name).read_bytes())
     assert app_compat.polish_previous_build(epoch,str(miniapp.APP_DIR),miniapp.APP_FILES)==digest.hexdigest()[:10]

@@ -85,7 +85,7 @@ def _read(worker: sandbox.BrowserProcess, *, stop: Callable[[], bool] | None = N
                     progress(max(0, int(item.get("done") or 0)), max(0, int(item.get("total") or 0)))
             elif item.get("kind") == "error":
                 code = str(item.get("error") or "media_error")
-                raise ValueError(code if code in {"bot_check", "private", "unavailable", "geo", "unsupported", "too_large"} else "media_error")
+                raise ValueError(code if code in {"bot_check", "private", "unavailable", "geo", "unsupported", "too_large", "disk_full", "network", "http_forbidden", "rate_limited", "format_unavailable", "ffmpeg_missing", "javascript_missing", "proxy_unavailable", "proxy_invalid"} else "media_error")
             elif item.get("kind") in {"info", "done"}:
                 result = item
                 break
