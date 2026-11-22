@@ -91,3 +91,18 @@ def test_extended_app_input_reaches_agent_intact_and_refuses_overflow(monkeypatc
     monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '0')
     with pytest.raises(miniapp.AppError):
         miniapp.op_ask(1, {'space': 'agent', 'text': text}, 'es')
+
+
+@pytest.mark.parametrize('available', [False, True])
+def test_real_extractor_ranks_the_exact_preflight_fixture_before_synthesis(monkeypatch, available):
+    from michiflin import local_ai
+    monkeypatch.setenv('LOCAL_WEB_SYNTHESIS', '1')
+    monkeypatch.setattr(local_ai, 'configured', lambda: True)
+    sources = (local_ai.Source('S1', 'Biblioteca sintética', 'https://example.test/library', smoke.PUBLIC_EXCERPT),)
+    raw = local_ai.Result('ok', '{"answer":"El horario del sábado no está confirmado [S1]."}') if available else local_ai.Result('unavailable')
+    with mock.patch.object(local_ai, 'complete_messages', return_value=raw) as infer:
+        result = local_ai._extractive(smoke.PUBLIC_QUESTION, sources, 'es', synthesize=True)
+    assert result.status == 'ok' and result.sources == sources
+    assert 'no está confirmado' in result.text and '[S1]' in result.text
+    assert infer.called
+    assert ('Síntesis de IA local' in result.text) == available

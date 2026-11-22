@@ -14,6 +14,13 @@ import time
 from unittest import mock
 
 
+PUBLIC_EXCERPT = (
+    'La biblioteca abre de lunes a viernes de 09:00 a 17:00 para atender a todas las personas que visitan sus salas de lectura. '
+    'El horario del sábado de la biblioteca no está confirmado, por lo que este extracto no permite afirmar que abra ese día.'
+)
+PUBLIC_QUESTION = '¿Está confirmado el horario del sábado?'
+
+
 def validate_paths() -> Path:
     root = Path(os.environ['MICHIFLIN_SYNTHETIC_PREFLIGHT_DIR']).resolve()
     runner = Path(os.environ['RUNNER_TEMP']).resolve()
@@ -51,8 +58,8 @@ def main():
             assert result.status == 'ok' and result.text and not result.truncated
             assert usage.used_today('synthetic-local@example.test', 'ask') == 0
             sources = (local_ai.Source('S1', 'Biblioteca sintética', 'https://example.test/library',
-                       'La biblioteca abre de lunes a viernes de 09:00 a 17:00. El sábado no tiene horario confirmado.'),)
-            synthesis = local_ai._extractive('¿Está confirmado el horario del sábado?', sources, 'es',
+                       PUBLIC_EXCERPT),)
+            synthesis = local_ai._extractive(PUBLIC_QUESTION, sources, 'es',
                          sender='synthetic-local@example.test', synthesize=True)
             report['web'] = {'status': synthesis.status, 'text': synthesis.text,
                              'synthesis_accepted': 'Síntesis de IA local' in synthesis.text,
