@@ -4,6 +4,7 @@
 
 - Remove the optional Google Drive backup mirror and its runtime configuration. The encrypted primary backup remains; previously stored Drive files and their separate recovery materials are not deleted.
 - Add an operator guide for the optional, limited official YouTube, Facebook and TikTok connections. Provider approval and real account authorization remain necessary.
+- Checkpoint an explicit owner refresh intent before mail handoff and count it in the read-only diagnostic. Uncertain sends remain held; restoring an older backup still requires manual verification before any retry.
 
 ## 5.5.0
 

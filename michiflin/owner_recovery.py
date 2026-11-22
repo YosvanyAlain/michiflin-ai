@@ -65,8 +65,10 @@ def deliver() -> bool:
 def deliver_requested_refresh() -> bool:
     """One explicit reviewed revision, within the sole already running bot.
 
-    Uses only an existing authorized owner binding. The environment variable
-    remains inert for every other commit; registration prevents duplicates.
+    Uses an existing authorized owner binding and checkpoints a durable intent
+    before handoff. A reserved or uncertain attempt is never retried blindly.
+    Restoring an older backup can still lose that intent, so operators must also
+    disarm the one-shot flag and check delivery before attempting any recovery.
     """
     requested = os.getenv('OWNER_REQUESTED_APP_REVISION', '').strip()
     if (not re.fullmatch(r'[0-9a-f]{40}', requested)
@@ -86,6 +88,18 @@ def deliver_requested_refresh() -> bool:
             selected = next((entry for entry in entries if miniapp._verified_binding(entry)), None)
             if not selected:
                 return False
+            # Reserve before handing anything to the mail core. In production,
+            # the verified encrypted backup must also contain the intent first;
+            # a failed checkpoint or uncertain send cannot authorize a retry.
+            with state.lock:
+                intents = state.data.setdefault('owner_refresh_intents', {})
+                if not isinstance(intents, dict) or requested in intents:
+                    return False
+                intents[requested] = {'state': 'reserved', 'epoch': config.BOT_EPOCH}
+            state.save()
+            if os.getenv('STATE_BACKUP_REQUIRED', '0').strip() == '1':
+                import state_backup
+                state_backup.save(rotate=False)
             mid = miniapp.send_app(int(selected['chat']), 'es', updated=True,
                                    address=config.OWNER_ADDRESS, recovery_revision=requested)
         if not mid:

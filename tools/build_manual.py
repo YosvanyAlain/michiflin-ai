@@ -594,7 +594,7 @@ def build_story() -> list:
               bullet("Revisa el diff, ejecuta pruebas, inspecciona el ZIP y busca credenciales antes de cualquier push."),
               bullet("Publica sin force-push salvo autorización expresa; espera la CI del commit exacto."),
               bullet("Coordina un único relevo. Confirma la restauración de estado y que haya una sola instancia activa."),
-              bullet("No envíes miniapps automáticamente. Con current-only, el paquete antiguo deja de operar y el aviso al interactuar es best-effort; la persona puede pedir /app en su chat privado cifrado y autorizado. Conserva la instancia anterior y prueba una operación segura en la nueva."),
+              bullet("No envíes miniapps automáticamente. Con current-only, el paquete antiguo deja de operar y el aviso al interactuar es best-effort; la persona puede pedir /app en su chat privado cifrado y autorizado. La entrega expresamente solicitada al dueño registra primero una reserva respaldada; si el resultado es incierto, no la repitas a ciegas. Conserva la instancia anterior y prueba una operación segura en la nueva."),
               bullet("Desactiva mantenimiento cuando el servicio y el respaldo estén verificados; comunica las limitaciones."),
               sub("Copias y restauración"),
               p("Esta versión no incluye respaldo a Google Drive. Las copias históricas que ya existan en esa cuenta se dejan intactas; el respaldo cifrado principal continúa usando el repositorio privado configurado."),
