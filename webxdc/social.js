@@ -34,7 +34,7 @@ window.TextCommunity = (() => {
       if (busy) return false;
       busy = true; root.setAttribute("aria-busy", "true");
       status.textContent = tx("Guardando…", "Saving…");
-      try { await bridge.call("social", args); return true; }
+      try { return await bridge.call("social", args); }
       catch (error) { if (active()) { status.textContent = error.message; toast(error.message, "bad"); } return false; }
       finally { busy = false; root.removeAttribute("aria-busy"); }
     }
@@ -63,7 +63,14 @@ window.TextCommunity = (() => {
         h("p", { class: "muted small" }, t("social_privacy")),
         button(tx("Guardar perfil y aspecto", "Save profile and appearance"), async () => {
           prefs.muted_tags = tags.value.split(",").map(s => s.trim().replace(/^#/, "")).filter(Boolean);
-          if (await mutation({ do: "profile", alias: alias.value, bio: bio.value, prefs })) { closeSheet(); load(); }
+          const confirmed = await mutation({ do: "profile", alias: alias.value, bio: bio.value, prefs });
+          if (confirmed?.me && active()) {
+            // The mutation response is the committed profile. Do not make its
+            // display depend on a second feed request reaching this device.
+            data = { ...data, me: confirmed.me, prefs: confirmed.prefs || {} };
+            applyPreferences(data.prefs); drawComposer();
+            closeSheet(); load();
+          }
         }, "primary"),
         button(tx("Volver a mostrar personas y textos ocultos", "Restore muted people and hidden posts"), async () => {
           if (await mutation({ do: "restore_hidden" })) { closeSheet(); load(); }

@@ -93,3 +93,30 @@ def test_real_social_handler_text_only_profile_draft_and_no_duplicate(monkeypatc
         assert page.evaluate("document.querySelector('#view').scrollWidth<=document.querySelector('#view').clientWidth+1")
         assert 'private.invalid' not in page.locator('.social-space').inner_text()
         assert errors == []
+
+
+def test_confirmed_profile_is_displayed_even_if_followup_feed_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(text_social, '_scope', lambda address: 'synthetic_verified_scope')
+    monkeypatch.setattr(config, 'is_owner_admin', lambda address: True)
+    saved = []
+    def handler(request):
+        if request['args']['do'] == 'feed' and saved:
+            raise RuntimeError('Synthetic feed offline after confirmed profile')
+        result = text_social.operate('synthetic@private.invalid', request['args'])
+        if request['args']['do'] == 'profile':
+            saved.append(True)
+        return result
+    with browser_fixture('en', {'width': 390, 'height': 844}, engine='webkit', delivery_handler=handler) as (page, errors):
+        page.evaluate('go("social",{})')
+        page.locator('.social-composer textarea').wait_for()
+        page.locator('.social-composer textarea').fill('Draft that must survive the profile change')
+        page.get_by_role('button', name='My profile', exact=True).click()
+        page.get_by_label('Public alias (not email)').fill('Luna')
+        page.get_by_role('button', name='Save profile and appearance').click()
+        page.wait_for_function("document.querySelector('#sheet').hidden")
+        page.wait_for_function("document.querySelector('.social-posting-as').textContent.includes('Luna')")
+        page.wait_for_function("document.querySelector('.social-space [role=status]').textContent.includes('Synthetic feed offline')")
+        assert page.locator('.social-composer textarea').input_value() == 'Draft that must survive the profile change'
+        assert len(saved) == 1
+        assert errors == []
