@@ -45,7 +45,7 @@ BRIDGE = r"""
   window.__delay = 0;
   window.__fixtureSession = "synthetic-boot-session";
   window.__sessionChangedNext = "";
-  window.__weatherHome = { city: "La Habana, Cuba", place_id: 0, auto: true, last: null,
+  window.__weatherHome = { city: "", place_id: 0, auto: false, last: null,
     next_at: Date.now() / 1000 + 21600, interval: 21600 };
   const responseFor = (request) => {
     switch (request.op) {
@@ -110,6 +110,10 @@ BRIDGE = r"""
         const start = ((request.args.page || 1) - 1) * 15;
         return { results: rows.slice(start, start + 15), more: rows.length > start + 15, limited: false };
       }
+      case "youtube_account":
+      case "facebook_account":
+      case "tiktok_account":
+        return window.__accountResponse ? window.__accountResponse(request) : {configured:false, connected:false, stored:false};
       case "maintenance_notice": return { notice: { active: false, es: "Mensaje de mantenimiento", en: "Maintenance message" }, profile_updated: true };
       case "personal_ai": return { providers: [] };
       case "music_search": return { results: [{ id: "album-1", title: "Licensed jazz", creator: "Artist" }] };
@@ -152,8 +156,10 @@ BRIDGE = r"""
             } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
                 (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op)) ||
                 (window.__realFilekit && request.op === "filekit") ||
+                (window.__realOfficial && ["youtube_account", "facebook_account", "tiktok_account"].includes(request.op)) ||
                 (window.__realDelivery && ["reinstall", "guidance"].includes(request.op))) {
               const endpoint = request.op === "filekit" ? "/api/filekit" :
+                ["youtube_account", "facebook_account", "tiktok_account"].includes(request.op) ? "/api/official" :
                 ["reinstall", "guidance"].includes(request.op) ? "/api/delivery" :
                 window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access";
               const result = await fetch(endpoint,
@@ -188,7 +194,7 @@ BRIDGE = r"""
 @contextmanager
 def browser_fixture(language: str, viewport: dict[str, int], real_access: bool = False, real_personal: bool = False,
                     real_filekit: bool = False, engine: str = "chromium", touch: bool = False,
-                    legacy_package: bool | str = False, delivery_handler=None, init_script: str = ""):
+                    legacy_package: bool | str = False, delivery_handler=None, init_script: str = "", official_handler=None):
     """Fake Delta bridge; optionally connect UI to Python handlers, never a live bot."""
     from michiflin import app_compat
     with tempfile.TemporaryDirectory(prefix="michiflin-browser-fixture-") as temporary:
@@ -211,7 +217,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
 
             def do_POST(self) -> None:
                 if not ((self.path == "/api/access" and real_access) or (self.path == "/api/personal" and real_personal) or
-                        (self.path == "/api/filekit" and real_filekit) or (self.path == "/api/delivery" and delivery_handler)):
+                        (self.path == "/api/filekit" and real_filekit) or (self.path == "/api/delivery" and delivery_handler) or
+                        (self.path == "/api/official" and official_handler)):
                     self.send_error(404)
                     return
                 try:
@@ -219,6 +226,8 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                     chat.set_sender("owner@example.org")
                     if self.path == "/api/delivery":
                         result = delivery_handler(request)
+                    elif self.path == "/api/official":
+                        result = official_handler(request)
                     elif self.path == "/api/personal":
                         from michiflin import personal_ai
                         state.set_personal_ai_secure(True)
@@ -250,7 +259,7 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
             with sync_playwright() as playwright:
                 browser = getattr(playwright, engine).launch(**({"args": ["--no-sandbox"]} if engine == "chromium" else {}))
                 page = browser.new_page(viewport=viewport, locale=language, has_touch=touch)
-                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()}; window.__realDelivery = {str(bool(delivery_handler)).lower()};")
+                page.add_init_script(f"window.__fixtureAdmin = true; window.__realAccess = {str(real_access).lower()}; window.__realPersonal = {str(real_personal).lower()}; window.__realFilekit = {str(real_filekit).lower()}; window.__realDelivery = {str(bool(delivery_handler)).lower()}; window.__realOfficial = {str(bool(official_handler)).lower()};")
                 if init_script:
                     page.add_init_script(init_script)
                 page.on("pageerror", lambda error: errors.append(str(error)))
@@ -262,6 +271,9 @@ def browser_fixture(language: str, viewport: dict[str, int], real_access: bool =
                     page.locator(".intro-overlay").wait_for(state="detached", timeout=5000)
                 else:
                     page.wait_for_function("cache.at > 0 && !syncing && viewReady()")
+                    # The person cannot interact until the short boot overlay
+                    # has gone; avoid issuing synthetic clicks before that.
+                    page.wait_for_function("window.__michiflinStartupDone === true", timeout=10000)
                 try:
                     yield page, errors
                 finally:
@@ -415,7 +427,9 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(page.locator(".home-banner-slot .rate-banner").is_visible())
                 page.locator(".home-banner-controls").get_by_role("button", name=weather_name).click()
                 self.assertTrue(page.locator(".home-banner-slot .weather-banner").is_visible())
-                self.assertIn("La Habana", page.locator(".home-banner-slot .weather-banner").inner_text())
+                self.assertIn("Aún no hay datos guardados" if language == "es" else "No saved weather yet",
+                              page.locator(".home-banner-slot .weather-banner").inner_text())
+                self.assertNotIn("La Habana", page.locator(".home-banner-slot .weather-banner").inner_text())
                 screenshot_if_requested(page, language + "-home-weather-empty")
                 page.locator(".home-banner-slot .weather-banner").click()
                 self.assertEqual(page.evaluate("current.view"), "weather")
@@ -430,12 +444,16 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 use.click()
                 page.get_by_role("button", name="Ubicación predeterminada" if language == "es" else "Default location", exact=True).wait_for()
                 self.assertEqual(page.evaluate("window.__weatherHome.place_id"), 1)
-                pause = page.get_by_role("button", name="Pausar actualización" if language == "es" else "Pause refresh")
-                pause.click()
-                page.get_by_role("button", name="Activar actualización" if language == "es" else "Enable refresh").wait_for()
                 self.assertFalse(page.evaluate("window.__weatherHome.auto"))
-                page.get_by_role("button", name="Activar actualización" if language == "es" else "Enable refresh").click()
-                page.get_by_role("button", name="Pausar actualización" if language == "es" else "Pause refresh").wait_for()
+                enable = page.get_by_role("button", name="Activar actualización" if language == "es" else "Enable refresh")
+                enable.click()
+                pause = page.get_by_role("button", name="Pausar actualización" if language == "es" else "Pause refresh")
+                pause.wait_for()
+                pause.click()
+                enable.wait_for()
+                self.assertFalse(page.evaluate("window.__weatherHome.auto"))
+                enable.click()
+                pause.wait_for()
                 screenshot_if_requested(page, language + "-weather-saved")
                 weather_calls = page.evaluate("window.__sentUpdates.filter(x => x.payload?.op === 'weather').length")
                 page.locator('.tab[data-tab="home"]:visible').click()

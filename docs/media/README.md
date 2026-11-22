@@ -18,12 +18,12 @@ The tool uses only the local test fixture. Do not replace it with a private prod
 
 ## Tours in Spanish and English
 
-- `es/clip-tour.gif`, `en/clip-tour.gif` and their MP4 versions: direct Home, five main tabs, centralized Settings and the optional five-step help tour. There is **no automatic introduction or startup animation**.
+- `es/clip-tour.gif`, `en/clip-tour.gif` and their MP4 versions: the greeting on Home, the main tabs and Settings, an example unread bell and its notification center, and the optional five-step guide opened from Help. Startup has a brief local, theme-aware mark; it does **not** open a welcome card or guide automatically, and reduced-motion preferences disable its motion.
 - `clip-web`: search and reader using a reserved example URL and a synthetic result.
 - `clip-download`: illustrative queued/completed states. This does not depict a real external download.
 - `clip-join`: the **current integrated file kit and join panel**, not the retired standalone joiner. It shows where to work, not a verified media-remux result.
 
-Mobile captures use 390×844; desktop captures use 1440×900. These are Chromium browser viewports. Android-style layout/failure tests, WebKit coverage and the separately installed old Chromium engine are described in [Android startup scope](../ANDROID_STARTUP.md). No screenshots or clips certify every device.
+Mobile captures use a 390×844 viewport; desktop captures use 1440×900. A 24-pixel caption strip is added below the captured viewport so the synthetic-data label never covers the interface. These are Chromium browser viewports. Android-style layout/failure tests, WebKit coverage and the separately installed old Chromium engine are described in [Android startup scope](../ANDROID_STARTUP.md). No screenshots or clips certify every device.
 
 ## Privacy and accuracy
 

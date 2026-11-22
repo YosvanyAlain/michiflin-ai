@@ -81,3 +81,34 @@ def test_diagnostic_honors_exact_previously_shipped_builds(tmp_path, monkeypatch
     with sqlite3.connect(root / 'dc.db') as db:
         db.executescript("CREATE TABLE msgs(id INTEGER,type INTEGER,chat_id INTEGER,deleted INTEGER,param TEXT,state INTEGER); CREATE TABLE contacts(addr TEXT,fingerprint TEXT,verifier INTEGER); CREATE TABLE chats(id INTEGER); CREATE TABLE msgs_status_updates(id INTEGER);")
     assert diagnose(tmp_path)['apps_incompatible_build'] == 1
+
+
+def test_current_only_diagnostic_uses_packaged_build_and_checks_epoch(tmp_path, monkeypatch):
+    from michiflin import config, miniapp
+    monkeypatch.setattr(config, 'BOT_EPOCH', 'synthetic-epoch')
+    monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'synthetic-release')
+    monkeypatch.setenv('BOT_EPOCH', 'synthetic-epoch')
+    monkeypatch.setenv('MINIAPP_RELEASE', 'synthetic-release')
+    monkeypatch.setenv('MINIAPP_CURRENT_ONLY', 'true')
+    monkeypatch.setenv('REVOKE_LEGACY_MINIAPPS', '0')
+    build = miniapp.app_build()
+    apps = {
+        '100': {'build': build, 'epoch': 'synthetic-epoch', 'chat': 42},
+        '101': {'build': 'older-build', 'epoch': 'synthetic-epoch', 'chat': 42},
+        '102': {'build': build, 'epoch': 'different-epoch', 'chat': 42},
+    }
+    (tmp_path / 'michiflin-state.json').write_text(json.dumps({'apps': apps}))
+    root = tmp_path / 'accounts' / 'synthetic'; root.mkdir(parents=True)
+    with sqlite3.connect(root / 'dc.db') as db:
+        db.executescript("""
+          CREATE TABLE msgs(id INTEGER,type INTEGER,chat_id INTEGER,deleted INTEGER,param TEXT,state INTEGER);
+          CREATE TABLE contacts(addr TEXT,fingerprint TEXT,verifier INTEGER);
+          CREATE TABLE chats(id INTEGER);
+          CREATE TABLE msgs_status_updates(id INTEGER);
+          INSERT INTO msgs VALUES (100,80,42,0,'',26), (101,80,42,0,'',26), (102,80,42,0,'',26);
+        """)
+    result = diagnose(tmp_path)
+    assert result['revocation_enabled'] and result['current_only_enabled']
+    assert result['current_release_bindings'] == 1
+    assert result['apps_incompatible_build'] == 2
+    assert result['apps_core_present'] == 3

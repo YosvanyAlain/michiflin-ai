@@ -1,11 +1,16 @@
 "use strict";
-// One top-right center; section/result badges retain their existing semantics.
+// The bell is the sole visible unread indicator, with no sound or vibration.
 let notificationCenterDraw = null;
 function notificationCenterPaint() {
   const button = $("#notifications-toggle");
   if (!button) return;
   const count = notificationCounts().home.unread;
-  fill(button, icon("bell"), h("i", { class: "notification-count", hidden: !count }, count > 99 ? "99+" : String(count)));
+  const previous = Number(button.dataset.count || -1);
+  if (previous !== count) {
+    fill(button, icon("bell"), h("i", { class: "notification-count", hidden: !count }, count > 99 ? "99+" : String(count)));
+    button.dataset.count = String(count);
+  }
+  button.classList.toggle("has-unread", count > 0);
   button.setAttribute("aria-label", t("notification_center") + (count ? ` · ${count}` : ""));
   button.title = t("notification_center");
   if (notificationCenterDraw) notificationCenterDraw();

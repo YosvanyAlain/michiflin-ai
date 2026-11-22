@@ -4,7 +4,7 @@
 
 ## Optional invitation mode
 
-An operator can set `OWNER_ONLY=0` and `INVITE_AUTO_ACCESS=1` to admit ordinary users automatically after a successful, directly verified SecureJoin in an encrypted one-to-one chat. The address and public-key fingerprint are checked and the grant is bound to the chat and a per-grant token. When encrypted backup is configured as required (as in the supplied Actions workflow), its checkpoint must succeed before local access is activated. The bot sends one WebXDC mini app with one welcome. If the recipient's language is known, the welcome uses it; otherwise the same message contains short Spanish and English instructions. The bot cannot reliably know a new recipient's device language before the app is opened; the app then adapts to the device or the person's choice. No command is needed to join. Older allow-list entries do not become grants.
+An operator can set `OWNER_ONLY=0` and `INVITE_AUTO_ACCESS=1` to admit ordinary users automatically after a successful, directly verified SecureJoin in an encrypted one-to-one chat. The address and public-key fingerprint are checked and the grant is bound to the chat and a per-grant token. When encrypted backup is configured as required (as in the supplied Actions workflow), its checkpoint must succeed before local access is activated. The bot sends one WebXDC miniapp attachment without a welcome caption. The app follows the device language unless changed, and its quick guide is available manually from Help. No command is needed to join. Older allow-list entries do not become grants.
 
 **An invitation is a bearer capability.** Anyone who receives it may give it to someone else. Share it only through trusted private channels; do not publish the invitation, account address, QR, confirmation codes or state backups. Successful automatic verification depends on the invitation remaining valid; an expired verification token may require a fresh private invitation. Email and the mail provider can delay delivery.
 
@@ -12,7 +12,7 @@ The owner or configured backup administrator can close access immediately in **A
 
 A simple revocation invalidates the current grant; the person may join again with a valid invitation. An explicit block prevents rejoining until an administrator unblocks them, after which a new SecureJoin is still required. A guest whose key changes must verify again through SecureJoin: a new grant invalidates the former binding. Existing chat-bound jobs and local WebXDC data are preserved but are not automatically migrated or reactivated under the new grant.
 
-`MAINTENANCE_MODE=1` takes precedence and allows only the configured administrators; it cannot be disabled from the mini app. The separate operational-maintenance notice pauses work while preserving grants, notifies eligible current users, and is included in a new user's welcome. Eligible queues can resume afterward, subject to preserved bytes and any manual pause.
+`MAINTENANCE_MODE=1` takes precedence and allows only the configured administrators; it cannot be disabled from the miniapp. The separate operational-maintenance notice pauses work while preserving grants and is shown to eligible users when they interact; it is not appended to the first silent attachment. Eligible queues can resume afterward, subject to preserved bytes and any manual pause.
 
 ## Individual access mode
 

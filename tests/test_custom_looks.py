@@ -33,7 +33,7 @@ def test_hidden_document_counts_as_away_even_when_same_chat_is_selected():
         page.evaluate("""() => { Object.defineProperty(document,'visibilityState',{value:'hidden', configurable:true});
           document.dispatchEvent(new Event('visibilitychange')); }""")
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
-        assert page.locator('.tab[data-tab="ai"]:visible .tab-badge').inner_text() == "1"
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         page.evaluate("""() => { Object.defineProperty(document,'visibilityState',{value:'visible', configurable:true});
           document.dispatchEvent(new Event('visibilitychange')); }""")
         # Returning starts the focus-and-paint check; it is not a synchronous read.
@@ -61,7 +61,7 @@ def test_download_progress_is_visible_in_queue_but_not_a_reply_badge():
         page.get_by_role("tab", name="Herramientas de enlaces").click() if page.get_by_role("tab", name="Herramientas de enlaces").count() else page.evaluate("go('downloads',{section:'links'})")
         page.evaluate("""() => { setJobs([{id:18,title:'Segundo',kind:'file',status:'downloading',size:20,done:10,created:Date.now()/1000}]);
           bridge.pushes.job({id:18,title:'Segundo',kind:'file',status:'done',size:20,done:20,created:Date.now()/1000}); }""")
-        assert tab.locator(".tab-badge").inner_text() == "1"  # links are not the jobs view
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"  # links are not the jobs view
         assert errors == []
 
 

@@ -111,10 +111,11 @@ class Package(unittest.TestCase):
 
         target = miniapp.build()
         with zipfile.ZipFile(target) as archive:
-            self.assertEqual(sorted(archive.namelist()), sorted(miniapp.APP_FILES))
-        # Includes the offline WASM archive engine and its corresponding source.
-        # Keep a margin under common 10 MiB mailbox-part limits.
-        self.assertLess(target.stat().st_size, 6_000_000)
+            self.assertEqual(sorted(archive.namelist()), sorted(miniapp.package_names()))
+            self.assertIsNone(archive.testzip())
+        # The complete corresponding sources and offline WASM engine remain
+        # included; keep a regression budget below four decimal megabytes.
+        self.assertLess(target.stat().st_size, 3_800_000)
 
 
 

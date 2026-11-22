@@ -47,7 +47,7 @@ def test_web_tab_returns_to_completed_result_without_repeat(engine, viewport, to
               url:'https://example.test/result',snippet:'Prueba'}]}}});
         }""")
         page.wait_for_function("store.get('notices',[]).some(n => n.unread && n.target?.view === 'results')")
-        assert '1 sin leer' in web_tab.get_attribute('aria-label')
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         web_tab.click()
         assert page.evaluate('current.view') == 'results'
         page.get_by_text('Resultado sintético de navegación', exact=True).wait_for(state='visible')
@@ -105,7 +105,7 @@ def test_multiple_web_notices_are_opened_one_at_a_time():
         page.get_by_text('Respuesta dos', exact=True).wait_for(state='visible')
         assert page.evaluate('current.params.q') == 'segunda'
         page.wait_for_function("store.get('notices',[]).filter(n=>n.unread&&n.category==='web').length===1")
-        assert '1 sin leer' in page.locator('.tab[data-tab="web"]:visible').get_attribute('aria-label')
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         page.get_by_role('button', name='Ver respuestas pendientes (1)').click()
         page.get_by_text('Respuesta uno', exact=True).wait_for(state='visible')
         assert page.evaluate('current.params.q') == 'primera'

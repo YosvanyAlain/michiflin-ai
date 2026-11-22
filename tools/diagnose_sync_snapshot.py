@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 
 def diagnose(root: Path) -> dict:
-    from michiflin import app_compat
+    from michiflin import app_compat, app_package
     state_path = root / 'michiflin-state.json'
     data = json.loads(state_path.read_text())
     marker_path = root / '.owner-clean-origin-v1.json'
@@ -32,8 +32,8 @@ def diagnose(root: Path) -> dict:
     strict = os.getenv('REVOKE_LEGACY_MINIAPPS', '0').lower() in {'1', 'true', 'yes', 'on'}
     if release:
         digest.update(f'miniapp-release:{release}'.encode())
-    for name in files:
-        digest.update(name.encode() + (ROOT / 'webxdc' / name).read_bytes())
+    for name, source in app_package.entries(files):
+        digest.update(name.encode() + (ROOT / 'webxdc' / source).read_bytes())
     current = digest.hexdigest()[:10]
     allowed = {current}
     if not strict:
@@ -42,13 +42,16 @@ def diagnose(root: Path) -> dict:
             value = fn(epoch, str(ROOT / 'webxdc'), files)
             if value:
                 allowed.add(value)
+    current_only = os.getenv('MINIAPP_CURRENT_ONLY', '0').lower() in {'1', 'true', 'yes', 'on'}
     previous = app_compat.community_previous_build(epoch, release, str(ROOT / 'webxdc'), files)
-    if previous:
+    if previous and not current_only:
         allowed.add(previous)
+    if current_only:
+        allowed = {current}
     requested = os.getenv('OWNER_REQUESTED_APP_REVISION', '')
     requested_valid = len(requested) == 40 and all(c in '0123456789abcdef' for c in requested)
     result = {'schema': 1, 'read_only': True, 'mail_io_started': False,
-              'revocation_enabled': strict, 'current_release_bindings': 0,
+              'revocation_enabled': strict or current_only, 'current_only_enabled': current_only, 'current_release_bindings': 0,
               'release_opening_checkpointed': data.get('public_access_release') == 'private-invites-20261119-v1',
               'invite_policy_open': isinstance(data.get('invite_policy'), dict) and data['invite_policy'].get('closed') is False,
               'database_count': len(databases), 'app_bindings': len(apps),
@@ -75,7 +78,7 @@ def diagnose(root: Path) -> dict:
             if not str(key).isdigit() or not isinstance(entry, dict):
                 continue
             result['apps_other_epoch'] += bool(entry.get('epoch') and entry.get('epoch') != epoch)
-            result['apps_incompatible_build'] += (entry.get('build') not in allowed and not app_compat.shipped_ui_build(epoch, release, entry.get('build'))) or (strict and entry.get('epoch') != epoch)
+            result['apps_incompatible_build'] += (entry.get('build') not in allowed and not (not current_only and app_compat.shipped_ui_build(epoch, release, entry.get('build')))) or ((strict or current_only) and entry.get('epoch') != epoch)
             result['current_release_bindings'] += entry.get('build') == current and entry.get('epoch') == epoch
             result['apps_owner_recipient'] += str(entry.get('addr', '')).casefold() == owner
             row = db.execute('SELECT type,chat_id,deleted,param FROM msgs WHERE id=?', (int(key),)).fetchone()

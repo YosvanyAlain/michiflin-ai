@@ -88,7 +88,7 @@ def packaged_app(tmp_path, monkeypatch):
     archive = miniapp.build()
     root = tmp_path / 'host'
     with zipfile.ZipFile(archive) as package:
-        assert set(package.namelist()) == set(miniapp.APP_FILES)
+        assert set(package.namelist()) == set(miniapp.package_names())
         package.extractall(root)
     (root / 'webxdc.js').write_text(BRIDGE)
     class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -125,7 +125,7 @@ def test_actual_old_chromium_engine_with_packaged_app(packaged_app):
         errors = []
         page.on('pageerror', lambda e: errors.append(str(e)))
         page.goto(url)
-        page.wait_for_function('cache.at>0 && !syncing')
+        page.wait_for_function('cache.at>0 && !syncing && window.__michiflinStartupDone === true')
         # Modern Playwright's :visible helper itself requires checkVisibility,
         # absent in this old engine. Use actual mouse input at DOM coordinates,
         # without polyfilling/changing the application's browser APIs.
@@ -138,6 +138,32 @@ def test_actual_old_chromium_engine_with_packaged_app(packaged_app):
             assert page.evaluate("document.querySelector('#view').innerText.trim().length>0")
             assert page.evaluate("!document.querySelector('[data-ui-recovery]')")
         assert page.evaluate("document.querySelectorAll('.settings-tile').length") == 9
+        page.evaluate("""() => {window.__accountResponse = request => {
+          const action = request.args.do;
+          if (action === 'status') return {configured:true,connected:false,stored:false};
+          if (action === 'start') return {configured:true,connected:false,pending:true,user_code:'TEST-1234'};
+          if (action === 'poll') return {configured:true,connected:true,pending:false};
+          return {items:[]};
+        }}""")
+        def tap_node(selector, text=''):
+            # Browser 100 lacks the newer checkVisibility helper used by
+            # Playwright locators. Scroll a real control and use mouse input.
+            rect = page.evaluate("""([selector,text]) => {
+              const node = Array.from(document.querySelectorAll(selector)).find(e=>!text||e.textContent.includes(text));
+              if (!node) return null;
+              node.scrollIntoView({block:'center'});
+              const r=node.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};
+            }""", [selector, text])
+            assert rect is not None, (selector, text)
+            page.mouse.click(rect['x'], rect['y'])
+        tap_node('[data-setting-section="privacy"]')
+        tap_node('#view button', 'Conexiones oficiales')
+        tap_node('[data-official-service="youtube"]')
+        page.wait_for_function("document.querySelector('[data-official-action=\"start\"]')")
+        tap_node('[data-official-action="start"]')
+        page.wait_for_function("document.querySelector('.official-code code')?.textContent === 'TEST-1234'")
+        tap_node('[data-official-action="poll"]')
+        page.wait_for_function("document.querySelector('[data-official-action=\"channels\"]')")
         assert errors == []
         browser.close()
 
@@ -162,13 +188,18 @@ def test_host_listener_failure_keeps_local_interface_usable(packaged_app):
 @pytest.mark.parametrize('locale', ['es', 'en'])
 def test_manual_tour_matches_current_chat_and_delivery_policy(locale):
     with browser_fixture(locale, {'width':360,'height':800}) as (page, errors):
-        assert page.locator('.intro-overlay').count() == 0
-        page.evaluate('onboarding(true)')
+        assert page.locator('.quick-tour,#welcome-guidance').count() == 0
+        page.evaluate("go('help')")
+        page.get_by_role('button', name='Ver guía rápida' if locale == 'es' else 'Open quick guide').click()
         pages = []
-        for _ in range(3):
+        for _ in range(5):
             pages.append(page.locator('.quick-tour').inner_text())
             page.locator('.quick-tour .btn.primary').click()
         page.locator('.quick-tour').wait_for(state='detached')
         text = ' '.join(pages)
-        assert ('miniapp' if locale == 'es' else 'miniapp') in text
+        assert '/app' in text and 'miniapp' in text
+        assert ('campana' if locale == 'es' else 'bell') in text
+        assert ('ciudad' if locale == 'es' else 'city') in text
+        assert ('Kit de archivos' if locale == 'es' else 'File kit') in text
+        assert page.evaluate("!window.__sentUpdates.some(x => x.payload?.op === 'guidance')")
         assert errors == []

@@ -35,12 +35,19 @@ def sample(city="La Habana, Cuba", place_id=42, temp=27):
             "source": "Open-Meteo"}
 
 
+def configured_overdue_owner():
+    """Synthetic previously selected city, opted in with an overdue refresh."""
+    weather_home.view("owner@example.test", "es")
+    record = state.data["weather_home"][weather_home._scope("owner@example.test")[0]]
+    record.update(city="La Habana, Cuba", place_id=42, auto=True, next_at=0)
+
+
 def test_default_is_explicit_city_without_device_location_and_guest_is_opt_in(monkeypatch):
     fetch = mock.Mock(side_effect=AssertionError("network during view"))
     monkeypatch.setattr(tools, "weather_data", fetch)
     owner = weather_home.view("owner@example.test", "es")
     guest = weather_home.view("guest@example.test", "es")
-    assert owner["city"] == "La Habana, Cuba" and owner["auto"] is True and owner["last"] is None
+    assert owner["city"] == "" and owner["auto"] is False and owner["last"] is None
     assert guest["auto"] is False and guest["last"] is None
     assert weather_home.view("nobody@example.test", "es") is None
     fetch.assert_not_called()
@@ -51,9 +58,9 @@ def test_manual_lookup_persists_and_default_requires_deliberate_selection(monkey
     response = miniapp.op_weather(1, {"city": "Santiago, Cuba", "place_id": 99}, "es")
     assert response["saved_on_bot"] is True
     before = weather_home.view("owner@example.test", "es")
-    assert before["city"] == "La Habana, Cuba" and before["last"]["data"]["place"]["id"] == 99
+    assert before["city"] == "" and before["last"]["data"]["place"]["id"] == 99
     after = miniapp.op_weather_settings(1, {"do": "use_last", "city": "Santiago, Cuba", "place_id": 99}, "es")
-    assert after["city"] == "Santiago, Cuba" and after["place_id"] == 99 and after["auto"] is True
+    assert after["city"] == "Santiago, Cuba" and after["place_id"] == 99 and after["auto"] is False
     off = miniapp.op_weather_settings(1, {"do": "auto", "on": False}, "es")
     assert off["auto"] is False and off["last"]["data"]["query"] == "Santiago, Cuba"
     on = miniapp.op_weather_settings(1, {"do": "auto", "on": True}, "es")
@@ -65,11 +72,11 @@ def test_default_selection_rejects_a_result_that_changed_elsewhere():
     weather_home.remember("owner@example.test", sample("Santiago, Cuba", 99), at=200)
     with pytest.raises(miniapp.AppError, match="última consulta cambió"):
         miniapp.op_weather_settings(1, {"do": "use_last", "city": "La Habana, Cuba", "place_id": 42}, "es")
-    assert weather_home.view("owner@example.test", "es")["city"] == "La Habana, Cuba"
+    assert weather_home.view("owner@example.test", "es")["city"] == ""
 
 
 def test_background_is_quiet_throttled_and_keeps_snapshot_on_failure(monkeypatch):
-    weather_home.view("owner@example.test", "es")
+    configured_overdue_owner()
     calls = mock.Mock(side_effect=[sample(), tools.WeatherError("unavailable")])
     monkeypatch.setattr(tools, "weather_data", calls)
     send = mock.Mock(side_effect=AssertionError("background must not send mail"))
@@ -88,7 +95,7 @@ def test_background_is_quiet_throttled_and_keeps_snapshot_on_failure(monkeypatch
 
 
 def test_pause_kill_and_preference_change_cannot_commit_inflight(monkeypatch):
-    weather_home.view("owner@example.test", "es")
+    configured_overdue_owner()
     fetch = mock.Mock(return_value=sample())
     monkeypatch.setattr(tools, "weather_data", fetch)
     monkeypatch.setattr(state, "maintenance_active", lambda: True)
@@ -107,7 +114,7 @@ def test_pause_kill_and_preference_change_cannot_commit_inflight(monkeypatch):
 
 
 def test_no_background_fetch_if_throttle_cannot_be_saved(monkeypatch):
-    weather_home.view("owner@example.test", "es")
+    configured_overdue_owner()
     fetch = mock.Mock(side_effect=AssertionError("network"))
     monkeypatch.setattr(tools, "weather_data", fetch)
     monkeypatch.setattr(state, "save", mock.Mock(side_effect=OSError("disk")))
@@ -146,7 +153,7 @@ def test_settings_reject_missing_last_and_invalid_types():
 
 
 def test_toggling_does_not_clear_failed_attempt_backoff(monkeypatch):
-    weather_home.view("owner@example.test", "es")
+    configured_overdue_owner()
     fetch = mock.Mock(side_effect=tools.WeatherError("unavailable"))
     monkeypatch.setattr(tools, "weather_data", fetch)
     assert weather_home.poll_once(at=1000)
@@ -160,7 +167,7 @@ def test_toggling_does_not_clear_failed_attempt_backoff(monkeypatch):
 def test_equivalent_city_query_does_not_trigger_duplicate_auto_lookup(monkeypatch):
     data = sample("La Habana", 42)
     data["place"]["label"] = "La Habana, Provincia de La Habana, Cuba"
-    weather_home.view("owner@example.test", "es")
+    configured_overdue_owner()
     weather_home.remember("owner@example.test", data, at=1000)
     fetch = mock.Mock(side_effect=AssertionError("duplicate request"))
     monkeypatch.setattr(tools, "weather_data", fetch)
@@ -179,7 +186,7 @@ def test_weather_state_survives_restart_and_one_missed_cycle(tmp_path, monkeypat
     monkeypatch.setattr(state, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(state, "LEGACY_STATE_FILE", tmp_path / "missing-legacy.json")
     try:
-        weather_home.view("owner@example.test", "es")
+        configured_overdue_owner()
         weather_home.remember("owner@example.test", sample("La Habana, Cuba", 42), at=1000)
         key = weather_home._scope("owner@example.test")[0]
         assert state.data["weather_home"][key]["last"]["at"] == 1000
@@ -221,3 +228,27 @@ def test_geocoding_never_silently_falls_back_to_a_different_region(monkeypatch):
         tools.weather_data("Santiago, España", "es")
     # An explicitly selected provider ID survives a translated region label.
     assert tools.weather_data("Santiago, Havana, Cuba", "es", place_id=2)["place"]["id"] == 2
+
+
+def test_no_city_never_polls_and_cannot_enable_auto(monkeypatch):
+    fetch = mock.Mock(side_effect=AssertionError('no implied location'))
+    monkeypatch.setattr(tools, 'weather_data', fetch)
+    weather_home.view('owner@example.test', 'es')
+    with pytest.raises(weather_home.WeatherHomeError, match='no_result'):
+        weather_home.settings('owner@example.test', 'auto', True)
+    assert not weather_home.poll_once(at=100000)
+    fetch.assert_not_called()
+
+
+def test_legacy_unselected_region_cleared_but_forecast_and_explicit_city_kept():
+    configured_overdue_owner()
+    key = weather_home._scope('owner@example.test')[0]
+    record = state.data['weather_home'][key]
+    record.update(place_id=0, last={'at':100,'data':sample()})
+    saved = record['last']
+    neutral = weather_home.view('owner@example.test','es')
+    assert neutral['city'] == '' and not neutral['auto']
+    assert record['last'] == saved
+    record.update(city='Singapore',place_id=77,auto=True)
+    chosen = weather_home.view('owner@example.test','es')
+    assert chosen['city'] == 'Singapore' and chosen['auto']

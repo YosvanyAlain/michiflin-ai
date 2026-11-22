@@ -71,7 +71,7 @@ def test_ai_pending_and_unread_badges_open_actual_chat_and_clear(engine):
         ai_tab = page.locator('.tab[data-tab="ai"]:visible')
         assert ai_tab.locator(".tab-badge").is_hidden()
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread && n.target?.view==='chat')")
-        assert "1 sin leer" in ai_tab.get_attribute("aria-label")
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         page.locator('.tab[data-tab="home"]:visible').click()
         page.locator("#notifications-toggle").click()
         notice = page.locator("button.notice-center-main").filter(has_text="Agente").first
@@ -103,7 +103,7 @@ def test_search_survives_navigation_and_lost_waiter_without_repeating(target):
         tab = page.locator(f'.tab[data-tab="{section}"]:visible')
         assert tab.locator(".tab-badge").is_hidden()
         page.wait_for_function("name => store.get('notices',[]).some(x=>x.unread && x.text.includes(name))", arg=notice_text)
-        assert "1 sin leer" in tab.get_attribute("aria-label")
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         page.locator("#notifications-toggle").click()
         page.locator("button.notice-center-main").filter(has_text=notice_text).first.click()
         page.get_by_text("Resultado sintético", exact=True).first.wait_for(state="visible")
