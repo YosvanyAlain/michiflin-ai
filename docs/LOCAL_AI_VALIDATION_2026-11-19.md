@@ -30,7 +30,7 @@ Ejecución: https://github.com/YosvanyAlain/michiflin-ai/actions/runs/4496305216
 
 El modelo anterior respondió `19` donde correspondía `17`. Son comprobaciones pequeñas y una sola generación por pregunta; **no equivalen a un benchmark general de inteligencia**. El tiempo acumulado excluye descarga y arranque, depende del runner y no prueba una ventaja universal de velocidad.
 
-## Prueba ampliada del candidato
+## Comparación ampliada: contexto 6144
 
 Ejecución: https://github.com/YosvanyAlain/michiflin-ai/actions/runs/44963259023
 
@@ -42,7 +42,11 @@ El candidato arrancó con el motor fijado `llama.cpp b11960` y contexto 6144. En
 - Recuperó el código inicial de una entrada de 3811 tokens. Esa petición tardó aproximadamente 95 segundos, incluida la evaluación de entrada y las llamadas de plantilla/tokenización.
 - Pico del grupo de servicio: 3613315072 bytes (aprox. 3,36 GiB), con máximo configurado de 7 GiB, dos hilos y CPU limitada al 200 %. No incluye todo el consumo del sistema, descargas ni del bot con sus navegadores.
 
-Estos resultados justifican estudiar el candidato, pero también conservar cálculo determinista, formatos comprobables y respuestas de reserva. No justifican prometer que razona correctamente en cualquier tarea.
+La misma ejecución terminó correctamente para el modelo anterior: 8/12 comprobaciones, 199,42 segundos acumulados y 3804016640 bytes de pico (aprox. 3,54 GiB). El candidato obtuvo 9/12, 171,08 segundos acumulados y aprox. 3,36 GiB. Los tiempos de esta tanda incluyen tokenización y preparación de cada petición; no deben mezclarse directamente con los de la primera tanda.
+
+**Decisión:** seleccionar `qwen35` como variante predeterminada del lanzador temporal, conservando `legacy` para reversión. Es una mejora modesta respaldada por estas pruebas, no una garantía universal. Ambos fallaron la segunda operación; el anterior además afirmó que la biblioteca no abrió el sábado cuando el dato solo decía que no había horario confirmado. El candidato expresó la incertidumbre correctamente aunque incumplió el formato.
+
+No se han cambiado las variables remotas para activar inferencia en producción. El workflow de comparación queda bajo ejecución manual para no repetir descargas y pruebas de modelos en cada cambio de código. Estos resultados exigen conservar cálculo determinista, formatos comprobables y respuestas de reserva. No justifican prometer que razona correctamente en cualquier tarea.
 
 ## Integridad y recuperación
 
@@ -55,6 +59,6 @@ La variante `legacy` permanece disponible para revertir una selección de prueba
 La revisión `d264262` superó las cinco suites de CI (lógica, navegador, archivos, móvil y notificaciones):
 https://github.com/YosvanyAlain/michiflin-ai/actions/runs/44963430185
 
-La ejecución local seleccionada superó 328 pruebas. Hay pruebas adicionales de liquidación real de cuota por persona, sin transporte externo, que verifican que varios pasos se cobran una sola vez, los errores no gastan cuota y otra persona agotada no hereda la autorización.
+La ejecución local seleccionada final superó 331 pruebas. Incluye pruebas de liquidación real de cuota por persona, sin transporte externo, que verifican que varios pasos se cobran una sola vez, los errores no gastan cuota y otra persona agotada no hereda la autorización.
 
 No se ha confirmado esta mejora en un teléfono físico ni se ha activado el GGUF en la sesión de producción.

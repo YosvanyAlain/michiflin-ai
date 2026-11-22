@@ -234,3 +234,16 @@ def test_hybrid_uses_real_api_allowance_and_settlement_once_per_person(monkeypat
         with pytest.raises(agent.AgentError):
             agent.run('Calcula 2+2', 'es')
         assert transport.call_count == (1 if failure else 2)
+
+
+def test_test_launcher_and_workflow_keep_profile_aligned_and_activation_separate():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    script = (root / 'tools/local_gguf_session.sh').read_text()
+    workflow = (root / '.github/workflows/michiflin.yml').read_text()
+    compare = (root / '.github/workflows/local-model-compare.yml').read_text()
+    assert '${LOCAL_GGUF_VARIANT:-qwen35}' in script
+    assert 'CONTEXT=6144' in script and '--ctx-size "$CONTEXT"' in script
+    for flag in ('LOCAL_GGUF_EXTENDED', 'LOCAL_WEB_SYNTHESIS', 'LOCAL_AGENT_COORDINATOR'):
+        assert f"{flag}: ${{{{ vars.{flag} || '0' }}}}" in workflow
+    assert 'workflow_dispatch:' in compare and '\n  push:' not in compare
