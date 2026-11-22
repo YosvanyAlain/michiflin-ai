@@ -1,18 +1,34 @@
-name: Tests
+name: Validacion y mantenimiento
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
+  schedule:
+    - cron: "20 3 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "One validation entry point; never starts another bot"
+        type: choice
+        options: [all, tests, model, diagnostic, maintenance]
+        default: all
+      include_legacy:
+        description: "For model task only: compare the older model too"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: tests-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   offline-tests:
+    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'tests' || inputs.task == 'all'))
     runs-on: ubuntu-latest
     name: Tests (${{ matrix.suite }})
     # Keep every existing check. Run the long browser, viewport and mobile
@@ -76,7 +92,7 @@ jobs:
           python -m unittest tests.test_personal_maintenance -v
           python -m unittest tests.test_operational_maintenance -v
           python -m unittest tests.test_owner_delivery -v
-          python -m pytest -q tests/test_summary_inline.py tests/test_inline_answer.py tests/test_fair_local_ai.py tests/test_local_gguf.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_hybrid_local_agent.py tests/test_local_ai_test_session.py tests/test_stable_agents_contract.py tests/test_youtube_challenge_safe.py tests/test_native_github_return.py tests/test_clean_owner_identity.py tests/test_5_1_features.py tests/test_weather_home.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py tests/test_email_key_recovery.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py
+          python -m pytest -q tests/test_summary_inline.py tests/test_inline_answer.py tests/test_fair_local_ai.py tests/test_local_gguf.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_hybrid_local_agent.py tests/test_local_ai_test_session.py tests/test_stable_agents_contract.py tests/test_single_path_maintenance.py tests/test_youtube_challenge_safe.py tests/test_native_github_return.py tests/test_clean_owner_identity.py tests/test_5_1_features.py tests/test_weather_home.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py tests/test_email_key_recovery.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py
           MICHIFLIN_SANDBOX_TESTS=1 python -m unittest tests.test_web_session tests.test_proxy_gateway tests.test_human_browser -v
           MICHIFLIN_SANDBOX_TESTS=1 python -m pytest -q tests/test_graphical_saved.py
 
@@ -124,3 +140,137 @@ jobs:
           node tests/live_web.js
           for file in webxdc/*.js; do node --check "$file"; done
           git diff --check
+
+  compare:
+    if: github.event_name == 'workflow_dispatch' && (inputs.task == 'model' || inputs.task == 'all')
+    name: Local model (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        variant: ${{ fromJSON(inputs.include_legacy && '["qwen35","legacy"]' || '["qwen35"]') }}
+    env:
+      LOCAL_GGUF_VARIANT: ${{ matrix.variant }}
+      LOCAL_GGUF_EXTENDED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install application dependencies without browser downloads
+        run: python -m pip install -r requirements.txt
+      - name: Verify and prepare isolated pinned engine and weights
+        run: bash tools/local_gguf_session.sh prepare
+      - name: Start authenticated isolated inference
+        run: bash tools/local_gguf_session.sh start
+      - name: Configure actual application paths for synthetic hybrid checks
+        run: |
+          echo "LOCAL_GGUF_ENABLED=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_ACTIONS_TEST=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
+          echo "LOCAL_WEB_SYNTHESIS=1" >> "$GITHUB_ENV"
+          echo "LOCAL_AGENT_COORDINATOR=1" >> "$GITHUB_ENV"
+      - name: Actual hybrid code and synthetic-only rejection diagnostics
+        env:
+          CONFIG_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/config
+          JOB_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/jobs
+          PREVIEW_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/preview
+          MICHIFLIN_SYNTHETIC_PREFLIGHT_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight
+          LOCAL_HYBRID_REPORT: ${{ runner.temp }}/local-hybrid-preflight.json
+          MICHIFLIN_REQUIRE_SYNTHESIS: '1'
+        run: python tools/smoke_local_hybrid.py
+      - name: Real inference on synthetic questions only
+        run: python3 tools/benchmark_local_model.py
+      - name: Save synthetic answers and narrow checks for review
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-benchmark-${{ matrix.variant }}
+          path: |
+            local-benchmark.json
+            ${{ runner.temp }}/local-hybrid-preflight.json
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Stop and remove only this job's isolated model
+        if: always()
+        run: bash tools/local_gguf_session.sh stop
+
+  inspect-backup:
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'diagnostic'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CONFIG_DIR: ${{ github.workspace }}/.sync-diagnostic-state
+      GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+      STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+      STATE_BACKUP_REQUIRED: "1"
+      STATE_BACKUP_STORAGE: releases
+      STATE_BACKUP_INCLUDE_BLOBS: "1"
+      MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
+      STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}
+      MICHIFLIN_NATIVE_READY_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
+      MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
+      STATE_BACKUP_PASSPHRASE: ${{ secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE'] }}
+      OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      # Match the current runtime generation; old packages remain stored but revoked.
+      REVOKE_LEGACY_MINIAPPS: "1"
+      MINIAPP_RELEASE: "public-private-20261119-v1"
+      SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
+      BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Dependencies
+        run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
+      - name: Restore isolated copy only
+        run: |
+          python - <<'PY'
+          import contextlib, os
+          from pathlib import Path
+          import state_backup
+          try:
+              with open(Path(os.environ['RUNNER_TEMP']) / 'private-restore.log', 'w') as log:
+                  with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
+                      state_backup.restore()
+          except Exception as exc:
+              print('RESTORE_FAILED', type(exc).__name__)
+              raise SystemExit(1)
+          print('ISOLATED_SNAPSHOT_RESTORED_NO_MAIL_IO')
+          PY
+      - name: Counts and booleans only
+        run: python tools/diagnose_sync_snapshot.py > "$RUNNER_TEMP/sync-diagnostic.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sync-diagnostic-counts
+          path: ${{ runner.temp }}/sync-diagnostic.json
+          retention-days: 1
+          if-no-files-found: error
+      - name: Remove isolated private copy
+        if: always()
+        run: rm -rf "$CONFIG_DIR" "$RUNNER_TEMP/private-restore.log"
+
+  old-action-logs:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'maintenance')
+    permissions:
+      contents: read
+      actions: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install 'requests>=2.31,<3'
+      - name: Remove only older diagnostic logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/trim_action_logs.py

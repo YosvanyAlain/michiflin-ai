@@ -1,0 +1,12 @@
+{
+  "base": "agentes-estables-20261119",
+  "authorization": "User explicitly authorized these two corrections after requesting one main path. Original accepted baseline remains recoverable by tag.",
+  "files": {
+    "michiflin/local_ai.py": "8f020c867bff45de4811837d19d59686332779fbc28eb9e721fd13527b0b3f4f",
+    "michiflin/smart_agent.py": "3428e689cf1e0fdec9800d5be87f65c7d349e007529ca90750f91efa1f0c2101"
+  },
+  "changes": {
+    "michiflin/local_ai.py": "Accept exact-quote-verified separate citations; preserve rejection/fallback for invalid output. Clarify wire prompt.",
+    "michiflin/smart_agent.py": "Request-local read-only tool reuse; repeated local plan delegates to the existing API route."
+  }
+}
