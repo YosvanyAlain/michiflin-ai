@@ -14,7 +14,11 @@ def test_home_actions_and_progressive_search(engine, language):
         page.locator("#splash").wait_for(state="detached")
         assert page.locator(".home-brand-mark").count() == 0
         assert page.locator(".home-hero h2").inner_text() == (
-            "¿Qué quieres hacer hoy?" if language == "es" else "What will you do today?")
+            "¿Qué necesitas hacer?" if language == "es" else "What would you like to do?")
+        page.locator(".hero-action-primary").click()
+        assert page.evaluate("current.view") == "chat"
+        assert page.evaluate("current.params.space") == "agent"
+        page.evaluate("goTab('home')")
         assert not page.locator(".home-search-options").evaluate("node => node.open")
         page.locator(".home-search-options > summary").click()
         page.locator('.search-selectors [data-key="advanced"]').click()
@@ -25,13 +29,13 @@ def test_home_actions_and_progressive_search(engine, language):
         assert page.evaluate("current.params.mode") == "advanced"
         assert page.evaluate("current.params.engine") == "wiki"
         assert not page.locator(".home-brand-mark").count()
+        page.wait_for_function("store.get('notices',[]).some(n=>n.target?.view==='results')")
         page.evaluate("goTab('home')")
         page.locator(".hero-action-primary").click()
-        assert page.evaluate("current.view") == "chat"
-        assert page.evaluate("current.params.space") == "agent"
+        assert page.evaluate("current.view") == "results"
         page.evaluate("goTab('home')")
         page.locator(".hero-action:not(.hero-action-primary)").click()
-        assert page.evaluate("current.view") == "web"
+        assert page.evaluate("current.view") == "downloads"
         assert errors == []
 
 

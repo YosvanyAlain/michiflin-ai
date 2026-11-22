@@ -90,3 +90,34 @@ def test_recovery_tag_is_checkpointed_with_normal_app_registration(recovery, mon
     assert state.data['apps']['100'] == {'preserved': True}
     save.assert_called_once()
     assert 'ESTE mensaje' in send.call_args.args[1]
+
+
+def test_explicit_ui_refresh_uses_current_verified_owner_once(recovery, monkeypatch):
+    monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', REV)
+    monkeypatch.setattr(miniapp, '_verified_binding', lambda entry: True)
+    monkeypatch.setattr(state, 'save', Mock())
+    monkeypatch.setattr(owner_recovery.chat, 'wait_delivery', Mock(return_value='delivered'))
+    monkeypatch.setattr(config, 'OWNER_ONLY', False)
+    monkeypatch.setattr(config, 'INVITE_AUTO_ACCESS', True)
+    monkeypatch.setattr(config, 'EMAIL_KEY_RECOVERY', True)
+    before = copy.deepcopy(recovery.apps)
+    assert owner_recovery.deliver_requested_refresh()
+    recovery.send.assert_called_once_with(42, 'es', updated=True, address=config.OWNER_ADDRESS, recovery_revision=REV)
+    assert recovery.apps == before
+    recovery.apps['101'] = {'addr':config.OWNER_ADDRESS, 'epoch':config.BOT_EPOCH, 'recovery_revision':REV}
+    assert not owner_recovery.deliver_requested_refresh()
+    assert recovery.send.call_count == 1
+
+
+@pytest.mark.parametrize('reason', ['unarmed', 'other_revision', 'unverified', 'foreign_epoch'])
+def test_explicit_ui_refresh_cannot_send_without_exact_request_and_binding(recovery, monkeypatch, reason):
+    monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', REV)
+    monkeypatch.setattr(miniapp, '_verified_binding', lambda entry: reason != 'unverified')
+    if reason == 'unarmed':
+        monkeypatch.delenv('OWNER_REQUESTED_APP_REVISION')
+    elif reason == 'other_revision':
+        monkeypatch.setenv('RUNNING_SHA', 'b'*40)
+    elif reason == 'foreign_epoch':
+        recovery.apps['100']['epoch'] = 'other'
+    assert not owner_recovery.deliver_requested_refresh()
+    recovery.send.assert_not_called()

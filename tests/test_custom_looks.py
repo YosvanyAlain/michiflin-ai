@@ -133,7 +133,7 @@ def test_real_weather_codes_drive_offline_art_and_reduced_motion():
         page.locator(".home-banner-dot").nth(1).click()
         assert page.locator(".rate-banner").evaluate("e=>getComputedStyle(e,'::after').animationName") == "none"
         page.locator(".home-banner-dot").nth(0).click()
-        assert page.locator(".hero-art .ic").evaluate("e=>e.getAnimations().length") == 0
+        assert page.locator(".activity-hero").evaluate("e=>e.getAnimations().length") == 0
         page.evaluate("""() => { const w=weatherHome(); w.last.data.current={code:0,is_day:0,temp:23,description:'Despejado'};
           store.set('weatherHome',w); bus.emit('weather_home'); }""")
         page.locator(".home-banner-dot").nth(2).click()

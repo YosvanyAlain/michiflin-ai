@@ -1,0 +1,9 @@
+{
+  "epoch_sha256": "90564f0b7d8419388740fb15579431b545eb9552c0fd081b7588fb84a0f2bac2",
+  "release": "public-private-20261119-v1",
+  "builds": [
+    "c86a0cb1c3",
+    "3bcf379e55",
+    "f3c8e7f3c7"
+  ]
+}

@@ -7,6 +7,7 @@ Unknown epochs and modified manifests fail closed.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -56,7 +57,7 @@ def _registered_build(epoch: str, app_dir: str, files: tuple[str, ...], source_d
         return ""
 
 
-def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str], release: str = "") -> str:
+def _uncached_pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str], release: str = "") -> str:
     try:
         expected = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
         if not isinstance(expected, dict) or not expected or not set(expected) <= set(files):
@@ -76,6 +77,22 @@ def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: 
         return digest.hexdigest()[:10]
     except (OSError, TypeError, ValueError, UnicodeError, KeyError):
         return ""
+
+
+def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str], release: str = "") -> str:
+    try:
+        manifest = source_dir / "manifest.json"
+        expected = json.loads(manifest.read_text())
+        paths = [manifest] + [(source_dir if name in replaced else Path(app_dir)) / name for name in expected]
+        signature = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size) for path in paths)
+        return _cached_pinned_build(epoch, app_dir, files, source_dir, frozenset(replaced), release, signature)
+    except (OSError, ValueError, TypeError, KeyError):
+        return ""
+
+
+@lru_cache(maxsize=16)
+def _cached_pinned_build(epoch, app_dir, files, source_dir, replaced, release, signature):
+    return _uncached_pinned_build(epoch, app_dir, files, source_dir, replaced, release)
 
 
 def previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
@@ -134,4 +151,17 @@ def community_previous_build(epoch: str, release: str, app_dir: str, files: tupl
             return ""
     except OSError:
         return ""
-    return _pinned_build(epoch, app_dir, files, directory, {"index.html", "app.css", "app.js", "i18n.js"}, release)
+    return _pinned_build(epoch, app_dir, files, directory, {"index.html", "app.css", "app.js", "i18n.js", "core.js", "books.js"}, release)
+
+
+def shipped_ui_build(epoch: str, release: str, value: str) -> bool:
+    """Exact recent release hashes only; never grants a chat or a revoked identity."""
+    try:
+        raw = (Path(__file__).resolve().parent / "compat" / "ui-release-builds.json").read_bytes()
+        if hashlib.sha256(raw).hexdigest() != "7d9cb4058b5288ba22afb68ed4ae0d8e94dda4f8584023e7a628b64ce7875f04":
+            return False
+        record = json.loads(raw)
+        return (hashlib.sha256(epoch.encode()).hexdigest() == record['epoch_sha256']
+                and release == record['release'] and value in record['builds'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False

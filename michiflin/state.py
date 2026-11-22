@@ -42,6 +42,7 @@ data: dict[str, Any] = {
     "apps": {},
     "people": {},
     "prefs": {},
+    "ui_guidance": {},  # per-person permanent help opt-out, shared across miniapps
     "chat_interfaces": {},  # explicit per-private-chat interface choices, not access grants
     "notes": {},
     "link_queue": {},

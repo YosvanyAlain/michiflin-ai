@@ -60,3 +60,41 @@ def deliver() -> bool:
         # Never expose the marker, identity, exception message or private paths.
         log.warning('Owner app recovery deferred (%s)', type(exc).__name__)
         return False
+
+
+def deliver_requested_refresh() -> bool:
+    """One explicit reviewed revision, within the sole already running bot.
+
+    Uses only an existing authorized owner binding. The environment variable
+    remains inert for every other commit; registration prevents duplicates.
+    """
+    requested = os.getenv('OWNER_REQUESTED_APP_REVISION', '').strip()
+    if (not re.fullmatch(r'[0-9a-f]{40}', requested)
+            or requested != os.getenv('RUNNING_SHA', '').strip() or not chat.ready()
+            or not config.OWNER_ADDRESS
+            or not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS)):
+        return False
+    try:
+        with miniapp._upgrade_lock:
+            with state.lock:
+                entries = [entry for entry in miniapp._apps().values() if isinstance(entry, dict)
+                           and str(entry.get('addr') or '').casefold() == config.OWNER_ADDRESS.casefold()
+                           and entry.get('epoch') == config.BOT_EPOCH]
+                if any(entry.get('recovery_revision') == requested for entry in entries):
+                    return False
+                entries.sort(key=lambda entry: float(entry.get('sent') or 0), reverse=True)
+            selected = next((entry for entry in entries if miniapp._verified_binding(entry)), None)
+            if not selected:
+                return False
+            mid = miniapp.send_app(int(selected['chat']), 'es', updated=True,
+                                   address=config.OWNER_ADDRESS, recovery_revision=requested)
+        if not mid:
+            return False
+        state.save()
+        import threading
+        outcome = chat.wait_delivery(mid, 180, threading.Event())
+        log.info('Requested owner miniapp refresh: %s', outcome if outcome in {'delivered', 'failed', 'pending', 'cancelled'} else 'registered')
+        return True
+    except Exception as exc:
+        log.warning('Requested owner miniapp refresh deferred (%s)', type(exc).__name__)
+        return False

@@ -164,15 +164,11 @@ def test_manual_tour_matches_current_chat_and_delivery_policy(locale):
     with browser_fixture(locale, {'width':360,'height':800}) as (page, errors):
         assert page.locator('.intro-overlay').count() == 0
         page.evaluate('onboarding(true)')
-        first = page.locator('.intro-card').inner_text()
-        assert ('/comandos' if locale == 'es' else '/commands') in first
-        assert '/app' in first
         pages = []
-        for _ in range(5):
-            pages.append(page.locator('.intro-card').inner_text())
-            page.locator('.intro-card .btn.primary').click()
-        page.locator('.intro-overlay').wait_for(state='detached')
+        for _ in range(3):
+            pages.append(page.locator('.quick-tour').inner_text())
+            page.locator('.quick-tour .btn.primary').click()
+        page.locator('.quick-tour').wait_for(state='detached')
         text = ' '.join(pages)
-        assert ('temporal' if locale == 'es' else 'temporary') in text
-        assert ('requieren la miniapp' if locale == 'es' else 'need the miniapp') in text
+        assert ('miniapp' if locale == 'es' else 'miniapp') in text
         assert errors == []

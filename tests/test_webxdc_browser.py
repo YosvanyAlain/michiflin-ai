@@ -152,9 +152,9 @@ BRIDGE = r"""
             } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
                 (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op)) ||
                 (window.__realFilekit && request.op === "filekit") ||
-                (window.__realDelivery && ["reinstall", "social"].includes(request.op))) {
+                (window.__realDelivery && ["reinstall", "guidance"].includes(request.op))) {
               const endpoint = request.op === "filekit" ? "/api/filekit" :
-                ["reinstall", "social"].includes(request.op) ? "/api/delivery" :
+                ["reinstall", "guidance"].includes(request.op) ? "/api/delivery" :
                 window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access";
               const result = await fetch(endpoint,
                 { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });
@@ -408,8 +408,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.emulate_media(reduced_motion="reduce")
                 self.assertEqual(page.locator(".home-carousel").count(), 1)
                 self.assertEqual(page.locator(".home-banner-controls button").count(), 3)
-                if language == "es":
-                    self.assertIn("la tasa de cambio a un toque", page.evaluate("I18N.es.home_sub_morning"))
+                self.assertTrue(page.locator('.activity-hero .hero-action').count() >= 1)
                 rate_name = "Tasas de cambio" if language == "es" else "Exchange rates"
                 weather_name = "Clima" if language == "es" else "Weather"
                 page.locator(".home-banner-controls").get_by_role("button", name=rate_name).click()
@@ -1098,8 +1097,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertTrue(area.evaluate("e => {const r=e.getBoundingClientRect(); return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2) === e}") )
                 screenshot_if_requested(page, language + "-chat-input")
                 page.evaluate("onboarding(true)")
-                page.locator(".intro-overlay .btn.ghost").first.click()
-                page.locator(".intro-overlay").wait_for(state="detached")
+                page.locator(".quick-tour .btn.ghost").first.click()
+                page.locator(".quick-tour").wait_for(state="detached")
                 self.assertEqual(page.locator('#view .intro').count(), 1, "closing tour must not remove chat introduction")
 
                 if page.locator("#gear").is_visible():

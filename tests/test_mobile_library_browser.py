@@ -71,7 +71,7 @@ def test_library_download_persists_and_reopens_without_network():
           if(args.do==='search')return {books:[{id:'fixture:1',source:'Fixture',title:'Un libro completo',authors:['Autor'],url:'https://example.org/book',downloads:[{format:'txt',url:'https://example.org/book.txt'}]}],more:false};
           if(args.do==='download')return {text:'Primera página.\\n\\nContenido completo del libro.',complete:true,sha256:'fixture',source_format:'txt'};
           return {};
-        };go('books')}''')
+        };go('books',{q:'libro'})}''')
         page.get_by_role('heading', name='Un libro completo', exact=True).wait_for(state='visible')
         page.get_by_role('button', name='Descargar', exact=True).click()
         page.get_by_role('button', name='Abrir', exact=True).wait_for(state='visible')
