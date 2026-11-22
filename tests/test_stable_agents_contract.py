@@ -13,21 +13,24 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = json.loads((ROOT / 'docs/stable-agents-profile.json').read_text())
+MAINTENANCE = json.loads((ROOT / 'docs/stable-maintenance-profile.json').read_text())
 
 
 @pytest.mark.parametrize('path,expected', list(PROFILE['files'].items()))
-def test_accepted_agent_files_are_unchanged(path, expected):
+def test_agent_files_match_baseline_or_explicit_authorized_maintenance(path, expected):
+    expected = MAINTENANCE['files'].get(path, expected)
     assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == expected, (
         f'{path} changed from the user-accepted baseline; review and version the change explicitly')
 
 
 @pytest.mark.parametrize('path,name,expected', [
-    (path, name, digest) for path, functions in PROFILE['functions'].items() for name, digest in functions.items()
+    (path, name, digest) for path, functions in PROFILE['function_source_sha256'].items() for name, digest in functions.items()
 ])
 def test_accepted_api_quota_and_routing_functions_are_unchanged(path, name, expected):
-    tree = ast.parse((ROOT / path).read_text())
+    source = (ROOT / path).read_text()
+    tree = ast.parse(source)
     function = next(node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name)
-    actual = hashlib.sha256(ast.dump(function, include_attributes=False).encode()).hexdigest()
+    actual = hashlib.sha256(ast.get_source_segment(source, function).encode()).hexdigest()
     assert actual == expected, f'{path}:{name} changed; preserve the accepted behavior or explicitly version it'
 
 
@@ -37,3 +40,10 @@ def test_accepted_profile_remains_identifiable_and_reversible():
     assert PROFILE['profile']['context_tokens'] == 6144
     assert PROFILE['profile']['LOCAL_GGUF_VARIANT'] == 'qwen35'
     assert PROFILE['profile']['LOCAL_AGENT_COORDINATOR'] == '1'
+
+
+def test_maintenance_is_explicit_and_limited_to_two_authorized_agent_files():
+    assert MAINTENANCE['base'] == PROFILE['name']
+    assert set(MAINTENANCE['files']) == {'michiflin/local_ai.py', 'michiflin/smart_agent.py'}
+    assert set(MAINTENANCE['changes']) == set(MAINTENANCE['files'])
+    assert 'authorized' in MAINTENANCE['authorization']

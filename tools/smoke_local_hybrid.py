@@ -77,6 +77,8 @@ def main():
                              'synthesis_accepted': 'Síntesis de IA local' in synthesis.text,
                              'sources': [s.label for s in synthesis.sources]}
             assert synthesis.status == 'ok' and synthesis.sources
+            if os.environ.get('MICHIFLIN_REQUIRE_SYNTHESIS') == '1':
+                assert report['web']['synthesis_accepted'], 'synthetic synthesis format rejected'
             # The actual quota wrapper and the real calculator remain active.
             # Only the provider transport is replaced. Inspect and retain the
             # proposal rather than pretending a local fallback used a tool.
@@ -117,7 +119,9 @@ def main():
                     raise AssertionError('exhausted per-person quota was bypassed')
                 assert api_transport.call_count == 1
                 assert usage.used_today('synthetic-local@example.test', 'ask') == 0
+            assert len(calculations) == 1 and calculations[0]['answer'] == '22', 'calculator must execute exactly once'
             report['hybrid'] = {'local_proposals': proposals, 'calculator_calls': calculations,
+                               'calculator_executed_once': True,
                                'api_transport_calls': api_transport.call_count,
                                'signature': hybrid['sig'], 'per_person_quota_enforced': True}
             report['status'] = 'ok'

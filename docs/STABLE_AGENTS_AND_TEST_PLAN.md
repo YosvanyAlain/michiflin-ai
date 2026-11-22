@@ -1,5 +1,7 @@
 # Agentes aceptados y pruebas eficientes
 
+**Decisión posterior del usuario:** un solo camino en `main`, dos workflows y autorización explícita de las dos correcciones puntuales. Véase [UN_SOLO_CAMINO.md](UN_SOLO_CAMINO.md). La etiqueta original no cambia; `stable-maintenance-profile.json` documenta los dos archivos con mantenimiento autorizado. El resto permanece protegido contra la referencia original. Los apartados siguientes describen el plan inicial, no una prohibición de ese mantenimiento posterior.
+
 La referencia aceptada por el usuario es la etiqueta `agentes-estables-20261119`, revisión `5da5d2b`. La publicación de referencia no garantiza disponibilidad de alojamiento: conserva el código que el usuario aprobó.
 
 `stable-agents-profile.json` recoge el perfil y las sumas del código aceptado. `tests/test_stable_agents_contract.py` comprueba que los archivos del agente, la cola, el colaborador propietario y el lanzador no cambian mientras se completan otros trabajos. También protege las funciones de autorización/cuota, selección exacta y entrada de la app. No garantiza respuestas idénticas de un modelo generativo ni constituye una firma criptográfica de seguridad. Cualquier cambio futuro deliberado exige revisión y una nueva referencia explícita.

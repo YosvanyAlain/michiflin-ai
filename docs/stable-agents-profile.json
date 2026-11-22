@@ -40,5 +40,21 @@
       "generate": "426e78ce6fb753871368e1a22ef30873ef988bf29f26ecb5e4e26eac10e01786",
       "_generate": "b59659db693974b9f15df28fe377b5aa12c875df2d63c05c1ee73660baacaa07"
     }
-  }
+  },
+  "function_source_sha256": {
+    "michiflin/ai.py": {
+      "_allowance": "328178005910ce29f92aa9f895771629104fe3d2aa265440304441ec0f4b6075",
+      "_settle": "84334f0f6892269d882eb97e7a4e74c8144318cc2c3b10c336421bda725ce159",
+      "complete": "113bc836b5970305ed0698ebb511102d053d436ac3de4fb31e819ce5b9dc1374",
+      "complete_exact": "b5f5b460487741422995f031918e7c7bb9efc15ea2ad1f427cbf6c500aac0e04"
+    },
+    "michiflin/miniapp.py": {
+      "op_ask": "271e6bcab6b31f4e1967d82c3cf6e40c4d6d5dd6db875e9846ec69840487850c"
+    },
+    "michiflin/images.py": {
+      "generate": "32d150d4dd10834af1e0d22b73c164eb24aed34e97eacc0327313656c4e7ef63",
+      "_generate": "7355eed4ff237e5eb1e69fe5bd69b1009190ae28de42aa2668ba1566c31a6909"
+    }
+  },
+  "fingerprint_note": "Original AST hashes are retained for provenance (Python 3.13); function_source_sha256 hashes exact source segments from the accepted revision and works across Python 3.12/3.13."
 }
