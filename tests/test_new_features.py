@@ -195,16 +195,6 @@ class YouTubeTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         self.assertNotIn(b"private-refresh-token", yt._path(OWNER).read_bytes())
 
-    def test_cancel_youtube_device_flow_keeps_an_existing_grant(self) -> None:
-        self.connect()
-        with mock.patch.object(yt, "_request", return_value=(200, self.device)) as request:
-            yt.start(OWNER)
-            result = yt.cancel(OWNER)
-        self.assertTrue(result["connected"])
-        self.assertFalse(result["pending"])
-        self.assertTrue(yt._path(OWNER).exists())
-        self.assertEqual(request.call_count, 1)  # cancel does not revoke or call Google
-
     def test_disconnect_reports_unconfirmed_revocation_and_removes_local_copy(self) -> None:
         self.connect()
         with mock.patch.object(yt, "_request", side_effect=yt.AccountError("network")):

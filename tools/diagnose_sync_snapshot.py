@@ -65,6 +65,21 @@ def diagnose(root: Path) -> dict:
               'all_core_webxdc': 0, 'unregistered_core_webxdc': 0, 'status_updates': 0}
     intents = data.get('owner_refresh_intents', {})
     result['requested_refresh_reserved'] = int(requested_valid and isinstance(intents, dict) and requested in intents)
+    # Counts describe only metadata in this point-in-time snapshot. They cannot
+    # prove that temporary queue bytes or excluded media survive a handover.
+    jobs = data.get('jobs')
+    jobs_valid = isinstance(jobs, dict) and all(isinstance(job, dict) for job in jobs.values())
+    result['queue_metadata_valid'] = jobs_valid
+    if jobs_valid:
+        statuses = [job.get('status') for job in jobs.values()]
+        active = {'queued', 'downloading', 'packing', 'ready', 'sending'}
+        final = {'done', 'failed', 'cancelled'}
+        result['queue_jobs_total'] = len(statuses)
+        result['queue_jobs_active'] = sum(isinstance(status, str) and status in active for status in statuses)
+        result['queue_jobs_finished'] = sum(isinstance(status, str) and status in final for status in statuses)
+        result['queue_jobs_unknown'] = len(statuses) - result['queue_jobs_active'] - result['queue_jobs_finished']
+    else:
+        result.update(queue_jobs_total=None, queue_jobs_active=None, queue_jobs_finished=None, queue_jobs_unknown=None)
     if len(databases) != 1:
         return result
     with sqlite3.connect(f'file:{databases[0]}?mode=ro', uri=True) as db:

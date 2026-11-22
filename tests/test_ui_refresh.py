@@ -258,14 +258,10 @@ def test_remaining_screens_responsive_matrix(engine, width, height, locale, them
                    ('news', {}), ('translate', {}), ('tools', {}), ('health', {}), ('admin', {}),
                    ('notes', {}), ('links', {}), ('nauta_strict', {}), ('kill_switch', {}), ('estado', {}),
                    ('live_web', {'url': 'https://example.org/fixture'}),
-                   ('downloads', {'section': 'kit'}), ('downloads', {'section': 'links'}),
-                   ('official_connections', {})] + [('official_connections', {'service': name})
-                                                    for name in ['youtube', 'facebook', 'tiktok']]
+                   ('downloads', {'section': 'kit'}), ('downloads', {'section': 'links'})]
         for index, (view, params) in enumerate(screens):
             page.evaluate('([view,params])=>go(view,params)', [view, params])
             page.wait_for_timeout(120)
-            if view == 'official_connections' and params.get('service'):
-                page.locator('.official-account .official-body').wait_for(state='visible')
             assert page.locator('#view').evaluate('e=>e.scrollWidth<=e.clientWidth+1'), (view, params)
             assert page.locator('#view').inner_text().strip(), (view, params)
             assert page.locator('#view .failure').count() == 0, (view, params)

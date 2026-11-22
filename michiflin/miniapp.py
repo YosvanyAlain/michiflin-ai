@@ -1867,8 +1867,6 @@ def op_youtube_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             return youtube_account.poll(address)
         if action in {"channels", "subscriptions"}:
             return youtube_account.read(address, action)
-        if action == "cancel":
-            return youtube_account.cancel(address)
         if action == "disconnect":
             return youtube_account.disconnect(address)
     except youtube_account.AccountError as exc:

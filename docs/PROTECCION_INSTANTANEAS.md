@@ -1,0 +1,16 @@
+# Protección reversible de instantáneas: preparación, no ejecución
+
+El plan `tools/plan_snapshot_protection.py` es una función pura y de solo lectura: recibe un inventario y propone nombres, pero **no consulta GitHub, no renombra, no copia ni borra assets, no toca Drive y no restaura cuentas**. Sus pruebas usan únicamente datos sintéticos. La existencia de un plan no demuestra que una copia esté protegida.
+
+Para el namespace `owner-clean-v1`, el plan deja reconocibles por el restaurador las dos instantáneas más recientes y la más antigua (la semilla que conserva la política actual). Propone anteponer `michiflin-preserved-v1-` a las demás. Con ese prefijo dejan de coincidir con los nombres que reconocen la restauración y la rotación automáticas. El nombre original se obtiene quitando exactamente ese prefijo; los bytes cifrados no deben cambiar. La función rechaza otra época lógica, un inventario ambiguo, menos de tres instantáneas o una colisión de nombres. No interpreta ni renombra assets pendientes o ajenos.
+
+Antes de considerar cualquier operación real, hace falta comprobar por separado:
+
+1. Una ventana exclusiva en la que **todos** los procesos que puedan guardar o rotar copias estén detenidos, incluidos la sesión antigua y cualquier sucesora en cola. El lock de un corredor es local: no coordina otros runners ni una operación externa. Un proceso antiguo puede haber enumerado un asset por ID y borrarlo después de que otra operación lo renombre. Mientras eso pueda pasar, no hay una ventana segura.
+2. Que el inventario del repositorio privado y su publicación reservada sean completos y estables; que no haya publicaciones pendientes ni conflictos; que se conserve sin renombrar la semilla y las dos copias recientes. El plan por sí solo no puede probar ninguna de estas condiciones.
+3. Que una copia reciente se haya descargado y restaurado en un entorno aislado con la clave correcta, que SQLite e identidad correspondan, y que estén verificadas las reservas y entregas que no se deben repetir. No restaurar sobre el estado activo ni usar una instantánea antigua automáticamente: podría perder trabajo o reservas de envío.
+4. Que al reiniciar se ejecute exactamente la versión que conserva todas las instantáneas (`STATE_BACKUP_RETAIN_ALL=1`), no una sesión antigua con rotación. Confirmar capacidad suficiente para las siguientes copias: conservar todo puede agotar espacio o assets.
+
+Si todas esas condiciones se cumplen y se decide ejecutar la operación autorizada, solo cambiaría el nombre de los assets seleccionados, conservando ID, tamaño, fecha de creación y contenido cifrado. Habría que verificar individualmente la respuesta y la descarga/huella después de cada cambio, detenerse ante cualquier resultado incierto y guardar un registro privado del mapa original/protegido. El restaurador automático no verá las copias con prefijo; recuperarlas requiere una operación manual deliberada y otra comprobación de la situación actual. No se autoriza eliminar archivos, rehacer envíos ni borrar o mover las copias históricas de Google Drive.
+
+La copia ordinaria sigue excluyendo ciertos medios y temporales; renombrar sus snapshots no los convierte en un respaldo completo. Contar trabajos en un snapshot informa sobre metadatos de ese momento, no demuestra que sus archivos temporales sigan disponibles.
