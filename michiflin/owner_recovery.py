@@ -94,6 +94,18 @@ def deliver_requested_refresh() -> bool:
         import threading
         outcome = chat.wait_delivery(mid, 180, threading.Event())
         log.info('Requested owner miniapp refresh: %s', outcome if outcome in {'delivered', 'failed', 'pending', 'cancelled'} else 'registered')
+        # Preserve the one-shot registration and its delivery state in the
+        # mandatory encrypted primary before a later runner can restore it.
+        # Reuse its lock/verification; never rotate earlier recovery points.
+        if os.getenv('STATE_BACKUP_REQUIRED', '0') == '1':
+            try:
+                import state_backup
+                state_backup.save(rotate=False)
+                log.info('Requested owner miniapp registration checkpoint verified')
+            except Exception as exc:
+                # Registration already happened. A backup failure must not
+                # turn this into a send retry or remove the existing record.
+                log.warning('Owner refresh checkpoint deferred (%s)', type(exc).__name__)
         return True
     except Exception as exc:
         log.warning('Requested owner miniapp refresh deferred (%s)', type(exc).__name__)
