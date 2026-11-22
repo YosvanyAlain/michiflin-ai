@@ -14,7 +14,8 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     data = {'apps': {'100': {'chat': 42, 'addr': marker['owner_address'],
                             'build': 'c8a5f423ba', 'epoch': 'test-epoch', 'recovery_revision': 'b' * 40},
                      '101': {'chat': 42, 'addr': marker['owner_address'],
-                             'build': 'unknown', 'epoch': 'different'}}}
+                             'build': 'unknown', 'epoch': 'different'}},
+            'owner_refresh_intents': {'b' * 40: {'state': 'reserved', 'epoch': 'test-epoch'}}}
     (tmp_path / 'michiflin-state.json').write_text(json.dumps(data))
     root = tmp_path / 'accounts' / 'synthetic'
     root.mkdir(parents=True)
@@ -40,6 +41,7 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['pending_outgoing'] == 1
     assert result['owner_marker_fingerprint_present'] is True
     assert result['owner_directly_verified_contact_present'] is True
+    assert result['requested_refresh_reserved'] == 1
     assert result['requested_refresh_registered'] == 1
     assert result['requested_refresh_delivered'] == 1
     assert result['requested_refresh_pending'] == 0
@@ -112,3 +114,13 @@ def test_current_only_diagnostic_uses_packaged_build_and_checks_epoch(tmp_path, 
     assert result['current_release_bindings'] == 1
     assert result['apps_incompatible_build'] == 2
     assert result['apps_core_present'] == 3
+
+
+def test_diagnostic_revision_input_cannot_arm_the_production_workflow():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    tests_workflow = (root / '.github/workflows/tests.yml').read_text()
+    production = (root / '.github/workflows/michiflin.yml').read_text()
+    assert 'diagnostic_revision:' in tests_workflow
+    assert "inputs.diagnostic_revision || vars.OWNER_REQUESTED_APP_REVISION" in tests_workflow
+    assert 'diagnostic_revision' not in production

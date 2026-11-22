@@ -18,6 +18,11 @@ on:
         description: "For model task only: compare the older model too"
         type: boolean
         default: false
+      diagnostic_revision:
+        description: "Optional exact revision to count in the read-only backup diagnostic"
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -223,7 +228,8 @@ jobs:
       MINIAPP_CURRENT_ONLY: "1"
       MINIAPP_RELEASE: "public-private-20261119-v1"
       SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
-      OWNER_REQUESTED_APP_REVISION: ${{ vars.OWNER_REQUESTED_APP_REVISION }}
+      # Diagnostic input is read-only and never arms a production delivery.
+      OWNER_REQUESTED_APP_REVISION: ${{ inputs.diagnostic_revision || vars.OWNER_REQUESTED_APP_REVISION }}
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

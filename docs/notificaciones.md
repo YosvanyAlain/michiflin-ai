@@ -2,7 +2,7 @@
 
 ## Actualizaciones voluntarias
 
-El workflow no ejecuta automáticamente `deliver_owner_refresh`. No se envía un archivo `.xdc` por actualizar el servidor, salvo una solicitud explícita del dueño fijada a un commit exacto mediante `OWNER_REQUESTED_APP_REVISION`. Esa entrega sucede dentro de la única instancia del bot y solo a una vinculación autorizada existente. La marca por revisión ayuda a evitar duplicados, pero una caída alrededor del envío puede dejar un resultado incierto: verifica la entrega y desarma la variable, sin reenviar a ciegas.
+El workflow no ejecuta automáticamente `deliver_owner_refresh`. No se envía un archivo `.xdc` por actualizar el servidor, salvo una solicitud explícita del dueño fijada a un commit exacto mediante `OWNER_REQUESTED_APP_REVISION`. Esa entrega sucede dentro de la única instancia del bot y solo a una vinculación autorizada existente. Antes del envío se guarda una reserva durable y, si el respaldo es obligatorio, se verifica una copia cifrada sin rotar las anteriores. Un fallo de la reserva impide enviar; una reserva existente o un resultado incierto impide reintentar a ciegas. Restaurar una copia anterior podría perder la reserva: verifica la entrega y desarma la variable antes de cualquier recuperación.
 
 Con `MINIAPP_CURRENT_ONLY=1`, una app anterior no puede operar el backend, aunque antes figurara como compatible. Solo si esa instancia autorizada envía un evento nuevo puede recibir un aviso orientativo; el barrido de arranque no genera un envío masivo. La reserva del aviso se guarda antes del envío, por lo que una caída posterior o la saturación pueden impedirlo. No se garantiza la entrega, y restaurar un respaldo anterior a la reserva puede permitir que se repita.
 

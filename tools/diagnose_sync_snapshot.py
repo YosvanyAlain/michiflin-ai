@@ -55,7 +55,7 @@ def diagnose(root: Path) -> dict:
               'release_opening_checkpointed': data.get('public_access_release') == 'private-invites-20261119-v1',
               'invite_policy_open': isinstance(data.get('invite_policy'), dict) and data['invite_policy'].get('closed') is False,
               'database_count': len(databases), 'app_bindings': len(apps),
-              'requested_refresh_registered': 0, 'requested_refresh_delivered': 0,
+              'requested_refresh_reserved': 0, 'requested_refresh_registered': 0, 'requested_refresh_delivered': 0,
               'requested_refresh_pending': 0, 'requested_refresh_failed': 0,
               'clean_marker_present': bool(marker), 'apps_core_present': 0,
               'apps_core_missing_or_deleted': 0, 'apps_core_wrong_type': 0,
@@ -63,6 +63,8 @@ def diagnose(root: Path) -> dict:
               'apps_incompatible_build': 0, 'apps_owner_recipient': 0,
               'apps_missing_blob': 0, 'pending_outgoing': 0, 'failed_outgoing': 0,
               'all_core_webxdc': 0, 'unregistered_core_webxdc': 0, 'status_updates': 0}
+    intents = data.get('owner_refresh_intents', {})
+    result['requested_refresh_reserved'] = int(requested_valid and isinstance(intents, dict) and requested in intents)
     if len(databases) != 1:
         return result
     with sqlite3.connect(f'file:{databases[0]}?mode=ro', uri=True) as db:
