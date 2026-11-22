@@ -5,6 +5,11 @@ on:
     - cron: "5 */6 * * *"
   workflow_dispatch:
     inputs:
+      local_ai_test:
+        description: "One-hour local-AI development test; automatic successor returns to normal settings"
+        required: false
+        type: boolean
+        default: false
       deliver_owner_refresh:
         description: "Deliver this release once to the existing verified owner's private chat"
         required: false
@@ -35,7 +40,9 @@ jobs:
       SESSION_DURATION_SECONDS: "19200"
       # User-authorized, temporary test. Set repository variable to 0 to opt out
       # at the next session. The server uses no provider AI key or account.
-      LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '1' }}
+      # Exact run number is a one-shot arming signal; it cannot carry into the successor.
+      LOCAL_AI_TEST: ${{ (inputs.local_ai_test || (vars.LOCAL_AI_TEST_RUN_NUMBER != '' && vars.LOCAL_AI_TEST_RUN_NUMBER == github.run_number && github.run_attempt == '1')) && '1' || '0' }}
+      LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '0' }}
       # Independently opt-in features; these do not request or start inference.
       # Keep the client context profile aligned with the isolated launcher.
       LOCAL_GGUF_VARIANT: ${{ vars.LOCAL_GGUF_VARIANT || 'qwen35' }}
@@ -196,11 +203,24 @@ jobs:
       - name: Install browser
         run: python -m playwright install --with-deps chromium
 
+      - name: Configure bounded one-shot local AI development test
+        if: env.LOCAL_AI_TEST == '1'
+        run: |
+          # Job-scoped only. No repository quota, account or identity change.
+          # These values are not forwarded by the ordinary Next session step.
+          echo "LOCAL_GGUF_TEST_REQUESTED=1" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_VARIANT=qwen35" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_EXTENDED=1" >> "$GITHUB_ENV"
+          echo "LOCAL_WEB_SYNTHESIS=1" >> "$GITHUB_ENV"
+          echo "LOCAL_AGENT_COORDINATOR=1" >> "$GITHUB_ENV"
+          echo "SESSION_DURATION_SECONDS=3600" >> "$GITHUB_ENV"
+          echo "SAFE_GGUF_ONE_SHOT_PROFILE=6144"
+
       - name: Prepare isolated local AI test
         id: gguf_prepare
         if: env.LOCAL_GGUF_TEST_REQUESTED == '1'
         continue-on-error: true
-        timeout-minutes: 11
+        timeout-minutes: 22
         run: |
           # Keep only fixed safety markers and numeric curl error codes in the
           # optional diagnostic artifact; never upload arbitrary process output.
@@ -439,6 +459,39 @@ jobs:
           echo "LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock" >> "$GITHUB_ENV"
           echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
           echo "Local test available, one inference at a time."
+
+      - name: Exercise actual local hybrid code with synthetic inputs before serving
+        id: gguf_hybrid_preflight
+        if: env.LOCAL_AI_TEST == '1' && steps.gguf_start.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          CONFIG_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/config
+          JOB_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/jobs
+          PREVIEW_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/preview
+          MICHIFLIN_SYNTHETIC_PREFLIGHT_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight
+          LOCAL_HYBRID_REPORT: ${{ runner.temp }}/local-hybrid-preflight.json
+        run: python tools/smoke_local_hybrid.py
+
+      - name: Save only synthetic hybrid test results
+        continue-on-error: true
+        if: always() && env.LOCAL_AI_TEST == '1' && steps.gguf_hybrid_preflight.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: local-hybrid-synthetic-preflight
+          path: ${{ runner.temp }}/local-hybrid-preflight.json
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Keep normal bot if hybrid preflight failed
+        if: env.LOCAL_AI_TEST == '1' && steps.gguf_hybrid_preflight.outcome == 'failure'
+        run: |
+          bash tools/local_gguf_session.sh stop || true
+          echo "LOCAL_GGUF_ENABLED=0" >> "$GITHUB_ENV"
+          echo "LOCAL_GGUF_TEST_UNAVAILABLE=1" >> "$GITHUB_ENV"
+          echo "LOCAL_WEB_SYNTHESIS=0" >> "$GITHUB_ENV"
+          echo "LOCAL_AGENT_COORDINATOR=0" >> "$GITHUB_ENV"
+          echo "SAFE_GGUF_HYBRID_PREFLIGHT_FAILED"
 
       - name: Local AI unavailable; retain normal bot
         if: ${{ env.LOCAL_GGUF_TEST_REQUESTED == '1' && steps.gguf_start.outcome != 'success' }}
