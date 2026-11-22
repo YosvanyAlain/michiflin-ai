@@ -308,6 +308,9 @@ def point_to_app(chat_id: int, locale: str) -> None:
     if msg_id:
         text = tr(locale, "Michiflin funciona dentro de la mini app de este chat: ábrela con «Iniciar» y pide ahí lo que necesites.",
                   "Michiflin works inside the mini app in this chat: open it with “Start” and ask for what you need there.")
+    elif known and not bound and _authorized_retired_app_for_sender(chat_id):
+        text = tr(locale, "La miniapp anterior ya no puede operar este bot. No envié otra automáticamente; si deseas la actual, escribe /app en este chat.",
+                  "The previous mini app can no longer operate this bot. I did not send another automatically; if you want the current one, type /app in this chat.")
     elif known and not bound:
         # A new grant must not revive an old app or replay its requests.
         text = tr(locale, "Hay una miniapp anterior registrada en este chat, pero su acceso previo no se ha reactivado. No envié otra automáticamente; si necesitas una nueva, consulta al propietario.",
@@ -370,26 +373,49 @@ def _bound_apps(chat_id: int) -> list[dict[str, Any]]:
     return entries
 
 
-def _registered_app_for_sender(chat_id: int) -> bool:
-    """Detect an earlier app without authorizing it or reading its messages.
+def _historical_apps_for_sender(chat_id: int) -> list[dict[str, Any]]:
+    """Read binding metadata, including retired builds, without authorizing them.
 
-    The chat, deployment epoch and recipient must match. An unknown recipient
-    is treated conservatively: it blocks automatic delivery, never grants access.
-    Different recipients or deployments do not suppress a legitimate first app.
+    Match the chat and deployment epoch; an unknown recipient conservatively
+    blocks automatic delivery, but cannot qualify for an upgrade hint. A
+    different recipient or deployment does not suppress a legitimate first app.
     """
     recipient = str(chat.sender() or "").strip().casefold()
+    matches: list[dict[str, Any]] = []
     with state.lock:
         for key, entry in _apps().items():
             if not str(key).isdigit() or not isinstance(entry, dict):
                 continue
             try:
-                if int(entry.get("chat") or 0) != chat_id or _instance(int(key)) is None:
+                if int(entry.get("chat") or 0) != chat_id:
                     continue
             except (TypeError, ValueError):
                 continue
+            epoch = entry.get("epoch")
+            if (config.BOT_EPOCH_STRICT and epoch != config.BOT_EPOCH) or (epoch and epoch != config.BOT_EPOCH):
+                continue
             address = str(entry.get("addr") or "").strip().casefold()
             if not recipient or not address or address == recipient:
-                return True
+                matches.append(dict(entry))
+    return matches
+
+
+def _registered_app_for_sender(chat_id: int) -> bool:
+    return bool(_historical_apps_for_sender(chat_id))
+
+
+def _authorized_retired_app_for_sender(chat_id: int) -> bool:
+    """Distinguish a retired build from a revoked grant before suggesting /app."""
+    if not (config.MINIAPP_CURRENT_ONLY or config.REVOKE_LEGACY_MINIAPPS):
+        return False
+    recipient = str(chat.sender() or "").strip().casefold()
+    if not recipient:
+        return False
+    for entry in _historical_apps_for_sender(chat_id):
+        if (str(entry.get("addr") or "").strip().casefold() == recipient
+                and not compatible_build(entry) and access.bound_allowed(entry)
+                and admin.is_allowed(recipient) and _verified_binding(entry)):
+            return True
     return False
 
 
@@ -939,7 +965,10 @@ def _official_snapshot(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _official_private(instance_id: int, admitted: dict[str, Any]) -> bool:
-    """Require a verified one-to-one encrypted binding for official account data."""
+    """Require a policy-authorized one-to-one encrypted binding for account data.
+
+    Direct contact verification is stronger than optional email-key recovery.
+    """
     if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return False
     try:

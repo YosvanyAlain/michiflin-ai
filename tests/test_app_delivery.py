@@ -151,10 +151,12 @@ def test_first_contact_still_receives_one_app(app_state, monkeypatch):
     assert "201" in state.data["apps"]
 
 
-def test_explicit_app_command_still_allows_deliberate_recovery(app_state, monkeypatch):
+@pytest.mark.parametrize('current_only', [False, True])
+def test_explicit_app_command_still_allows_deliberate_recovery(app_state, monkeypatch, current_only):
     from michiflin import commands
 
-    app_state.update(build="new-build", sent=time.time() - 3600)
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', current_only)
+    app_state.update(build="old-build" if current_only else "new-build", sent=time.time() - 3600)
     send = mock.Mock(return_value=201)
     monkeypatch.setattr(chat, "send", send)
     commands.cmd_app(CHAT, [], "", "es")
@@ -192,6 +194,36 @@ def test_regranted_recipient_does_not_get_an_automatic_duplicate(app_state, monk
         assert send_text.call_count == 1
         assert not send_text.call_args.kwargs.get("viewtype")
         assert "/app" not in send_text.call_args.args[1]
+
+
+@pytest.mark.parametrize('path', ['welcome', 'point'])
+def test_current_only_retired_app_blocks_automatic_replacement_without_granting_access(app_state, monkeypatch, path):
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)
+    monkeypatch.setattr(miniapp, 'latest_instance', lambda _chat: 0)
+    monkeypatch.setattr(miniapp, 'send_app', send_app := mock.Mock())
+    monkeypatch.setattr(chat, 'send', send_text := mock.Mock(return_value=202))
+    original = dict(app_state)
+    assert miniapp._instance(100) is None  # the old build cannot operate the bot
+    assert miniapp._registered_app_for_sender(CHAT)  # but its existence must still block auto-delivery
+    if path == 'welcome':
+        miniapp.welcome(CHAT, 'es')
+    else:
+        miniapp.point_to_app(CHAT, 'es')
+        assert '/app' in send_text.call_args.args[1]
+    send_app.assert_not_called()
+    assert state.data['apps']['100'] == original
+
+
+def test_current_only_revoked_grant_is_not_treated_as_retired_authorized_app(app_state, monkeypatch):
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)
+    monkeypatch.setattr(miniapp, 'latest_instance', lambda _chat: 0)
+    monkeypatch.setattr(miniapp.access, 'bound_allowed', lambda _entry: False)
+    monkeypatch.setattr(miniapp, 'send_app', send_app := mock.Mock())
+    monkeypatch.setattr(chat, 'send', send_text := mock.Mock(return_value=202))
+    miniapp.point_to_app(CHAT, 'es')
+    send_app.assert_not_called()
+    assert '/app' not in send_text.call_args.args[1]
+    assert set(state.data['apps']) == {'100'}
 
 
 def test_unknown_historical_address_blocks_automatic_delivery_conservatively(app_state, monkeypatch):

@@ -117,6 +117,8 @@ El despliegue actual en GitHub Actions es **temporal**: usarlo como servidor per
 
 La [guía integral en PDF](docs/Manual_Michiflin.pdf) explica el uso, el código, los límites y la migración. Para regenerarla desde el código fuente se necesitan las fuentes DejaVu instaladas y `pip install -r docs/requirements-manual.txt`; después, ejecuta `python tools/build_manual.py`. Las capturas incluidas en esa guía usan datos sintéticos y están identificadas como reales o simuladas.
 
+El ZIP opcional de código omite capturas y los dos archivos XZ redundantes para respetar el límite de adjuntos; conserva las fuentes gzip originales completas. Tras comprobar `SHA256SUMS.txt`, ejecuta `python tools/restore_compact_sources.py` antes de construir la miniapp. El script solo publica archivos con las huellas fijadas y no sobrescribe otros distintos. Si tu versión de liblzma produce bytes diferentes, obtén los XZ exactos del mismo commit del repositorio.
+
 ## Colaboraciones, sugerencias y apoyo de hospedaje
 
 Michiflin es un proyecto independiente. Son bienvenidas propuestas, pruebas, informes de accesibilidad, mejoras de documentación, revisión del código y ayuda para encontrar un hospedaje adecuado. Usa los [Issues del repositorio](https://github.com/YosvanyAlain/michiflin-ai/issues) para ideas que no sean sensibles: explica objetivo, plataforma, pasos y resultado esperado, e identifica los ejemplos simulados. **No publiques invitaciones, direcciones de cuentas, tokens, contraseñas, archivos de usuarios, claves privadas ni respaldos de estado.** Para fallos de seguridad utiliza la notificación privada de GitHub si está habilitada o un canal privado ya establecido; no difundas detalles de explotación antes de coordinar.

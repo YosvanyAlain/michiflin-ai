@@ -2,11 +2,11 @@
 
 ## Actualizaciones voluntarias
 
-El workflow ya no ejecuta la entrega automática `deliver_owner_refresh`. No se añade otro workflow ni una rama de despliegue. En el primer saludo de una app anterior admitida se envía un aviso dentro de esa misma instancia, con marca por compilación después del envío. No se envía un archivo `.xdc` por actualizar el servidor, salvo una solicitud explícita del dueño fijada a un commit exacto mediante `OWNER_REQUESTED_APP_REVISION`. Esa entrega sucede dentro de la única instancia del bot, solo a una vinculación verificada existente y una sola vez; el mismo ajuste es inerte para cualquier otro commit.
+El workflow no ejecuta automáticamente `deliver_owner_refresh`. No se envía un archivo `.xdc` por actualizar el servidor, salvo una solicitud explícita del dueño fijada a un commit exacto mediante `OWNER_REQUESTED_APP_REVISION`. Esa entrega sucede dentro de la única instancia del bot y solo a una vinculación autorizada existente. La marca por revisión ayuda a evitar duplicados, pero una caída alrededor del envío puede dejar un resultado incierto: verifica la entrega y desarma la variable, sin reenviar a ciegas.
 
-El paquete exacto anterior a esta modificación sigue admitido en la misma época y release, aun con la revocación de versiones históricas activa. Los paquetes de referencia se verifican contra sus manifiestos; las compilaciones recientes publicadas se reconocen mediante un registro fijado de huellas vinculado a la misma época y release. Esto **no reactiva** identidades, concesiones ni versiones antiguas retiradas.
+Con `MINIAPP_CURRENT_ONLY=1`, una app anterior no puede operar el backend, aunque antes figurara como compatible. Solo si esa instancia autorizada envía un evento nuevo puede recibir un aviso orientativo; el barrido de arranque no genera un envío masivo. La reserva del aviso se guarda antes del envío, por lo que una caída posterior o la saturación pueden impedirlo. No se garantiza la entrega, y restaurar un respaldo anterior a la reserva puede permitir que se repita.
 
-La persona solicita la nueva instancia desde **Ajustes → Sincronización → Pedir app nueva**, o mediante `/app`. La anterior y sus datos locales se conservan. Las instancias tienen almacenamiento local independiente. Un respaldo restaurado puede repetir un aviso cuya marca aún no se había respaldado.
+Una app actual puede ofrecer **Ajustes → Sincronización → Pedir app nueva**. Para una app retirada, solicita `/app` en el chat privado cifrado y autorizado. El bot no reemplaza automáticamente una instancia anterior conocida, ni por abrirla ni por repetir la unión. Los mensajes anteriores y sus datos locales no se borran; cada instancia tiene almacenamiento independiente y no se trasladan los proyectos automáticamente.
 
 ## Google Drive: copia adicional opcional
 

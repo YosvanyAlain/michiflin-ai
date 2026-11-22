@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -138,11 +139,25 @@ class OwnerDeliveryTests(unittest.TestCase):
             self.assertNotIn("Michiflin-AI/.git/config", names)
             self.assertFalse(any("docs/media/" in name for name in names))
             self.assertFalse(any(".michiflin-state" in name or ".enc" in name for name in names))
+            self.assertIn("Michiflin-AI/tools/restore_compact_sources.py", names)
+            stems = ('source-7zip-26.05', 'source-wrapper-26.5.0')
+            for stem in stems:
+                self.assertIn(f'Michiflin-AI/webxdc/vendor/7zip/{stem}.tar.gz', names)
+                self.assertNotIn(f'Michiflin-AI/webxdc/vendor/7zip/{stem}.tar.xz', names)
+            self.assertIn('restore_compact_sources.py', archive.read('Michiflin-AI/LEEME_ENTREGA.txt').decode())
             rows = archive.read("Michiflin-AI/SHA256SUMS.txt").decode().splitlines()
             for row in rows:
                 digest, name = row.split("  ", 1)
                 self.assertEqual(hashlib.sha256(archive.read("Michiflin-AI/" + name)).hexdigest(), digest)
+            archive.extractall(self.root / 'extracted')
         self.assertLess(result.stat().st_size, owner_delivery.MAX_ATTACHMENT)
+        extracted = self.root / 'extracted' / 'Michiflin-AI'
+        subprocess.run([sys.executable, 'tools/restore_compact_sources.py'], cwd=extracted,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180, check=True)
+        for stem in stems:
+            path = Path('webxdc/vendor/7zip') / f'{stem}.tar.xz'
+            self.assertEqual(hashlib.sha256((extracted/path).read_bytes()).digest(),
+                             hashlib.sha256((ROOT/path).read_bytes()).digest())
 
 
 if __name__ == "__main__":

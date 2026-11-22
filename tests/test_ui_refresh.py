@@ -177,7 +177,7 @@ def test_changed_screens_responsive_matrix(engine, width, height, locale, theme)
             page.screenshot(path=str(target / f'{index:02d}-{view}.png'))
         page.evaluate("notice('Notificación de prueba')")
         page.locator('#notifications-toggle').click()
-        page.wait_for_function("() => {const r=document.querySelector('#sheet .sheet-panel').getBoundingClientRect();return r.top>=0&&r.bottom<=innerHeight+1}")
+        page.wait_for_function("() => {const p=document.querySelector('#sheet .sheet-panel'),r=p.getBoundingClientRect();return getComputedStyle(p).transform==='none'&&r.top>=0&&r.bottom<=innerHeight+1}")
         page.screenshot(path=str(target/'20-notificaciones.png'))
         assert page.locator('#sheet .sheet-panel').evaluate('e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1}')
         assert errors == []
