@@ -1672,3 +1672,61 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 }
 @media (min-width: 900px) { .scroll-discovery { bottom: 12px; } }
 @media (prefers-reduced-motion: reduce) { .book-sync::before { animation: none; } }
+
+/* Notification center: anchored top-right on desktop, safe-area sheet on phones. */
+.notification-toggle { position: relative; flex-shrink: 0; }
+.notification-count { position: absolute; right: -2px; top: -2px; min-width: 17px; height: 17px; border-radius: 9px; padding: 0 3px; background: var(--accent); color: var(--surface); font: 700 10px/17px system-ui; }
+.notification-count[hidden] { display: none; }
+.notification-center .sheet-panel { display: flex; flex-direction: column; overflow: hidden; max-height: min(88dvh, 760px); }
+.notification-center .sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.notification-center-content { min-width: 0; }
+.notification-center-tools { padding: 8px 0 14px; }
+.notification-center-tools select { width: auto; min-width: 100px; flex: 1; }
+.notification-center-tools label { font-size: 12px; }
+.notification-center-list { display: grid; gap: 10px; margin-top: 14px; }
+.notice-center-row { border: 1px solid var(--line); border-radius: 16px; padding: 12px; min-width: 0; }
+.notice-center-main { display: flex; align-items: flex-start; gap: 10px; width: 100%; text-align: left; background: none; border: 0; color: var(--text); padding: 0; font: inherit; }
+.notice-center-main .grow { min-width: 0; }
+.notice-center-text { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice-center-main small { display: block; margin-top: 5px; }
+.notice-visibility { margin-top: 10px; }
+.notice-hidden { opacity: .65; border-style: dashed; }
+@media (min-width: 700px) {
+  .notification-center .sheet-panel { left: auto; right: max(16px, env(safe-area-inset-right)); top: max(65px, env(safe-area-inset-top)); bottom: auto; width: min(460px, calc(100vw - 32px)); border-radius: 20px; transform: translateY(-8px); opacity: 0; }
+  .notification-center.open .sheet-panel { transform: none; opacity: 1; }
+}
+/* Text-only community: uses the app's light/dark colors with a personal accent. */
+.social-space { --social-accent: var(--accent); display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 850px; margin: 0 auto; }
+.social-space[data-theme="violet"] { --social-accent: #9677db; }
+.social-space[data-theme="ocean"] { --social-accent: #459cbd; }
+.social-space[data-theme="forest"] { --social-accent: #569b76; }
+.social-space[data-theme="rose"] { --social-accent: #c07893; }
+.social-space[data-theme="amber"] { --social-accent: #bd9648; }
+.social-hero { border-left: 4px solid var(--social-accent); padding: 14px 22px; border-radius: 0 18px 18px 0; background: var(--surface-2); }
+.social-hero .eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .12em; font-weight: 750; }
+.social-hero h2 { font-size: clamp(30px, 6vw, 48px); letter-spacing: -.04em; margin: 6px 0; }
+.social-hero p { margin: 0; color: var(--muted); line-height: 1.6; }
+.social-toolbar > select { width: auto; flex: 1; min-width: 110px; }
+.social-search { width: 100%; min-width: 0; }
+.social-search input { min-width: 0; flex: 1; }
+.social-composer, .social-post { border: 1px solid var(--line); background: var(--surface); padding: 20px; border-radius: 20px; min-width: 0; }
+.social-composer:empty { display: none; }
+.social-editor { width: 100%; resize: vertical; line-height: 1.65; min-height: 100px; }
+.social-composer > .row { margin-top: 12px; justify-content: space-between; }
+.social-feed { display: grid; gap: 14px; }
+.social-post-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.social-post-head .grow { min-width: 100px; overflow-wrap: anywhere; }
+.social-post-head small { display: block; margin-top: 3px; }
+.social-avatar { display: grid; place-items: center; flex-shrink: 0; width: 38px; height: 38px; border-radius: 14px; border: 1px solid var(--social-accent); font-weight: 750; font-size: 12px; }
+.social-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.75; font-size: 15px; }
+.social-actions { padding-top: 8px; }
+.social-post-menu { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 12px; }
+.social-post-menu summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+.social-post-menu .row { margin-top: 10px; }
+.social-profile-form { display: grid; gap: 14px; min-width: 0; }
+.social-profile-form label { display: grid; gap: 6px; font-size: 13px; }
+.social-profile-form .input { width: 100%; }
+.social-space[data-density="compact"] .social-post { padding: 12px; border-radius: 12px; }
+.social-space[data-density="compact"] .social-feed { gap: 8px; }
+.social-space[data-font="large"] .social-text { font-size: 19px; }
+@media (max-width: 380px) { .social-composer, .social-post { padding: 13px; } .social-toolbar .btn { padding: 8px; } }

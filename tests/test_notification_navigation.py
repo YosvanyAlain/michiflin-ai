@@ -299,6 +299,7 @@ def test_paged_media_notice_from_home_opens_exact_page_or_error(view, fail):
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function('name=>store.get("notices",[]).some(n=>n.unread&&n.target?.view===name)', arg=view)
         assert page.evaluate('name=>store.get("notices",[]).find(n=>n.unread&&n.target?.view===name).target.params.resultPage', view) == 2
+        page.locator('#notifications-toggle').click()
         page.locator('button.notice').filter(has_text='música' if view == 'music' else 'YouTube').first.click()
         expected = 'SIMULATED network uncertainty' if fail else 'Elemento 16'
         page.get_by_text(expected, exact=not fail).first.wait_for(state='visible')
@@ -372,6 +373,7 @@ def test_youtube_and_music_with_same_provider_query_keep_distinct_unread_results
         page.wait_for_function("window.__sentUpdates.filter(x=>x.payload?.op==='youtube_search').length===2")
         page.locator('.tab[data-tab="home"]:visible').click()
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='music')")
+        page.locator('#notifications-toggle').click()
         page.locator('button.notice').filter(has_text='YouTube').first.click()
         page.get_by_text('Primera búsqueda', exact=True).wait_for(state='visible', timeout=5000)
         assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.view==='music')")
@@ -393,6 +395,7 @@ def test_legacy_youtube_notice_recovers_its_original_page_from_cache_key():
           const records=store.get(RESULT_CACHE_KEY,{});records[old]=records[n.cacheKey];delete records[n.cacheKey];store.set(RESULT_CACHE_KEY,records);
           memo.set(old,memo.get(n.cacheKey));resultMemoTimes.set(old,resultMemoTimes.get(n.cacheKey));memo.delete(n.cacheKey);resultMemoTimes.delete(n.cacheKey);
           n.cacheKey=old;delete n.target.params.resultPage;store.set('notices',notices);bus.emit('notices');}""")
+        page.locator('#notifications-toggle').click()
         page.locator('button.notice').filter(has_text='YouTube').first.click()
         page.get_by_text('Antiguo 16', exact=True).wait_for(state='visible', timeout=5000)
         assert page.evaluate('current.params.resultPage') == 2
@@ -533,6 +536,7 @@ def test_local_timeout_is_history_not_an_unread_reply(view, op, category):
         assert not page.evaluate("store.get('notices',[]).some(n=>n.unread)")
         assert page.locator(f'.tab[data-tab="{category}"]:visible .tab-badge').is_hidden()
         assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
+        page.locator('#notifications-toggle').click()
         page.locator('button.notice').filter(has_text='La app dejó de esperar sin recibir respuesta').first.click()
         assert page.evaluate('current.view') == view
         page.locator('#view').get_by_text('No llegó respuesta.', exact=False).first.wait_for(state='visible')
@@ -553,13 +557,15 @@ def test_home_marks_only_general_notices_shown_in_the_viewport(engine):
           goTab('home');
         }""")
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&!n.target&&n.text.startsWith('Aviso sintético')).length") == 3
-        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '3'
-        # One row is almost entirely below the viewport: merely opening Home or
-        # clipping a small edge cannot count it as seen.
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '3'
+        # General rows now live in the bell's scroller, never on Home.
+        page.evaluate("""() => {notificationCenter();
+          const list=document.querySelector('.notification-center-list');
+          list.style.paddingTop='450px';list.style.paddingBottom='600px';}""")
         def show_fraction(fraction):
             page.evaluate("""fraction => {
-              const root=document.querySelector('#view'), bounds=root.getBoundingClientRect();
-              const row=[...root.querySelectorAll('.notice')].find(e=>e.textContent.includes('Aviso sintético C'));
+              const root=document.querySelector('#sheet .sheet-body'), bounds=root.getBoundingClientRect();
+              const row=[...root.querySelectorAll('.notice-center-row')].find(e=>e.textContent.includes('Aviso sintético C'));
               const rect=row.getBoundingClientRect();
               root.scrollTop += rect.top - bounds.bottom + rect.height * fraction;
             }""", fraction)
@@ -570,7 +576,7 @@ def test_home_marks_only_general_notices_shown_in_the_viewport(engine):
         show_fraction(.7)
         page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso sintético C').unread")
         assert page.evaluate("store.get('notices',[]).filter(n=>n.unread&&!n.target&&n.text.startsWith('Aviso sintético')).map(n=>n.text)") == ['Aviso sintético B', 'Aviso sintético A']
-        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '2'
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '2'
         assert page.evaluate('window.__sentUpdates.length') == sent_before
         assert errors == []
 
@@ -585,10 +591,11 @@ def test_general_notice_arriving_on_home_stays_unread_until_seen(engine):
           notice('Espera local','info',{local:true}); }""")
         assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso fuera de pantalla').unread")
         assert not page.evaluate("store.get('notices',[]).find(n=>n.text==='Espera local').unread")
-        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').inner_text() == '1'
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         # Hiding the WebView must not acknowledge a row that scrolls into view.
         page.evaluate("""() => {Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true});
           document.dispatchEvent(new Event('visibilitychange'));}""")
+        page.evaluate('notificationCenter()')
         page.locator('.notice').filter(has_text='Aviso fuera de pantalla').scroll_into_view_if_needed()
         page.wait_for_timeout(120)
         assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso fuera de pantalla').unread")
@@ -606,22 +613,21 @@ def test_general_notice_covered_by_sheet_is_read_after_closing_it(engine):
         page.locator('#splash').wait_for(state='detached', timeout=8000)
         page.emulate_media(reduced_motion='reduce')
         page.evaluate("goTab('home');notice('Aviso de referencia','info')")
-        page.wait_for_timeout(400)
+        page.locator('#notifications-toggle').click()
         page.locator('.notice').filter(has_text='Aviso de referencia').scroll_into_view_if_needed()
         page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso de referencia').unread")
         page.evaluate("openSheet('Panel sintético',[h('p',{},'Cubierto')]);notice('Aviso cubierto','info')")
-        # Put the notice in the viewport while the sheet still obscures it.
-        page.evaluate("""() => {const root=document.querySelector('#view'),box=root.getBoundingClientRect();
-          const row=[...root.querySelectorAll('.notice')].find(e=>e.textContent.includes('Aviso cubierto'));
-          const rect=row.getBoundingClientRect();root.scrollTop += rect.top-box.top-(box.height-rect.height)/2;}""")
         page.wait_for_timeout(150)
         assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
         page.evaluate('closeSheet()')
-        page.wait_for_function("document.querySelector('#sheet').hidden && !store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
-        # A new general notice appearing in the part already on screen is read.
+        page.wait_for_function("document.querySelector('#sheet').hidden")
+        # Closing a different sheet does not expose a general notice on Home.
+        assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
+        page.locator('#notifications-toggle').click()
+        page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso cubierto').unread")
         page.evaluate("notice('Aviso ya visible','info')")
         page.wait_for_function("!store.get('notices',[]).find(n=>n.text==='Aviso ya visible').unread")
-        assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
+        assert page.locator('#notifications-toggle .notification-count').is_hidden()
         assert errors == []
 
 
@@ -631,7 +637,8 @@ def test_general_notice_becomes_visible_after_resize(engine):
         page.wait_for_function('cache.at > 0 && !syncing')
         page.locator('#splash').wait_for(state='detached', timeout=8000)
         page.emulate_media(reduced_motion='reduce')
-        page.evaluate("goTab('ai');notice('Aviso al cambiar tamaño','info');goTab('home')")
+        page.evaluate("""() => {goTab('ai');notice('Aviso al cambiar tamaño','info');goTab('home');
+          notificationCenter();document.querySelector('.notification-center-list').style.paddingTop='350px';}""")
         page.wait_for_timeout(400)
         assert page.evaluate("store.get('notices',[]).find(n=>n.text==='Aviso al cambiar tamaño').unread")
         page.set_viewport_size({'width': 320, 'height': 1600})

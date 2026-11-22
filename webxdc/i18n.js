@@ -2,6 +2,17 @@
 
 const I18N = {
   es: {
+    tile_social: "Comunidad de texto",
+    social_title: "La Plaza",
+    notification_center: "Notificaciones",
+    notification_hide: "Ocultar",
+    notification_show: "Mostrar",
+    notification_hidden: "Mostrar ocultas",
+    notification_clear_visible: "Limpiar visibles",
+    notification_clear_confirm: "Se quitarán estas notificaciones de este dispositivo. No se borrarán resultados ni mensajes.",
+    notification_all: "Todas",
+    social_privacy: "Comunidad de usuarios admitidos. Solo texto. Los miembros y el servidor pueden leer lo publicado; el respaldo se cifra. No publiques secretos.",
+
     view_failed_title: "No se pudo abrir esta sección",
     view_failed_body: "El dispositivo no pudo mostrar esta vista. Puedes abrir otra sección; no se borraron tus datos ni se repitió la solicitud.",
     view_failed_help: "Si continúa, pide una miniapp nueva con /app en el chat privado. Código: vista-local.",
@@ -1286,6 +1297,17 @@ const I18N = {
     estado_killed: "Kill switch ACTIVO",
   },
   en: {
+    tile_social: "Text community",
+    social_title: "The Square",
+    notification_center: "Notifications",
+    notification_hide: "Hide",
+    notification_show: "Show",
+    notification_hidden: "Show hidden",
+    notification_clear_visible: "Clear visible",
+    notification_clear_confirm: "These notifications will be removed from this device. Results and messages will not be deleted.",
+    notification_all: "All",
+    social_privacy: "Admitted bot community. Text only. Members and the server can read posts; backups are encrypted. Do not publish secrets.",
+
     view_failed_title: "This section could not open",
     view_failed_body: "The device could not display this view. You can open another section; your data was not deleted and the request was not repeated.",
     view_failed_help: "If this continues, request a fresh miniapp with /app in the private chat. Code: local-view.",

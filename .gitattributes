@@ -9,3 +9,6 @@ michiflin/compat/ec7e67e/* -text -whitespace
 
 # Exact package preceding the second mobile review.
 michiflin/compat/polish-before/* -text -whitespace
+
+# Exact package retained for voluntary community updates.
+michiflin/compat/community-before/* -text -whitespace

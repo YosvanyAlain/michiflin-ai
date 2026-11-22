@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Michiflin AI</title>
+<link rel="stylesheet" href="app.css">
+<script>
+// Independent, ES5 recovery: also works when a later script cannot be parsed.
+(function () {
+  function report() {
+    if (window.__michiflinBootReady) return;
+    var node = document.getElementById("startup-recovery");
+    if (!node) return;
+    var language = (navigator.language || "en").toLowerCase();
+    try { var pref = JSON.parse(localStorage.getItem("mf.prefs") || "{}");
+      if (pref && (pref.lang === "es" || pref.lang === "en")) language = pref.lang;
+    } catch (_) {}
+    var es = language.indexOf("es") === 0;
+    node.querySelector("h2").textContent = es ? "No se pudo iniciar la miniapp" : "The miniapp could not start";
+    node.querySelector("p").textContent = es ? "Tus datos se conservaron. Cierra esta vista y escribe /app en el chat privado para pedir una copia nueva. Si sigue igual, actualiza Android System WebView y Delta Chat. Código: inicio-local." : "Your data was kept. Close this view and type /app in the private chat for a fresh copy. If this continues, update your system WebView and Delta Chat. Code: local-startup.";
+    node.hidden = false;
+  }
+  window.addEventListener("load", function () { setTimeout(report, 1500); });
+})();
+</script>
+<script src="webxdc.js"></script>
+</head>
+<body>
+<div id="app" class="shell">
+  <nav id="rail" class="rail"></nav>
+  <div class="stage">
+    <header class="top">
+      <button id="back" class="icon-btn" hidden></button>
+      <h1 id="title"></h1>
+      <span id="activity" class="activity" hidden></span>
+      <button id="gear" class="icon-btn"></button>
+    </header>
+    <section id="startup-recovery" hidden role="alert" style="padding:20px;overflow:auto">
+      <h2></h2><p></p>
+    </section>
+    <main id="view"></main>
+  </div>
+  <nav id="tabs" class="tabs"></nav>
+</div>
+<div id="sheet" class="sheet" hidden></div>
+<div id="toasts" class="toasts"></div>
+<script src="i18n.js"></script>
+<script src="core.js"></script>
+<script src="qr.js"></script>
+<script src="mp4.js"></script>
+<script src="brands.js"></script>
+<script src="filekit-store.js"></script>
+<script src="vendor/noble/filekit-crypto.js"></script>
+<script src="filekit-join.js"></script>
+<script src="filekit.js"></script>
+<script src="utilities.js"></script>
+<script src="books.js"></script>
+<script src="app.js"></script>
+<script src="live.js"></script>
+<script src="coder.js"></script>
+</body>
+</html>

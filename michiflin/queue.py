@@ -884,7 +884,7 @@ def _preparer() -> None:
                     _interrupted_preparation(job)
                     continue
                 text = str(exc)
-                known = {"too_large", "disk_full", "network", "source_preservation", "source_changed", "range_invalid", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid"}
+                known = {"too_large", "disk_full", "network", "source_preservation", "source_changed", "range_invalid", "bot_check", "private", "unavailable", "geo", "media_error", "pack_error", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid", "http_forbidden", "rate_limited", "format_unavailable", "ffmpeg_missing", "javascript_missing"}
                 code = text if text in known or re.fullmatch(r"http_\d{3}", text) else exc.__class__.__name__
                 # Provider exceptions can include signed URLs or credentials.
                 log.warning("job %s failed: %s", job["id"], code)
@@ -922,7 +922,7 @@ def _interrupted_preparation(job: dict[str, Any]) -> None:
 
 
 def _error_text(code: str, locale: str) -> str:
-    if code in {"bot_check", "private", "unavailable", "geo", "media_error", "too_large", "disk_full", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid"}:
+    if code in {"bot_check", "private", "unavailable", "geo", "media_error", "too_large", "disk_full", "vault", "isolation_unavailable", "proxy_unavailable", "proxy_invalid", "http_forbidden", "rate_limited", "format_unavailable", "ffmpeg_missing", "javascript_missing"}:
         return media.describe_error(code, locale).removeprefix("⚠️ ")
     if code.startswith("http_"):
         return tr(locale, f"el servidor respondió {code[5:]}", f"the server answered {code[5:]}")

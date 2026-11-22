@@ -56,13 +56,15 @@ def _registered_build(epoch: str, app_dir: str, files: tuple[str, ...], source_d
         return ""
 
 
-def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str]) -> str:
+def _pinned_build(epoch: str, app_dir: str, files: tuple[str, ...], source_dir: Path, replaced: set[str], release: str = "") -> str:
     try:
         expected = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
         if not isinstance(expected, dict) or not expected or not set(expected) <= set(files):
             return ""
         digest = hashlib.sha256()
         digest.update(f"epoch:{epoch}".encode())
+        if release:
+            digest.update(f"miniapp-release:{release}".encode())
         for name in files:
             if name not in expected:
                 continue  # added by a later package, never part of this one
@@ -122,3 +124,14 @@ _POLISH_REPLACED = {"i18n.js", "index.html", "app.css", "app.js", "core.js", "br
 def polish_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
     """The exact mobile/library app already delivered, never shipped anew."""
     return _pinned_build(epoch, app_dir, files, _POLISH_BEFORE, _POLISH_REPLACED)
+
+
+def community_previous_build(epoch: str, release: str, app_dir: str, files: tuple[str, ...]) -> str:
+    """Exact pre-community package remains usable; never re-admit older retired apps."""
+    directory = Path(__file__).resolve().parent / "compat" / "community-before"
+    try:
+        if hashlib.sha256((directory / "manifest.json").read_bytes()).hexdigest() != "e19445e21551c01c78855a8fa19299ce5e0f868a9fe92e75ef5ecb9feaa35178":
+            return ""
+    except OSError:
+        return ""
+    return _pinned_build(epoch, app_dir, files, directory, {"index.html", "app.css", "app.js", "i18n.js"}, release)

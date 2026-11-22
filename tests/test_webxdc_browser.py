@@ -152,9 +152,9 @@ BRIDGE = r"""
             } else if ((window.__realAccess && ["admin", "owner_only"].includes(request.op)) ||
                 (window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op)) ||
                 (window.__realFilekit && request.op === "filekit") ||
-                (window.__realDelivery && request.op === "reinstall")) {
+                (window.__realDelivery && ["reinstall", "social"].includes(request.op))) {
               const endpoint = request.op === "filekit" ? "/api/filekit" :
-                request.op === "reinstall" ? "/api/delivery" :
+                ["reinstall", "social"].includes(request.op) ? "/api/delivery" :
                 window.__realPersonal && ["personal_ai", "models", "ask"].includes(request.op) ? "/api/personal" : "/api/access";
               const result = await fetch(endpoint,
                 { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) });

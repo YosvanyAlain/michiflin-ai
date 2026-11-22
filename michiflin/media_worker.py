@@ -25,9 +25,34 @@ def emit(value: dict[str, Any]) -> None:
 
 def fail(exc: Exception) -> str:
     text = str(exc).lower()
+    if "disk_full" in text or "no space left on device" in text or "errno 28" in text:
+        return "disk_full"
     if any(marker in text for marker in ("sign in to confirm", "not a bot", "captcha", "verify you are human",
                                          "verify you're human", "confirm you're human", "anti-bot")):
         return "bot_check"
+    # Preserve gateway categories verbatim: proxy_unavailable must never be
+    # mistaken for unavailable *content*. No URLs or raw provider text escapes.
+    known = {"bot_check", "private", "unavailable", "geo", "unsupported", "too_large", "disk_full",
+             "ytdlp_missing", "vault", "proxy_unavailable", "proxy_invalid", "isolation_unavailable",
+             "network", "http_forbidden", "rate_limited", "format_unavailable", "ffmpeg_missing", "javascript_missing"}
+    if text in known:
+        return text
+    if any(marker in text for marker in ("connection refused", "proxyerror", "proxy error", "socks5", "socks error")):
+        return "proxy_unavailable" if "proxy" in text or "socks" in text else "network"
+    if any(marker in text for marker in ("timed out", "timeout", "name resolution", "getaddrinfo", "network is unreachable",
+                                         "network unavailable", "network not available", "connection reset", "unable to connect", "failed to resolve", "nodename nor servname", "tls handshake",
+                                         "certificate_verify_failed", "temporary failure in name")):
+        return "network"
+    if "http error 429" in text or "too many requests" in text:
+        return "rate_limited"
+    if "http error 403" in text or "403 forbidden" in text:
+        return "http_forbidden"
+    if "ffmpeg" in text and ("not found" in text or "not installed" in text):
+        return "ffmpeg_missing"
+    if "requested format is not available" in text or "no video formats found" in text:
+        return "format_unavailable"
+    if "javascript runtime" in text and ("no supported" in text or "not found" in text):
+        return "javascript_missing"
     if "private" in text or "login" in text or "sign in" in text:
         return "private"
     if "unavailable" in text or "removed" in text or "not available" in text:
