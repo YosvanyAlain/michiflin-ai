@@ -140,9 +140,9 @@ jobs:
       STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
       STATE_BACKUP_REQUIRED: "1"
       STATE_BACKUP_STORAGE: releases
-      # Retain a bounded set of verified snapshots; recovery plans and other
-      # non-snapshot assets are never targeted by the automatic rotation.
-      STATE_BACKUP_RETAIN_ALL: "0"
+      # Preserve existing snapshots during and after the handover. Storage may
+      # grow; a full repository must stop new backups rather than delete history.
+      STATE_BACKUP_RETAIN_ALL: "1"
       STATE_BACKUP_INCLUDE_BLOBS: "1"
       # Owner requested a light runtime: no archived or completed download copies.
       STATE_BACKUP_INCLUDE_MEDIA: "0"

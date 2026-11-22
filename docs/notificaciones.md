@@ -12,6 +12,10 @@ Una app actual puede ofrecer **Ajustes → Sincronización → Pedir app nueva**
 
 Esta versión no ofrece copias automáticas en Google Drive. El respaldo principal continúa cifrado en el repositorio privado configurado. La retirada de esta opción no borra ni modifica archivos o copias históricas que ya se encuentren en Drive. Conserva sus claves y herramientas de recuperación por separado.
 
+En la nueva sesión `STATE_BACKUP_RETAIN_ALL=1` impide la rotación automática de instantáneas. Una sesión anterior ya iniciada conserva su propia configuración hasta terminar; no se puede cambiar en caliente. Las copias acumuladas requieren espacio y GitHub limita los archivos de cada publicación: vigila su capacidad. Si no se puede guardar una copia nueva, el relevo automático debe detenerse; no resuelvas el problema borrando copias sin una decisión expresa.
+
+La configuración ligera existente excluye del respaldo archivos de audio y vídeo dentro de los adjuntos y puede descartar copias locales de descargas completadas; las carpetas de la cola y los espacios temporales tampoco se incluyen. Una instantánea del estado **no es una copia completa de todos los archivos**. Conserva y verifica por separado los originales y adjuntos importantes, así como los datos locales de cada miniapp.
+
 ## YouTube: alcance real del diagnóstico
 
 El propietario confirmó que su nueva prueba descargó vídeos y ya no mostró el aviso de verificación. Eso confirma su caso observado, no garantiza todos los enlaces, clientes o sesiones futuras.
