@@ -4,8 +4,8 @@
 The complete historical gzip sources remain in the source ZIP. Regeneration
 uses only those local bytes and Python's standard library, verifies the exact
 committed hashes, and never overwrites an existing file. A different liblzma
-version can produce different compressed bytes; in that case nothing is
-published and the exact files must be obtained from the matching repository
+version can produce different compressed bytes; a differing output is not
+published, and the exact file must be obtained from the matching repository
 commit instead. This tool never touches account state or the historical gzip.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ SOURCES = (
      "6f00ec0dd7bfca88fa29e9b4bde149eac79dd4ef59f26d53fc767c595c2a9ae1",
      "8a566c3cfa56f20c8541a399e0af296feb2989fae2aa3ee9bf19fa3847d64f60"),
     ("source-wrapper-26.5.0", "6c1dde0beddc27c82dcff32021e914af99d575b3b96d7ee0d87f55b462ac2d71",
-     "3b23c0499c19ce7ec367b9d8dd1856d67c39cf446d70d8cc58ae46a02fa7184",
+     "3b23c0499c19ce7ec367b9d8ddf1856d67c39cf446d70d8cc58ae46a02fa7184",
      "4958de9f9f460df0df4084a76b1ca00e8031412fb999e4b406c69860e7080aec"),
 )
 
