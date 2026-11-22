@@ -1512,8 +1512,10 @@ def op_models(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 @op("ask")
 def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     raw_text = _clean(args.get("text"))
-    text = raw_text[:6000]
     space = str(args.get("space") or "agent")
+    from . import local_ai
+    input_limit = 12000 if space == "agent" and local_ai._flag("LOCAL_GGUF_EXTENDED") else 6000
+    text = raw_text[:input_limit]
     attachment = args.get("file") if isinstance(args.get("file"), dict) and space != "agent" else None
     if not text and not attachment:
         raise AppError(tr(locale, "Escribe algo primero.", "Write something first."))
@@ -1522,8 +1524,8 @@ def op_ask(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if space != "agent" and local_only:
         raise AppError(tr(locale, "Pediste solo local, pero esta opción usa modelos externos; elige Agente local.",
                           "You requested local only, but this option uses external models; choose the local Agent."))
-    if space == "agent" and local_only and len(raw_text) > len(text):
-        # The opt-out may be beyond the routing limit; never drop it silently.
+    if space == "agent" and len(raw_text) > len(text):
+        # Never silently drop local input or a privacy opt-out beyond the limit.
         raise AppError(tr(locale, "La petición es demasiado larga; no la recorté ni envié. Divídela en partes.",
                           "The request is too long; I did not truncate or send it. Split it into parts."))
     media_parts: list[tuple[str, bytes]] = []

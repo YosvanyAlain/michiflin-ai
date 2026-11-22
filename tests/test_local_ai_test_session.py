@@ -75,3 +75,19 @@ def test_smoke_report_exercises_real_quota_settlement_with_fake_local_transport(
         state.data.clear()
         state.data.update(saved)
         state.act_as('')
+
+
+def test_extended_app_input_reaches_agent_intact_and_refuses_overflow(monkeypatch):
+    from michiflin import agent, collab_agent, miniapp
+    monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '1')
+    monkeypatch.setattr(collab_agent, 'authorized', lambda scope: False)
+    monkeypatch.setattr(miniapp, 'run_captured', lambda callback, locale: callback() or {'text': 'fixture'})
+    text = 'Explica este texto. ' * 450
+    with mock.patch.object(agent, 'handle', return_value=None) as handle:
+        miniapp.op_ask(1, {'space': 'agent', 'text': text}, 'es')
+        assert handle.call_args.args[1] == text.strip()
+        with pytest.raises(miniapp.AppError):
+            miniapp.op_ask(1, {'space': 'agent', 'text': 'x' * 12001}, 'es')
+    monkeypatch.setenv('LOCAL_GGUF_EXTENDED', '0')
+    with pytest.raises(miniapp.AppError):
+        miniapp.op_ask(1, {'space': 'agent', 'text': text}, 'es')
