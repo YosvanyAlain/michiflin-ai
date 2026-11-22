@@ -211,3 +211,26 @@ def test_extended_chat_refuses_oversized_template_before_inference(monkeypatch):
     with mock.patch.object(local_ai, '_http', side_effect=http):
         got = local_ai.complete_messages([{'role': 'user', 'content': 'Texto'}], sender='guest@example.test')
     assert got.status == 'long_context' and '/v1/chat/completions' not in calls
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_hybrid_uses_real_api_allowance_and_settlement_once_per_person(monkeypatch, failure):
+    monkeypatch.setattr(usage, 'reserve_low', lambda: False)
+    monkeypatch.setattr(usage, 'allowed', lambda address, kind: address != 'exhausted@example.test')
+    responses = ([ai.AIResult(error='quota')] if failure else [
+        ai.AIResult(text='{"tool":"calculator","input":"3+3"}', provider='Synthetic', model='test'), answer()])
+    with mock.patch.object(local_ai, 'complete_messages', return_value=local_ai.Result('ok', '{"tool":"calculator","input":"2+2"}')), \
+         mock.patch.object(tools, 'calculate', return_value='4'), \
+         mock.patch.object(ai, '_complete', side_effect=responses) as transport, \
+         mock.patch.object(usage, 'spend') as spend:
+        got = agent.run('Calcula 2+2 y 3+3', 'es')
+        assert transport.call_count == (1 if failure else 2)
+        if failure:
+            spend.assert_not_called()
+            assert 'Resultado contrastado' not in got['text']
+        else:
+            spend.assert_called_once_with('guest@example.test', 'ask')
+        state.act_as('exhausted@example.test')
+        with pytest.raises(agent.AgentError):
+            agent.run('Calcula 2+2', 'es')
+        assert transport.call_count == (1 if failure else 2)
