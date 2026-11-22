@@ -116,17 +116,17 @@ def test_revocation_applies_to_delayed_handoff(release):
     assert not miniapp._release_allows(101, {**release['101'], 'build': 'current'})
 
 
-def test_retired_registration_does_not_block_new_welcome(release, monkeypatch):
+def test_retired_registration_blocks_automatic_welcome_without_restoring_access(release, monkeypatch):
     release.pop('101')
     monkeypatch.setattr(miniapp.chat, 'sender', lambda: OWNER)
-    assert not miniapp._registered_app_for_sender(21)
+    assert miniapp._registered_app_for_sender(21)
     assert not miniapp._bound_apps(21)
     send = Mock()
     monkeypatch.setattr(miniapp, 'send_app', send)
     monkeypatch.setattr(miniapp.maintenance, 'silent_active', lambda: False)
     miniapp.welcome(21, 'es')
-    send.assert_called_once_with(21, 'es')
-    assert '100' in release
+    send.assert_not_called()
+    assert '100' in release and miniapp._instance(100) is None
 
 
 def test_public_opening_checkpoint_once_then_preserves_emergency_close(release):

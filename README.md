@@ -200,6 +200,8 @@ The current GitHub Actions deployment is temporary. GitHub says hosted Actions s
 
 The [Spanish owner and developer manual](docs/Manual_Michiflin.pdf) covers operation, source structure, limitations and migration. To rebuild it from source, install the DejaVu fonts and `pip install -r docs/requirements-manual.txt`, then run `python tools/build_manual.py`. Its screenshots use synthetic data and are labelled as real or simulated.
 
+The optional source-delivery ZIP omits guide media and the two redundant XZ archives to stay below the attachment limit; it retains the complete original gzip sources. After checking `SHA256SUMS.txt`, run `python tools/restore_compact_sources.py` before building the miniapp. It publishes only files matching the committed hashes and never overwrites a different file. If your liblzma produces different bytes, obtain the exact XZ files from the same repository commit.
+
 ## Collaborations, suggestions and hosting support
 
 Michiflin is an independent project. Thoughtful suggestions, testing reports, accessibility improvements, documentation, code review and help finding appropriate hosting are welcome. Please use the repository's [Issues](https://github.com/YosvanyAlain/michiflin-ai/issues) for non-sensitive proposals: describe the goal, platform, steps and expected result, and mark synthetic examples as such. Do **not** post invitations, account addresses, tokens, passwords, user files, private keys or state backups. For a security issue, use GitHub's private vulnerability reporting if enabled, or an already established private channel; do not disclose exploit details publicly before coordination.

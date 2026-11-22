@@ -45,7 +45,7 @@ def _digest(path: Path) -> str:
 
 
 def source_zip(repo: Path, revision: str, destination: Path) -> str:
-    """Package tracked source from one commit; exclude only large guide media."""
+    """Package tracked code and complete sources; omit media and reproducible duplicates."""
     revision = revision.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise DeliveryError("invalid_revision")
@@ -54,9 +54,18 @@ def source_zip(repo: Path, revision: str, destination: Path) -> str:
     if result.returncode:
         raise DeliveryError("archive_failed")
     included: list[tuple[str, bytes, int]] = []
+    omitted_compact: list[str] = []
+    compact_duplicates = {"webxdc/vendor/7zip/source-7zip-26.05.tar.xz",
+                          "webxdc/vendor/7zip/source-wrapper-26.5.0.tar.xz"}
     try:
         with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
-            for member in archive:
+            members = archive.getmembers()
+            # Older revisions may not have a reconstruction tool. In that
+            # case include their XZ files rather than producing an incomplete ZIP.
+            available = {m.name for m in members if m.isfile()}
+            can_restore = ("tools/restore_compact_sources.py" in available and compact_duplicates <= available
+                           and {name[:-3] + ".gz" for name in compact_duplicates} <= available)
+            for member in members:
                 if member.isdir():
                     continue
                 path = PurePosixPath(member.name)
@@ -65,6 +74,9 @@ def source_zip(repo: Path, revision: str, destination: Path) -> str:
                     raise DeliveryError("unsafe_archive")
                 if member.name.startswith("docs/media/") or member.name == "docs/Manual_Michiflin.pdf":
                     continue  # screenshots/video are non-code; the manual is sent separately
+                if can_restore and member.name in compact_duplicates:
+                    omitted_compact.append(member.name)
+                    continue  # full historical gzip source is included; XZ duplicates can be rebuilt
                 handle = archive.extractfile(member)
                 if handle is None:
                     raise DeliveryError("unsafe_archive")
@@ -74,10 +86,15 @@ def source_zip(repo: Path, revision: str, destination: Path) -> str:
     if not included or not any(name == "bot.py" for name, _, _ in included):
         raise DeliveryError("archive_failed")
     manifest = [f"{hashlib.sha256(data).hexdigest()}  {name}" for name, data, _ in sorted(included)]
+    compact_note = ("Se omiten dos duplicados XZ regenerables; las fuentes gzip completas se incluyen.\n"
+                    "Tras verificar, ejecuta: python tools/restore_compact_sources.py\n"
+                    "El script solo publica bytes con la huella exacta; si falla, obten los XZ\n"
+                    "del mismo commit del repositorio, no modifiques el archivo gzip historico.\n") if omitted_compact else ""
     note = ("Michiflin AI - codigo fuente rastreado\n"
             f"Commit: {revision}\n"
             "Incluye codigo, pruebas, configuracion de ejemplo y documentacion textual.\n"
             "Se omiten capturas/videos de docs/media; el manual PDF se envia aparte.\n"
+            + compact_note +
             "No incluye estado, cuentas, claves, secretos, historiales ni .git.\n"
             "Comprueba las huellas listadas en SHA256SUMS.txt.\n")
     included.extend([("LEEME_ENTREGA.txt", note.encode(), 0o644),

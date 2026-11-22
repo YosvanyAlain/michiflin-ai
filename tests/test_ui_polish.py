@@ -248,8 +248,9 @@ def test_manual_guide_reflows_at_narrow_width_and_large_text(engine, locale):
         page.evaluate("document.documentElement.style.fontSize='160%';go('help')")
         page.get_by_role('button', name='Ver guía rápida' if locale == 'es' else 'Open quick guide').click()
         # The sheet slides in; assess its settled layout, not its opening frame.
-        page.wait_for_function("""() => {const r=document.querySelector('#sheet .sheet-panel').getBoundingClientRect();
-          return r.top>=0 && r.bottom<=innerHeight+1;}""")
+        page.wait_for_function("""() => {const panel=document.querySelector('#sheet .sheet-panel');
+          const r=panel.getBoundingClientRect();return getComputedStyle(panel).transform==='none'
+            && r.top>=0 && r.bottom<=innerHeight+1;}""")
         for step in range(5):
             panel = page.locator('#sheet .sheet-panel')
             assert panel.evaluate('e => {const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1}')

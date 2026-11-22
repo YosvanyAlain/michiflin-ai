@@ -64,6 +64,25 @@ def test_concurrent_builds_publish_only_complete_archives(monkeypatch, tmp_path)
     assert not list(tmp_path.glob('*.part'))
 
 
+@pytest.mark.parametrize('as_symlink', [False, True])
+def test_compact_source_restore_never_overwrites_unexpected_existing_file(tmp_path, as_symlink):
+    from tools.restore_compact_sources import restore
+
+    folder = tmp_path / 'webxdc' / 'vendor' / '7zip'
+    folder.mkdir(parents=True)
+    target = folder / 'source-7zip-26.05.tar.xz'
+    other = tmp_path / 'keep'; other.write_bytes(b'preserve')
+    if as_symlink:
+        target.symlink_to(other)
+    else:
+        target.write_bytes(b'preserve')
+    with pytest.raises(ValueError, match='not overwritten'):
+        restore(tmp_path)
+    assert target.read_bytes() == b'preserve' and other.read_bytes() == b'preserve'
+    assert target.is_symlink() is as_symlink
+    assert not list(folder.glob('*.part'))
+
+
 def test_failed_build_does_not_leave_a_partial_or_publish_corrupt_zip(monkeypatch, tmp_path):
     monkeypatch.setattr(config, 'TEMP_ROOT', tmp_path)
     with mock.patch.object(zipfile.ZipFile, 'writestr', side_effect=OSError('synthetic disk failure')):
