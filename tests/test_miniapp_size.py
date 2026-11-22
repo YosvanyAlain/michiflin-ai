@@ -64,6 +64,20 @@ def test_concurrent_builds_publish_only_complete_archives(monkeypatch, tmp_path)
     assert not list(tmp_path.glob('*.part'))
 
 
+def test_compact_restoration_manifest_matches_exact_tracked_sources():
+    from tools.restore_compact_sources import SOURCES
+
+    folder = miniapp.APP_DIR / 'vendor' / '7zip'
+    assert len(SOURCES) == 2
+    for stem, gzip_hash, tar_hash, xz_hash in SOURCES:
+        original = (folder / f'{stem}.tar.gz').read_bytes()
+        compact = (folder / f'{stem}.tar.xz').read_bytes()
+        assert hashlib.sha256(original).hexdigest() == gzip_hash
+        assert hashlib.sha256(gzip.decompress(original)).hexdigest() == tar_hash
+        assert hashlib.sha256(compact).hexdigest() == xz_hash
+        assert lzma.decompress(compact) == gzip.decompress(original)
+
+
 @pytest.mark.parametrize('as_symlink', [False, True])
 def test_compact_source_restore_never_overwrites_unexpected_existing_file(tmp_path, as_symlink):
     from tools.restore_compact_sources import restore
