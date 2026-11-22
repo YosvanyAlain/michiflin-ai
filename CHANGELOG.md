@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Remove the optional Google Drive backup mirror and its runtime configuration. The encrypted primary backup remains; previously stored Drive files and their separate recovery materials are not deleted.
+- Add an operator guide for the optional, limited official YouTube, Facebook and TikTok connections. Provider approval and real account authorization remain necessary.
+
 ## 5.5.0
 
 - Integrate the existing parts joiner directly inside the file kit, retaining raw and compatible media joining, ordering, gap checks and available verification. Add streaming remote `.001` joins with optional encrypted SHA-256 verification; media remuxing remains on-device.

@@ -1,4 +1,4 @@
-# Notificaciones y respaldo adicional
+# Notificaciones y conservación de instancias
 
 ## Actualizaciones voluntarias
 
@@ -8,31 +8,9 @@ Con `MINIAPP_CURRENT_ONLY=1`, una app anterior no puede operar el backend, aunqu
 
 Una app actual puede ofrecer **Ajustes → Sincronización → Pedir app nueva**. Para una app retirada, solicita `/app` en el chat privado cifrado y autorizado. El bot no reemplaza automáticamente una instancia anterior conocida, ni por abrirla ni por repetir la unión. Los mensajes anteriores y sus datos locales no se borran; cada instancia tiene almacenamiento independiente y no se trasladan los proyectos automáticamente.
 
-## Google Drive: copia adicional opcional
+## Respaldo principal
 
-`drive_backup.py` puede duplicar el **mismo sobre cifrado**, nunca el estado en claro, después de que GitHub haya verificado su copia. Para activarlo en el runner hacen falta:
-
-| Configuración de GitHub | Nombre |
-|---|---|
-| Variable, valor `1` | `DRIVE_BACKUP_ENABLED` |
-| Secreto OAuth del propietario | `GOOGLE_DRIVE_CLIENT_ID` |
-| Secreto OAuth | `GOOGLE_DRIVE_CLIENT_SECRET` |
-| Concesión de renovación de acceso | `GOOGLE_DRIVE_REFRESH_TOKEN` |
-| ID de una carpeta privada no compartida en Mi unidad | `GOOGLE_DRIVE_FOLDER_ID` |
-
-La conexión de Google Drive de **Arena** no transfiere estas credenciales a **GitHub Actions**. Sin ellas, no se debe anunciar automatización activa. Usar una autorización de archivos apropiada, no credenciales de Gmail o la contraseña de Google. Mantenerse dentro del almacenamiento gratuito: no hay ampliación, compra ni activación de facturación automática. Revocar el refresh token en Google desactiva el acceso del runner.
-
-Protocolo de la copia adicional:
-
-1. Validar el sobre cifrado y su recuperación local.
-2. Comprobar que la carpeta de destino no está compartida.
-3. Crear un archivo nuevo marcado pendiente, sin reemplazar ni borrar copias anteriores.
-4. Descargarlo con límite de tamaño; comparar SHA-256; descifrar y validar extracción, estado y bases SQLite.
-5. Marcarlo verificado solo después de superar la recuperación de prueba.
-
-Si falla Drive, la copia principal ya verificada continúa válida y se pospone su rotación para conservar todas las anteriores. No se rota ni elimina ningún archivo de Drive desde este módulo. Se debe revisar su espacio periódicamente; al agotarse la copia adicional falla sin comprar almacenamiento. Los errores no registran credenciales, URLs privadas ni contenidos.
-
-Para una recuperación excepcional, `drive_backup.recovery_archive(file_id, passphrase)` descarga, descifra y verifica un archivo explícitamente elegido y devuelve un archivo TAR en memoria. **No restaura sobre el bot en funcionamiento.** Un operador debe inspeccionar la identidad en un directorio aislado, guardar con permisos privados y seguir el procedimiento de recuperación y exclusión de doble bot existente. La clave de cifrado debe conservarse fuera de la carpeta de respaldos.
+Esta versión no ofrece copias automáticas en Google Drive. El respaldo principal continúa cifrado en el repositorio privado configurado. La retirada de esta opción no borra ni modifica archivos o copias históricas que ya se encuentren en Drive. Conserva sus claves y herramientas de recuperación por separado.
 
 ## YouTube: alcance real del diagnóstico
 
