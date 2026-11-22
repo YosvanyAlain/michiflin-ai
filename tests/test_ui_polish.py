@@ -32,7 +32,7 @@ def test_narrow_titles_wrap_without_clipping_or_overlapping_controls(engine, loc
     with browser_fixture(locale, {'width': 320, 'height': 568}, engine=engine, touch=True) as (page, errors):
         for size in (100, 160):
             page.evaluate('n=>document.documentElement.style.fontSize=n+"%"', size)
-            for view in ('official_connections', 'help', 'weather', 'personal_ai', 'downloads', 'admin', 'settings', 'tools'):
+            for view in ('help', 'weather', 'personal_ai', 'downloads', 'admin', 'settings', 'tools'):
                 page.evaluate('view=>go(view)', view)
                 title = page.locator('#title')
                 assert title.evaluate('e=>e.scrollWidth<=e.clientWidth+1 && e.scrollHeight<=e.clientHeight+1')

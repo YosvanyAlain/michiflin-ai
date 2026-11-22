@@ -3927,7 +3927,7 @@ VIEWS.settings = {
       ["ai", "ai", es ? "IA, modelos y APIs" : "AI, models and APIs", [aiSettings, botSettings("ai")]],
       ["navigation", "web", es ? "Búsqueda y clima" : "Search and weather", [card(engine, link("weather", t("tile_weather"), "weather")), botSettings("navigation")]],
       ["bot", "tools", es ? "Bot y descargas" : "Bot and downloads", [nodes[2]]],
-      ["privacy", "shield", es ? "Privacidad y controles" : "Privacy and controls", [nodes[1], card(link("user", t("official_title"), "official_connections")), nodes[5]]],
+      ["privacy", "shield", es ? "Privacidad y controles" : "Privacy and controls", [nodes[1], nodes[5]]],
       ["library", "book", es ? "Biblioteca y caché" : "Library and cache", [cacheSettings]],
       ["groups", "users", es ? "Grupos públicos" : "Public groups", []],
       ["connection", "refresh", es ? "Conexión y sincronización" : "Connection and sync", [nodes[4]]],
@@ -3943,132 +3943,6 @@ VIEWS.settings = {
       main.querySelectorAll(".fold").forEach(node => { node.classList.add("open"); const head = node.querySelector(".fold-head"); if (head) head.replaceWith(h("h3", {}, head.textContent)); });
       if (selected[0] === "groups") mountGroupSettings(main);
     }
-  },
-};
-
-// Official account connections are separate from Live and from downloads.
-// Nothing contacts a provider until the person explicitly starts, confirms,
-// reads or disconnects; status is requested only after choosing a service.
-const OFFICIAL_CONNECTIONS = Object.freeze({
-  youtube: { op: "youtube_account", title: "yt_account", name: "YouTube", glyph: "youtube", url: "https://www.google.com/device" },
-  facebook: { op: "facebook_account", title: "fb_account", name: "Facebook", glyph: "user", url: "https://www.facebook.com/device" },
-  tiktok: { op: "tiktok_account", title: "tt_account", name: "TikTok", glyph: "user" },
-});
-
-VIEWS.official_connections = {
-  tab: "settings",
-  title: () => t("official_title"),
-  render(main, params = {}) {
-    const key = Object.prototype.hasOwnProperty.call(OFFICIAL_CONNECTIONS, params.service) ? params.service : "";
-    const provider = key ? OFFICIAL_CONNECTIONS[key] : null;
-    add(main, card(h("p", {}, t("official_intro")), h("p", { class: "muted small" }, t("official_privacy"))));
-    if (!provider) {
-      add(main, h("p", { class: "muted" }, t("official_choose")), h("div", { class: "card list" },
-        Object.entries(OFFICIAL_CONNECTIONS).map(([service, item]) =>
-          h("button", { class: "list-row", "data-official-service": service,
-            onclick: () => go("official_connections", { service }) },
-          icon(item.glyph), h("span", { class: "grow" }, t(item.title)), icon("next")))));
-      return;
-    }
-
-    const box = h("div", { class: "stack official-account", "aria-live": "polite" });
-    let account = null, busy = false, error = "", message = "", results = null;
-    add(main, h("h2", {}, t(provider.title)), box);
-
-    const actionButton = (label, action, extra = "") => h("button", {
-      class: `btn ${extra}`, disabled: busy, "data-official-action": action, onclick: () => act(action),
-    }, label);
-    const draw = () => {
-      if (!box.isConnected) return;
-      if (!account) {
-        fill(box, error ? failure(error, () => act("status")) : loading());
-        return;
-      }
-      const body = h("div", { class: "card official-body", "aria-busy": String(busy) });
-      if (error) add(body, h("p", { class: "notice warn", role: "alert" }, error));
-      if (message) add(body, h("p", { class: "note", role: "status" }, message));
-      const actions = h("div", { class: "row wrap official-actions" });
-      const disconnect = () => actionButton(t("yt_disconnect"), "disconnect", "ghost");
-      if (!account.configured) {
-        add(body, h("p", {}, t(key === "youtube" ? "yt_not_configured" : "social_not_configured")));
-        if (account.stored) add(actions, disconnect());
-      } else if (account.vault_error) {
-        add(body, h("p", { class: "notice warn" }, t(key === "youtube" ? "yt_vault_error" : "social_vault_error")));
-        add(actions, disconnect());
-      } else if (account.pending) {
-        add(body, h("p", {}, t(key === "youtube" ? "yt_instructions" : key === "facebook" ? "fb_instructions" : "tt_instructions")));
-        if (key === "tiktok") {
-          const qr = typeof account.qr_png === "string" && account.qr_png.length <= 100000 && /^[A-Za-z0-9+/]+={0,2}$/.test(account.qr_png) ? account.qr_png : "";
-          add(body, qr ? h("img", { class: "official-qr", src: "data:image/png;base64," + qr, alt: t("tt_qr_alt") }) :
-            h("p", { class: "notice warn" }, t("official_bad_code")));
-        } else {
-          const code = typeof account.user_code === "string" && account.user_code.length <= 64 && /^[\x20-\x7e]+$/.test(account.user_code) ? account.user_code : "";
-          add(body, code ? h("div", { class: "official-code" }, h("b", {}, t(key === "youtube" ? "yt_code" : "fb_code")),
-            h("code", {}, code), h("button", { class: "btn ghost small", disabled: busy, onclick: () => copyText(code) }, icon("copy"), t("official_code_copy")),
-            h("a", { class: "btn ghost small", href: provider.url, target: "_blank", rel: "noopener noreferrer" }, icon("open"), t("official_open"))) :
-            h("p", { class: "notice warn" }, t("official_bad_code")));
-        }
-        add(actions, actionButton(t("social_approved"), "poll", "primary"), actionButton(t("social_cancel"), "cancel", "ghost"));
-      } else if (account.connected) {
-        add(body, h("p", {}, t(key === "youtube" ? "yt_connected" : "social_connected")));
-        if (key !== "youtube") add(body, h("p", { class: "muted small" }, t("social_limited")));
-        const reads = key === "youtube" ? [["channels", "yt_channels", true], ["subscriptions", "yt_subscriptions", true]] :
-          key === "facebook" ? [["profile", "social_profile", true], ["posts", "fb_posts", !!account.posts_granted]] :
-          [["profile", "social_profile", true], ["videos", "tt_videos", !!account.videos_granted]];
-        for (const [action, label, granted] of reads) {
-          const button = actionButton(t(label), action);
-          button.disabled = busy || !granted;
-          add(actions, button);
-        }
-        add(actions, disconnect());
-      } else {
-        add(body, h("p", {}, t(key === "youtube" ? "yt_disconnected" : "social_disconnected")));
-        if (account.expired) add(body, h("p", { class: "notice warn" }, t("social_expired")));
-        add(actions, actionButton(key === "youtube" ? t("yt_connect") : t("social_connect", { name: provider.name }), "start", "primary"));
-        if (account.stored) add(actions, disconnect());
-      }
-      add(actions, actionButton(t("official_check"), "status", "ghost"));
-      add(body, actions);
-      const resultBox = results ? card(h("h3", {}, t("official_results")), h("p", { class: "muted small" }, t("official_result_limit")),
-        results.length ? results.map(item => h("div", { class: "official-result" },
-          h("b", {}, String(item.title || "").slice(0, 200)), item.description ? h("p", {}, String(item.description).slice(0, 2000)) : null)) :
-          h("p", {}, t("official_no_results"))) : null;
-      fill(box, body, resultBox);
-    };
-
-    async function act(action) {
-      if (busy || !box.isConnected) return;
-      if (action === "disconnect" && !(await confirmBox(t(provider.title), t("official_disconnect_q"), t("yt_disconnect")))) return;
-      if (!box.isConnected) return;
-      busy = true; error = ""; draw();
-      try {
-        const data = await bridge.call(provider.op, { do: action });
-        if (!box.isConnected) return;
-        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(t("bad_answer"));
-        if (action === "status" || action === "cancel") {
-          if (typeof data.configured !== "boolean") throw new Error(t("bad_answer"));
-          account = data; results = null; message = action === "cancel" ? t("official_cancelled") : "";
-        } else if (action === "start") {
-          account = Object.assign({}, account, data); results = null; message = "";
-        } else if (action === "poll") {
-          account = Object.assign({}, account, data); results = null;
-          const seconds = Math.max(1, Math.min(120, Math.ceil(Number(data.retry_in) || 5)));
-          message = data.pending ? t("official_wait", { n: seconds }) : data.denied ? t("yt_denied") : data.expired ? t("social_expired") : "";
-        } else if (action === "disconnect") {
-          account = Object.assign({}, account, { connected: false, pending: false, stored: false, expired: false, vault_error: false });
-          results = null;
-          message = data.revoked ? t("official_removed") : t(key === "youtube" ? "yt_revocation_failed" : "social_revocation_failed");
-        } else {
-          results = Array.isArray(data.items) ? data.items.filter(item => item && typeof item === "object").slice(0, 20) : [];
-          message = "";
-        }
-      } catch (failure) {
-        if (!failure.cancelled && box.isConnected) error = failure.message || t("failed");
-      } finally {
-        busy = false; draw();
-      }
-    }
-    act("status");
   },
 };
 

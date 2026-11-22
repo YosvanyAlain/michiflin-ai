@@ -15,7 +15,9 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
                             'build': 'c8a5f423ba', 'epoch': 'test-epoch', 'recovery_revision': 'b' * 40},
                      '101': {'chat': 42, 'addr': marker['owner_address'],
                              'build': 'unknown', 'epoch': 'different'}},
-            'owner_refresh_intents': {'b' * 40: {'state': 'reserved', 'epoch': 'test-epoch'}}}
+            'owner_refresh_intents': {'b' * 40: {'state': 'reserved', 'epoch': 'test-epoch'}},
+            'jobs': {'fixture-one': {'status': 'downloading', 'url': 'PRIVATE-URL'},
+                     'fixture-two': {'status': 'done'}, 'fixture-three': {'status': ['unrecognized']}}}
     (tmp_path / 'michiflin-state.json').write_text(json.dumps(data))
     root = tmp_path / 'accounts' / 'synthetic'
     root.mkdir(parents=True)
@@ -39,6 +41,11 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['apps_incompatible_build'] == 1
     assert result['apps_other_epoch'] == 1
     assert result['pending_outgoing'] == 1
+    assert result['queue_metadata_valid'] is True
+    assert result['queue_jobs_total'] == 3
+    assert result['queue_jobs_active'] == 1
+    assert result['queue_jobs_finished'] == 1
+    assert result['queue_jobs_unknown'] == 1
     assert result['owner_marker_fingerprint_present'] is True
     assert result['owner_directly_verified_contact_present'] is True
     assert result['requested_refresh_reserved'] == 1
@@ -49,7 +56,7 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['mail_io_started'] is False
     assert all(isinstance(v, (int, bool)) or v is None for v in result.values())
     serialized = json.dumps(result)
-    for secret in ['owner@example.invalid', 'PRIVATE-PARAMETERS', 'A' * 40, 'c8a5f423ba']:
+    for secret in ['owner@example.invalid', 'PRIVATE-PARAMETERS', 'PRIVATE-URL', 'fixture-one', 'A' * 40, 'c8a5f423ba']:
         assert secret not in serialized
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
     monkeypatch.setenv('REVOKE_LEGACY_MINIAPPS', '1')
@@ -67,6 +74,8 @@ def test_ambiguous_database_is_not_silently_selected(tmp_path):
     result = diagnose(tmp_path)
     assert result['database_count'] == 0
     assert 'database_quick_check_ok' not in result
+    assert result['queue_metadata_valid'] is False
+    assert result['queue_jobs_active'] is None
 
 
 def test_diagnostic_honors_exact_previously_shipped_builds(tmp_path, monkeypatch):

@@ -1738,11 +1738,3 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 @keyframes bell-unread { 0%,45%,100% { transform: rotate(0); } 6%,18% { transform: rotate(16deg); } 12%,24% { transform: rotate(-16deg); } 30% { transform: rotate(8deg); } 36% { transform: rotate(-8deg); } }
 @media(prefers-reduced-motion:reduce){.notification-toggle.has-unread > .ic{animation:none}}
 .app-hidden .notification-toggle > .ic { animation-play-state: paused; }
-
-/* Optional official account authorization: wrap codes, actions and provider text. */
-.official-account, .official-body, .official-result { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
-.official-code { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.official-code code { padding: 7px 10px; border-radius: 8px; background: var(--surface-2); font-size: 1.1em; overflow-wrap: anywhere; }
-.official-qr { display: block; width: min(220px, 100%); height: auto; background: white; padding: 8px; border-radius: 8px; }
-.official-actions > .btn { min-height: 44px; white-space: normal; text-align: center; }
-.official-result + .official-result { border-top: 1px solid var(--line); padding-top: 12px; }

@@ -138,32 +138,9 @@ def test_actual_old_chromium_engine_with_packaged_app(packaged_app):
             assert page.evaluate("document.querySelector('#view').innerText.trim().length>0")
             assert page.evaluate("!document.querySelector('[data-ui-recovery]')")
         assert page.evaluate("document.querySelectorAll('.settings-tile').length") == 9
-        page.evaluate("""() => {window.__accountResponse = request => {
-          const action = request.args.do;
-          if (action === 'status') return {configured:true,connected:false,stored:false};
-          if (action === 'start') return {configured:true,connected:false,pending:true,user_code:'TEST-1234'};
-          if (action === 'poll') return {configured:true,connected:true,pending:false};
-          return {items:[]};
-        }}""")
-        def tap_node(selector, text=''):
-            # Browser 100 lacks the newer checkVisibility helper used by
-            # Playwright locators. Scroll a real control and use mouse input.
-            rect = page.evaluate("""([selector,text]) => {
-              const node = Array.from(document.querySelectorAll(selector)).find(e=>!text||e.textContent.includes(text));
-              if (!node) return null;
-              node.scrollIntoView({block:'center'});
-              const r=node.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2};
-            }""", [selector, text])
-            assert rect is not None, (selector, text)
-            page.mouse.click(rect['x'], rect['y'])
-        tap_node('[data-setting-section="privacy"]')
-        tap_node('#view button', 'Conexiones oficiales')
-        tap_node('[data-official-service="youtube"]')
-        page.wait_for_function("document.querySelector('[data-official-action=\"start\"]')")
-        tap_node('[data-official-action="start"]')
-        page.wait_for_function("document.querySelector('.official-code code')?.textContent === 'TEST-1234'")
-        tap_node('[data-official-action="poll"]')
-        page.wait_for_function("document.querySelector('[data-official-action=\"channels\"]')")
+        # The account-connection project was cancelled; its new page is absent.
+        assert page.evaluate("'youtube' in VIEWS && !('official_connections' in VIEWS)")
+        assert page.evaluate("!window.__sentUpdates.some(x=>['youtube_account','facebook_account','tiktok_account'].includes(x.payload && x.payload.op))")
         assert errors == []
         browser.close()
 

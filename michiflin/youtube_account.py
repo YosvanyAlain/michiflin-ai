@@ -254,14 +254,6 @@ def read(address: str, kind: str) -> dict[str, Any]:
     return {"items": rows, "kind": kind}
 
 
-def cancel(address: str) -> dict[str, Any]:
-    """Discard only the pending device flow, leaving any existing grant intact."""
-    address = _address(address)
-    with _lock:
-        _pending.pop(address, None)
-        return status(address)
-
-
 def disconnect(address: str) -> dict[str, Any]:
     address = _address(address)
     with _lock:
