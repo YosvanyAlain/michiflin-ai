@@ -1,0 +1,30 @@
+sevenzip-wasm 26.5.0, compiled from 7-Zip 26.05 (Alone2)
+
+Copyright 1999–2026 Igor Pavlov and other contributors. The generated
+JavaScript/WebAssembly is LGPL-2.1-or-later with the unRAR restriction; see
+LICENSE. The restriction prohibits using the RAR code to re-create the RAR
+compression algorithm. Michiflin does not offer creation of RAR archives.
+
+The complete corresponding upstream sources and build scripts are included
+alongside this notice, in losslessly recompressed XZ archives. Their extracted
+tar streams are byte-for-byte identical to the gzip archives in the project
+repository; no files have been removed. To rebuild, unpack
+source-wrapper-26.5.0.tar.xz and unpack source-7zip-26.05.tar.xz into its
+7zip subdirectory (the upstream git submodule), then follow build.sh and
+README.md in the wrapper source. Emscripten and its toolchain are needed
+separately. The two packaged library files are separate assets and may be
+replaced with a compatible rebuilt copy. Extract using a tool with XZ support,
+for example: tar -xf source-7zip-26.05.tar.xz
+
+Upstream wrapper tag 26.5.0, commit 7b53d4abf78d:
+https://github.com/arktronic/sevenzip-wasm/tree/26.5.0
+Upstream 7-Zip 26.05, commit b88c6bc09339:
+https://github.com/ip7z/7zip/tree/26.05
+
+SHA-256:
+sevenzip-wasm.js    e1071c49c4079391150f60de548139ee0871db5e62f481d338b924030fd678ea
+sevenzip-wasm.wasm  95eb04c35feffe75b2bcc3da26361f7334b6a5fd595c08ffbb0744a693d3b01c
+source-7zip-26.05.tar.xz    8a566c3cfa56f20c8541a399e0af296feb2989fae2aa3ee9bf19fa3847d64f60
+source-wrapper-26.5.0.tar.xz 4958de9f9f460df0df4084a76b1ca00e8031412fb999e4b406c69860e7080aec
+7-Zip uncompressed tar      6f00ec0dd7bfca88fa29e9b4bde149eac79dd4ef59f26d53fc767c595c2a9ae1
+Wrapper uncompressed tar    3b23c0499c19ce7ec367b9d8ddf1856d67c39cf446d70d8cc58ae46a02fa7184

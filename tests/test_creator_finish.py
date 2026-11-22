@@ -13,8 +13,9 @@ def test_home_actions_and_progressive_search(engine, language):
         page.emulate_media(reduced_motion="reduce")
         page.locator("#splash").wait_for(state="detached")
         assert page.locator(".home-brand-mark").count() == 0
-        assert page.locator(".home-hero h2").inner_text() == (
-            "¿Qué necesitas hacer?" if language == "es" else "What would you like to do?")
+        # The greeting remains the first slide, even with activity shortcuts.
+        assert page.locator(".home-hero h2").inner_text() == page.evaluate("greeting()")
+        assert page.locator('.home-banner-controls button').first.get_attribute('aria-current') == 'true'
         page.locator(".hero-action-primary").click()
         assert page.evaluate("current.view") == "chat"
         assert page.evaluate("current.params.space") == "agent"

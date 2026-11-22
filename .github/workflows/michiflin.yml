@@ -70,6 +70,7 @@ jobs:
       OWNER_ONLY: "0"
       INVITE_AUTO_ACCESS: "1"
       REVOKE_LEGACY_MINIAPPS: "1"
+      MINIAPP_CURRENT_ONLY: "1"
       MINIAPP_RELEASE: "public-private-20261119-v1"
       PUBLIC_ACCESS_RELEASE: "private-invites-20261119-v1"
       PURGE_NON_OWNER_ONCE: ${{ vars.PURGE_NON_OWNER_ONCE }}
@@ -79,6 +80,8 @@ jobs:
       # Explicit one-shot owner request, inert on every other revision.
       OWNER_REQUESTED_APP_REVISION: ${{ vars.OWNER_REQUESTED_APP_REVISION }}
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
+      # Store retirement is independently armed; a refresh never deletes files.
+      UI_RETIRE_STORE_REVISION: ${{ vars.UI_RETIRE_STORE_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
       # A separately verified candidate is imported only for an exact reviewed revision.
@@ -382,7 +385,7 @@ jobs:
           rm -rf -- "$RUNNER_TEMP/backup-recovery-check"
 
       - name: Retire the removed UI live store after verified recovery
-        if: env.OWNER_REQUESTED_APP_REVISION != '' && env.OWNER_REQUESTED_APP_REVISION == github.sha
+        if: env.UI_RETIRE_STORE_REVISION != '' && env.UI_RETIRE_STORE_REVISION == github.sha
         env:
           UI_RETIRE_BACKUP_VERIFIED: "1"
         run: python tools/retire_unused_ui_store.py

@@ -1,8 +1,9 @@
 """Remove only the retired text feature's live files after verified backup.
 
-Workflow-only, exact owner-requested revision. Never touches a backup, account,
-other SQLite store or running session. The workflow must run this after its
-mandatory encrypted backup and recovery verification, before starting the bot.
+Workflow-only, separately and explicitly armed for an exact revision. An app
+refresh alone must never remove files. Never touches a backup, account, other
+SQLite store or running session. The workflow must run this after its mandatory
+encrypted backup and recovery verification, before starting the bot.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ import stat
 
 
 def retire(root: Path) -> int:
-    revision = os.getenv('OWNER_REQUESTED_APP_REVISION', '')
+    revision = os.getenv('UI_RETIRE_STORE_REVISION', '')
     if (not re.fullmatch(r'[0-9a-f]{40}', revision)
             or revision != os.getenv('RUNNING_SHA', '')
             or os.getenv('UI_RETIRE_BACKUP_VERIFIED') != '1'):

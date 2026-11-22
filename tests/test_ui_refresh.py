@@ -140,26 +140,14 @@ def test_compact_notices_hidden_preview_swipe_and_global_delete(engine):
 
 
 @pytest.mark.parametrize('engine,locale', [('chromium','es'), ('webkit','en')])
-def test_nonblocking_welcome_can_skip_or_permanently_dismiss(engine, locale):
-    captured = []
-    def handler(request):
-        captured.append(request)
-        assert request['op'] == 'guidance' and request['args']['dismiss'] is True
-        return {'dismissed': True}
-    with browser_fixture(locale, {'width': 390, 'height': 844}, engine=engine, delivery_handler=handler) as (page, errors):
-        page.wait_for_function('cache.at > 0')
-        page.evaluate('welcomeGuidance(false)')
-        assert page.locator('#welcome-guidance').is_visible()
-        assert page.evaluate("!document.querySelector('#app').inert")
-        page.locator('#welcome-guidance').get_by_role('button', name='No volver a mostrar' if locale == 'es' else 'Never show again').click()
-        page.locator('#welcome-guidance').wait_for(state='detached')
-        assert len(captured) == 1
-        assert page.evaluate("store.get('tour_permanent', false)")
-        page.evaluate("() => {store.del('tour_permanent');store.del('tour_done');welcomeGuidance(true);}")
+def test_no_automatic_welcome_even_for_new_person(engine, locale):
+    with browser_fixture(locale, {'width':390,'height':844}, engine=engine) as (page, errors):
+        page.evaluate("() => {store.del('tour_permanent');store.del('tour_done');}")
+        page.evaluate('() => {hello(true,true)}')
+        page.wait_for_function('!syncing')
         assert page.locator('#welcome-guidance').count() == 0
-        page.evaluate('welcomeGuidance(false)')
-        page.locator('#welcome-guidance').get_by_role('button', name='Saltar' if locale == 'es' else 'Skip', exact=True).click()
-        assert page.locator('#welcome-guidance').count() == 0
+        assert page.locator('.quick-tour').count() == 0
+        assert page.evaluate("typeof welcomeGuidance === 'undefined'")
         assert errors == []
 
 
@@ -177,7 +165,7 @@ def test_changed_screens_responsive_matrix(engine, width, height, locale, theme)
         page.evaluate("value=>{prefs.theme=value;applyLook()}", theme)
         screens = [('home',{}), ('ai',{}), ('chat',{'space':'agent'}), ('chat',{'space':'auto'}),
                    ('web',{}), ('apps',{}), ('youtube',{}), ('books',{}), ('rates',{}), ('downloads',{}), ('settings',{})]
-        screens += [('settings',{'section':section}) for section in ['appearance','ai','navigation','bot','privacy','library','connection','support']]
+        screens += [('settings',{'section':section}) for section in ['appearance','ai','navigation','bot','privacy','library','groups','connection','support']]
         for index, (view, params) in enumerate(screens):
             page.evaluate('([view,params])=>go(view,params)', [view,params])
             page.wait_for_timeout(80)
@@ -223,10 +211,14 @@ def test_retired_store_cleanup_is_exact_opt_in_and_preserves_other_data(tmp_path
         (tmp_path/name).write_text('synthetic retired data')
     other = tmp_path/'other.sqlite3'; other.write_text('keep')
     monkeypatch.setenv('RUNNING_SHA', 'a'*40)
-    monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', 'b'*40)
-    monkeypatch.setenv('UI_RETIRE_BACKUP_VERIFIED', '1')
-    assert retire(tmp_path) == 0
     monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', 'a'*40)
+    monkeypatch.delenv('UI_RETIRE_STORE_REVISION', raising=False)
+    monkeypatch.setenv('UI_RETIRE_BACKUP_VERIFIED', '1')
+    assert retire(tmp_path) == 0  # a refresh never authorizes store removal
+    assert all((tmp_path/name).read_text() == 'synthetic retired data' for name in files)
+    monkeypatch.setenv('UI_RETIRE_STORE_REVISION', 'b'*40)
+    assert retire(tmp_path) == 0  # an unrelated revision cannot remove files
+    monkeypatch.setenv('UI_RETIRE_STORE_REVISION', 'a'*40)
     monkeypatch.setenv('UI_RETIRE_BACKUP_VERIFIED', '0')
     assert retire(tmp_path) == 0
     monkeypatch.setenv('UI_RETIRE_BACKUP_VERIFIED', '1')
@@ -246,7 +238,8 @@ def test_retired_store_workflow_is_after_recovery_and_before_bot():
     serve = source.index('- name: Private chats and restricted public group tools')
     assert recovery < cleanup < serve
     section = source[cleanup:source.index('- name:', cleanup + 10)]
-    assert "env.OWNER_REQUESTED_APP_REVISION == github.sha" in section
+    assert "env.UI_RETIRE_STORE_REVISION == github.sha" in section
+    assert "OWNER_REQUESTED_APP_REVISION" not in section
     assert 'UI_RETIRE_BACKUP_VERIFIED: "1"' in section
 
 
@@ -265,10 +258,14 @@ def test_remaining_screens_responsive_matrix(engine, width, height, locale, them
                    ('news', {}), ('translate', {}), ('tools', {}), ('health', {}), ('admin', {}),
                    ('notes', {}), ('links', {}), ('nauta_strict', {}), ('kill_switch', {}), ('estado', {}),
                    ('live_web', {'url': 'https://example.org/fixture'}),
-                   ('downloads', {'section': 'kit'}), ('downloads', {'section': 'links'})]
+                   ('downloads', {'section': 'kit'}), ('downloads', {'section': 'links'}),
+                   ('official_connections', {})] + [('official_connections', {'service': name})
+                                                    for name in ['youtube', 'facebook', 'tiktok']]
         for index, (view, params) in enumerate(screens):
             page.evaluate('([view,params])=>go(view,params)', [view, params])
             page.wait_for_timeout(120)
+            if view == 'official_connections' and params.get('service'):
+                page.locator('.official-account .official-body').wait_for(state='visible')
             assert page.locator('#view').evaluate('e=>e.scrollWidth<=e.clientWidth+1'), (view, params)
             assert page.locator('#view').inner_text().strip(), (view, params)
             assert page.locator('#view .failure').count() == 0, (view, params)

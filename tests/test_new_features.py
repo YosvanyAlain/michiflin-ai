@@ -195,6 +195,16 @@ class YouTubeTests(unittest.TestCase):
         self.assertEqual(request.call_count, 2)
         self.assertNotIn(b"private-refresh-token", yt._path(OWNER).read_bytes())
 
+    def test_cancel_youtube_device_flow_keeps_an_existing_grant(self) -> None:
+        self.connect()
+        with mock.patch.object(yt, "_request", return_value=(200, self.device)) as request:
+            yt.start(OWNER)
+            result = yt.cancel(OWNER)
+        self.assertTrue(result["connected"])
+        self.assertFalse(result["pending"])
+        self.assertTrue(yt._path(OWNER).exists())
+        self.assertEqual(request.call_count, 1)  # cancel does not revoke or call Google
+
     def test_disconnect_reports_unconfirmed_revocation_and_removes_local_copy(self) -> None:
         self.connect()
         with mock.patch.object(yt, "_request", side_effect=yt.AccountError("network")):
@@ -426,6 +436,7 @@ class KillSwitchDisconnectTests(unittest.TestCase):
              mock.patch.object(miniapp.admin, "is_allowed", return_value=True), \
              mock.patch.object(miniapp.admin, "seen"), mock.patch.object(config, "service_access_allowed", return_value=True), \
              mock.patch.object(state, "get_kill_switch", return_value=True), mock.patch.object(state, "work_interrupted", return_value=True), \
+             mock.patch.object(miniapp, "_official_private", return_value=True), mock.patch.object(miniapp, "_answers", {}), \
              mock.patch.object(miniapp, "respond") as reply, mock.patch.object(miniapp, "_workers", Immediate()), \
              mock.patch.object(miniapp.usage, "note"), mock.patch.object(miniapp.perf, "note_op"):
             miniapp.handle(100, entry, request)
@@ -454,6 +465,7 @@ class KillSwitchDisconnectTests(unittest.TestCase):
                  mock.patch.object(miniapp.admin, "seen"), mock.patch.object(config, "service_access_allowed", return_value=True), \
                  mock.patch.object(state, "get_kill_switch", return_value=True), \
                  mock.patch.object(state, "work_interrupted", return_value=True), \
+                 mock.patch.object(miniapp, "_official_private", return_value=True), mock.patch.object(miniapp, "_answers", {}), \
                  mock.patch.object(miniapp, "respond"), mock.patch.object(miniapp, "_workers", Immediate()), \
                  mock.patch.object(miniapp.usage, "note"), mock.patch.object(miniapp.perf, "note_op"):
                 for action in ("status", "cancel", "disconnect"):

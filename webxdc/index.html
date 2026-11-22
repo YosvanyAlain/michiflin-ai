@@ -8,13 +8,22 @@
 <style>
 html,body { margin:0; background:#faf9f6; color:#1b3034; }
 @media(prefers-color-scheme:dark){html,body{background:#121c24;color:#eaf1ee}}
-#boot-mark{position:fixed;inset:0;z-index:80;display:grid;place-content:center;justify-items:center;gap:14px;background:inherit;font:600 15px system-ui;pointer-events:none}
+#boot-mark{position:fixed;inset:0;z-index:2147483000;display:grid;place-content:center;justify-items:center;gap:14px;background:#faf9f6;color:#1b3034;font:600 15px system-ui;pointer-events:auto;color-scheme:only light}
+html[data-boot-theme="dark"] #boot-mark{background:#121c24;color:#eaf1ee;color-scheme:only dark}
 #boot-mark svg{width:46px;height:46px;stroke:#198b78;fill:none;stroke-width:1.8}
 #boot-mark .boot-track{width:72px;height:3px;border-radius:3px;background:#7a8b8c33;overflow:hidden}
 #boot-mark .boot-track:after{content:"";display:block;width:30px;height:3px;border-radius:3px;background:#198b78;animation:boot-glide 1s ease-in-out infinite alternate}
 @keyframes boot-glide{to{transform:translateX(42px)}}
 @media(prefers-reduced-motion:reduce){#boot-mark .boot-track:after{animation:none;width:100%}}
 </style>
+<script>
+(function(){
+  var theme="system";
+  try{theme=JSON.parse(localStorage.getItem("mf.prefs")||"{}").theme||"system";}catch(_){}
+  var dark=theme==="dark"||(theme==="system"&&window.matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-boot-theme",dark?"dark":"light");
+})();
+</script>
 <link rel="stylesheet" href="app.css">
 <script>
 // Independent, ES5 recovery: also works when a later script cannot be parsed.
@@ -32,15 +41,21 @@ html,body { margin:0; background:#faf9f6; color:#1b3034; }
     node.querySelector("p").textContent = es ? "Tus datos se conservaron. Cierra esta vista y escribe /app en el chat privado para pedir una copia nueva. Si sigue igual, actualiza Android System WebView y Delta Chat. Código: inicio-local." : "Your data was kept. Close this view and type /app in the private chat for a fresh copy. If this continues, update your system WebView and Delta Chat. Code: local-startup.";
     node.hidden = false;
     var boot = document.getElementById("boot-mark"); if (boot) boot.remove();
+    var app=document.getElementById("app");if(app)app.inert=false;
   }
   window.addEventListener("load", function () { setTimeout(report, 1500); });
+  // A blocked messenger script can prevent the load event indefinitely.
+  // This independent watchdog still offers local recovery without mail I/O.
+  setTimeout(report, 8000);
 })();
 </script>
-<script src="webxdc.js"></script>
 </head>
 <body>
 <div id="boot-mark" aria-label="Michiflin AI" role="status"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg><span>Michiflin AI</span><i class="boot-track"></i></div>
-<div id="app" class="shell">
+<script>
+requestAnimationFrame(function(){window.__michiflinPaintStart=Date.now();});
+</script>
+<div id="app" class="shell" inert>
   <nav id="rail" class="rail"></nav>
   <div class="stage">
     <header class="top">
@@ -59,6 +74,7 @@ html,body { margin:0; background:#faf9f6; color:#1b3034; }
 </div>
 <div id="sheet" class="sheet" hidden></div>
 <div id="toasts" class="toasts"></div>
+<script src="webxdc.js"></script>
 <script src="i18n.js"></script>
 <script src="core.js"></script>
 <script src="qr.js"></script>

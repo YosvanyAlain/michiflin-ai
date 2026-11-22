@@ -13,7 +13,7 @@ def test_bell_general_notices_paint_clear_hide_and_bottom_badges(engine, width, 
         assert page.evaluate("store.get('notices',[]).every(n=>n.unread)")
         assert page.locator('#notifications-toggle .notification-count').inner_text() == '2'
         assert page.locator('.tab[data-tab="home"]:visible .tab-badge').is_hidden()
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').inner_text() == '1'
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '2'
         assert page.locator('#view .notice').count() == 0
         page.locator('#notifications-toggle').click()
         page.wait_for_timeout(350)
@@ -30,7 +30,7 @@ def test_bell_general_notices_paint_clear_hide_and_bottom_badges(engine, width, 
         page.get_by_role('button', name='Ocultas', exact=True).click()
         row = page.locator('.notice-center-row').filter(has_text='Resultado de otra sección')
         row.get_by_role('button', name='Mostrar', exact=True).click()
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').inner_text() == '1'
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == '1'
         page.get_by_role('button', name='Eliminar todas', exact=True).click()
         page.locator('#sheet').get_by_role('button', name='Eliminar', exact=True).click()
         page.wait_for_function("store.get('notices',[]).length===0")

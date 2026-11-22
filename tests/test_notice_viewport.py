@@ -38,8 +38,8 @@ def test_download_outside_viewport_keeps_badge_until_seen(engine):
         page.evaluate("""bridge.pushes.job({id:1,title:'Fichero sintético 1',status:'failed',kind:'file',
           error:'Fallo fuera de pantalla',created:now(),parts:0})""")
         assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.job?.id==='1')")
-        page.locator('.tab[data-tab="downloads"]:visible .tab-badge').wait_for(state="visible")
-        assert page.locator('.tab[data-tab="downloads"]:visible .tab-badge').inner_text() == "1"
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         page.locator('[data-job-id="1"]').scroll_into_view_if_needed()
         page.wait_for_function("!store.get('notices',[]).some(n=>n.unread&&n.job?.id==='1')")
         assert page.locator('.tab[data-tab="downloads"]:visible .tab-badge').is_hidden()
@@ -68,8 +68,8 @@ def test_image_outside_viewport_keeps_badge_until_seen(engine, failed):
         selector = f'[data-image-id="{rid}"]'
         assert outside_view(page, selector)
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.imageId===id)", arg=rid, timeout=3000)
-        page.locator('.tab[data-tab="ai"]:visible .tab-badge').wait_for(state="visible")
-        assert page.locator('.tab[data-tab="ai"]:visible .tab-badge').inner_text() == "1"
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         page.locator(selector).scroll_into_view_if_needed()
         page.wait_for_function("id=>!store.get('notices',[]).some(n=>n.unread&&n.imageId===id)", arg=rid)
         assert page.locator('.tab[data-tab="ai"]:visible .tab-badge').is_hidden()
@@ -177,8 +177,8 @@ def test_utility_result_outside_viewport_is_not_silently_read(engine, failed):
         output.get_by_text("Error sintético" if failed else "Dos sintéticos", exact=False).first.wait_for(state="visible")
         assert outside_view(page, ".utility-output")
         page.wait_for_function("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid, timeout=2500)
-        page.locator('.tab[data-tab="apps"]:visible .tab-badge').wait_for(state="visible")
-        assert page.locator('.tab[data-tab="apps"]:visible .tab-badge').inner_text() == "1"
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         output.scroll_into_view_if_needed()
         page.wait_for_function("id=>!store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid)
         assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='tool').length") == 1
@@ -370,7 +370,7 @@ def test_leaving_before_inline_reply_paints_keeps_it_unread(engine, feature):
           else bridge.pushes.job(v.data);
           const item=store.get('notices',[]).find(n=>v.field==='job'?n.job?.id===v.rid:n[v.field]===v.rid);
           const visible=item&&elementInView(noticeNode(item));
-          const badge=Array.from(document.querySelectorAll('.tab[data-tab="'+v.category+'"] .tab-badge')).some(n=>!n.hidden);
+          const badge=Array.from(document.querySelectorAll('#notifications-toggle .notification-count')).some(n=>!n.hidden);
           goTab('home');window.requestAnimationFrame=raf;return {visible,badge};}""",
                                     {"op": op, "rid": rid, "data": data, "field": field, "category": category})
         assert before_exit["visible"]
@@ -401,11 +401,11 @@ def test_reopen_before_the_first_frame_recovers_the_unread_reply(engine):
         assert page.evaluate("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", rid)
         # Navigation exposes the saved badge even if the old view never runs
         # another animation callback (as can happen when a WebView is paused).
-        assert not page.locator('.tab[data-tab="apps"]:visible .tab-badge').is_hidden()
+        assert not page.locator('#notifications-toggle .notification-count').is_hidden()
         page.reload()
         page.locator("#splash").wait_for(state="detached", timeout=8000)
         page.wait_for_function("!syncing")
-        page.locator('.tab[data-tab="apps"]:visible .tab-badge').wait_for(state="visible")
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
         page.locator('.tab[data-tab="apps"]:visible').click()
         page.get_by_text("Respuesta guardada antes de pintar", exact=True).wait_for(state="visible")
         page.wait_for_function("id=>!store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", arg=rid)
@@ -428,7 +428,7 @@ def test_backgrounding_before_paint_exposes_badge_without_an_animation_frame(eng
           Object.defineProperty(document,'visibilityState',{value:'hidden',configurable:true});
           document.dispatchEvent(new Event('visibilitychange'));}""", rid)
         assert page.evaluate("id=>store.get('notices',[]).some(n=>n.unread&&n.resultId===id)", rid)
-        assert not page.locator('.tab[data-tab="apps"]:visible .tab-badge').is_hidden()
+        assert not page.locator('#notifications-toggle .notification-count').is_hidden()
         page.evaluate("""()=>{window.requestAnimationFrame=window.__originalRaf;
           Object.defineProperty(document,'visibilityState',{value:'visible',configurable:true});
           document.dispatchEvent(new Event('visibilitychange'));}""")
@@ -448,7 +448,7 @@ def test_scrolling_a_reply_into_view_then_leaving_before_paint_keeps_it_unread(e
         page.evaluate("""() => {document.querySelector('#view').scrollTop=0;
           bridge.pushes.job({id:1,title:'Fichero sintético 1',status:'failed',kind:'file',
             error:'Fallo sintético',created:now(),parts:0});}""")
-        page.locator('.tab[data-tab="downloads"]:visible .tab-badge').wait_for(state="visible")
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
         assert outside_view(page, '[data-job-id="1"]')
         before_exit = page.evaluate("""()=>{const item=store.get('notices',[]).find(n=>n.job?.id==='1');
           noticeNode(item).scrollIntoView({block:'center'});
@@ -678,7 +678,7 @@ def test_chat_message_hidden_by_sticky_header_is_not_read(engine):
         page.wait_for_function("store.get('notices',[]).some(n=>n.unread&&n.messageId==='old-4')")
         # Wait for provisional badge exposure so its button no longer shifts
         # the chat geometry while we position the bubble behind the header.
-        page.locator('.tab[data-tab="ai"]:visible .tab-badge').wait_for(state="visible")
+        page.locator('#notifications-toggle .notification-count').wait_for(state="visible")
         page.evaluate("""()=>{const m=document.querySelector('#view'),n=m.querySelector('[data-message-id="old-4"]');
           m.scrollTop+=n.getBoundingClientRect().top-m.getBoundingClientRect().top-1;}""")
         page.wait_for_timeout(150)

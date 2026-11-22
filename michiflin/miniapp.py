@@ -30,11 +30,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_inline, app_compat, app_package, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
+# Keep this historical source list for verifying previously shipped packages.
+# app_package.entries() provides the actual current package names and inputs.
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
     "utilities.js", "books.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
@@ -79,9 +81,15 @@ def op(name: str) -> Callable[[Op], Op]:
 # ---------------------------------------------------------------------------
 # Packaging and instances.
 # ---------------------------------------------------------------------------
+def package_names() -> tuple[str, ...]:
+    """Names actually shipped, distinct from historical compatibility inputs."""
+    return tuple(name for name, _source in app_package.entries(APP_FILES))
+
+
 def app_build() -> str:
-    """Content hash, reused until source metadata/epoch/release changes."""
-    signature = tuple((name, (APP_DIR / name).stat().st_mtime_ns, (APP_DIR / name).stat().st_size) for name in APP_FILES)
+    """Content hash, reused until packaged assets/epoch/release change."""
+    signature = tuple((name, source, (APP_DIR / source).stat().st_mtime_ns, (APP_DIR / source).stat().st_size)
+                      for name, source in app_package.entries(APP_FILES))
     return _cached_app_build(str(APP_DIR), config.BOT_EPOCH, config.MINIAPP_RELEASE, signature)
 
 
@@ -91,14 +99,16 @@ def _cached_app_build(directory: str, epoch: str, release: str, signature: tuple
     digest.update(f"epoch:{epoch}".encode())
     if release:
         digest.update(f"miniapp-release:{release}".encode())
-    for name, _mtime, _size in signature:
-        digest.update(name.encode() + (Path(directory) / name).read_bytes())
+    for name, source, _mtime, _size in signature:
+        digest.update(name.encode() + (Path(directory) / source).read_bytes())
     return digest.hexdigest()[:10]
 
 
 def compatible_build(entry: dict[str, Any]) -> bool:
     """Admit only this package and the exact previously tested builds."""
     value = entry.get("build")
+    if config.MINIAPP_CURRENT_ONLY:
+        return bool(entry.get("epoch") == config.BOT_EPOCH and value == app_build())
     if config.REVOKE_LEGACY_MINIAPPS:
         return bool(entry.get("epoch") == config.BOT_EPOCH and value and (value == app_build() or value == app_compat.community_previous_build(
             config.BOT_EPOCH, config.MINIAPP_RELEASE, str(APP_DIR), APP_FILES) or app_compat.shipped_ui_build(config.BOT_EPOCH, config.MINIAPP_RELEASE, value)))
@@ -134,7 +144,7 @@ def compatible_build(entry: dict[str, Any]) -> bool:
 def discloses_infobars(entry: dict[str, Any]) -> bool:
     """Only packages with the specific graphical-browser warning can hide it."""
     value = entry.get("build")
-    if config.REVOKE_LEGACY_MINIAPPS:
+    if config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY:
         return compatible_build(entry)
     polish_previous = app_compat.polish_previous_build(config.BOT_EPOCH, str(APP_DIR), APP_FILES)
     if polish_previous and value == polish_previous:
@@ -156,13 +166,20 @@ def build() -> Path:
     target = config.TEMP_ROOT / f"michiflin-{app_build()}.xdc"
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        partial = target.with_suffix(".part")
-        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as archive:
-            for name in APP_FILES:
-                info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_STORED if name.endswith(".png") else zipfile.ZIP_DEFLATED
-                archive.writestr(info, (APP_DIR / name).read_bytes())
-        partial.replace(target)
+        # Separate temporary names prevent concurrent first deliveries from
+        # writing the same archive at once. A reader only sees a finished ZIP.
+        with tempfile.NamedTemporaryFile(prefix=target.stem + "-", suffix=".part", dir=target.parent, delete=False) as stream:
+            partial = Path(stream.name)
+        try:
+            with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+                for name, source in app_package.entries(APP_FILES):
+                    info = zipfile.ZipInfo(name, date_time=(2026, 1, 1, 0, 0, 0))
+                    # Already-compressed files gain nothing by another DEFLATE pass.
+                    info.compress_type = zipfile.ZIP_STORED if name.endswith((".png", ".tar.xz", ".tar.gz")) else zipfile.ZIP_DEFLATED
+                    archive.writestr(info, (APP_DIR / source).read_bytes(), compresslevel=9)
+            partial.replace(target)
+        finally:
+            partial.unlink(missing_ok=True)
     return target
 
 
@@ -324,7 +341,7 @@ def _instance(msg_id: int) -> dict[str, Any] | None:
     entry = _apps().get(str(msg_id))
     if not isinstance(entry, dict):
         return None
-    if config.REVOKE_LEGACY_MINIAPPS and not compatible_build(entry):
+    if (config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY) and not compatible_build(entry):
         return None
     # Another deployment's packages must not drive this bot at all.
     epoch = entry.get("epoch")
@@ -391,6 +408,7 @@ def observed_locale(chat_id: int) -> str:
 
 
 SAFE_REPLAY = {"hello", "models", "health", "repair"}  # no provider calls or billable side effects
+OFFICIAL_ACCOUNT_OPS = frozenset({"youtube_account", "facebook_account", "tiktok_account"})
 BOOT_SESSION = secrets.token_urlsafe(24)  # deliberately never stored in a backup
 ACK_AFTER = 12.0        # seconds before a still-running request is acknowledged (one small update)
 SWEEP_EVERY = 15.0      # local fallback for missed events; normal updates remain event-driven
@@ -574,14 +592,71 @@ def _request_piece(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, 
             return None
 
 
-def on_status_update(msg_id: int) -> None:
-    """Read new updates of an instance and dispatch the app's requests."""
+def _notify_retired_instance(msg_id: int) -> bool:
+    """At-most-once metadata notice, never reading or replaying an old request.
+
+    Reserve the notice durably before handoff. If saving fails, send nothing;
+    if delivery fails or the process crashes after reservation, do not retry
+    blindly. This avoids repeated messages to old instances after a restart.
+    """
+    if not config.MINIAPP_CURRENT_ONLY:
+        return False
+    build_id = app_build()
+    identity_fields = ("chat", "addr", "epoch", "build", "access_session")
+
+    def entitled(entry: Any) -> bool:
+        return bool(isinstance(entry, dict) and entry.get("epoch") == config.BOT_EPOCH
+                    and entry.get("build") != build_id and access.bound_allowed(entry)
+                    and admin.is_allowed(str(entry.get("addr") or "")) and _verified_binding(entry))
+
+    initial = _apps().get(str(msg_id))
+    # A single old instance needs at most one notice over its lifetime, not
+    # another message every time a later build changes the current fingerprint.
+    if not entitled(initial) or initial.get("retired_notice"):
+        return False
+    identity = tuple(initial.get(key) for key in identity_fields)
+    with state.lock:
+        entry = _apps().get(str(msg_id))
+        if (not isinstance(entry, dict) or entry.get("retired_notice")
+                or tuple(entry.get(key) for key in identity_fields) != identity):
+            return False
+        had_marker = "retired_notice" in entry
+        previous_marker = entry.get("retired_notice")
+        entry["retired_notice"] = build_id
+        try:
+            state.save()
+        except (OSError, ValueError, TypeError):
+            if had_marker:
+                entry["retired_notice"] = previous_marker
+            else:
+                entry.pop("retired_notice", None)
+            return False
+
+    def interrupted() -> bool:
+        current = _apps().get(str(msg_id))
+        return (not entitled(current) or current.get("retired_notice") != build_id
+                or tuple(current.get(key) for key in identity_fields) != identity)
+
+    payload = {"t": "push", "kind": "notice", "data": {"kind": "warn",
+        "es": "Esta miniapp quedó desactivada para el bot. Sus datos locales se conservan. Escribe /app en el chat privado cifrado y autorizado para pedir la nueva.",
+        "en": "This miniapp can no longer operate the bot. Its local data is kept. Type /app in the authorized, encrypted private chat to request the new one."}}
+    return chat.send_update(msg_id, payload, interrupted=interrupted)
+
+
+def on_status_update(msg_id: int, *, from_event: bool = False) -> None:
+    """Dispatch admitted requests; only an actual event may prompt a retirement notice."""
     if _paused.is_set():
         return
     lock = _instance_locks.setdefault(msg_id, threading.Lock())
     with lock:
         entry = _instance(msg_id)
-        if entry is None or not access.bound_allowed(entry) or not _verified_binding(entry):
+        if entry is None:
+            # The startup/periodic sweep visits all historical bindings. It
+            # must never turn a restart into a broadcast to inactive people.
+            if from_event:
+                _notify_retired_instance(msg_id)
+            return
+        if not access.bound_allowed(entry) or not _verified_binding(entry):
             return  # old, revoked or unverified instances cannot replay pending requests
         try:
             raw = chat.rpc().get_webxdc_status_updates(chat.account(), msg_id, int(entry.get("serial", 0)))
@@ -685,7 +760,7 @@ def _dispatch_handle(instance_id: int, entry: dict[str, Any], request: dict[str,
 
 def _release_allows(instance_id: int, admitted: dict[str, Any]) -> bool:
     """A request cannot claim another build or survive replacement of its binding."""
-    if not config.REVOKE_LEGACY_MINIAPPS:
+    if not (config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY):
         return True
     current = _instance(instance_id)
     return bool(current and compatible_build(admitted) and all(
@@ -698,12 +773,20 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     rid = str(request.get("id", ""))[:40]
     if not rid:
         return
+    op = str(request.get("op", ""))
+    if op in OFFICIAL_ACCOUNT_OPS and not _official_private(instance_id, entry):
+        return  # never admit, acknowledge or replay sensitive account data
     try:
         retry = int(request.get("retry") or 0)
     except (TypeError, ValueError):
         retry = 0
     verdict = _admit(rid, retry, instance_id)
-    op = str(request.get("op", ""))
+    if verdict == "new" and op in OFFICIAL_ACCOUNT_OPS:
+        # Mark the cached answer independently of the operation claimed by a
+        # later resend, so a changed op cannot bypass the private-chat check.
+        with _answers_lock:
+            if rid in _answers:
+                _answers[rid]["official_entry"] = _official_snapshot(entry)
     args = request.get("args") if isinstance(request.get("args"), dict) else {}
     locale = request.get("lang") if request.get("lang") in {"es", "en"} else "es"
     address = str(entry.get("addr", "")).strip().lower()
@@ -767,7 +850,7 @@ def _route(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
 
 def _status_allowed(instance_id: int) -> bool:
     """Recheck epoch, access grant and verified contact at the actual handoff."""
-    if not (config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
+    if not (config.MINIAPP_CURRENT_ONLY or config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
         return True  # preserve existing deployments until a deliberate cutover
     try:
         entry = _instance(instance_id)
@@ -779,16 +862,24 @@ def _status_allowed(instance_id: int) -> bool:
         return False
 
 
-def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None) -> bool:
-    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+def _send_status(instance_id: int, payload: Any, notify: dict[str, str] | None = None,
+                 *, private_check: Any = None) -> bool:
+    if private_check is not None:
+        # Check again under chat.send_update's handoff lock, including each
+        # chunk and cached resend, rather than only when work was admitted.
+        if not _status_allowed(instance_id) or not private_check():
+            return False
+        return chat.send_update(instance_id, payload, notify,
+                                interrupted=lambda: not _status_allowed(instance_id) or not private_check())
+    if (config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY) and not _status_allowed(instance_id):
         return False
-    if config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
+    if config.MINIAPP_CURRENT_ONLY or config.REVOKE_LEGACY_MINIAPPS or config.BOT_EPOCH_STRICT or config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS:
         return chat.send_update(instance_id, payload, notify, interrupted=lambda: not _status_allowed(instance_id))
     return chat.send_update(instance_id, payload, notify) if notify else chat.send_update(instance_id, payload)
 
 
 def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] | None = None) -> None:
-    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+    if (config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY) and not _status_allowed(instance_id):
         return
     if entry is not None and (not access.bound_allowed(entry) or not _verified_binding(entry)):
         return
@@ -843,6 +934,24 @@ def _inline_scope(entry: dict[str, Any], args: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(parts, ensure_ascii=True).encode("ascii")).hexdigest()
 
 
+def _official_snapshot(entry: dict[str, Any]) -> dict[str, Any]:
+    return {key: entry.get(key) for key in ("chat", "addr", "epoch", "build", "access_session")}
+
+
+def _official_private(instance_id: int, admitted: dict[str, Any]) -> bool:
+    """Require a verified one-to-one encrypted binding for official account data."""
+    if not (config.BOT_VERIFIED_CONTACTS_ONLY or config.EMAIL_KEY_RECOVERY or config.INVITE_AUTO_ACCESS):
+        return False
+    try:
+        from . import live_web
+        identity = live_web._identity(instance_id)
+        return bool(identity and identity[1] == str(admitted.get("addr") or "").strip().casefold()
+                    and _official_snapshot(identity[0]) == _official_snapshot(admitted)
+                    and compatible_build(admitted))
+    except Exception:
+        return False
+
+
 def _same_inline_identity(instance_id: int, admitted: dict[str, Any]) -> bool:
     """Recheck the encrypted recipient and exact grant immediately before use."""
     try:
@@ -873,8 +982,18 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
     function = OPS.get(op)
     chat_id = int(entry["chat"])
     address = str(entry.get("addr", "")).strip().lower()
+    if op in OFFICIAL_ACCOUNT_OPS:
+        if not _official_private(instance_id, admitted_entry):
+            return
+        # Normally _route marks this before dispatch. Also cover direct calls
+        # to handle(), while preserving the original entry on a resend.
+        with _answers_lock:
+            item = _answers.setdefault(rid, {"state": "running", "ts": time.time(), "body": None, "acked": 0.0})
+            item.setdefault("official_entry", _official_snapshot(admitted_entry))
 
     def reply(data: Any, error: str = "") -> None:
+        if (op in OFFICIAL_ACCOUNT_OPS and not _official_private(instance_id, admitted_entry)):
+            return
         if _release_allows(instance_id, entry) and access.bound_allowed(entry) and admin.is_allowed(address) and _verified_binding(entry):
             respond(instance_id, rid, data, error)
 
@@ -942,6 +1061,11 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         actual_args.pop("_collab_scope", None)  # never trust a client-supplied project identity
         actual_args.pop("_collab_task", None)
         actual_args.pop("_app_instance_id", None)
+        if op in OFFICIAL_ACCOUNT_OPS and not _official_private(instance_id, admitted_entry):
+            # Account codes, temporary QR images and results must never reach
+            # a group, unencrypted chat or a changed recipient/grant.
+            raise AppError(tr(locale, "Las conexiones oficiales requieren la miniapp actual en un chat individual cifrado y verificado.",
+                              "Official connections require the current app in a verified, encrypted one-to-one chat."))
         if op in {"reinstall", "hello", "repair"}:
             actual_args["_app_instance_id"] = instance_id  # verified server context, never from the app
         inline_key: tuple[int, str, str] | None = None
@@ -1130,7 +1254,7 @@ def replace_app(instance_id: int, chat_id: int, locale: str, address: str = "") 
 
 
 def respond(instance_id: int, rid: str, data: Any, error: str = "", *, code: str = "") -> None:
-    if config.REVOKE_LEGACY_MINIAPPS and not _status_allowed(instance_id):
+    if (config.REVOKE_LEGACY_MINIAPPS or config.MINIAPP_CURRENT_ONLY) and not _status_allowed(instance_id):
         return
     body = {"t": "res", "re": rid, "ok": not error, "data": data, "error": error}
     if code:
@@ -1156,8 +1280,16 @@ def respond(instance_id: int, rid: str, data: Any, error: str = "", *, code: str
 def _deliver(instance_id: int, rid: str, text: str) -> None:
     if not _status_allowed(instance_id):
         return
+    with _answers_lock:
+        private_entry = (_answers.get(rid) or {}).get("official_entry")
+    private_check = (lambda: _official_private(instance_id, private_entry)) if private_entry is not None else None
+    if private_check is not None and not private_check():
+        return
     if len(text.encode("utf-8")) <= CHUNK:
-        _send_status(instance_id, json.loads(text))
+        if private_check is None:
+            _send_status(instance_id, json.loads(text))
+        else:
+            _send_status(instance_id, json.loads(text), private_check=private_check)
         return
     # The string is embedded in another JSON object: its characters can take
     # up to four UTF-8 bytes (or require escaping) in that outer update. Keep
@@ -1166,7 +1298,10 @@ def _deliver(instance_id: int, rid: str, text: str) -> None:
     pieces = [text[start:start + width] for start in range(0, len(text), width)]
     for index, piece in enumerate(pieces):
         # The recipient, grant or epoch can change between fragments.
-        if not _send_status(instance_id, {"t": "chunk", "re": rid, "i": index, "n": len(pieces), "s": piece}):
+        payload = {"t": "chunk", "re": rid, "i": index, "n": len(pieces), "s": piece}
+        sent = (_send_status(instance_id, payload) if private_check is None else
+                _send_status(instance_id, payload, private_check=private_check))
+        if not sent:
             break
 
 
@@ -1703,6 +1838,8 @@ def op_youtube_account(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             return youtube_account.poll(address)
         if action in {"channels", "subscriptions"}:
             return youtube_account.read(address, action)
+        if action == "cancel":
+            return youtube_account.cancel(address)
         if action == "disconnect":
             return youtube_account.disconnect(address)
     except youtube_account.AccountError as exc:

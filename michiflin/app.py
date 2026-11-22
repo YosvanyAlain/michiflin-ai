@@ -769,7 +769,7 @@ def on_app_update(bot: Any, accid: int, event: Any) -> None:
         removed = False
         try:
             for _ in range(4):
-                miniapp.on_status_update(msg_id)
+                miniapp.on_status_update(msg_id, from_event=True)
                 with _app_event_lock:
                     if not _app_events_pending.get(msg_id):
                         _app_events_pending.pop(msg_id, None)

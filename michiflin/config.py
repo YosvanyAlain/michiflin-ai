@@ -68,6 +68,7 @@ BOT_EPOCH = env("BOT_EPOCH") or env("RUNNING_SHA", "local")[:12]
 # Keep compatibility with existing instances until the owner verifies a cutover.
 BOT_EPOCH_STRICT = env("BOT_EPOCH_STRICT", "0").lower() in {"1", "true", "yes", "on"}
 # Explicit release cutover: keep archived messages, reject every older package.
+MINIAPP_CURRENT_ONLY = env("MINIAPP_CURRENT_ONLY", "0").lower() in {"1", "true", "yes", "on"}
 REVOKE_LEGACY_MINIAPPS = env("REVOKE_LEGACY_MINIAPPS", "0").lower() in {"1", "true", "yes", "on"}
 # Separate package generation: revokes old miniapps without changing account/job epochs.
 MINIAPP_RELEASE = env("MINIAPP_RELEASE")

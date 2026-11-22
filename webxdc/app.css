@@ -178,6 +178,10 @@ small { font-size: 12.5px; }
   background: var(--surface); border-bottom: 1px solid var(--line);
 }
 .top h1 { flex: 1; margin: 0 6px; font-size: 18px; font-weight: 680; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Leave narrow-screen titles readable instead of cutting translated labels. */
+@media (max-width: 400px) {
+  .top h1 { min-width: 0; white-space: normal; overflow-wrap: anywhere; line-height: 1.16; }
+}
 .activity {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px;
   border-radius: 99px; background: var(--accent-soft); color: var(--accent); font: 700 12.5px/1 inherit; cursor: pointer;
@@ -1717,9 +1721,28 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .notice-hidden { opacity: .85; }
 .preview-off { display: none; }
 .video:has(.preview-off) { grid-template-columns: minmax(0,1fr); }
-.welcome-guidance { position: fixed; z-index: 65; right: max(12px,env(safe-area-inset-right)); bottom: calc(80px + env(safe-area-inset-bottom)); width: min(360px,calc(100vw - 24px)); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: 18px; padding: 14px; box-shadow: var(--shadow); }
-.welcome-guidance p { margin: 6px 0 10px; font-size: 13px; line-height: 1.5; }
-.welcome-guidance .btn { min-height: 44px; }
 .quick-tour h3 { margin: 0; }
 .quick-tour p { line-height: 1.6; }
-@media(min-width:900px){.welcome-guidance{bottom:24px}}
+
+
+/* Complete labels at narrow widths, large text and mobile WebViews. */
+.search-selectors { grid-template-columns: minmax(0,1fr); gap: 12px; }
+.search-selectors .segmented { overflow: visible; gap: 5px; }
+.search-selectors .segmented button { flex: 1 1 0; min-width: 0; min-height: 44px; white-space: normal; overflow-wrap: anywhere; padding: 9px 7px; line-height: 1.35; }
+.search-selectors .segmented .ic { flex-shrink: 0; }
+.download-tabs { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); overflow: visible; gap: 4px; }
+.download-tabs button { min-width: 0; min-height: 50px; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; padding: 8px 5px; }
+.download-tabs button .ic { flex-shrink: 0; }
+.tab-badge, .tile-badge, .space-badge { display: none !important; }
+.notification-toggle.has-unread > .ic { transform-origin: 50% 15%; animation: bell-unread 1.8s ease-in-out infinite; }
+@keyframes bell-unread { 0%,45%,100% { transform: rotate(0); } 6%,18% { transform: rotate(16deg); } 12%,24% { transform: rotate(-16deg); } 30% { transform: rotate(8deg); } 36% { transform: rotate(-8deg); } }
+@media(prefers-reduced-motion:reduce){.notification-toggle.has-unread > .ic{animation:none}}
+.app-hidden .notification-toggle > .ic { animation-play-state: paused; }
+
+/* Optional official account authorization: wrap codes, actions and provider text. */
+.official-account, .official-body, .official-result { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.official-code { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.official-code code { padding: 7px 10px; border-radius: 8px; background: var(--surface-2); font-size: 1.1em; overflow-wrap: anywhere; }
+.official-qr { display: block; width: min(220px, 100%); height: auto; background: white; padding: 8px; border-radius: 8px; }
+.official-actions > .btn { min-height: 44px; white-space: normal; text-align: center; }
+.official-result + .official-result { border-top: 1px solid var(--line); padding-top: 12px; }

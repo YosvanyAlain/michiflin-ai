@@ -1,9 +1,11 @@
 {
-  "source": "current webxdc sources",
+  "renderer_source_sha256": "8b9869ba7c57adeb70751f62522a3fd4bc7b1ffbe8da845a95687b7b7518b583",
+  "source": "current packaged webxdc assets",
   "bridge": "tests.test_webxdc_browser.BRIDGE",
   "synthetic": true,
   "physical_device_test": false,
   "clips_are_held_frames": true,
+  "caption_strip_px": 24,
   "languages": {
     "es": {
       "viewport": [
@@ -14,6 +16,7 @@
         1440,
         900
       ],
+      "manual_tour_steps": 5,
       "clips": [
         "clip-tour",
         "clip-web",
@@ -30,6 +33,7 @@
         1440,
         900
       ],
+      "manual_tour_steps": 5,
       "clips": [
         "clip-tour",
         "clip-web",
@@ -37,6 +41,5 @@
         "clip-join"
       ]
     }
-  },
-  "renderer_source_sha256": "47f9a28416c1fc2c732c04538549dded55ad24fefc5e41a56289319d7e993fbb"
+  }
 }

@@ -1,8 +1,7 @@
 """Per-person weather snapshots and a quiet, bounded server-side refresh.
 
-No device location is read. Places are explicitly typed/selected; the owner's
-initial city is the app's existing Havana default. Other people must enable
-background refresh themselves. Snapshots and city preferences live in the bot
+No device location is read. Everyone explicitly chooses a city and opts into
+background refresh. No region is assumed. Snapshots and city preferences live in the bot
 state (and its encrypted backups); no proactive chat messages are sent.
 """
 from __future__ import annotations
@@ -18,7 +17,7 @@ from typing import Any
 from . import access, admin, config, state, tools
 
 INTERVAL = 6 * 3600
-DEFAULT_CITY = "La Habana, Cuba"
+DEFAULT_CITY = ""
 MAX_RECORDS = 500  # refuse new records instead of purging older people's data
 MAX_SNAPSHOT_BYTES = 16_000
 _fetch_lock = threading.Lock()
@@ -61,11 +60,21 @@ def _ensure(scope: tuple[str, str, str]) -> dict[str, Any]:
         records = _records()
         record = records.get(key)
         if isinstance(record, dict):
+            # Old automatic regional default was not a user-selected place.
+            # Preserve all forecasts/history and any explicitly chosen place ID.
+            if not record.get("place_id") and record.get("city") == "La Habana, Cuba":
+                previous = copy.deepcopy(record)
+                record.update(city="", auto=False, next_at=0.0, revision=int(record.get("revision") or 0) + 1)
+                try:
+                    state.save()
+                except (OSError, ValueError, TypeError) as exc:
+                    records[key] = previous
+                    raise WeatherHomeError("storage") from exc
             return record
         if len(records) >= MAX_RECORDS:
             raise WeatherHomeError("full")
         record = {"address": address, "stamp": stamp, "city": DEFAULT_CITY, "place_id": 0,
-                  "auto": bool(config.OWNER_ADDRESS and address == config.OWNER_ADDRESS.casefold()),
+                  "auto": False,
                   "next_at": 0.0, "revision": 0, "last": None}
         records[key] = record
         try:
@@ -193,6 +202,8 @@ def settings(address: str, action: str, value: Any = None) -> None:
     timestamp = time.time()
     if action == "auto" and type(value) is bool:
         def apply(record: dict[str, Any]) -> None:
+            if value and not str(record.get("city") or "").strip():
+                raise WeatherHomeError("no_result")
             if record.get("auto") is value:
                 return
             record["auto"] = value
@@ -237,7 +248,8 @@ def poll_once(at: float | None = None) -> bool:
     try:
         with state.lock:
             due = sorted(((_number(row.get("next_at")), key, str(row.get("address") or ""))
-                          for key, row in _records().items() if isinstance(row, dict) and row.get("auto") is True
+                          for key, row in _records().items() if isinstance(row, dict) and row.get("auto") is True and str(row.get("city") or "").strip()
+                          and not (not row.get("place_id") and row.get("city") == "La Habana, Cuba")
                           and _number(row.get("next_at")) <= timestamp), key=lambda item: (item[0], item[1]))
         for _when, key, address in due:
             scope = _scope(address)

@@ -94,7 +94,7 @@ def test_missed_download_push_recovers_notice_from_sync_and_deduplicates(engine)
           setJobs([job]);window.__jobs=[{...job,status:'done',updated:30}];
         }""")
         page.evaluate("hello(true,true)")
-        badge = page.locator('.tab[data-tab="downloads"]:visible .tab-badge')
+        badge = page.locator('#notifications-toggle .notification-count')
         badge.wait_for(state="visible")
         assert badge.inner_text() == "1"
         page.evaluate("bridge.pushes.job(window.__jobs[0]);setJobs(window.__jobs)")
@@ -113,7 +113,7 @@ def test_each_download_outcome_notifies_without_waiting_for_another_tab(status):
     with browser_fixture("en", {"width": 390, "height": 844}) as (page, errors):
         page.evaluate("goTab('apps')")
         page.evaluate("status=>bridge.pushes.job({id:'991',title:'Outcome check',kind:'video',created:10,updated:20,status})", status)
-        assert page.locator('.tab[data-tab="downloads"]:visible .tab-badge').inner_text() == "1"
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         assert page.evaluate("store.get('notices',[]).find(n=>n.job?.id==='991').job.status") == status
         assert errors == []
 

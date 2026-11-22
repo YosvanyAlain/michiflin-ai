@@ -135,7 +135,7 @@ function chrome() {
 }
 
 // Navigation badges report unread results only, never a request still running.
-// The top-right bell summarizes unread notices; section badges remain independent.
+// The top-right bell summarizes unread notices; all visible unread dots are centralized there.
 const badgeCounts = {};
 function pendingTarget(meta) {
   const ctx = meta.ctx || {};
@@ -167,16 +167,12 @@ function countLabel(base, count) {
 }
 function jobBadge() {
   const counts = notificationCounts();
+  // All unread dots live in the bell; keep category counts for navigation.
   document.querySelectorAll(".tab[data-tab]").forEach((tab) => {
     const id = tab.dataset.tab, count = counts[id] || { pending: 0, unread: 0 };
     const total = id === "home" ? 0 : count.unread, node = $(".tab-badge", tab);
-    if (!node) return;
-    node.hidden = total === 0;
-    node.textContent = total > 99 ? "99+" : String(total);
-    const previous = badgeCounts[id];
-    if (previous !== undefined && total > previous) {
-      node.classList.remove("pop"); void node.offsetWidth; node.classList.add("pop");
-    }
+    if (node) { node.hidden = true; node.textContent = ""; }
+    // Preserve category information for screen readers without drawing a dot.
     tab.setAttribute("aria-label", total ? countLabel(t("tab_" + id), count) : t("tab_" + id));
   });
   Object.assign(badgeCounts, Object.fromEntries(Object.entries(counts).map(([id, value]) => [id, value.unread])));
@@ -1217,8 +1213,6 @@ function hello(force = false, quiet = false) {
 async function sync(force, quiet = false) {
   try {
     const data = await bridge.call("hello", {}, { quiet });
-    if (data.ui_guidance_dismissed === true) store.set("tour_permanent", true);
-    if (data.ui_guidance_dismissed === true || data.ui_guidance_dismissed === false) welcomeGuidance(data.ui_guidance_dismissed);
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
       maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
@@ -1294,12 +1288,17 @@ function tiles(extra = [], omit = []) {
     for (const entry of buttons) {
       const count = shortcutCount(entry.view, entry.params);
       const total = count.unread;
-      entry.count.hidden = !total; entry.count.textContent = total > 99 ? "99+" : String(total);
+      entry.count.hidden = true; entry.count.textContent = "";
       entry.button.setAttribute("aria-label", total ? countLabel(t(entry.label), count) : t(entry.label));
     }
   };
   bus.on("badges", draw); draw();
   return root;
+}
+
+// The greeting uses the device's local time, not an assumed place or location.
+function greeting(hour = new Date().getHours()) {
+  return t(hour >= 5 && hour < 12 ? "greet_morning" : hour >= 12 && hour < 19 ? "greet_afternoon" : "greet_evening");
 }
 
 function homeActivity() {
@@ -1308,8 +1307,8 @@ function homeActivity() {
   const latest = store.get("notices", []).find(item => item.target && !item.hidden);
   return h("div", { class: "hero home-hero activity-hero" },
     h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, t("home_activity")),
-      h("h2", {}, pending || jobs ? t("home_activity_pending", { n: pending + jobs }) : t("home_activity_ready")),
-      h("p", {}, t("home_activity_hint"))),
+      h("h2", {}, greeting()),
+      h("p", {}, pending || jobs ? t("home_activity_pending", { n: pending + jobs }) : t("home_activity_ready"))),
     h("div", { class: "hero-actions" },
       latest ? h("button", { class: "hero-action hero-action-primary", onclick: () => openNotice(latest) }, icon("next"), t("home_last_result")) :
         h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
@@ -1447,7 +1446,7 @@ function watchVisibleRates(element) {
 // Per-person bot snapshot plus an offline device copy.
 function weatherHome() {
   const saved = store.get("weatherHome", null);
-  return saved && typeof saved === "object" ? saved : { city: t("default_city"), auto: false, last: null, next_at: 0, interval: 21600 };
+  return saved && typeof saved === "object" ? saved : { city: "", auto: false, last: null, next_at: 0, interval: 21600 };
 }
 
 function validWeatherLast(last) {
@@ -1619,7 +1618,7 @@ function homeRatesBanner() {
 
 function homeCarousel() {
   const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
-  const labels = ["home_activity", "home_banner_rates", "home_banner_weather"];
+  const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
   const slides = [
     homeActivity,
     homeRatesBanner,
@@ -1740,7 +1739,7 @@ function notifiedSpaceCard(name, title, hint, view, params = {}) {
     h("span", { class: "space-icon" }, icon(name)), h("span", { class: "grow" }, h("b", {}, title), h("small", {}, hint)), marker, icon("next"));
   const draw = () => {
     const count = shortcutCount(view, params), total = count.unread;
-    marker.hidden = !total; marker.textContent = total > 99 ? "99+" : String(total);
+    marker.hidden = true; marker.textContent = "";
     button.setAttribute("aria-label", total ? countLabel(title, count) : title);
   };
   bus.on("badges", draw); draw();
@@ -3352,12 +3351,13 @@ VIEWS.weather = {
     } : null;
     const box = h("div", { class: "stack weather-result" });
     const settings = h("div", { class: "card stack weather-settings" });
-    const savedCities = store.get("cities", [t("default_city")]);
-    const cities = Array.isArray(savedCities) && savedCities.length ? savedCities : [t("default_city")];
+    const savedCities = store.get("cities", []);
+    const cities = Array.isArray(savedCities) ? savedCities.filter(city => typeof city === "string" && city.trim()) : [];
     let sequence = 0;
     const drawSettings = () => {
       const home = weatherHome();
       const toggle = h("button", { class: "btn small", type: "button" }, t(home.auto ? "weather_auto_disable" : "weather_auto_enable"));
+      toggle.disabled = !home.city;
       toggle.addEventListener("click", async () => {
         toggle.disabled = true;
         try {
@@ -3368,7 +3368,7 @@ VIEWS.weather = {
         finally { toggle.disabled = false; }
       });
       fill(settings, h("div", { class: "row between wrap" },
-        h("div", { class: "stack grow" }, h("b", {}, t("weather_default_city", { city: home.city })),
+        h("div", { class: "stack grow" }, h("b", {}, home.city ? t("weather_default_city", { city: home.city }) : t("weather_choose_city_first")),
           h("small", { class: "muted" }, t(home.auto ? "weather_auto_on" : "weather_auto_off"))), toggle),
         h("small", { class: "muted" }, t("weather_auto_detail")), h("small", { class: "muted" }, t("weather_privacy")));
     };
@@ -3460,7 +3460,7 @@ VIEWS.weather = {
       if (!sequence && validWeatherLast(last)) draw(last.data);
     });
     drawSettings();
-    add(main, askBox({ placeholder: t("weather_placeholder"), value: cities[0], onsubmit: run, iconName: "weather", label: t("weather_find") }),
+    add(main, askBox({ placeholder: t("weather_placeholder"), value: weatherHome().city || cities[0] || "", onsubmit: run, iconName: "weather", label: t("weather_find") }),
       h("div", { class: "chips" }, cities.map((city) => h("button", { class: "chip", onclick: () => run(city) }, city))), box, settings);
     const last = weatherHome().last;
     if (selectedRecord && !selectedRecord.error && selectedRecord.data) draw(selectedRecord.data);
@@ -3745,7 +3745,9 @@ VIEWS.downloads = {
       else if (which === "kit") FileKitUI.render(body, kitOptions);
       else drawJobs = downloadPanel(body);
     };
-    add(main, segmented(chosen, [["downloads", t("downloads_section"), "downloads"], ["kit", t("kit_title"), "folder"], ["links", t("links_section"), "links"]], draw), body);
+    const tabs = segmented(chosen, [["downloads", t("downloads_section"), "downloads"], ["kit", t("kit_title"), "folder"], ["links", t("links_section"), "links"]], draw);
+    tabs.classList.add("download-tabs");
+    add(main, tabs, body);
     draw(chosen);
   },
 };
@@ -3925,7 +3927,7 @@ VIEWS.settings = {
       ["ai", "ai", es ? "IA, modelos y APIs" : "AI, models and APIs", [aiSettings, botSettings("ai")]],
       ["navigation", "web", es ? "Búsqueda y clima" : "Search and weather", [card(engine, link("weather", t("tile_weather"), "weather")), botSettings("navigation")]],
       ["bot", "tools", es ? "Bot y descargas" : "Bot and downloads", [nodes[2]]],
-      ["privacy", "shield", es ? "Privacidad y controles" : "Privacy and controls", [nodes[1], nodes[5]]],
+      ["privacy", "shield", es ? "Privacidad y controles" : "Privacy and controls", [nodes[1], card(link("user", t("official_title"), "official_connections")), nodes[5]]],
       ["library", "book", es ? "Biblioteca y caché" : "Library and cache", [cacheSettings]],
       ["groups", "users", es ? "Grupos públicos" : "Public groups", []],
       ["connection", "refresh", es ? "Conexión y sincronización" : "Connection and sync", [nodes[4]]],
@@ -3941,6 +3943,132 @@ VIEWS.settings = {
       main.querySelectorAll(".fold").forEach(node => { node.classList.add("open"); const head = node.querySelector(".fold-head"); if (head) head.replaceWith(h("h3", {}, head.textContent)); });
       if (selected[0] === "groups") mountGroupSettings(main);
     }
+  },
+};
+
+// Official account connections are separate from Live and from downloads.
+// Nothing contacts a provider until the person explicitly starts, confirms,
+// reads or disconnects; status is requested only after choosing a service.
+const OFFICIAL_CONNECTIONS = Object.freeze({
+  youtube: { op: "youtube_account", title: "yt_account", name: "YouTube", glyph: "youtube", url: "https://www.google.com/device" },
+  facebook: { op: "facebook_account", title: "fb_account", name: "Facebook", glyph: "user", url: "https://www.facebook.com/device" },
+  tiktok: { op: "tiktok_account", title: "tt_account", name: "TikTok", glyph: "user" },
+});
+
+VIEWS.official_connections = {
+  tab: "settings",
+  title: () => t("official_title"),
+  render(main, params = {}) {
+    const key = Object.prototype.hasOwnProperty.call(OFFICIAL_CONNECTIONS, params.service) ? params.service : "";
+    const provider = key ? OFFICIAL_CONNECTIONS[key] : null;
+    add(main, card(h("p", {}, t("official_intro")), h("p", { class: "muted small" }, t("official_privacy"))));
+    if (!provider) {
+      add(main, h("p", { class: "muted" }, t("official_choose")), h("div", { class: "card list" },
+        Object.entries(OFFICIAL_CONNECTIONS).map(([service, item]) =>
+          h("button", { class: "list-row", "data-official-service": service,
+            onclick: () => go("official_connections", { service }) },
+          icon(item.glyph), h("span", { class: "grow" }, t(item.title)), icon("next")))));
+      return;
+    }
+
+    const box = h("div", { class: "stack official-account", "aria-live": "polite" });
+    let account = null, busy = false, error = "", message = "", results = null;
+    add(main, h("h2", {}, t(provider.title)), box);
+
+    const actionButton = (label, action, extra = "") => h("button", {
+      class: `btn ${extra}`, disabled: busy, "data-official-action": action, onclick: () => act(action),
+    }, label);
+    const draw = () => {
+      if (!box.isConnected) return;
+      if (!account) {
+        fill(box, error ? failure(error, () => act("status")) : loading());
+        return;
+      }
+      const body = h("div", { class: "card official-body", "aria-busy": String(busy) });
+      if (error) add(body, h("p", { class: "notice warn", role: "alert" }, error));
+      if (message) add(body, h("p", { class: "note", role: "status" }, message));
+      const actions = h("div", { class: "row wrap official-actions" });
+      const disconnect = () => actionButton(t("yt_disconnect"), "disconnect", "ghost");
+      if (!account.configured) {
+        add(body, h("p", {}, t(key === "youtube" ? "yt_not_configured" : "social_not_configured")));
+        if (account.stored) add(actions, disconnect());
+      } else if (account.vault_error) {
+        add(body, h("p", { class: "notice warn" }, t(key === "youtube" ? "yt_vault_error" : "social_vault_error")));
+        add(actions, disconnect());
+      } else if (account.pending) {
+        add(body, h("p", {}, t(key === "youtube" ? "yt_instructions" : key === "facebook" ? "fb_instructions" : "tt_instructions")));
+        if (key === "tiktok") {
+          const qr = typeof account.qr_png === "string" && account.qr_png.length <= 100000 && /^[A-Za-z0-9+/]+={0,2}$/.test(account.qr_png) ? account.qr_png : "";
+          add(body, qr ? h("img", { class: "official-qr", src: "data:image/png;base64," + qr, alt: t("tt_qr_alt") }) :
+            h("p", { class: "notice warn" }, t("official_bad_code")));
+        } else {
+          const code = typeof account.user_code === "string" && account.user_code.length <= 64 && /^[\x20-\x7e]+$/.test(account.user_code) ? account.user_code : "";
+          add(body, code ? h("div", { class: "official-code" }, h("b", {}, t(key === "youtube" ? "yt_code" : "fb_code")),
+            h("code", {}, code), h("button", { class: "btn ghost small", disabled: busy, onclick: () => copyText(code) }, icon("copy"), t("official_code_copy")),
+            h("a", { class: "btn ghost small", href: provider.url, target: "_blank", rel: "noopener noreferrer" }, icon("open"), t("official_open"))) :
+            h("p", { class: "notice warn" }, t("official_bad_code")));
+        }
+        add(actions, actionButton(t("social_approved"), "poll", "primary"), actionButton(t("social_cancel"), "cancel", "ghost"));
+      } else if (account.connected) {
+        add(body, h("p", {}, t(key === "youtube" ? "yt_connected" : "social_connected")));
+        if (key !== "youtube") add(body, h("p", { class: "muted small" }, t("social_limited")));
+        const reads = key === "youtube" ? [["channels", "yt_channels", true], ["subscriptions", "yt_subscriptions", true]] :
+          key === "facebook" ? [["profile", "social_profile", true], ["posts", "fb_posts", !!account.posts_granted]] :
+          [["profile", "social_profile", true], ["videos", "tt_videos", !!account.videos_granted]];
+        for (const [action, label, granted] of reads) {
+          const button = actionButton(t(label), action);
+          button.disabled = busy || !granted;
+          add(actions, button);
+        }
+        add(actions, disconnect());
+      } else {
+        add(body, h("p", {}, t(key === "youtube" ? "yt_disconnected" : "social_disconnected")));
+        if (account.expired) add(body, h("p", { class: "notice warn" }, t("social_expired")));
+        add(actions, actionButton(key === "youtube" ? t("yt_connect") : t("social_connect", { name: provider.name }), "start", "primary"));
+        if (account.stored) add(actions, disconnect());
+      }
+      add(actions, actionButton(t("official_check"), "status", "ghost"));
+      add(body, actions);
+      const resultBox = results ? card(h("h3", {}, t("official_results")), h("p", { class: "muted small" }, t("official_result_limit")),
+        results.length ? results.map(item => h("div", { class: "official-result" },
+          h("b", {}, String(item.title || "").slice(0, 200)), item.description ? h("p", {}, String(item.description).slice(0, 2000)) : null)) :
+          h("p", {}, t("official_no_results"))) : null;
+      fill(box, body, resultBox);
+    };
+
+    async function act(action) {
+      if (busy || !box.isConnected) return;
+      if (action === "disconnect" && !(await confirmBox(t(provider.title), t("official_disconnect_q"), t("yt_disconnect")))) return;
+      if (!box.isConnected) return;
+      busy = true; error = ""; draw();
+      try {
+        const data = await bridge.call(provider.op, { do: action });
+        if (!box.isConnected) return;
+        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error(t("bad_answer"));
+        if (action === "status" || action === "cancel") {
+          if (typeof data.configured !== "boolean") throw new Error(t("bad_answer"));
+          account = data; results = null; message = action === "cancel" ? t("official_cancelled") : "";
+        } else if (action === "start") {
+          account = Object.assign({}, account, data); results = null; message = "";
+        } else if (action === "poll") {
+          account = Object.assign({}, account, data); results = null;
+          const seconds = Math.max(1, Math.min(120, Math.ceil(Number(data.retry_in) || 5)));
+          message = data.pending ? t("official_wait", { n: seconds }) : data.denied ? t("yt_denied") : data.expired ? t("social_expired") : "";
+        } else if (action === "disconnect") {
+          account = Object.assign({}, account, { connected: false, pending: false, stored: false, expired: false, vault_error: false });
+          results = null;
+          message = data.revoked ? t("official_removed") : t(key === "youtube" ? "yt_revocation_failed" : "social_revocation_failed");
+        } else {
+          results = Array.isArray(data.items) ? data.items.filter(item => item && typeof item === "object").slice(0, 20) : [];
+          message = "";
+        }
+      } catch (failure) {
+        if (!failure.cancelled && box.isConnected) error = failure.message || t("failed");
+      } finally {
+        busy = false; draw();
+      }
+    }
+    act("status");
   },
 };
 
@@ -4519,28 +4647,12 @@ VIEWS.estado = {
 };
 
 // ---------------------------------------------------------------------------
-// First-run introduction: the app is the whole bot.
+// Optional guide, opened deliberately from Help; it never requires the bot.
 // ---------------------------------------------------------------------------
-const INTRO = [["search", "quick_tour_search"], ["bell", "quick_tour_results"], ["downloads", "quick_tour_files"]];
-function welcomeGuidance(dismissed) {
-  if (dismissed || store.get("tour_done", false) || store.get("tour_permanent", false) || $("#welcome-guidance")) return;
-  const box = h("aside", { id: "welcome-guidance", class: "welcome-guidance", "aria-label": t("welcome_title") },
-    h("strong", {}, t("welcome_title")), h("p", {}, t("welcome_hint")),
-    h("div", { class: "row wrap" },
-      h("button", { class: "btn primary small", onclick: () => { box.remove(); onboarding(true); } }, t("welcome_tour")),
-      h("button", { class: "btn ghost small", onclick: () => { store.set("tour_done", true); box.remove(); } }, t("tour_skip")),
-      h("button", { class: "btn ghost small", onclick: async event => {
-        const button = event.currentTarget; button.disabled = true;
-        try {
-          await bridge.call("guidance", { dismiss: true });
-          store.set("tour_permanent", true); store.set("tour_done", true); box.remove();
-        } catch (_) { button.disabled = false; toast(t("welcome_save_failed"), "bad"); }
-      } }, t("welcome_never"))));
-  document.body.append(box);
-}
+const INTRO = [["search", "quick_tour_search"], ["bell", "quick_tour_results"],
+  ["downloads", "quick_tour_files"], ["weather", "quick_tour_weather"], ["shield", "quick_tour_update"]];
 function onboarding(force = false) {
   if (!force && (store.get("tour_done", false) || store.get("tour_permanent", false))) return;
-  $("#welcome-guidance")?.remove();
   let step = 0;
   const body = h("div", { class: "quick-tour" });
   const finish = () => { store.set("tour_done", true); closeSheet(); };
@@ -4549,30 +4661,44 @@ function onboarding(force = false) {
     fill(body, h("div", { class: "row" }, icon(name), h("h3", {}, t(key + "_t"))),
       h("p", {}, t(key + "_b")), h("small", { class: "muted" }, `${step + 1} / ${INTRO.length}`),
       h("div", { class: "row end wrap" },
-        h("button", { class: "btn ghost small", onclick: async event => {
-          const button = event.currentTarget; button.disabled = true;
-          try { await bridge.call("guidance", { dismiss: true }); store.set("tour_permanent", true); finish(); }
-          catch (_) { button.disabled = false; toast(t("welcome_save_failed"), "bad"); }
-        } }, t("welcome_never")),
         h("button", { class: "btn ghost", onclick: finish }, t("tour_skip")),
         h("button", { class: "btn primary", onclick: () => { if (last) finish(); else { step++; draw(); } } }, last ? t("tour_start") : t("tour_next"))));
   };
-  draw(); openSheet(t("welcome_tour"), body, () => store.set("tour_done", true));
+  draw(); openSheet(t("quick_tour_title"), body, () => store.set("tour_done", true));
 }
 
 // ---------------------------------------------------------------------------
 // Start.
 // ---------------------------------------------------------------------------
 // Paint the shell promptly; keep the immediate HTML mark only until the
-// first frame. No artificial wait or automatic blocking introduction.
+// first frame, then keep a brief readable local animation, never await mail.
+function finishStartup() {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const started = window.__michiflinPaintStart || Date.now();
+    setTimeout(() => {
+      document.getElementById("boot-mark")?.remove();
+      const sheet = document.getElementById("sheet");
+      if (sheet && !sheet.hidden) {
+        // A sheet opened during startup must keep the background inert until
+        // it closes; its saved pre-sheet state was the temporary boot lock.
+        sheetBackgroundInert = false;
+      } else {
+        document.getElementById("app").inert = false;
+      }
+      window.__michiflinStartupDone = true;
+    }, Math.max(0, 850 - (Date.now() - started)));
+  }));
+}
 function boot() {
+  // If a delayed host script eventually recovers, remove the watchdog message.
+  document.getElementById("startup-recovery").hidden = true;
   applyLook(); chrome(); pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
   setInterval(recoverJobSnapshot, 60000);
-  if (!window.webxdc) { $("#view").className = "view"; fill($("#view"), failure(t("no_webxdc"))); window.__michiflinBootReady = true; document.getElementById("boot-mark")?.remove(); return; }
+  if (!window.webxdc) { $("#view").className = "view"; fill($("#view"), failure(t("no_webxdc"))); window.__michiflinBootReady = true; finishStartup(); return; }
   goTab(current.view);
   window.__michiflinBootReady = true;
-  requestAnimationFrame(() => document.getElementById("boot-mark")?.remove());
+  finishStartup();
   // Hosts may throw synchronously, reject, or be offline; none should erase UI.
   Promise.resolve().then(() => window.webxdc.setUpdateListener(update => bridge.receive(update), bridge.startSerial())).then(() => {
     bus.emit("images"); hello(true, true); bridge.watchExpiry();

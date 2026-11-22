@@ -31,7 +31,7 @@ def test_web_result_arriving_behind_sheet_remains_unread_until_sheet_closes(engi
         page.wait_for_function("id=>!bridge.pending()[id]", arg=rid)
         assert page.evaluate("!document.querySelector('#sheet').hidden")
         assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='consulta cubierta')")
-        assert page.locator('.tab[data-tab="web"]:visible .tab-badge').inner_text() == "1"
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
         assert page.evaluate("store.get('notices',[]).some(n=>n.unread&&n.target?.params?.q==='consulta cubierta')")
         page.evaluate("closeSheet()")
@@ -74,7 +74,7 @@ def test_reader_transcript_and_music_wait_for_sheet_to_close(engine, failed, vie
                       {"view": view, "op": op, "params": params, "failed": failed})
         page.wait_for_function("op=>window.__fixtureResponses.includes(op)", arg=op)
         page.wait_for_function("v=>store.get('notices',[]).some(n=>n.unread&&n.target?.view===v)", arg=view)
-        assert page.locator(f'.tab[data-tab="{category}"]:visible .tab-badge').inner_text() == "1"
+        assert page.locator('#notifications-toggle .notification-count').inner_text() == "1"
         assert page.evaluate("!document.querySelector('#sheet').hidden")
         page.evaluate("closeSheet()")
         page.wait_for_function("v=>document.querySelector('#sheet').hidden && !store.get('notices',[]).some(n=>n.unread&&n.target?.view===v)", arg=view)

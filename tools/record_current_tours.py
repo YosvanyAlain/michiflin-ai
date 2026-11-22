@@ -15,9 +15,27 @@ import subprocess
 import sys
 import tempfile
 
+from PIL import Image, ImageDraw, ImageFont
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from michiflin import app_package, miniapp  # noqa: E402
 from tests.test_webxdc_browser import browser_fixture  # noqa: E402
+
+
+def label_capture(path: Path, locale: str) -> None:
+    """Place the synthetic-data label outside, never on top of UI controls."""
+    with Image.open(path) as source:
+        image = source.convert('RGB')
+    labelled = Image.new('RGB', (image.width, image.height + 24), '#152e2c')
+    labelled.paste(image, (0, 0))
+    try:
+        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 12)
+    except OSError:
+        font = ImageFont.load_default()
+    label = 'DEMO · datos simulados' if locale == 'es' else 'DEMO · synthetic data'
+    ImageDraw.Draw(labelled).text((8, image.height + 4), label, fill='white', font=font)
+    labelled.save(path)
 
 
 def encode(frames: list[Path], target: Path, temporary: Path) -> None:
@@ -31,11 +49,14 @@ def encode(frames: list[Path], target: Path, temporary: Path) -> None:
 
 def main() -> None:
     digest = hashlib.sha256()
-    for source in sorted((ROOT / 'webxdc').rglob('*')):
-        if source.is_file():
-            digest.update(source.relative_to(ROOT / 'webxdc').as_posix().encode() + source.read_bytes())
-    manifest = {'renderer_source_sha256': digest.hexdigest(), 'source': 'current webxdc sources', 'bridge': 'tests.test_webxdc_browser.BRIDGE',
-                'synthetic': True, 'physical_device_test': False, 'clips_are_held_frames': True, 'languages': {}}
+    # Fingerprint the actual names and bytes that enter the current .xdc, not
+    # historical gzip copies retained only for compatibility verification.
+    for name, source in app_package.entries(miniapp.APP_FILES):
+        digest.update(name.encode() + (miniapp.APP_DIR / source).read_bytes())
+    manifest = {'renderer_source_sha256': digest.hexdigest(), 'source': 'current packaged webxdc assets',
+                'bridge': 'tests.test_webxdc_browser.BRIDGE', 'synthetic': True,
+                'physical_device_test': False, 'clips_are_held_frames': True,
+                'caption_strip_px': 24, 'languages': {}}
     for locale in ['es', 'en']:
         target = ROOT / 'docs' / 'media' / locale
         target.mkdir(parents=True, exist_ok=True)
@@ -43,7 +64,6 @@ def main() -> None:
             tmp = Path(directory)
             with browser_fixture(locale, {'width':390, 'height':844}, touch=True) as (page, errors):
                 page.evaluate("window.__fixtureAdmin=false;cache.admin=false;window.__modes.kill_switch=false;cache.modes.kill_switch.active=false;goTab('home')")
-                page.evaluate("""label=>{const tag=document.createElement('div');tag.id='documentation-fixture';tag.textContent=label;tag.style.cssText='position:fixed;bottom:78px;right:8px;z-index:99999;padding:4px 7px;background:#152e2c;color:white;font:11px system-ui;border-radius:6px;pointer-events:none';document.body.append(tag)}""", 'DEMO · datos simulados' if locale == 'es' else 'DEMO · synthetic data')
                 frames = []
                 def capture(name: str, view: str = '', params=None) -> Path:
                     if view:
@@ -52,17 +72,37 @@ def main() -> None:
                     assert page.locator('[data-ui-recovery]').count() == 0, name
                     path = target / (name + '.png')
                     page.screenshot(path=str(path))
+                    label_capture(path, locale)
                     saved = tmp / (str(len(frames)) + '.png')
                     saved.write_bytes(path.read_bytes()); frames.append(saved)
                     return saved
                 overview = []
                 for name, view in [('home','home'), ('ai','ai'), ('web','web'), ('apps','apps'), ('downloads','downloads'), ('settings','settings')]:
                     overview.append(capture(name, view))
-                page.evaluate('onboarding(true)')
-                for i in range(5):
+                # A real, synthetic unread result demonstrates the bell and
+                # center without asking a provider or sending any email.
+                page.evaluate("""label => {goTab('home'); notice(label, 'ok',
+                  {category:'ai', target:{view:'chat',params:{space:'agent'}}});}""",
+                              'Respuesta de ejemplo' if locale == 'es' else 'Example response')
+                page.locator('#notifications-toggle .notification-count').wait_for(state='visible')
+                overview.append(capture('notification-bell'))
+                page.locator('#notifications-toggle').click()
+                page.locator('.notification-center-content').wait_for(state='visible')
+                overview.append(capture('notification-center'))
+                page.evaluate("closeSheet()")
+                page.locator('#sheet').wait_for(state='hidden')
+                page.evaluate("store.set('notices', []); bus.emit('notices')")
+                # Follow the same deliberate route as the user, instead of
+                # invoking the guide function directly or opening it on startup.
+                page.evaluate("goTab('home')")
+                page.locator('#view .link-card').click()
+                page.locator('#view .btn.primary.wide').click()
+                page.locator('.quick-tour').wait_for(state='visible')
+                steps = page.evaluate('INTRO.length')
+                for i in range(steps):
                     overview.append(capture('tour-step-' + str(i + 1)))
-                    page.locator('.intro-card .btn.primary').click()
-                page.locator('.intro-overlay').wait_for(state='detached')
+                    page.locator('.quick-tour .btn.primary').click()
+                page.locator('#sheet').wait_for(state='hidden')
                 encode(overview, target / 'clip-tour', tmp)
                 capture('agent', 'chat', {'space':'agent'})
                 capture('images', 'images')
@@ -89,10 +129,13 @@ def main() -> None:
                 assert errors == [], errors
             with browser_fixture(locale, {'width':1440, 'height':900}) as (page, errors):
                 page.evaluate("window.__fixtureAdmin=false;cache.admin=false;goTab('home')")
-                page.evaluate("label=>{const tag=document.createElement('p');tag.textContent=label;tag.style.cssText='position:fixed;bottom:8px;right:16px;background:#152e2c;color:white;padding:8px;font:12px system-ui;z-index:99999';document.body.append(tag)}", 'DEMO · datos simulados' if locale == 'es' else 'DEMO · synthetic data')
-                page.screenshot(path=str(target / 'desktop-home.png'))
+                desktop = target / 'desktop-home.png'
+                page.screenshot(path=str(desktop))
+                label_capture(desktop, locale)
                 assert errors == []
-        manifest['languages'][locale] = {'viewport': [390,844], 'desktop': [1440,900], 'clips': ['clip-tour','clip-web','clip-download','clip-join']}
+        manifest['languages'][locale] = {'viewport': [390, 844], 'desktop': [1440, 900],
+                                         'manual_tour_steps': steps,
+                                         'clips': ['clip-tour', 'clip-web', 'clip-download', 'clip-join']}
     (ROOT / 'docs' / 'media' / 'capture-manifest.json').write_text(json.dumps(manifest,indent=2) + '\n')
 
 
