@@ -36,6 +36,12 @@ jobs:
       # User-authorized, temporary test. Set repository variable to 0 to opt out
       # at the next session. The server uses no provider AI key or account.
       LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '1' }}
+      # Independently opt-in features; these do not request or start inference.
+      # Keep the client context profile aligned with the isolated launcher.
+      LOCAL_GGUF_VARIANT: ${{ vars.LOCAL_GGUF_VARIANT || 'qwen35' }}
+      LOCAL_GGUF_EXTENDED: ${{ vars.LOCAL_GGUF_EXTENDED || '0' }}
+      LOCAL_WEB_SYNTHESIS: ${{ vars.LOCAL_WEB_SYNTHESIS || '0' }}
+      LOCAL_AGENT_COORDINATOR: ${{ vars.LOCAL_AGENT_COORDINATOR || '0' }}
       # Independently opted in by the owner; ignored for everyone else and
       # unless the request is in the current encrypted one-to-one app.
       LOCAL_COLLAB_OWNER: ${{ vars.LOCAL_COLLAB_OWNER || '0' }}

@@ -1,12 +1,6 @@
 name: Compare local models without bot identity
 on:
-  push:
-    branches: [mejorar-ia-local-20261119]
-    paths:
-      - tools/local_gguf_session.sh
-      - tools/benchmark_local_model.py
-      - tools/download_pinned_model.py
-      - .github/workflows/local-model-compare.yml
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:

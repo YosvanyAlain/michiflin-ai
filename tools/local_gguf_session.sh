@@ -18,7 +18,7 @@ MODEL_BYTES=2497281312
 CONTEXT=3072
 if [[ "${LOCAL_GGUF_EXTENDED:-0}" == '1' ]]; then CONTEXT=6144; fi
 # Fixed, reviewed variants only; no caller-supplied URLs or arbitrary engines.
-case "${LOCAL_GGUF_VARIANT:-legacy}" in
+case "${LOCAL_GGUF_VARIANT:-qwen35}" in
   legacy) ;;
   qwen35)
     MODEL_URL='https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf?download=true'
