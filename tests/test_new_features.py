@@ -73,8 +73,11 @@ class AgentTests(unittest.TestCase):
         self.assertIn("Five", result["text"])
 
     def test_last_round_never_executes_a_tool(self) -> None:
-        response = self.response('{"tool":"calculator","input":"2+3"}')
-        with mock.patch.object(ai, "complete", return_value=response) as model, \
+        # Distinct arguments isolate the final-round guard from the authorized
+        # request-local deduplication of identical tool actions.
+        responses = [self.response(json.dumps({"tool": "calculator", "input": f"2+{index}"}))
+                     for index in range(smart_agent.MAX_ROUNDS)]
+        with mock.patch.object(ai, "complete", side_effect=responses) as model, \
              mock.patch.object(tools, "calculate", return_value="5") as calc:
             result = smart_agent.run("2+3", "en")
         self.assertEqual(model.call_count, smart_agent.MAX_ROUNDS)
