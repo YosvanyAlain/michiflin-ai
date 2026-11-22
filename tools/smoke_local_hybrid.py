@@ -59,8 +59,20 @@ def main():
             assert usage.used_today('synthetic-local@example.test', 'ask') == 0
             sources = (local_ai.Source('S1', 'Biblioteca sintética', 'https://example.test/library',
                        PUBLIC_EXCERPT),)
-            synthesis = local_ai._extractive(PUBLIC_QUESTION, sources, 'es',
-                         sender='synthetic-local@example.test', synthesize=True)
+            # Diagnostics exist only in this synthetic test, never in the bot.
+            # Capture the actual rejection candidate without changing prompts,
+            # parsing, tool permissions or answers of the accepted agent.
+            traces = []
+            original_complete = local_ai.complete_messages
+            def trace_sources(*args, **kwargs):
+                candidate = original_complete(*args, **kwargs)
+                traces.append({'status': candidate.status, 'truncated': candidate.truncated,
+                               'text': candidate.text[:6000]})
+                return candidate
+            with mock.patch.object(local_ai, 'complete_messages', side_effect=trace_sources):
+                synthesis = local_ai._extractive(PUBLIC_QUESTION, sources, 'es',
+                             sender='synthetic-local@example.test', synthesize=True)
+            report['synthetic_source_candidates'] = traces
             report['web'] = {'status': synthesis.status, 'text': synthesis.text,
                              'synthesis_accepted': 'Síntesis de IA local' in synthesis.text,
                              'sources': [s.label for s in synthesis.sources]}

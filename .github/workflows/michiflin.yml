@@ -6,10 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       local_ai_test:
-        description: "One-hour local-AI development test; automatic successor returns to normal settings"
+        description: "Bounded local-AI development test; automatic successor returns to normal settings"
         required: false
         type: boolean
         default: false
+      local_ai_test_hours:
+        description: "Acceptance test length in hours; does not enable an endless local-AI session"
+        required: false
+        type: choice
+        options: ['1', '2', '3']
+        default: '1'
       deliver_owner_refresh:
         description: "Deliver this release once to the existing verified owner's private chat"
         required: false
@@ -43,6 +49,7 @@ jobs:
       # Exact run number is a one-shot arming signal; it cannot carry into the successor.
       LOCAL_AI_TEST: ${{ (inputs.local_ai_test || (vars.LOCAL_AI_TEST_RUN_NUMBER != '' && vars.LOCAL_AI_TEST_RUN_NUMBER == github.run_number && github.run_attempt == '1')) && '1' || '0' }}
       LOCAL_GGUF_TEST_REQUESTED: ${{ vars.LOCAL_GGUF_TEST_REQUESTED || '0' }}
+      LOCAL_AI_TEST_HOURS: ${{ inputs.local_ai_test_hours || vars.LOCAL_AI_TEST_HOURS || '1' }}
       # Independently opt-in features; these do not request or start inference.
       # Keep the client context profile aligned with the isolated launcher.
       LOCAL_GGUF_VARIANT: ${{ vars.LOCAL_GGUF_VARIANT || 'qwen35' }}
@@ -213,7 +220,12 @@ jobs:
           echo "LOCAL_GGUF_EXTENDED=1" >> "$GITHUB_ENV"
           echo "LOCAL_WEB_SYNTHESIS=1" >> "$GITHUB_ENV"
           echo "LOCAL_AGENT_COORDINATOR=1" >> "$GITHUB_ENV"
-          echo "SESSION_DURATION_SECONDS=3600" >> "$GITHUB_ENV"
+          # Select fixed durations; never interpolate an arbitrary shell value.
+          case "$LOCAL_AI_TEST_HOURS" in
+            2) echo "SESSION_DURATION_SECONDS=7200" >> "$GITHUB_ENV" ;;
+            3) echo "SESSION_DURATION_SECONDS=10800" >> "$GITHUB_ENV" ;;
+            *) echo "SESSION_DURATION_SECONDS=3600" >> "$GITHUB_ENV" ;;
+          esac
           echo "SAFE_GGUF_ONE_SHOT_PROFILE=6144"
 
       - name: Prepare isolated local AI test
