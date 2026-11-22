@@ -13,6 +13,8 @@ REV = 'a' * 40
 
 @pytest.fixture
 def recovery(tmp_path, monkeypatch):
+    import state_backup
+    monkeypatch.setattr(state_backup, 'save', Mock())
     monkeypatch.setenv('OWNER_APP_RECOVERY_REVISION', REV)
     monkeypatch.setenv('RUNNING_SHA', REV)
     for name, value in [('OWNER_ONLY', True), ('BOT_EPOCH_STRICT', True),
@@ -121,3 +123,24 @@ def test_explicit_ui_refresh_cannot_send_without_exact_request_and_binding(recov
         recovery.apps['100']['epoch'] = 'other'
     assert not owner_recovery.deliver_requested_refresh()
     recovery.send.assert_not_called()
+
+
+@pytest.mark.parametrize('fails', [False, True])
+def test_owner_refresh_checkpoints_without_rotating_or_retrying_send(recovery, monkeypatch, fails):
+    import state_backup
+    monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', REV)
+    monkeypatch.setenv('STATE_BACKUP_REQUIRED', '1')
+    monkeypatch.setattr(miniapp, '_verified_binding', lambda entry: True)
+    monkeypatch.setattr(state, 'save', Mock())
+    monkeypatch.setattr(owner_recovery.chat, 'wait_delivery', Mock(return_value='delivered'))
+    checkpoint = Mock(side_effect=RuntimeError('synthetic') if fails else None)
+    monkeypatch.setattr(state_backup, 'save', checkpoint)
+    def register(*args, **kwargs):
+        recovery.apps['101'] = {'addr': config.OWNER_ADDRESS, 'epoch': config.BOT_EPOCH, 'recovery_revision': REV}
+        return 101
+    recovery.send.side_effect = register
+    assert owner_recovery.deliver_requested_refresh()
+    checkpoint.assert_called_once_with(rotate=False)
+    assert not owner_recovery.deliver_requested_refresh()
+    assert recovery.send.call_count == 1
+    assert recovery.apps['100']['local_data'] == 'preserve'
