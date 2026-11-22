@@ -90,3 +90,21 @@ def test_only_two_workflows_with_explicit_non_bot_tools():
     runtime = (ROOT / '.github/workflows/michiflin.yml').read_text()
     assert 'group: michiflin-session' in runtime and 'cancel-in-progress: false' in runtime
     assert 'Final encrypted backup failed; automatic handover is stopped.' in runtime
+
+
+def test_summary_schema_is_local_per_call_not_a_change_to_chat(context, monkeypatch):
+    monkeypatch.setattr(local_ai, 'ready', lambda: True)
+    calls = []
+    def http(path, payload, timeout):
+        calls.append((path, payload))
+        if path == '/apply-template':
+            return {'prompt': 'synthetic template'}
+        if path == '/tokenize':
+            return {'tokens': [1] * 100}
+        return {'choices': [{'message': {'content': 'Fixture'}, 'finish_reason': 'stop'}]}
+    schema = {'type': 'object', 'properties': {'answer': {'type': 'string'}}}
+    with mock.patch.object(local_ai, '_http', side_effect=http):
+        assert local_ai.complete_messages([{'role': 'user', 'content': 'fixture'}], coding=True, output_schema=schema).status == 'ok'
+        assert calls[-1][1]['response_format']['json_schema']['schema'] == schema
+        assert local_ai.complete_messages([{'role': 'user', 'content': 'normal chat'}]).status == 'ok'
+        assert 'response_format' not in calls[-1][1]
