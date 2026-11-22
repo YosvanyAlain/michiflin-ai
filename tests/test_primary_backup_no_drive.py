@@ -61,4 +61,6 @@ def test_workflow_does_not_expose_removed_backup_controls():
     workflow = (root / '.github/workflows/michiflin.yml').read_text(encoding='utf-8')
     assert 'DRIVE_BACKUP_ENABLED' not in workflow
     assert 'GOOGLE_DRIVE_' not in workflow
+    assert 'STATE_BACKUP_RETAIN_ALL: "1"' in workflow
+    assert 'STATE_BACKUP_REQUIRED: "1"' in workflow
     assert not (root / 'drive_backup.py').exists()
