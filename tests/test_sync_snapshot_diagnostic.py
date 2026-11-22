@@ -10,8 +10,9 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     marker = {'epoch': 'test-epoch', 'owner_address': 'owner@example.invalid',
               'owner_chat': 42, 'owner_fingerprint': 'A' * 40}
     (tmp_path / '.owner-clean-origin-v1.json').write_text(json.dumps(marker))
+    monkeypatch.setenv('OWNER_REQUESTED_APP_REVISION', 'b' * 40)
     data = {'apps': {'100': {'chat': 42, 'addr': marker['owner_address'],
-                            'build': 'c8a5f423ba', 'epoch': 'test-epoch'},
+                            'build': 'c8a5f423ba', 'epoch': 'test-epoch', 'recovery_revision': 'b' * 40},
                      '101': {'chat': 42, 'addr': marker['owner_address'],
                              'build': 'unknown', 'epoch': 'different'}}}
     (tmp_path / 'michiflin-state.json').write_text(json.dumps(data))
@@ -39,6 +40,10 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['pending_outgoing'] == 1
     assert result['owner_marker_fingerprint_present'] is True
     assert result['owner_directly_verified_contact_present'] is True
+    assert result['requested_refresh_registered'] == 1
+    assert result['requested_refresh_delivered'] == 1
+    assert result['requested_refresh_pending'] == 0
+    assert result['requested_refresh_failed'] == 0
     assert result['mail_io_started'] is False
     assert all(isinstance(v, (int, bool)) or v is None for v in result.values())
     serialized = json.dumps(result)
@@ -60,3 +65,19 @@ def test_ambiguous_database_is_not_silently_selected(tmp_path):
     result = diagnose(tmp_path)
     assert result['database_count'] == 0
     assert 'database_quick_check_ok' not in result
+
+
+def test_diagnostic_honors_exact_previously_shipped_builds(tmp_path, monkeypatch):
+    from michiflin import app_compat
+    monkeypatch.setenv('REVOKE_LEGACY_MINIAPPS', '1')
+    monkeypatch.setenv('MINIAPP_RELEASE', 'synthetic-release')
+    monkeypatch.setenv('BOT_EPOCH', 'synthetic-epoch')
+    monkeypatch.setattr(app_compat, 'community_previous_build', lambda *args: '')
+    monkeypatch.setattr(app_compat, 'shipped_ui_build', lambda epoch, release, build: epoch == 'synthetic-epoch' and release == 'synthetic-release' and build == 'previously-shipped')
+    data = {'apps': {'100': {'build': 'previously-shipped', 'epoch': 'synthetic-epoch', 'chat': 42},
+                     '101': {'build': 'unknown', 'epoch': 'synthetic-epoch', 'chat': 42}}}
+    (tmp_path / 'michiflin-state.json').write_text(json.dumps(data))
+    root = tmp_path / 'accounts' / 'synthetic'; root.mkdir(parents=True)
+    with sqlite3.connect(root / 'dc.db') as db:
+        db.executescript("CREATE TABLE msgs(id INTEGER,type INTEGER,chat_id INTEGER,deleted INTEGER,param TEXT,state INTEGER); CREATE TABLE contacts(addr TEXT,fingerprint TEXT,verifier INTEGER); CREATE TABLE chats(id INTEGER); CREATE TABLE msgs_status_updates(id INTEGER);")
+    assert diagnose(tmp_path)['apps_incompatible_build'] == 1

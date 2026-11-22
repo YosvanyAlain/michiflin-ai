@@ -46,7 +46,7 @@ def install_books(page):
         if(args.do==='search')return Promise.resolve({books:window.sampleBooks,more:false});
         if(args.do==='download')return Promise.resolve({text:'Texto completo.',complete:true,sha256:'fixture',source_format:'txt'});
         return Promise.resolve({});
-      };go('books');
+      };go('books',{q:'libro'});
     }''')
 
 
@@ -57,7 +57,7 @@ def test_books_download_only_compact_and_reopen_cache(engine):
         page.get_by_text('Libro descargable', exact=True).wait_for()
         assert page.get_by_text('Solo préstamo', exact=True).count() == 0
         assert page.locator('.book-cover').bounding_box()['width'] <= 100
-        page.evaluate("go('home');go('books')")
+        page.evaluate("go('home');go('books',{q:'libro'})")
         page.get_by_text('Libro descargable', exact=True).wait_for()
         assert page.evaluate("bookCalls.filter(x=>x.do==='search').length") == 1
         page.locator('.book-actions button').first.click()

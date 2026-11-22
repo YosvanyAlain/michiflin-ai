@@ -154,7 +154,7 @@ def test_premium_looks_apply_across_tabs_without_overflow(engine, width, height)
             before = page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='weather').length")
             page.emulate_media(reduced_motion="no-preference")
             page.locator('.home-banner-dot').nth(0).click()
-            assert page.locator('.hero-art .ic').evaluate("e=>e.getAnimations().length") == 0
+            assert page.locator('.activity-hero').evaluate("e=>e.getAnimations().length") == 0
             page.locator('.home-banner-dot').nth(1).click()
             assert page.locator('.rate-banner').evaluate("e=>getComputedStyle(e,'::after').animationName") != "none"
             page.locator('.home-banner-dot').nth(2).click()
@@ -166,7 +166,7 @@ def test_premium_looks_apply_across_tabs_without_overflow(engine, width, height)
             page.locator('.home-banner-dot').nth(1).click()
             assert page.locator('.rate-banner').evaluate("e=>getComputedStyle(e,'::after').animationName") == "none"
             page.locator('.home-banner-dot').nth(0).click()
-            assert page.locator('.hero-art .ic').evaluate("e=>e.getAnimations().length") == 0
+            assert page.locator('.activity-hero').evaluate("e=>e.getAnimations().length") == 0
             assert page.evaluate("window.__sentUpdates.filter(x=>x.payload?.op==='weather').length") == before
         assert len(seen_palettes) == len(PREMIUM)
         assert errors == []

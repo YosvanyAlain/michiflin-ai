@@ -25,18 +25,19 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, text_social, web, web_vault, youtube_account
+from . import __version__, access, admin, agent, ai, answer_inline, app_compat, browser, chat, commands, config, extras, facebook_account, filekit, filekit_api, handover, identity_guard, images, links, maintenance, mail_profiles, media, music, perf, queue, rate_store, reader, smart_agent, state, tiktok_account, tools, usage, weather_home, web, web_vault, youtube_account
 from .util import clean_filename, compact, human_size, tr
 
 log = logging.getLogger("michiflin")
 APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
-    "utilities.js", "books.js", "social.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
+    "utilities.js", "books.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
     "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
@@ -79,13 +80,19 @@ def op(name: str) -> Callable[[Op], Op]:
 # Packaging and instances.
 # ---------------------------------------------------------------------------
 def app_build() -> str:
-    """Content hash of the app source and deployment epoch; other epochs are treated as foreign."""
+    """Content hash, reused until source metadata/epoch/release changes."""
+    signature = tuple((name, (APP_DIR / name).stat().st_mtime_ns, (APP_DIR / name).stat().st_size) for name in APP_FILES)
+    return _cached_app_build(str(APP_DIR), config.BOT_EPOCH, config.MINIAPP_RELEASE, signature)
+
+
+@lru_cache(maxsize=4)
+def _cached_app_build(directory: str, epoch: str, release: str, signature: tuple) -> str:
     digest = hashlib.sha256()
-    digest.update(f"epoch:{config.BOT_EPOCH}".encode())
-    if config.MINIAPP_RELEASE:
-        digest.update(f"miniapp-release:{config.MINIAPP_RELEASE}".encode())
-    for name in APP_FILES:
-        digest.update(name.encode() + (APP_DIR / name).read_bytes())
+    digest.update(f"epoch:{epoch}".encode())
+    if release:
+        digest.update(f"miniapp-release:{release}".encode())
+    for name, _mtime, _size in signature:
+        digest.update(name.encode() + (Path(directory) / name).read_bytes())
     return digest.hexdigest()[:10]
 
 
@@ -94,7 +101,7 @@ def compatible_build(entry: dict[str, Any]) -> bool:
     value = entry.get("build")
     if config.REVOKE_LEGACY_MINIAPPS:
         return bool(entry.get("epoch") == config.BOT_EPOCH and value and (value == app_build() or value == app_compat.community_previous_build(
-            config.BOT_EPOCH, config.MINIAPP_RELEASE, str(APP_DIR), APP_FILES)))
+            config.BOT_EPOCH, config.MINIAPP_RELEASE, str(APP_DIR), APP_FILES) or app_compat.shipped_ui_build(config.BOT_EPOCH, config.MINIAPP_RELEASE, value)))
     if not isinstance(value, str) or not value:
         return False
     if value == app_build():
@@ -798,9 +805,9 @@ def _ack(instance_id: int, rid: str, force: bool = False, entry: dict[str, Any] 
 
 
 WORK_OPS = {"books", "ask", "image", "code", "read", "search", "youtube_search", "music_search", "music_item", "action", "command", "tool", "translate", "rates", "weather",
-            "youtube_account", "facebook_account", "tiktok_account", "filekit", "social"}
+            "youtube_account", "facebook_account", "tiktok_account", "filekit"}
 AI_OPS = {"ask", "image", "code"}
-KILL_SAFE_OPS = {"public_groups", "hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
+KILL_SAFE_OPS = {"guidance", "public_groups", "hello", "health", "kill_switch", "owner_only", "maintenance_notice", "nauta_strict", "settings", "models", "estado"}
 OP_LIMITS = {"ask": 240, "image": 480, "read": 150, "action": 150, "search": 100, "music_search": 60, "music_item": 60, "translate": 90, "code": 900, "personal_ai": 150, "filekit": 2100}
 _workers = ThreadPoolExecutor(max_workers=16, thread_name_prefix="app-op")
 _control_workers = ThreadPoolExecutor(max_workers=4, thread_name_prefix="app-admin-op")
@@ -1468,6 +1475,7 @@ def op_hello(chat_id: int, args: dict[str, Any], locale: str) -> Any:
     if instance_id:
         announce_optional_update(instance_id)
     return {"version": __version__, "session": BOOT_SESSION, "admin": admin.is_admin(chat.sender()), "models": models_view(), "health": health_view(),
+            "ui_guidance_dismissed": op_guidance(chat_id, {}, locale)["dismissed"],
             "settings": settings_view(locale), "jobs": jobs_view(chat_id, locale), "quota": usage.quota_view(chat.sender()),
             "maintenance_notice": maintenance.get(), "rates_summary": tools.saved_rates_snapshot(), "weather_home": weather,
             "rates_derived_allowed": config.ELTOQUE_DERIVED_CALCULATIONS,
@@ -2472,19 +2480,18 @@ def announce_optional_update(instance_id: int) -> None:
                 state._save_soon()
 
 
-@op("social")
-def op_social(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    try:
-        return text_social.operate(chat.sender(), args)
-    except text_social.SocialError as exc:
-        labels = {
-            'denied': ('Acceso no autorizado.', 'Access denied.'),
-            'suspended': ('Tu acceso a la comunidad está suspendido.', 'Community access is suspended.'),
-            'alias_taken': ('Ese alias ya está en uso.', 'That alias is taken.'),
-            'rate_limit': ('Espera unos segundos; máximo 20 publicaciones cada 10 minutos.', 'Wait a few seconds; at most 20 posts per 10 minutes.'),
-            'conflict': ('El texto cambió. Actualiza antes de editar.', 'The text changed. Refresh before editing.'),
-            'capacity': ('La comunidad alcanzó su capacidad; no se ha borrado el historial.', 'Community capacity reached; history was not deleted.'),
-            'not_found': ('Publicación no disponible.', 'Post unavailable.'),
-        }
-        es, en = labels.get(str(exc), ('Revisa los campos de texto, alias y opciones.', 'Check text, alias and options.'))
-        raise AppError(tr(locale, es, en)) from None
+
+@op("guidance")
+def op_guidance(chat_id: int, args: dict[str, Any], locale: str) -> Any:
+    address = chat.sender().strip().casefold()
+    if not address:
+        if args.get("dismiss") is True:
+            raise AppError(tr(locale, "Acceso no autorizado.", "Access denied."))
+        return {"dismissed": False}
+    with state.lock:
+        records = state.data.get("ui_guidance", {})
+        if args.get("dismiss") is True:
+            records = state.data.setdefault("ui_guidance", {})
+            records[address] = True
+            state.save()
+        return {"dismissed": records.get(address) is True}

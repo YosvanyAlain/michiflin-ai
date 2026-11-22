@@ -42,11 +42,18 @@ def diagnose(root: Path) -> dict:
             value = fn(epoch, str(ROOT / 'webxdc'), files)
             if value:
                 allowed.add(value)
+    previous = app_compat.community_previous_build(epoch, release, str(ROOT / 'webxdc'), files)
+    if previous:
+        allowed.add(previous)
+    requested = os.getenv('OWNER_REQUESTED_APP_REVISION', '')
+    requested_valid = len(requested) == 40 and all(c in '0123456789abcdef' for c in requested)
     result = {'schema': 1, 'read_only': True, 'mail_io_started': False,
               'revocation_enabled': strict, 'current_release_bindings': 0,
               'release_opening_checkpointed': data.get('public_access_release') == 'private-invites-20261119-v1',
               'invite_policy_open': isinstance(data.get('invite_policy'), dict) and data['invite_policy'].get('closed') is False,
               'database_count': len(databases), 'app_bindings': len(apps),
+              'requested_refresh_registered': 0, 'requested_refresh_delivered': 0,
+              'requested_refresh_pending': 0, 'requested_refresh_failed': 0,
               'clean_marker_present': bool(marker), 'apps_core_present': 0,
               'apps_core_missing_or_deleted': 0, 'apps_core_wrong_type': 0,
               'apps_chat_mismatch': 0, 'apps_other_epoch': 0,
@@ -68,7 +75,7 @@ def diagnose(root: Path) -> dict:
             if not str(key).isdigit() or not isinstance(entry, dict):
                 continue
             result['apps_other_epoch'] += bool(entry.get('epoch') and entry.get('epoch') != epoch)
-            result['apps_incompatible_build'] += entry.get('build') not in allowed or (strict and entry.get('epoch') != epoch)
+            result['apps_incompatible_build'] += (entry.get('build') not in allowed and not app_compat.shipped_ui_build(epoch, release, entry.get('build'))) or (strict and entry.get('epoch') != epoch)
             result['current_release_bindings'] += entry.get('build') == current and entry.get('epoch') == epoch
             result['apps_owner_recipient'] += str(entry.get('addr', '')).casefold() == owner
             row = db.execute('SELECT type,chat_id,deleted,param FROM msgs WHERE id=?', (int(key),)).fetchone()
@@ -78,6 +85,14 @@ def diagnose(root: Path) -> dict:
             result['apps_core_present'] += 1
             result['apps_core_wrong_type'] += row[0] != 80
             result['apps_chat_mismatch'] += row[1] != int(entry.get('chat') or 0)
+            if (requested_valid and entry.get('recovery_revision') == requested
+                    and entry.get('epoch') == epoch
+                    and str(entry.get('addr') or '').casefold() == owner):
+                result['requested_refresh_registered'] += 1
+                delivery = db.execute('SELECT state FROM msgs WHERE id=?', (int(key),)).fetchone()[0]
+                result['requested_refresh_delivered'] += delivery in {26, 28}
+                result['requested_refresh_pending'] += delivery in {18, 20}
+                result['requested_refresh_failed'] += delivery == 24
             # No file names/parameters are emitted. Only count missing local app blobs.
             for line in str(row[3] or '').splitlines():
                 if line.startswith('f=$BLOBDIR/'):

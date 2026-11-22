@@ -1216,7 +1216,9 @@ function hello(force = false, quiet = false) {
 
 async function sync(force, quiet = false) {
   try {
-    const data = await bridge.call("hello");
+    const data = await bridge.call("hello", {}, { quiet });
+    if (data.ui_guidance_dismissed === true) store.set("tour_permanent", true);
+    if (data.ui_guidance_dismissed === true || data.ui_guidance_dismissed === false) welcomeGuidance(data.ui_guidance_dismissed);
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
       maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
@@ -1276,7 +1278,6 @@ const TILES = [
   ["book", "tile_books", "books"],
   ["health", "tile_health", "health"],
   ["notes", "tile_notes", "notes"],
-  ["chat", "tile_social", "social"],
 ];
 
 function tiles(extra = [], omit = []) {
@@ -1301,14 +1302,18 @@ function tiles(extra = [], omit = []) {
   return root;
 }
 
-function greeting() {
-  const hour = new Date().getHours();
-  return t(hour < 5 ? "greet_late" : hour < 12 ? "greet_morning" : hour < 19 ? "greet_afternoon" : "greet_evening");
-}
-
-function greetingLine() {
-  const hour = new Date().getHours();
-  return t(hour < 5 ? "home_sub_late" : hour < 12 ? "home_sub_morning" : hour < 19 ? "home_sub" : "home_sub_evening");
+function homeActivity() {
+  const pending = Object.values(bridge.pending()).filter(meta => !meta.quiet).length;
+  const jobs = cache.jobs.filter(job => !["ready", "done", "failed", "cancelled"].includes(job.status)).length;
+  const latest = store.get("notices", []).find(item => item.target && !item.hidden);
+  return h("div", { class: "hero home-hero activity-hero" },
+    h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, t("home_activity")),
+      h("h2", {}, pending || jobs ? t("home_activity_pending", { n: pending + jobs }) : t("home_activity_ready")),
+      h("p", {}, t("home_activity_hint"))),
+    h("div", { class: "hero-actions" },
+      latest ? h("button", { class: "hero-action hero-action-primary", onclick: () => openNotice(latest) }, icon("next"), t("home_last_result")) :
+        h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
+      h("button", { class: "hero-action", onclick: () => pending ? pendingSheet() : goTab("downloads") }, icon("downloads"), t(pending ? "home_pending" : "tab_downloads"))));
 }
 
 function statusChips() {
@@ -1380,10 +1385,21 @@ function noticeList() {
 // An old local cache cannot grant permission in a new miniapp session.
 let rateDerivedApproved = false;
 let sharedRateRefresh = null;
+let sharedRateRequestId = null;
 
-function refreshSharedRates() {
-  if (sharedRateRefresh) return sharedRateRefresh;
-  sharedRateRefresh = bridge.call("rates").then((data) => {
+function refreshSharedRates(quiet = true) {
+  if (sharedRateRefresh) {
+    // A manual refresh can adopt the in-flight automatic request without
+    // issuing another network operation or hiding the user's explicit work.
+    if (!quiet && sharedRateRequestId) {
+      const pending = bridge.pending(), meta = pending[sharedRateRequestId];
+      if (meta && meta.quiet) { meta.quiet = false; bridge.save(pending); bridge.changed(); }
+    }
+    return sharedRateRefresh;
+  }
+  const request = bridge.request("rates", {}, null, { quiet });
+  sharedRateRequestId = request.id;
+  sharedRateRefresh = request.promise.then((data) => {
     rateDerivedApproved = data.derived_allowed === true;
     store.set("rates", data);
     saveRateObservation(data);
@@ -1396,7 +1412,7 @@ function refreshSharedRates() {
       bus.emit("rates");
     }
     throw error;
-  }).finally(() => { sharedRateRefresh = null; });
+  }).finally(() => { sharedRateRefresh = null; sharedRateRequestId = null; });
   return sharedRateRefresh;
 }
 
@@ -1603,15 +1619,9 @@ function homeRatesBanner() {
 
 function homeCarousel() {
   const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
-  const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
+  const labels = ["home_activity", "home_banner_rates", "home_banner_weather"];
   const slides = [
-    () => h("div", { class: "hero home-hero" },
-      h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, greeting()),
-        h("h2", {}, t("home_headline")), h("p", {}, greetingLine())),
-      h("div", { class: "hero-art", "aria-hidden": "true" }, icon("apps")),
-      h("div", { class: "hero-actions" },
-        h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
-        h("button", { class: "hero-action", onclick: () => go("web") }, icon("web"), t("home_explore")))),
+    homeActivity,
     homeRatesBanner,
     homeWeatherBanner,
   ];
@@ -1647,8 +1657,8 @@ function homeCarousel() {
       else dot.removeAttribute("aria-current");
     });
   };
-  const refresh = () => { if (!slot.contains(document.activeElement)) draw(); };
-  ["hello", "rates", "weather_home"].forEach((kind) => bus.on(kind, refresh));
+  const refresh = () => { if (slot.isConnected && !slot.contains(document.activeElement)) draw(); };
+  ["hello", "rates", "weather_home", "jobs", "notices", "bridge"].forEach((kind) => bus.on(kind, refresh));
   bus.on("home-layout", reserveSpace);
   requestAnimationFrame(reserveSpace);
   const rotate = () => {
@@ -2306,12 +2316,10 @@ function bubble(space, item, list) {
 }
 
 function chatIntro(space, send) {
-  const keys = space === "agent" ? ["sugg_agent_1", "sugg_agent_2", "sugg_agent_3", "sugg_agent_4"] : ["sugg_ai_1", "sugg_ai_2", "sugg_ai_3"];
   const info = modelInfo(space);
   const brand = info ? brandOf(info.model, info.provider) : "";
   return h("div", { class: "intro" }, brand ? brandMark(brand, "big") : icon(space === "agent" ? "bolt" : "ai", "big"),
-    h("p", {}, t(space === "agent" ? "intro_agent" : space === "smart_agent" ? "smart_agent_intro" : "intro_ai")),
-    h("div", { class: "chips center" }, keys.map((key) => h("button", { class: "chip", onclick: () => send(t(key)) }, t(key)))));
+    h("p", {}, t(space === "agent" ? "intro_agent" : space === "smart_agent" ? "smart_agent_intro" : "intro_ai")));
 }
 
 VIEWS.chat = {
@@ -2867,11 +2875,14 @@ function youtubeThumbnail(item) {
   try { const u = new URL(item.url); identifier = u.hostname === "youtu.be" ? u.pathname.slice(1).split("/")[0] : u.searchParams.get("v") || u.pathname.split("/").pop(); } catch (_) {}
   if (!/^[A-Za-z0-9_-]{11}$/.test(identifier)) return art;
   art.dataset.videoId = identifier; art.dataset.videoTitle = item.title || "YouTube";
+  art.dataset.videoUrl = item.url;
+  if (!store.get("youtube.showThumbnails", true)) { art.classList.add("preview-off"); return art; }
   const quality = "low", key = identifier + ":low";
-  const apply = (data) => { if (data && art.isConnected) fill(art, h("img", { src: data, alt: item.title || "YouTube", loading: "lazy", decoding: "async" })); };
+  const apply = (data) => { if (data && art.isConnected && store.get("youtube.showThumbnails", true)) fill(art, h("img", { src: data, alt: item.title || "YouTube", loading: "lazy", decoding: "async" })); };
   const load = () => {
+    if (!art.isConnected || !store.get("youtube.showThumbnails", true)) return;
     if (youtubeThumbCache.has(key)) return apply(youtubeThumbCache.get(key));
-    youtubeThumbQueue.push({ identifier, quality, key, apply });
+    youtubeThumbQueue.push({ identifier, quality, key, apply, active: () => art.isConnected });
     clearTimeout(youtubeThumbTimer);
     youtubeThumbTimer = setTimeout(flushYoutubeThumbnails, 100);
   };
@@ -2882,11 +2893,13 @@ function youtubeThumbnail(item) {
   return art;
 }
 async function flushYoutubeThumbnails() {
-  const queue = youtubeThumbQueue.splice(0);
+  const queue = youtubeThumbQueue.splice(0).filter(item => item.active());
+  if (!store.get("youtube.showThumbnails", true)) return;
   for (const quality of ["low"]) {
     const selected = queue.filter(item => item.quality === quality);
     const ids = [...new Set(selected.map(item => item.identifier))];
     for (let offset = 0; offset < ids.length; offset += 6) {
+      if (!store.get("youtube.showThumbnails", true)) return;
       const batch = ids.slice(offset, offset + 6);
       try {
         const result = await bridge.call("youtube_thumbs", { ids: batch, quality });
@@ -3006,7 +3019,18 @@ VIEWS.youtube = {
     };
     input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); submit(); } });
     const box = h("div", { class: "stack" });
-    add(main, h("div", { class: "search-field" }, icon("youtube"), input,
+    const filter = iconButton("image", t("youtube_filter"), () => {
+      const enabled = store.get("youtube.showThumbnails", true);
+      const checkbox = h("input", { type: "checkbox", checked: enabled, onchange: event => {
+        if (!store.set("youtube.showThumbnails", event.target.checked)) { event.target.checked = enabled; return; }
+        for (const art of document.querySelectorAll(".video-preview[data-video-url]"))
+          art.replaceWith(youtubeThumbnail({ url: art.dataset.videoUrl, title: art.dataset.videoTitle }));
+        filter.setAttribute("aria-pressed", String(event.target.checked));
+      } });
+      openSheet(t("youtube_filter"), h("label", { class: "row" }, checkbox, t("youtube_show_thumbnails")));
+    });
+    filter.classList.add("youtube-filter"); filter.setAttribute("aria-pressed", String(store.get("youtube.showThumbnails", true)));
+    add(main, h("div", { class: "search-field" }, icon("youtube"), input, filter,
       h("button", { class: "btn primary small", onclick: submit }, t("go"))),
       h("p", { class: "note" }, icon("info"), t("media_rights_note")), box);
     if (params.q) youtubePages(box, params.q, false, params.resultPage || 1);
@@ -3259,7 +3283,7 @@ VIEWS.rates = {
       if (button) button.classList.add("busy");
       if (!store.get("rates", null)) fill(board, loading());
       try {
-        const data = await refreshSharedRates();
+        const data = await refreshSharedRates(!button);
         if (board.isConnected) draw(data);
       } catch (error) {
         if (!error.cancelled) {
@@ -4497,51 +4521,61 @@ VIEWS.estado = {
 // ---------------------------------------------------------------------------
 // First-run introduction: the app is the whole bot.
 // ---------------------------------------------------------------------------
-const INTRO = [["apps", "tour_1"], ["apps", "tour_2"], ["send", "tour_3"], ["downloads", "tour_4"], ["help", "tour_5"]];
-
+const INTRO = [["search", "quick_tour_search"], ["bell", "quick_tour_results"], ["downloads", "quick_tour_files"]];
+function welcomeGuidance(dismissed) {
+  if (dismissed || store.get("tour_done", false) || store.get("tour_permanent", false) || $("#welcome-guidance")) return;
+  const box = h("aside", { id: "welcome-guidance", class: "welcome-guidance", "aria-label": t("welcome_title") },
+    h("strong", {}, t("welcome_title")), h("p", {}, t("welcome_hint")),
+    h("div", { class: "row wrap" },
+      h("button", { class: "btn primary small", onclick: () => { box.remove(); onboarding(true); } }, t("welcome_tour")),
+      h("button", { class: "btn ghost small", onclick: () => { store.set("tour_done", true); box.remove(); } }, t("tour_skip")),
+      h("button", { class: "btn ghost small", onclick: async event => {
+        const button = event.currentTarget; button.disabled = true;
+        try {
+          await bridge.call("guidance", { dismiss: true });
+          store.set("tour_permanent", true); store.set("tour_done", true); box.remove();
+        } catch (_) { button.disabled = false; toast(t("welcome_save_failed"), "bad"); }
+      } }, t("welcome_never"))));
+  document.body.append(box);
+}
 function onboarding(force = false) {
-  if (!force && store.get("tour_done", false)) return;
-  document.querySelectorAll(".intro-overlay").forEach((node) => node.remove());
+  if (!force && (store.get("tour_done", false) || store.get("tour_permanent", false))) return;
+  $("#welcome-guidance")?.remove();
   let step = 0;
-  const finish = () => {
-    store.set("tour_done", true);
-    overlay.classList.add("gone");
-    setTimeout(() => { overlay.remove(); revealVisibleNotices(); }, 300);
-  };
-  const body = h("div", { class: "intro-card", role: "dialog", "aria-modal": "true" });
-  const overlay = h("div", { class: "intro-overlay" }, body);
+  const body = h("div", { class: "quick-tour" });
+  const finish = () => { store.set("tour_done", true); closeSheet(); };
   const draw = () => {
-    const [name, key] = INTRO[step];
-    const last = step === INTRO.length - 1;
-    fill(body,
-      h("div", { class: "intro-icon" }, icon(name)),
-      h("h2", {}, t(key + "_t")),
-      h("p", {}, t(key + "_b")),
-      h("div", { class: "intro-dots" }, ...INTRO.map((unused, index) => h("i", { class: index === step ? "on" : "" }))),
-      h("div", { class: "row end" },
-        last ? null : h("button", { class: "btn ghost", onclick: finish }, t("tour_skip")),
-        step ? h("button", { class: "btn ghost", onclick: () => { step -= 1; draw(); } }, t("back")) : null,
-        h("button", { class: "btn primary", onclick: () => { if (last) finish(); else { step += 1; draw(); } } }, last ? t("tour_start") : t("tour_next"))));
+    const [name, key] = INTRO[step], last = step === INTRO.length - 1;
+    fill(body, h("div", { class: "row" }, icon(name), h("h3", {}, t(key + "_t"))),
+      h("p", {}, t(key + "_b")), h("small", { class: "muted" }, `${step + 1} / ${INTRO.length}`),
+      h("div", { class: "row end wrap" },
+        h("button", { class: "btn ghost small", onclick: async event => {
+          const button = event.currentTarget; button.disabled = true;
+          try { await bridge.call("guidance", { dismiss: true }); store.set("tour_permanent", true); finish(); }
+          catch (_) { button.disabled = false; toast(t("welcome_save_failed"), "bad"); }
+        } }, t("welcome_never")),
+        h("button", { class: "btn ghost", onclick: finish }, t("tour_skip")),
+        h("button", { class: "btn primary", onclick: () => { if (last) finish(); else { step++; draw(); } } }, last ? t("tour_start") : t("tour_next"))));
   };
-  draw();
-  document.body.append(overlay);
+  draw(); openSheet(t("welcome_tour"), body, () => store.set("tour_done", true));
 }
 
 // ---------------------------------------------------------------------------
 // Start.
 // ---------------------------------------------------------------------------
-// Paint the shell promptly; the existing snapshot stays usable while a slow
-// Open directly: no splash, mascot animation or automatic blocking introduction.
+// Paint the shell promptly; keep the immediate HTML mark only until the
+// first frame. No artificial wait or automatic blocking introduction.
 function boot() {
   applyLook(); chrome(); pruneSavedResults();
   setInterval(pruneSavedResults, 3600000);
   setInterval(recoverJobSnapshot, 60000);
-  if (!window.webxdc) { $("#view").className = "view"; fill($("#view"), failure(t("no_webxdc"))); window.__michiflinBootReady = true; return; }
+  if (!window.webxdc) { $("#view").className = "view"; fill($("#view"), failure(t("no_webxdc"))); window.__michiflinBootReady = true; document.getElementById("boot-mark")?.remove(); return; }
   goTab(current.view);
   window.__michiflinBootReady = true;
+  requestAnimationFrame(() => document.getElementById("boot-mark")?.remove());
   // Hosts may throw synchronously, reject, or be offline; none should erase UI.
   Promise.resolve().then(() => window.webxdc.setUpdateListener(update => bridge.receive(update), bridge.startSerial())).then(() => {
-    bus.emit("images"); hello(true); bridge.watchExpiry();
+    bus.emit("images"); hello(true, true); bridge.watchExpiry();
   }).catch(() => toast(t("sync"), "bad"));
 }
 

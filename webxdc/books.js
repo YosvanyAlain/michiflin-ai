@@ -126,7 +126,7 @@ window.BookShelf = (() => {
     const shelf = h("div", { class: "book-shelf" });
     const status = h("p", { class: "muted small", role: "status" });
     const query = field({ type: "search", placeholder: text("Título, autor o tema", "Title, author or topic"), value: params.q || store.get("books.query", "") });
-    let source = store.get("books.source", "gutenberg"), page = 1;
+    let source = store.get("books.source", "all"), page = 1;
     const sourcePicker = select(source, [["all", text("Todos los catálogos", "All catalogues")], ["gutenberg", "Project Gutenberg"], ["openlibrary", "Open Library"],
       ["archive", "Internet Archive"], ["google", "Google Books · gratuitos"], ["standard", "Standard Ebooks"], ["wikisource", "Wikisource"], ["web", text("Buscar en la web", "Search the web")]], value => { source = value; page = 1; store.set("books.source", value); search(); });
     const more = h("button", { class: "btn ghost wide", hidden: true, onclick: () => { page++; search(true); } }, text("Más libros", "More books"));
@@ -166,6 +166,11 @@ window.BookShelf = (() => {
       add(shelf, card);
     };
     const search = async (append = false, force = false) => {
+      if (!query.value.trim()) {
+        revision++; shelf.replaceChildren(); more.hidden = true;
+        status.textContent = text("Busca un título, autor o tema para consultar los catálogos.", "Search for a title, author or topic to query the catalogues.");
+        return;
+      }
       const version = ++revision;
       status.textContent = t("searching");
       if (!append) shelf.replaceChildren();
@@ -188,18 +193,19 @@ window.BookShelf = (() => {
     };
     const controls = h("div", { class: "stack" });
     // askBox owns its own field in older clients; keep a clear explicit search form.
-    fill(controls, sourcePicker, h("div", { class: "row" }, query, h("button", { class: "btn primary", onclick: () => { page = 1; search(); } }, icon("search"), t("search")), h("button", { class: "icon-btn", "aria-label": t("refresh"), onclick: () => { page = 1; search(false, true); } }, icon("refresh"))));
+    fill(controls, sourcePicker, h("div", { class: "row" }, query, h("button", { class: "btn primary", onclick: () => { page = 1; search(); } }, icon("search"), t("act_search")), h("button", { class: "icon-btn", "aria-label": t("refresh"), onclick: () => { page = 1; search(false, true); } }, icon("refresh"))));
     query.addEventListener("keydown", event => { if (event.key === "Enter") { page = 1; search(); } });
     const drawTab = async value => {
       stopSpeech(); active = value; revision++; shelf.replaceChildren(); more.hidden = true; controls.hidden = value !== "catalogue"; status.textContent = "";
-      if (value === "catalogue") { page = 1; search(); }
+      if (value === "catalogue") { page = 1; status.textContent = text("Busca un título, autor o tema.", "Search for a title, author or topic."); }
       if (value === "saved") { for (const book of local.values()) addBook(book); if (!local.size) status.textContent = text("Todavía no hay libros descargados en esta instancia.", "No downloaded books in this instance yet."); }
     };
     add(main, h("p", { class: "note" }, text("Libros con copia de lectura descargable. Los préstamos y fichas sin descarga no se muestran. Las copias guardadas pertenecen a esta miniapp.", "Books with downloadable reading copies. Loans and records without downloads are hidden. Saved copies belong to this miniapp instance.")),
       segmented(active, [["catalogue", text("Explorar", "Explore")], ["saved", text("Mi biblioteca", "My library")]], drawTab), controls, status, shelf, more);
     try { local = new Map((await all()).map(book => [book.id, book])); } catch (_) { status.textContent = text("Almacenamiento local no disponible. No se afirmará que un libro fue guardado.", "Local storage unavailable. Books will not be reported as saved."); }
     if (active === "saved") drawTab("saved");
-    else search();
+    else if (params.q && params.q.trim()) search();
+    else status.textContent = text("Busca un título, autor o tema para comenzar.", "Search for a title, author or topic to begin.");
   }
   return { mount, stopSpeech, all, clearCache() { recentCovers.clear(); store.del("books.coverCache"); store.del("books.catalogueCache"); } };
 })();

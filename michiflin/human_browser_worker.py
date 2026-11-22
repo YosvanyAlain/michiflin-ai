@@ -413,8 +413,19 @@ def main() -> int:
         # Do not expose the entered URL or its query string in process argv.
         # Refuse to paste if the expected normal window is not focused.
         root_window = _root_window()
-        if _restore_root_focus(root_window) != main_window:
-            raise ValueError("focus")
+        # A visible window can precede X11's first focus assignment. Wait for
+        # that assignment only; never type into or steal an unrelated window.
+        for attempt in range(20):
+            try:
+                focused = _restore_root_focus(root_window)
+            except subprocess.CalledProcessError:
+                if attempt == 19:
+                    raise ValueError("focus") from None
+                time.sleep(0.1)
+                continue
+            if focused != main_window:
+                raise ValueError("focus")
+            break
         try:
             _open_initial_address(str(initial["url"]), main_window)
         except Exception:

@@ -905,6 +905,7 @@ def on_start(bot: Any, args: Any) -> None:
     _start_cursor(bot, accid)
     from . import owner_recovery
     _pool.submit(owner_recovery.deliver)
+    _pool.submit(owner_recovery.deliver_requested_refresh)
     _pool.submit(_bootstrap_verified_owner, bot, accid)
     _pool.submit(_bootstrap_email_recovery, bot, accid)
     if config.INVITE_AUTO_ACCESS:

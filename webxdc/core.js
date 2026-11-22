@@ -33,6 +33,8 @@ function h(tag, props, ...children) {
 }
 
 const ICONS = {
+  eyeOff: '<path d="m3 3 18 18M10.5 5.2A11 11 0 0 1 12 5c6 0 10 7 10 7a17 17 0 0 1-4 4.5M6.2 6.3A21 21 0 0 0 2 12s4 7 10 7a12 12 0 0 0 5-1.4"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   code: '<path d="m8 8-4 4 4 4"/><path d="m16 8 4 4-4 4"/><path d="m14 5-4 14"/>',
   home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M10 21v-6h4v6"/>',
   ai: '<path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7-4.7-1.8 4.7-1.8z"/><path d="M19 15l.8 2.2 2.2.8-2.2.8L19 21l-.8-2.2-2.2-.8 2.2-.8z"/>',
@@ -539,7 +541,7 @@ const bridge = {
     const floors = Object.values(store.get("floors", {})).map((item) => item.s);
     return Math.max(0, Math.min(this.serial, ...floors));
   },
-  request(op, args = {}, ctx = null) {
+  request(op, args = {}, ctx = null, options = {}) {
     const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     // The bot rotates this value after every restart. Requests queued under an
     // older session are refused rather than silently repeating provider calls.
@@ -558,7 +560,7 @@ const bridge = {
       return { id: null, promise, error };
     }
     const pending = this.pending();
-    pending[id] = { op, ctx, quiet: op === "books" && ["cover", "search", "archive_files"].includes(args.do), ts: Date.now(), sent: Date.now(), tries: 0, ack: 0, p: size <= RESENDABLE ? payload : null };
+    pending[id] = { op, ctx, quiet: options.quiet === true || op === "youtube_thumbs" || op === "guidance" || op === "books" && ["cover", "search", "archive_files"].includes(args.do), ts: Date.now(), sent: Date.now(), tries: 0, ack: 0, p: size <= RESENDABLE ? payload : null };
     // Never send a potentially chargeable operation if the app cannot retain
     // even its minimal tracking metadata for a later response or reopen.
     if (!this.save(pending, false)) {
@@ -589,8 +591,8 @@ const bridge = {
     this.changed();
     return { id, promise };
   },
-  call(op, args = {}) {
-    return this.request(op, args).promise;
+  call(op, args = {}, options = {}) {
+    return this.request(op, args, null, options).promise;
   },
   resend(id, pending = this.pending()) {
     const meta = pending[id];

@@ -76,6 +76,8 @@ jobs:
       # Optional one-shot request is bound to a single exact revision.
       OWNER_DOCUMENT_DELIVERY_REVISION: ${{ vars.OWNER_DOCUMENT_DELIVERY_REVISION }}
       # Explicit owner-authorized recovery; only the one exact deployment may send.
+      # Explicit one-shot owner request, inert on every other revision.
+      OWNER_REQUESTED_APP_REVISION: ${{ vars.OWNER_REQUESTED_APP_REVISION }}
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
       RELAY_MIGRATION_REVISION: ${{ vars.RELAY_MIGRATION_REVISION }}
@@ -378,6 +380,12 @@ jobs:
           set -e
           CONFIG_DIR="$RUNNER_TEMP/backup-recovery-check" python state_backup.py restore
           rm -rf -- "$RUNNER_TEMP/backup-recovery-check"
+
+      - name: Retire the removed UI live store after verified recovery
+        if: env.OWNER_REQUESTED_APP_REVISION != '' && env.OWNER_REQUESTED_APP_REVISION == github.sha
+        env:
+          UI_RETIRE_BACKUP_VERIFIED: "1"
+        run: python tools/retire_unused_ui_store.py
 
       - name: Verify sanitized backup or roll back
         id: purge_verified

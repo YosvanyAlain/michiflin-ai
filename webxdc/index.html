@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Michiflin AI</title>
+<style>
+html,body { margin:0; background:#faf9f6; color:#1b3034; }
+@media(prefers-color-scheme:dark){html,body{background:#121c24;color:#eaf1ee}}
+#boot-mark{position:fixed;inset:0;z-index:80;display:grid;place-content:center;justify-items:center;gap:14px;background:inherit;font:600 15px system-ui;pointer-events:none}
+#boot-mark svg{width:46px;height:46px;stroke:#198b78;fill:none;stroke-width:1.8}
+#boot-mark .boot-track{width:72px;height:3px;border-radius:3px;background:#7a8b8c33;overflow:hidden}
+#boot-mark .boot-track:after{content:"";display:block;width:30px;height:3px;border-radius:3px;background:#198b78;animation:boot-glide 1s ease-in-out infinite alternate}
+@keyframes boot-glide{to{transform:translateX(42px)}}
+@media(prefers-reduced-motion:reduce){#boot-mark .boot-track:after{animation:none;width:100%}}
+</style>
 <link rel="stylesheet" href="app.css">
 <script>
 // Independent, ES5 recovery: also works when a later script cannot be parsed.
@@ -21,6 +31,7 @@
     node.querySelector("h2").textContent = es ? "No se pudo iniciar la miniapp" : "The miniapp could not start";
     node.querySelector("p").textContent = es ? "Tus datos se conservaron. Cierra esta vista y escribe /app en el chat privado para pedir una copia nueva. Si sigue igual, actualiza Android System WebView y Delta Chat. Código: inicio-local." : "Your data was kept. Close this view and type /app in the private chat for a fresh copy. If this continues, update your system WebView and Delta Chat. Code: local-startup.";
     node.hidden = false;
+    var boot = document.getElementById("boot-mark"); if (boot) boot.remove();
   }
   window.addEventListener("load", function () { setTimeout(report, 1500); });
 })();
@@ -28,6 +39,7 @@
 <script src="webxdc.js"></script>
 </head>
 <body>
+<div id="boot-mark" aria-label="Michiflin AI" role="status"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.4 6.6L21 12l-6.6 2.4L12 21l-2.4-6.6L3 12l6.6-2.4z"/></svg><span>Michiflin AI</span><i class="boot-track"></i></div>
 <div id="app" class="shell">
   <nav id="rail" class="rail"></nav>
   <div class="stage">
@@ -60,7 +72,6 @@
 <script src="books.js"></script>
 <script src="app.js"></script>
 <script src="notifications.js"></script>
-<script src="social.js"></script>
 <script src="live.js"></script>
 <script src="coder.js"></script>
 </body>
