@@ -78,6 +78,21 @@ def diagnose(root: Path) -> dict:
         result['queue_jobs_active'] = sum(isinstance(status, str) and status in active for status in statuses)
         result['queue_jobs_finished'] = sum(isinstance(status, str) and status in final for status in statuses)
         result['queue_jobs_unknown'] = len(statuses) - result['queue_jobs_active'] - result['queue_jobs_finished']
+        # These are aggregate, fixed-schema counters only. In particular, never
+        # return a job id, destination, source URL, path, title or message id.
+        unfinished = [job for job in jobs.values()
+                      if isinstance(job.get('status'), str) and job['status'] in active]
+        for name in ('queued', 'downloading', 'packing', 'ready', 'sending'):
+            result['queue_active_status_' + name] = sum(job['status'] == name for job in unfinished)
+        for name in ('file', 'video', 'audio'):
+            result['queue_active_kind_' + name] = sum(job.get('kind') == name for job in unfinished)
+        result['queue_active_held'] = sum(bool(job.get('hold')) for job in unfinished)
+        result['queue_active_with_inflight'] = sum(bool(job.get('inflight')) for job in unfinished)
+        result['queue_active_inflight_without_message_id'] = sum(
+            isinstance(job.get('inflight'), dict) and bool(job['inflight']) and not job['inflight'].get('msg_id')
+            for job in unfinished)
+        result['queue_active_with_remaining_parts'] = sum(bool(job.get('todo')) for job in unfinished)
+        result['queue_active_filekit_local'] = sum(bool(job.get('filekit_local')) for job in unfinished)
     else:
         result.update(queue_jobs_total=None, queue_jobs_active=None, queue_jobs_finished=None, queue_jobs_unknown=None)
     if len(databases) != 1:

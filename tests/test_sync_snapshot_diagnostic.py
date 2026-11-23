@@ -16,7 +16,9 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
                      '101': {'chat': 42, 'addr': marker['owner_address'],
                              'build': 'unknown', 'epoch': 'different'}},
             'owner_refresh_intents': {'b' * 40: {'state': 'reserved', 'epoch': 'test-epoch'}},
-            'jobs': {'fixture-one': {'status': 'downloading', 'url': 'PRIVATE-URL'},
+            'jobs': {'fixture-one': {'status': 'downloading', 'kind': 'video', 'url': 'PRIVATE-URL',
+                                     'inflight': {'msg_id': 0, 'private': 'PRIVATE-CHECKPOINT'},
+                                     'todo': [7], 'hold': True},
                      'fixture-two': {'status': 'done'}, 'fixture-three': {'status': ['unrecognized']}}}
     (tmp_path / 'michiflin-state.json').write_text(json.dumps(data))
     root = tmp_path / 'accounts' / 'synthetic'
@@ -46,6 +48,15 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['queue_jobs_active'] == 1
     assert result['queue_jobs_finished'] == 1
     assert result['queue_jobs_unknown'] == 1
+    assert result['queue_active_status_downloading'] == 1
+    assert result['queue_active_status_sending'] == 0
+    assert result['queue_active_kind_video'] == 1
+    assert result['queue_active_kind_file'] == 0
+    assert result['queue_active_held'] == 1
+    assert result['queue_active_with_inflight'] == 1
+    assert result['queue_active_inflight_without_message_id'] == 1
+    assert result['queue_active_with_remaining_parts'] == 1
+    assert result['queue_active_filekit_local'] == 0
     assert result['owner_marker_fingerprint_present'] is True
     assert result['owner_directly_verified_contact_present'] is True
     assert result['requested_refresh_reserved'] == 1
@@ -56,7 +67,7 @@ def test_diagnostic_is_readonly_and_does_not_emit_private_fields(tmp_path, monke
     assert result['mail_io_started'] is False
     assert all(isinstance(v, (int, bool)) or v is None for v in result.values())
     serialized = json.dumps(result)
-    for secret in ['owner@example.invalid', 'PRIVATE-PARAMETERS', 'PRIVATE-URL', 'fixture-one', 'A' * 40, 'c8a5f423ba']:
+    for secret in ['owner@example.invalid', 'PRIVATE-PARAMETERS', 'PRIVATE-URL', 'PRIVATE-CHECKPOINT', 'fixture-one', 'A' * 40, 'c8a5f423ba']:
         assert secret not in serialized
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
     monkeypatch.setenv('REVOKE_LEGACY_MINIAPPS', '1')
