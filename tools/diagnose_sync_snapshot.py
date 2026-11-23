@@ -101,6 +101,43 @@ def diagnose(root: Path) -> dict:
         result['database_quick_check_ok'] = db.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
         result['pending_outgoing'] = db.execute('SELECT count(*) FROM msgs WHERE state IN (18,20) AND deleted=0').fetchone()[0]
         result['failed_outgoing'] = db.execute('SELECT count(*) FROM msgs WHERE state=24 AND deleted=0').fetchone()[0]
+        if jobs_valid:
+            # Correlate only the checkpointed message state. No identifiers,
+            # destinations, text or database rows leave this isolated process.
+            categories = ('delivered', 'pending', 'failed', 'missing_or_deleted', 'other', 'chat_mismatch', 'chat_unknown')
+            for name in categories:
+                result['queue_inflight_message_' + name] = 0
+            for job in unfinished:
+                flight = job.get('inflight')
+                if not isinstance(flight, dict):
+                    continue
+                try:
+                    msg_id = int(flight.get('msg_id') or 0)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if msg_id <= 0:
+                    continue
+                row = db.execute('SELECT state,deleted,chat_id FROM msgs WHERE id=?', (msg_id,)).fetchone()
+                if row is None or row[1]:
+                    category = 'missing_or_deleted'
+                else:
+                    try:
+                        chat_id = int(job.get('chat') or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        chat_id = 0
+                    if chat_id <= 0:
+                        category = 'chat_unknown'
+                    elif row[2] != chat_id:
+                        category = 'chat_mismatch'
+                    elif row[0] in {26, 28}:
+                        category = 'delivered'
+                    elif row[0] in {18, 20}:
+                        category = 'pending'
+                    elif row[0] == 24:
+                        category = 'failed'
+                    else:
+                        category = 'other'
+                result['queue_inflight_message_' + category] += 1
         core_apps = {r[0] for r in db.execute('SELECT id FROM msgs WHERE type=80 AND deleted=0')}
         result['all_core_webxdc'] = len(core_apps)
         result['unregistered_core_webxdc'] = len(core_apps - {int(k) for k in apps if str(k).isdigit()})

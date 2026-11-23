@@ -23,6 +23,11 @@ on:
         required: false
         type: string
         default: ''
+      diagnostic_public_key:
+        description: "Required for diagnostic: base64url X25519 public key; never provide a private key"
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -122,8 +127,8 @@ jobs:
       - name: Slow-mail forms, accessible dialogs and pre-audit compatibility
         if: matrix.suite == 'mobile'
         run: |
-          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_mobile_polish.py tests/test_android_startup.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_ui_polish.py tests/test_miniapp_size.py
-          ruff check tests/test_mobile_polish.py tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_ui_polish.py tests/test_miniapp_size.py tests/test_official_connections.py michiflin/app_package.py --select F,E9
+          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_mobile_polish.py tests/test_android_startup.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_diagnostic_inflight.py tests/test_diagnostic_artifact_crypto.py tests/test_ui_polish.py tests/test_miniapp_size.py
+          ruff check tests/test_mobile_polish.py tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_diagnostic_inflight.py tests/test_diagnostic_artifact_crypto.py tools/diagnostic_artifact_crypto.py tests/test_ui_polish.py tests/test_miniapp_size.py tests/test_official_connections.py michiflin/app_package.py --select F,E9
 
       - name: File kit, encrypted bridge and isolated archive worker
         if: matrix.suite == 'filekit'
@@ -228,6 +233,8 @@ jobs:
       MINIAPP_CURRENT_ONLY: "1"
       MINIAPP_RELEASE: "public-private-20261119-v1"
       SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
+      # Only a public key is passed; the matching private key stays off GitHub.
+      DIAGNOSTIC_PUBLIC_KEY: ${{ inputs.diagnostic_public_key }}
       # Diagnostic input is read-only and never arms a production delivery.
       OWNER_REQUESTED_APP_REVISION: ${{ inputs.diagnostic_revision || vars.OWNER_REQUESTED_APP_REVISION }}
       BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
@@ -238,6 +245,9 @@ jobs:
           python-version: "3.12"
       - name: Dependencies
         run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
+      # Fail closed before touching the backup if no usable encryption key was supplied.
+      - name: Validate diagnostic public key
+        run: python tools/diagnostic_artifact_crypto.py validate
       - name: Restore isolated copy only
         run: |
           python - <<'PY'
@@ -253,25 +263,31 @@ jobs:
               raise SystemExit(1)
           print('ISOLATED_SNAPSHOT_RESTORED_NO_MAIL_IO')
           PY
-      - name: Counts and booleans only
+      - name: Encrypt counts and booleans before upload
         run: |
+          umask 077
           python tools/diagnose_sync_snapshot.py > "$RUNNER_TEMP/sync-diagnostic.json"
           python tools/diagnose_backup_inventory.py > "$RUNNER_TEMP/backup-inventory.json"
+          python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/sync-diagnostic.enc"
+          python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/backup-inventory.enc"
+          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: sync-diagnostic-counts
-          path: ${{ runner.temp }}/sync-diagnostic.json
+          name: sync-diagnostic-encrypted
+          path: ${{ runner.temp }}/sync-diagnostic.enc
           retention-days: 1
           if-no-files-found: error
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backup-inventory-counts
-          path: ${{ runner.temp }}/backup-inventory.json
+          name: backup-inventory-encrypted
+          path: ${{ runner.temp }}/backup-inventory.enc
           retention-days: 1
           if-no-files-found: error
-      - name: Remove isolated private copy
+      - name: Remove isolated private copy and plaintext reports
         if: always()
-        run: rm -rf "$CONFIG_DIR" "$RUNNER_TEMP/private-restore.log"
+        run: |
+          rm -rf "$CONFIG_DIR" "$RUNNER_TEMP/private-restore.log"
+          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"
 
   old-action-logs:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'maintenance')
