@@ -12,7 +12,7 @@ on:
       task:
         description: "One validation entry point; never starts another bot"
         type: choice
-        options: [all, tests, model, diagnostic, maintenance]
+        options: [all, tests, model, diagnostic, maintenance, fence-preview, fence]
         default: all
       include_legacy:
         description: "For model task only: compare the older model too"
@@ -28,12 +28,17 @@ on:
         required: false
         type: string
         default: ''
+      fence_inventory_sha256:
+        description: "For a serialized handover only: SHA-256 of the previously verified asset metadata"
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: tests-${{ github.ref }}
+  group: ${{ (inputs.task == 'fence' || inputs.task == 'fence-preview') && 'michiflin-session' || format('tests-{0}', github.ref) }}
   cancel-in-progress: false
 
 jobs:
@@ -96,6 +101,7 @@ jobs:
           python -m unittest discover -s tests -p test_new_features.py -v
           python -m unittest discover -s tests -p test_ai_music.py -v
           python -m unittest tests.test_backup_maintenance -v
+          python -m pytest -q tests/test_reactivation_fence.py
           python -m pytest -q tests/test_primary_backup_no_drive.py tests/test_backup_inventory.py tests/test_snapshot_protection_plan.py tests/test_optional_community_update.py tests/test_media_error_categories.py tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py tests/test_mobile_library_backend.py tests/test_public_private_release.py tests/test_contact_invitation_repair.py tests/test_short_welcome.py tests/test_chat_interface_choice.py
           python -m unittest tests.test_github_handover -v
           python -m unittest tests.test_social_accounts -v
@@ -211,6 +217,40 @@ jobs:
         if: always()
         run: bash tools/local_gguf_session.sh stop
 
+  fence-old-writers:
+    if: github.event_name == 'workflow_dispatch' && (inputs.task == 'fence' || inputs.task == 'fence-preview')
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MICHIFLIN_FENCE_ARMED: "1"
+      MICHIFLIN_FENCE_PREVIEW: ${{ inputs.task == 'fence-preview' && '1' || '0' }}
+      MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
+      FENCE_INVENTORY_SHA256: ${{ inputs.fence_inventory_sha256 }}
+      GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
+      STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
+      STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
+      STATE_BACKUP_NAMESPACE: owner-clean-v1
+      STATE_BACKUP_STORAGE: releases
+      STATE_BACKUP_REQUIRED: "1"
+      STATE_BACKUP_RETAIN_ALL: "1"
+      MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
+      OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
+      OWNER_ONLY: "0"
+      INVITE_AUTO_ACCESS: "1"
+      EMAIL_KEY_RECOVERY: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Install offline verification dependencies
+        run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
+      - name: Verify the latest recovery and fence old writers
+        run: python tools/guard_clean_handover.py
+
   inspect-backup:
     if: github.event_name == 'workflow_dispatch' && inputs.task == 'diagnostic'
     runs-on: ubuntu-latest
@@ -222,6 +262,7 @@ jobs:
       STATE_BACKUP_REQUIRED: "1"
       STATE_BACKUP_STORAGE: releases
       STATE_BACKUP_INCLUDE_BLOBS: "1"
+      STATE_BACKUP_FENCE_REQUIRED: "1"
       MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
       STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}
       MICHIFLIN_NATIVE_READY_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}

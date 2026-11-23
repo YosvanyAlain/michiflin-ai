@@ -55,6 +55,9 @@ MAX_BLOB_BYTES = 200_000
 RELEASE_TAG = "michiflin-state-releases-v1"
 READY_TAG = "michiflin-state-release-ready-v1"
 RELEASE_MARKER = "Managed encrypted Michiflin state snapshots v1"
+# This reversible metadata prefix makes historical clients fail closed before
+# restoring or rotating snapshots. Only an explicitly fenced runtime accepts it.
+RELEASE_WRITER_FENCE = "Michiflin retained-state writer fence v1.\n"
 ASSET_PREFIX = "michiflin-state-"
 PENDING_PREFIX = "michiflin-pending-"
 ASSET_PATTERN = re.compile(r"^michiflin-(?:state|pending)-\d{8}T\d{6}Z-[0-9a-f]{16}\.bin$")
@@ -360,8 +363,12 @@ def _release(token: str, repo: str) -> dict | None:
         return None
     response.raise_for_status()
     item = response.json()
-    if not isinstance(item, dict) or not str(item.get("body") or "").startswith(RELEASE_MARKER):
-        raise ValueError("the reserved backup release does not belong to this application")
+    policy = os.getenv("STATE_BACKUP_FENCE_REQUIRED", "0").strip()
+    if policy not in {"0", "1"}:
+        raise ValueError("invalid state-backup fence policy")
+    expected = RELEASE_WRITER_FENCE + RELEASE_MARKER if policy == "1" else RELEASE_MARKER
+    if not isinstance(item, dict) or not str(item.get("body") or "").startswith(expected):
+        raise ValueError("the reserved backup release is not authorized for this writer")
     if not isinstance(item.get("id"), int) or item["id"] <= 0:
         raise ValueError("invalid release metadata")
     return item
@@ -765,6 +772,11 @@ def restore() -> None:
     namespace = os.getenv("STATE_BACKUP_NAMESPACE", "").strip()
     _backup_names()  # reject unknown namespaces even if a local state exists
     if target.exists():
+        # A reused runner must not bypass the reviewed writer fence merely
+        # because a local directory happens to survive from an older session.
+        if os.getenv("STATE_BACKUP_FENCE_REQUIRED", "0").strip() == "1":
+            if os.getenv("STATE_BACKUP_STORAGE", "releases").strip() != "releases" or _release(settings[0], settings[1]) is None:
+                raise RuntimeError("the required state-backup writer fence is unavailable")
         if namespace == CLEAN_OWNER_NAMESPACE:
             try:
                 origin = json.loads((target / CLEAN_OWNER_ORIGIN).read_text(encoding="utf-8"))

@@ -143,6 +143,9 @@ jobs:
       # Preserve existing snapshots during and after the handover. Storage may
       # grow; a full repository must stop new backups rather than delete history.
       STATE_BACKUP_RETAIN_ALL: "1"
+      # Historical sessions reject the reversible release-description fence.
+      # This reviewed runtime must not start unless that fence is in place.
+      STATE_BACKUP_FENCE_REQUIRED: "1"
       STATE_BACKUP_INCLUDE_BLOBS: "1"
       # Owner requested a light runtime: no archived or completed download copies.
       STATE_BACKUP_INCLUDE_MEDIA: "0"
@@ -152,6 +155,7 @@ jobs:
       # switches only after its distinct clean seed has been verified and sealed.
       MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
       STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}
+      MICHIFLIN_CLEAN_REPLAY_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH == '' && '0' || '1' }}
       MICHIFLIN_NATIVE_READY_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
       MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
       # A clean account has no old queues or maintenance notice to resume.
@@ -295,6 +299,10 @@ jobs:
       - name: Verify the separately paired clean identity
         if: env.STATE_BACKUP_NAMESPACE == 'owner-clean-v1'
         run: python tools/clean_owner_identity.py activate
+
+      - name: Hold uncertain in-flight deliveries once
+        if: env.STATE_BACKUP_NAMESPACE == 'owner-clean-v1'
+        run: python tools/hold_uncertain_handover.py
 
       - name: Initialize account
         run: |
