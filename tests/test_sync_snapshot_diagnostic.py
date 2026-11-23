@@ -144,3 +144,19 @@ def test_diagnostic_revision_input_cannot_arm_the_production_workflow():
     assert 'diagnostic_revision:' in tests_workflow
     assert "inputs.diagnostic_revision || vars.OWNER_REQUESTED_APP_REVISION" in tests_workflow
     assert 'diagnostic_revision' not in production
+
+
+def test_backup_diagnostic_requires_key_before_restore_and_uploads_only_ciphertext():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    workflow = (root / '.github/workflows/tests.yml').read_text()
+    inspect = workflow.split('  inspect-backup:', 1)[1].split('  old-action-logs:', 1)[0]
+    assert 'diagnostic_public_key:' in workflow
+    assert 'DIAGNOSTIC_PUBLIC_KEY: ${{ inputs.diagnostic_public_key }}' in inspect
+    assert inspect.index('diagnostic_artifact_crypto.py validate') < inspect.index('state_backup.restore()')
+    assert inspect.index('diagnostic_artifact_crypto.py encrypt') < inspect.index('actions/upload-artifact@')
+    assert 'path: ${{ runner.temp }}/sync-diagnostic.enc' in inspect
+    assert 'path: ${{ runner.temp }}/backup-inventory.enc' in inspect
+    assert 'path: ${{ runner.temp }}/sync-diagnostic.json' not in inspect
+    assert 'path: ${{ runner.temp }}/backup-inventory.json' not in inspect
+    assert 'rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"' in inspect
