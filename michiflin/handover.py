@@ -15,6 +15,7 @@ from . import state
 SOURCE_ASSET_ID = 699441108
 FLAG = "github_native_cutover_v1"
 HOLD = "github_native_held_v1"
+CLEAN_FLAG = "clean_handover_replay_v1"
 
 
 class FenceNotReady(RuntimeError):
@@ -25,11 +26,18 @@ def cutoff() -> float | None:
     with state.lock:
         flags = state.data.get("flags")
         marker = flags.get(FLAG) if isinstance(flags, dict) else None
-    required = os.getenv("MICHIFLIN_NATIVE_FENCE_REQUIRED", "0").strip() == "1"
-    if marker is None and not required:
-        return None  # other installations retain their existing behavior
-    if not isinstance(marker, dict) or marker.get("source_asset_id") != SOURCE_ASSET_ID:
-        raise FenceNotReady("cutover marker unavailable")
+        clean = flags.get(CLEAN_FLAG) if isinstance(flags, dict) else None
+    clean_required = os.getenv("MICHIFLIN_CLEAN_REPLAY_FENCE_REQUIRED", "0").strip() == "1"
+    if clean is not None or clean_required:
+        if not isinstance(clean, dict) or clean.get("version") != 1 or type(clean.get("cutoff")) is not int:
+            raise FenceNotReady("clean handover marker unavailable")
+        marker = clean
+    else:
+        required = os.getenv("MICHIFLIN_NATIVE_FENCE_REQUIRED", "0").strip() == "1"
+        if marker is None and not required:
+            return None  # other installations retain their existing behavior
+        if not isinstance(marker, dict) or marker.get("source_asset_id") != SOURCE_ASSET_ID:
+            raise FenceNotReady("cutover marker unavailable")
     try:
         result = float(marker["cutoff"])
     except (KeyError, TypeError, ValueError):

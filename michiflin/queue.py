@@ -383,7 +383,8 @@ def _finish_job(job: dict[str, Any], outcome: str) -> None:
 
 
 def _discard_completed_download(job: dict[str, Any]) -> None:
-    if (config.RETAIN_DOWNLOADED_MEDIA or job.get("status") != "done" or job.get("inflight")
+    if (job.get("preserve_handover_metadata") or config.RETAIN_DOWNLOADED_MEDIA
+            or job.get("status") != "done" or job.get("inflight")
             or not re.fullmatch(r"[0-9a-z]+", str(job.get("id", "")))):
         return
     base = folder(job)
@@ -1274,6 +1275,7 @@ def cleanup() -> None:
     now = time.time()
     with state.lock:
         expired = [job for job in jobs().values() if access.job_allowed(job)
+                   and not job.get("preserve_handover_metadata")
                    and job["status"] in FINAL and now - float(job.get("updated") or 0) > ttl]
         for job in expired:
             jobs().pop(job["id"], None)
@@ -1281,12 +1283,13 @@ def cleanup() -> None:
         shutil.rmtree(folder(job), ignore_errors=True)
     if not config.RETAIN_DOWNLOADED_MEDIA:
         for job in list(jobs().values()):
-            if access.job_allowed(job):
+            if access.job_allowed(job) and not job.get("preserve_handover_metadata"):
                 _discard_completed_download(job)
     # In retention mode, delivered files remain available until disk gets tight.
     if free_disk() < config.MIN_FREE_DISK_BYTES * 2:
         with state.lock:
             done = sorted((job for job in jobs().values() if job["status"] == "done"
+                           and not job.get("preserve_handover_metadata")
                            and access.job_allowed(job)), key=lambda item: float(item.get("done_at") or 0))
         for job in done:
             shutil.rmtree(folder(job), ignore_errors=True)
@@ -1395,7 +1398,9 @@ def recover() -> None:
         for job in jobs().values():
             if not access.job_allowed(job):
                 continue  # preserve historical non-owner jobs without starting or cleaning them
-            if job.get("status_msg"):
+            if job.get("preserve_status_on_recovery") and job.get("hold"):
+                continue  # the uncertain handoff stays byte-for-byte unchanged until review
+            if job.get("status_msg") and not job.get("preserve_status_on_recovery"):
                 stale.append(int(job["status_msg"]))
                 job["status_msg"] = 0
             if job["status"] in ACTIVE:
@@ -1464,6 +1469,9 @@ def status_label(job: dict[str, Any], locale: str) -> str:
 
 def recovery_warning(job: dict[str, Any], locale: str) -> str:
     warnings = []
+    if job.get("preserve_handover_metadata") and job.get("hold") and job.get("inflight"):
+        warnings.append(tr(locale, "Entrega anterior pausada para revisión: comprueba el chat antes de reanudar para evitar duplicados.",
+                           "Earlier delivery paused for review: check the chat before resuming to avoid duplicates."))
     if job.get("recovery_note") == "progress_lost":
         warnings.append(tr(locale,
                            "Parte del progreso local anterior no estaba disponible tras la pausa o el reinicio; solo se conservan los bytes guardados.",
