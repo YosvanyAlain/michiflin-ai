@@ -20,12 +20,12 @@ from urllib.parse import urlsplit
 from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 
-from . import net
+from . import book_search, net
 
 
 class AppError(ValueError):
-    def __init__(self, code: str, retryable: bool = False):
-        self.code, self.retryable = code, retryable
+    def __init__(self, code: str, retryable: bool = False, *, response=None):
+        self.code, self.retryable, self.response = code, retryable, response
         super().__init__(code)
 
 MIRROR = "https://gutenberg.pglaf.org"
@@ -86,7 +86,12 @@ def fetch(url: str, *, limit: int, seconds: float = 20) -> bytes:
             return net.read_limited(response, limit)
         finally:
             response.close()
-    except Exception:
+    except Exception as exc:
+        response = getattr(exc, 'response', None)
+        status = getattr(response, 'status_code', 0) if response is not None else 0
+        if status in {401, 403, 429}:
+            code = {401: 'source_auth_required', 403: 'source_forbidden', 429: 'source_rate_limited'}[status]
+            raise AppError(code, retryable=True, response=response) from None
         raise AppError("source_unavailable", retryable=True) from None
 
 
@@ -249,7 +254,9 @@ class GutenbergClient:
                     pass
             try:
                 compressed = fetch(FEED, limit=FEED_LIMIT, seconds=25)
-            except AppError:
+            except AppError as exc:
+                if exc.code in {'source_auth_required', 'source_forbidden', 'source_rate_limited'}:
+                    raise  # a stale local index must not bypass a provider's restriction
                 if cached and not self.database.exists():
                     self._index(cached, self.feed.stat().st_mtime, preserve_feed=False)
                     return
@@ -270,8 +277,9 @@ class GutenbergClient:
         try:
             self.sync()
             stale = self._age() >= CATALOG_MAX_AGE
-        except AppError:
-            if not self.database.is_file() or self.database.is_symlink():
+        except AppError as exc:
+            if (exc.code in {'source_auth_required', 'source_forbidden', 'source_rate_limited'}
+                    or not self.database.is_file() or self.database.is_symlink()):
                 raise
             stale = True
         where, values = ["1=1"], []
@@ -280,6 +288,13 @@ class GutenbergClient:
             if value:
                 where.append(f"instr({field},?)>0")
                 values.append(fold(value))
+        # Gutendex's generic `search` means title, creator OR subject. The
+        # local mirror adapter used to ignore it altogether, yielding the
+        # first catalogue IDs instead of results for the query.
+        search_terms = book_search.terms(str(params.get("search") or ""))
+        for word in search_terms:
+            where.append("(book_word(title,?) OR book_word(author,?) OR book_word(topic,?))")
+            values.extend((word, word, word))
         if language := params.get("languages"):
             where.append("instr(language,?)>0")
             values.append(";" + language + ";")
@@ -289,19 +304,35 @@ class GutenbergClient:
         clause = " AND ".join(where)
         try:
             with closing(sqlite3.connect(self.database.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+                db.create_function('book_word', 2, lambda field, word: book_search.contains(field or '', word or ''))
                 count = db.execute("SELECT COUNT(*) FROM books WHERE " + clause, values).fetchone()[0]
-                identifiers = [row[0] for row in db.execute("SELECT id FROM books WHERE " + clause + " ORDER BY id LIMIT ? OFFSET ?", [*values, PAGE_SIZE, (page - 1) * PAGE_SIZE])]
+                rank = " + ".join("(CASE WHEN instr(title,?)>0 THEN 4 WHEN instr(author,?)>0 THEN 3 ELSE 0 END)" for _ in search_terms)
+                order = (rank + " DESC, ") if rank else ""
+                rank_values = [value for word in search_terms for value in (word, word)]
+                identifiers = [row[0] for row in db.execute(
+                    "SELECT id FROM books WHERE " + clause + " ORDER BY " + order + "id LIMIT ? OFFSET ?",
+                    [*values, *rank_values, PAGE_SIZE, (page - 1) * PAGE_SIZE])]
         except sqlite3.Error:
             raise AppError("source_response_invalid") from None
 
+        stopped = threading.Event()
         def resolve(identifier):
+            if stopped.is_set():
+                return None, None
             try:
-                return self.metadata(identifier)
-            except AppError:
-                return None
+                return self.metadata(identifier), None
+            except AppError as exc:
+                if exc.code in {'source_auth_required', 'source_forbidden', 'source_rate_limited'}:
+                    stopped.set()  # do not start queued metadata calls after an explicit restriction
+                return None, exc
 
         with ThreadPoolExecutor(max_workers=3) as pool:
-            results = list(pool.map(resolve, identifiers))
+            resolved = list(pool.map(resolve, identifiers))
+        restriction = next((error for _, error in resolved if error is not None
+                            and error.code in {'source_auth_required', 'source_forbidden', 'source_rate_limited'}), None)
+        if restriction:
+            raise restriction
+        results = [result for result, _ in resolved]
         if identifiers and not any(results):
             raise AppError("source_unavailable", retryable=True)
         return {"results": [result for result in results if result], "count": count,
