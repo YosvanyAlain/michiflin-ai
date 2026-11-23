@@ -1,349 +1,84 @@
-name: Validacion y mantenimiento
+name: Read-only state credential permission inspection
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  schedule:
-    - cron: "20 3 * * *"
   workflow_dispatch:
     inputs:
       task:
-        description: "One validation entry point; never starts another bot"
+        description: "Only a read-only permission inspection"
         type: choice
-        options: [all, tests, model, diagnostic, maintenance, fence-preview, fence]
-        default: all
-      include_legacy:
-        description: "For model task only: compare the older model too"
-        type: boolean
-        default: false
-      diagnostic_revision:
-        description: "Optional exact revision to count in the read-only backup diagnostic"
-        required: false
-        type: string
-        default: ''
-      diagnostic_public_key:
-        description: "Required for diagnostic: base64url X25519 public key; never provide a private key"
-        required: false
-        type: string
-        default: ''
-      fence_inventory_sha256:
-        description: "For a serialized handover only: SHA-256 of the previously verified asset metadata"
-        required: false
-        type: string
-        default: ''
+        options: [diagnostic]
+        default: diagnostic
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ (inputs.task == 'fence' || inputs.task == 'fence-preview') && 'michiflin-session' || format('tests-{0}', github.ref) }}
-  cancel-in-progress: false
-
 jobs:
-  offline-tests:
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.task == 'tests' || inputs.task == 'all'))
-    runs-on: ubuntu-latest
-    name: Tests (${{ matrix.suite }})
-    # Keep every existing check. Run the long browser, viewport and mobile
-    # suites independently so a failure cannot hide later regression checks.
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [logic, browser, notifications, mobile, filekit]
-    timeout-minutes: 40
-    env:
-      CONFIG_DIR: /tmp/michiflin-test/config
-      JOB_DIR: /tmp/michiflin-test/jobs
-      PREVIEW_DIR: /tmp/michiflin-test/tmp
-      FREE_GATEWAYS: "0"
-      AI_HORDE: "0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
-        with:
-          python-version: "3.12"
-          cache: pip
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
-        with:
-          node-version: "22"
-
-      - uses: denoland/setup-deno@e95548e56dfa95d4e1a28d6f422fafe75c4c26fb  # v2.0.3
-        with:
-          deno-version: v2.x
-
-      - name: Install test toolchains
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends build-essential ffmpeg default-jdk-headless socat iproute2 util-linux gnupg xvfb xdotool xclip
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt ruff pytest
-
-      - name: Build the pinned selective RAR reader
-        run: |
-          python tools/build_unrar_native.py --output "$RUNNER_TEMP/michiflin-unrar/libunrar.so"
-          echo "MICHIFLIN_UNRAR_LIB=$RUNNER_TEMP/michiflin-unrar/libunrar.so" >> "$GITHUB_ENV"
-
-      - name: Install Playwright Chromium and WebKit
-        run: python -m playwright install --with-deps chromium webkit
-
-      - name: Logic and isolated-language tests
-        if: matrix.suite == 'logic'
-        run: |
-          python -m unittest discover -s tests -p test_logic.py -v
-          python -m unittest tests.test_safety -v
-          python -m unittest discover -s tests -p test_new_features.py -v
-          python -m unittest discover -s tests -p test_ai_music.py -v
-          python -m unittest tests.test_backup_maintenance -v
-          python -m pytest -q tests/test_reactivation_fence.py
-          python -m pytest -q tests/test_primary_backup_no_drive.py tests/test_backup_inventory.py tests/test_snapshot_protection_plan.py tests/test_optional_community_update.py tests/test_media_error_categories.py tests/test_release_backup_size.py tests/test_lightweight_retention.py tests/test_audit_base_compat.py tests/test_owner_refresh_delivery.py tests/test_mobile_library_backend.py tests/test_public_private_release.py tests/test_contact_invitation_repair.py tests/test_short_welcome.py tests/test_chat_interface_choice.py
-          python -m unittest tests.test_github_handover -v
-          python -m unittest tests.test_social_accounts -v
-          python -m unittest tests.test_personal_maintenance -v
-          python -m unittest tests.test_operational_maintenance -v
-          python -m unittest tests.test_owner_delivery -v
-          python -m pytest -q tests/test_summary_inline.py tests/test_inline_answer.py tests/test_fair_local_ai.py tests/test_local_gguf.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_hybrid_local_agent.py tests/test_local_ai_test_session.py tests/test_stable_agents_contract.py tests/test_single_path_maintenance.py tests/test_youtube_challenge_safe.py tests/test_native_github_return.py tests/test_clean_owner_identity.py tests/test_5_1_features.py tests/test_weather_home.py tests/test_relay_migration.py tests/test_cutover_identity.py tests/test_eltoque_safe.py tests/test_rates_monitor.py tests/test_individual_guest.py tests/test_identity_isolation.py tests/test_verified_identity_guard.py tests/test_email_key_recovery.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py
-          MICHIFLIN_SANDBOX_TESTS=1 python -m unittest tests.test_web_session tests.test_proxy_gateway tests.test_human_browser -v
-          MICHIFLIN_SANDBOX_TESTS=1 python -m pytest -q tests/test_graphical_saved.py
-
-      - name: Translation resilience
-        if: matrix.suite == 'logic'
-        run: python -m unittest tests.test_translation_fallback -v
-
-      - name: WebXDC behavior and package tests
-        if: matrix.suite == 'logic'
-        run: python tests/test_webxdc.py
-
-      - name: WebXDC browser smoke test
-        if: matrix.suite == 'browser'
-        run: |
-          python -m unittest tests.test_webxdc_browser -v
-          python -m pytest -q tests/test_inline_answer_browser.py tests/test_5_1_browser.py tests/test_offline_owner_data.py tests/test_premium_ui.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py tests/test_official_connections.py tests/test_youtube_download_preserved.py
-
-      - name: Durable notification and real viewport tests
-        if: matrix.suite == 'notifications'
-        run: python -m pytest -q tests/test_ui_refresh.py tests/test_community_notifications_browser.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py
-
-      - name: Slow-mail forms, accessible dialogs and pre-audit compatibility
-        if: matrix.suite == 'mobile'
-        run: |
-          python -m pytest -q tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_mobile_library_browser.py tests/test_mobile_polish.py tests/test_android_startup.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_diagnostic_inflight.py tests/test_diagnostic_artifact_crypto.py tests/test_ui_polish.py tests/test_miniapp_size.py
-          ruff check tests/test_mobile_polish.py tests/test_slow_add_forms.py tests/test_sheet_accessibility.py tests/test_audit_base_compat.py tests/test_creator_finish.py tests/test_legacy_refresh.py tests/test_owner_app_recovery.py tests/test_sync_snapshot_diagnostic.py tests/test_diagnostic_inflight.py tests/test_diagnostic_artifact_crypto.py tools/diagnostic_artifact_crypto.py tests/test_ui_polish.py tests/test_miniapp_size.py tests/test_official_connections.py michiflin/app_package.py --select F,E9
-
-      - name: File kit, encrypted bridge and isolated archive worker
-        if: matrix.suite == 'filekit'
-        env:
-          MICHIFLIN_WEBKIT_TESTS: "1"
-          MICHIFLIN_SANDBOX_TESTS: "1"
-        run: |
-          python -m unittest tests.test_filekit tests.test_filekit_api tests.test_filekit_join_remote tests.test_filekit_intake tests.test_filekit_transfer tests.test_filekit_delivery -v
-          python -m unittest tests.test_filekit_store tests.test_filekit_crypto tests.test_filekit_archive tests.test_filekit_remote_archive tests.test_filekit_rar_native tests.test_filekit_ui tests.test_translation_ui -v
-
-      - name: Static checks
-        if: matrix.suite == 'logic'
-        run: |
-          ruff check michiflin state_backup.py tests/test_primary_backup_no_drive.py tests/test_optional_community_update.py tests/test_media_error_categories.py tests/test_ui_refresh.py tests/test_community_notifications_browser.py bot.py tools/local_gguf_health.py tools/build_manual.py tools/retire_unused_ui_store.py tools/clean_owner_identity.py tools/github_native_guard.py tools/cutover_identity_once.py tools/profile_carryover_once.py tools/export_owner_history_once.py tools/restore_owner_history.py tools/retire_legacy_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_summary_inline.py tests/test_inline_answer.py tests/test_inline_answer_browser.py tests/test_fair_local_ai.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_clean_owner_identity.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_human_browser.py tests/test_graphical_saved.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py tests/test_weather_home.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_translation_fallback.py tests/test_translation_ui.py tests/test_premium_ui.py tests/test_email_key_recovery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py tests/test_filekit*.py --select F,E9
-          python -m compileall -q michiflin state_backup.py bot.py tools/local_gguf_health.py tools/build_manual.py tools/retire_unused_ui_store.py tools/clean_owner_identity.py tools/github_native_guard.py tools/cutover_identity_once.py tools/profile_carryover_once.py tools/export_owner_history_once.py tools/restore_owner_history.py tools/retire_legacy_identity_once.py .github/scripts/trim_action_logs.py .github/scripts/deliver_owner_documents.py tests/test_summary_inline.py tests/test_inline_answer.py tests/test_inline_answer_browser.py tests/test_fair_local_ai.py tests/test_local_web_coder.py tests/test_coder_jail.py tests/test_manual_inventory.py tests/test_collab_agent.py tests/test_clean_owner_identity.py tests/test_logic.py tests/test_safety.py tests/test_new_features.py tests/test_ai_music.py tests/test_backup_maintenance.py tests/test_social_accounts.py tests/test_personal_maintenance.py tests/test_operational_maintenance.py tests/test_owner_delivery.py tests/test_web_session.py tests/test_human_browser.py tests/test_graphical_saved.py tests/test_custom_looks.py tests/test_premium_themes.py tests/test_notification_navigation.py tests/test_notice_same_destination.py tests/test_notice_sheet_visibility.py tests/test_notice_viewport.py tests/test_bridge_storage_safety.py tests/test_appearance_and_latency.py tests/test_published_compat.py tests/test_proxy_gateway.py tests/test_webxdc_browser.py tests/test_weather_home.py tests/test_read_receipts.py tests/test_profile_carryover.py tests/test_owner_history_export.py tests/test_retire_legacy_identity.py tests/test_app_delivery.py tests/test_translation_fallback.py tests/test_translation_ui.py tests/test_premium_ui.py tests/test_email_key_recovery.py tests/test_invite_community.py tests/test_invite_resources.py tests/test_invite_community_ui.py tests/test_filekit*.py
-          ruff check tests/test_public_private_release.py tools/open_private_invite_access.py tests/test_mobile_library*.py tools/deliver_owner_refresh.py tools/lightweight_recovery.py --select F,E9
-          python -m compileall -q tests/test_mobile_library_backend.py tests/test_mobile_library_browser.py tools/deliver_owner_refresh.py tools/lightweight_recovery.py
-          node tests/coder_history.js
-          node tests/live_web.js
-          for file in webxdc/*.js; do node --check "$file"; done
-          git diff --check
-
-  compare:
-    if: github.event_name == 'workflow_dispatch' && (inputs.task == 'model' || inputs.task == 'all')
-    name: Local model (${{ matrix.variant }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        variant: ${{ fromJSON(inputs.include_legacy && '["qwen35","legacy"]' || '["qwen35"]') }}
-    env:
-      LOCAL_GGUF_VARIANT: ${{ matrix.variant }}
-      LOCAL_GGUF_EXTENDED: '1'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: "3.12"
-          cache: pip
-      - name: Install application dependencies without browser downloads
-        run: python -m pip install -r requirements.txt
-      - name: Verify and prepare isolated pinned engine and weights
-        run: bash tools/local_gguf_session.sh prepare
-      - name: Start authenticated isolated inference
-        run: bash tools/local_gguf_session.sh start
-      - name: Configure actual application paths for synthetic hybrid checks
-        run: |
-          echo "LOCAL_GGUF_ENABLED=1" >> "$GITHUB_ENV"
-          echo "LOCAL_GGUF_ACTIONS_TEST=1" >> "$GITHUB_ENV"
-          echo "LOCAL_GGUF_SOCKET_PATH=/run/michiflin-local-gguf/llama.sock" >> "$GITHUB_ENV"
-          echo "LOCAL_GGUF_KEY_FILE=$RUNNER_TEMP/michiflin-local-gguf-key" >> "$GITHUB_ENV"
-          echo "LOCAL_WEB_SYNTHESIS=1" >> "$GITHUB_ENV"
-          echo "LOCAL_AGENT_COORDINATOR=1" >> "$GITHUB_ENV"
-      - name: Actual hybrid code and synthetic-only rejection diagnostics
-        env:
-          CONFIG_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/config
-          JOB_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/jobs
-          PREVIEW_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight/preview
-          MICHIFLIN_SYNTHETIC_PREFLIGHT_DIR: ${{ runner.temp }}/michiflin-synthetic-preflight
-          LOCAL_HYBRID_REPORT: ${{ runner.temp }}/local-hybrid-preflight.json
-          MICHIFLIN_REQUIRE_SYNTHESIS: '1'
-        run: python tools/smoke_local_hybrid.py
-      - name: Real inference on synthetic questions only
-        run: python3 tools/benchmark_local_model.py
-      - name: Save synthetic answers and narrow checks for review
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: local-benchmark-${{ matrix.variant }}
-          path: |
-            local-benchmark.json
-            ${{ runner.temp }}/local-hybrid-preflight.json
-          if-no-files-found: ignore
-          retention-days: 3
-      - name: Stop and remove only this job's isolated model
-        if: always()
-        run: bash tools/local_gguf_session.sh stop
-
-  fence-old-writers:
-    if: github.event_name == 'workflow_dispatch' && (inputs.task == 'fence' || inputs.task == 'fence-preview')
-    permissions:
-      contents: read
-      actions: read
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      MICHIFLIN_FENCE_ARMED: "1"
-      MICHIFLIN_FENCE_PREVIEW: ${{ inputs.task == 'fence-preview' && '1' || '0' }}
-      MICHIFLIN_ACTIONS_TOKEN: ${{ github.token }}
-      FENCE_INVENTORY_SHA256: ${{ inputs.fence_inventory_sha256 }}
-      GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
-      STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
-      STATE_BACKUP_PASSPHRASE: ${{ secrets.CLEAN_BACKUP_PASSPHRASE }}
-      STATE_BACKUP_NAMESPACE: owner-clean-v1
-      STATE_BACKUP_STORAGE: releases
-      STATE_BACKUP_REQUIRED: "1"
-      STATE_BACKUP_RETAIN_ALL: "1"
-      MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
-      OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
-      OWNER_ONLY: "0"
-      INVITE_AUTO_ACCESS: "1"
-      EMAIL_KEY_RECOVERY: "0"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: "3.12"
-      - name: Install offline verification dependencies
-        run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
-      - name: Verify the latest recovery and fence old writers
-        run: python tools/guard_clean_handover.py
-
-  inspect-backup:
+  permissions-inspection:
     if: github.event_name == 'workflow_dispatch' && inputs.task == 'diagnostic'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    env:
-      CONFIG_DIR: ${{ github.workspace }}/.sync-diagnostic-state
-      GITHUB_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
-      STATE_BACKUP_REPO: ${{ secrets.STATE_BACKUP_REPO }}
-      STATE_BACKUP_REQUIRED: "1"
-      STATE_BACKUP_STORAGE: releases
-      STATE_BACKUP_INCLUDE_BLOBS: "1"
-      STATE_BACKUP_FENCE_REQUIRED: "1"
-      MICHIFLIN_CLEAN_EPOCH: ${{ vars.CLEAN_IDENTITY_EPOCH }}
-      STATE_BACKUP_NAMESPACE: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && 'owner-clean-v1' || 'github-native-v1' }}
-      MICHIFLIN_NATIVE_READY_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
-      MICHIFLIN_NATIVE_FENCE_REQUIRED: ${{ vars.CLEAN_IDENTITY_EPOCH != '' && '0' || '1' }}
-      STATE_BACKUP_PASSPHRASE: ${{ secrets[vars.CLEAN_IDENTITY_EPOCH != '' && 'CLEAN_BACKUP_PASSPHRASE' || 'STATE_BACKUP_PASSPHRASE'] }}
-      OWNER_ADDRESS: ${{ secrets.OWNER_ADDRESS }}
-      # Match the current runtime generation; old packages remain stored but revoked.
-      REVOKE_LEGACY_MINIAPPS: "1"
-      MINIAPP_CURRENT_ONLY: "1"
-      MINIAPP_RELEASE: "public-private-20261119-v1"
-      SYNC_DIAGNOSTIC_OFFLINE_RPC: "1"
-      # Only a public key is passed; the matching private key stays off GitHub.
-      DIAGNOSTIC_PUBLIC_KEY: ${{ inputs.diagnostic_public_key }}
-      # Diagnostic input is read-only and never arms a production delivery.
-      OWNER_REQUESTED_APP_REVISION: ${{ inputs.diagnostic_revision || vars.OWNER_REQUESTED_APP_REVISION }}
-      BOT_EPOCH: ${{ secrets.BOT_EPOCH || 'ba553fe52541ffaaaa85e1b382200cc60fa9b89b' }}
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
-        with:
-          python-version: "3.12"
-      - name: Dependencies
-        run: python -m pip install requests 'cryptography>=50' 'deltachat2==2.58.0' 'deltachat-rpc-server==2.58.0'
-      # Fail closed before touching the backup if no usable encryption key was supplied.
-      - name: Validate diagnostic public key
-        run: python tools/diagnostic_artifact_crypto.py validate
-      - name: Restore isolated copy only
+      - name: Inspect existing credential access without mutation
+        shell: bash
+        env:
+          STATE_TOKEN: ${{ secrets.STATE_GITHUB_TOKEN }}
         run: |
           python - <<'PY'
-          import contextlib, os
-          from pathlib import Path
-          import state_backup
-          try:
-              with open(Path(os.environ['RUNNER_TEMP']) / 'private-restore.log', 'w') as log:
-                  with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
-                      state_backup.restore()
-          except Exception as exc:
-              print('RESTORE_FAILED', type(exc).__name__)
-              raise SystemExit(1)
-          print('ISOLATED_SNAPSHOT_RESTORED_NO_MAIL_IO')
-          PY
-      - name: Encrypt counts and booleans before upload
-        run: |
-          umask 077
-          python tools/diagnose_sync_snapshot.py > "$RUNNER_TEMP/sync-diagnostic.json"
-          python tools/diagnose_backup_inventory.py > "$RUNNER_TEMP/backup-inventory.json"
-          python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/sync-diagnostic.enc"
-          python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/backup-inventory.enc"
-          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: sync-diagnostic-encrypted
-          path: ${{ runner.temp }}/sync-diagnostic.enc
-          retention-days: 1
-          if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: backup-inventory-encrypted
-          path: ${{ runner.temp }}/backup-inventory.enc
-          retention-days: 1
-          if-no-files-found: error
-      - name: Remove isolated private copy and plaintext reports
-        if: always()
-        run: |
-          rm -rf "$CONFIG_DIR" "$RUNNER_TEMP/private-restore.log"
-          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"
+          import json, os, sys
+          from urllib.error import HTTPError
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-  old-action-logs:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'maintenance')
-    permissions:
-      contents: read
-      actions: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7
-        with:
-          python-version: "3.12"
-      - run: python -m pip install 'requests>=2.31,<3'
-      - name: Remove only older diagnostic logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python .github/scripts/trim_action_logs.py
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          token = os.environ.pop('STATE_TOKEN', '')
+          if not token:
+              print('SAFE_PERMISSIONS_ABORTED missing_state_credential')
+              raise SystemExit(1)
+          opener = build_opener(NoRedirect())
+          def get(path):
+              request = Request('https://api.github.com' + path, headers={
+                  'Authorization': 'Bearer ' + token,
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+              }, method='GET')
+              with opener.open(request, timeout=30) as response:
+                  body = response.read(2_000_001)
+                  if len(body) > 2_000_000:
+                      raise ValueError('response_too_large')
+                  return json.loads(body), response.headers
+          try:
+              user, headers = get('/user')
+              scopes = {item.strip() for item in headers.get('X-OAuth-Scopes', '').split(',') if item.strip()}
+              state, _ = get('/repos/YosvanyAlain/michiflin-private-state')
+              perms = state.get('permissions') or {}
+              if state.get('private') is not True or not isinstance(perms, dict):
+                  raise ValueError('private_repo_or_role_unavailable')
+              state_actions, _ = get('/repos/YosvanyAlain/michiflin-private-state/actions/runs?status=in_progress&per_page=1')
+              next_actions, _ = get('/repos/YosvanyAlain/michiflin-ai-next/actions/runs?status=in_progress&per_page=1')
+              release, _ = get('/repos/YosvanyAlain/michiflin-private-state/releases/tags/michiflin-state-releases-v1')
+              result = {
+                  'private_state_repo_visible': True,
+                  'repository_reports_pull': bool(perms.get('pull')),
+                  'repository_reports_push': bool(perms.get('push')),
+                  'repository_reports_admin': bool(perms.get('admin')),
+                  'oauth_scope_header_present': bool(scopes),
+                  'classic_repo_scope_present': 'repo' in scopes,
+                  'state_actions_readable': isinstance(state_actions.get('total_count'), int),
+                  'next_actions_readable': isinstance(next_actions.get('total_count'), int),
+                  'state_release_readable': isinstance(release.get('id'), int),
+                  'write_test_attempted': False,
+              }
+              print('SAFE_PERMISSIONS_RESULT ' + json.dumps(result, sort_keys=True))
+              if not (result['repository_reports_pull'] and result['repository_reports_push']
+                      and result['state_actions_readable'] and result['next_actions_readable']
+                      and result['state_release_readable']):
+                  raise ValueError('required_access_unconfirmed')
+          except HTTPError as exc:
+              print('SAFE_PERMISSIONS_ABORTED http_' + str(exc.code))
+              raise SystemExit(1) from None
+          except Exception as exc:
+              print('SAFE_PERMISSIONS_ABORTED ' + type(exc).__name__)
+              raise SystemExit(1) from None
+          PY
