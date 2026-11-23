@@ -83,7 +83,7 @@ Los recorridos usan el renderizador actual, un puente sin conexión con datos si
 
 El bot entrega únicamente la miniapp privada, sin texto de bienvenida. Si escribes directamente, explica las opciones sin ejecutar la primera solicitud. Elige `/comandos` para activar chat y consultar las funciones disponibles, o `/app` para la miniapp. Recuerda la elección por chat privado; `/modo` permite cambiar después. No se analiza ni se borra un adjunto antes de elegir, ni se reejecuta el mensaje bloqueado.
 
-La biblioteca, Live y los editores locales requieren la miniapp: no todas sus funciones tienen equivalente por comandos. El idioma del chat utiliza tu preferencia o el idioma detectado de tu mensaje, no el del propietario. Los controles autenticados de seguridad y las importaciones firmadas del kit mantienen sus verificaciones. Consulta el [comportamiento de las interfaces](docs/silent-onboarding.md).
+La biblioteca, Live y los editores locales requieren la miniapp: no todas sus funciones tienen equivalente por comandos. El idioma del chat utiliza tu preferencia o el idioma detectado de tu mensaje, no el del propietario. Los controles autenticados de seguridad y las importaciones firmadas del kit mantienen sus verificaciones. Consulta el [comportamiento de las interfaces](docs/silent-onboarding.md) y los [límites de la biblioteca en la miniapp existente](docs/biblioteca-miniapp-existente.md).
 
 El ajuste **Uso del chat** → *App y comandos* activa el modo clásico, con comandos en español e inglés (`/ayuda`, `/web`, `/buscar`, `/bajar`, `/ia`, `/traducir`, `/clima`, `/tasa`, `/ajustes`…). La lista completa está en la [guía](docs/GUIDE.md#classic-chat-mode).
 

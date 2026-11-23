@@ -1090,6 +1090,11 @@ def handle(instance_id: int, entry: dict[str, Any], request: dict[str, Any]) -> 
         actual_args.pop("_collab_scope", None)  # never trust a client-supplied project identity
         actual_args.pop("_collab_task", None)
         actual_args.pop("_app_instance_id", None)
+        actual_args.pop("_book_scope", None)  # never trust a client-supplied pagination identity
+        if op == "books":
+            binding = [instance_id, admitted_entry.get("chat"), address, admitted_entry.get("epoch"),
+                       admitted_entry.get("build"), admitted_entry.get("access_session")]
+            actual_args["_book_scope"] = hashlib.sha256(json.dumps(binding, ensure_ascii=True).encode()).hexdigest()
         if op in OFFICIAL_ACCOUNT_OPS and not _official_private(instance_id, admitted_entry):
             # Account codes, temporary QR images and results must never reach
             # a group, unencrypted chat or a changed recipient/grant.
@@ -2598,21 +2603,39 @@ def op_youtube_thumbs(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("books")
 def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    from . import book_library, public_media
+    from . import book_legacy, book_library, public_media
     action = str(args.get("do") or "search")
+    scope = str(args.get("_book_scope") or "")
     try:
         if action == "search":
-            return book_library.search(str(args.get("source") or "gutenberg"), _clean(args.get("q"))[:200], args.get("page", 1), str(args.get("language") or "")[:5])
+            source, query = str(args.get("source") or "gutenberg"), _clean(args.get("q"))[:200]
+            page, language = args.get("page", 1), str(args.get("language") or "")[:5]
+            if scope:
+                return book_legacy.search(scope, source, query, page, language, locale=locale)
+            return book_library.search(source, query, page, language, locale=locale)
         if action == "archive_files":
             return {"downloads": book_library.archive_download(str(args.get("id") or ""))}
         if action == "download":
-            return book_library.reading_copy(str(args.get("url") or ""), str(args.get("format") or ""))
+            url, format = str(args.get("url") or ""), str(args.get("format") or "")
+            return book_legacy.reading_copy(scope, url, format) if scope else book_library.reading_copy(url, format)
         if action == "cover":
             return {"data": public_media.image_data(str(args.get("url") or ""), "low", cover=True)}
         raise ValueError("action")
-    except Exception:
-        raise AppError(tr(locale, "No se pudo leer la fuente o el libro. Puede no estar disponible, protegido o superar el límite de tamaño.",
-                          "The source or book could not be read. It may be unavailable, protected or exceed the size limit.")) from None
+    except Exception as exc:
+        code = book_library.failure_code(exc)
+        messages = {
+            'source_rate_limited': ("La fuente alcanzó su límite. Espera antes de reintentar.", "The source reached its rate limit. Wait before retrying."),
+            'source_forbidden': ("La fuente rechazó el acceso. No se eludió la restricción.", "The source refused access. The restriction was not bypassed."),
+            'source_auth_required': ("La fuente requiere autorización. No se eludió el acceso.", "The source requires authorization. Access was not bypassed."),
+            'source_restricted': ("La ficha indica restricciones o no ofrece un archivo público confirmado.", "The record indicates restrictions or no confirmed public file."),
+            'source_not_found': ("El archivo ya no está disponible. Consulta la ficha original.", "The file is no longer available. Check the original record."),
+            'network_timeout': ("La fuente agotó el tiempo de conexión. Prueba de nuevo más tarde.", "The source timed out. Try again later."),
+            'protected_book': ("El archivo está protegido o cifrado. No se eludió DRM.", "The file is protected or encrypted. DRM was not bypassed."),
+            'book_too_large': ("El archivo o su texto supera el límite seguro; no se guardó.", "The file or its text exceeds the safe limit; nothing was saved."),
+        }
+        fallback = ("No se pudo consultar la fuente o leer el libro. Prueba otro catálogo o revisa la ficha original.",
+                    "Could not query the source or read the book. Try another catalogue or the original record.")
+        raise AppError(tr(locale, *messages.get(code, fallback))) from None
 
 
 @op("public_groups")
