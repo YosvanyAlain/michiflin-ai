@@ -82,7 +82,10 @@ def test_only_two_workflows_with_explicit_non_bot_tools():
     assert {p.name for p in (ROOT / '.github/workflows').glob('*.yml')} == {'michiflin.yml', 'tests.yml'}
     text = (ROOT / '.github/workflows/tests.yml').read_text()
     assert 'branches: [main]' in text
-    assert 'options: [all, tests, model, diagnostic, maintenance]' in text
+    assert 'options: [all, tests, model, diagnostic, maintenance, fence-preview, fence]' in text
+    # The handover tools share the bot concurrency group but never start a bot.
+    assert "inputs.task == 'fence-preview'" in text and "inputs.task == 'fence'" in text
+    assert "&& 'michiflin-session'" in text
     assert "inputs.task == 'model'" in text
     assert "inputs.task == 'diagnostic'" in text
     assert 'NEXT_RUNTIME_CONFIG' not in text
