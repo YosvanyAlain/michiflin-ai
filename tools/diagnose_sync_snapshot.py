@@ -14,6 +14,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def invitation_fingerprint_matches(marker: dict, expected_digest: str) -> bool:
+    """Compare a one-way QA invite digest without publishing either fingerprint."""
+    fingerprint = str(marker.get('bot_fingerprint') or '').upper()
+    if len(fingerprint) not in (40, 64) or any(c not in '0123456789ABCDEF' for c in fingerprint):
+        return False
+    if len(expected_digest) != 40 or any(c not in '0123456789abcdef' for c in expected_digest):
+        return False
+    return hashlib.sha256(fingerprint.encode('ascii')).hexdigest()[:40] == expected_digest
+
+
 def diagnose(root: Path) -> dict:
     from michiflin import app_compat, app_package
     state_path = root / 'michiflin-state.json'
@@ -51,6 +61,7 @@ def diagnose(root: Path) -> dict:
     requested = os.getenv('OWNER_REQUESTED_APP_REVISION', '')
     requested_valid = len(requested) == 40 and all(c in '0123456789abcdef' for c in requested)
     result = {'schema': 1, 'read_only': True, 'mail_io_started': False,
+              'qa_invitation_matches_current_identity': invitation_fingerprint_matches(marker, requested),
               'revocation_enabled': strict or current_only, 'current_only_enabled': current_only, 'current_release_bindings': 0,
               'release_opening_checkpointed': data.get('public_access_release') == 'private-invites-20261119-v1',
               'invite_policy_open': isinstance(data.get('invite_policy'), dict) and data['invite_policy'].get('closed') is False,
