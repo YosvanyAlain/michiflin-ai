@@ -289,6 +289,7 @@ MODULES = {
     "book_epub_view.py": "Prepara una vista EPUB adaptada y acotada, sin HTML activo ni recursos remotos.",
     "book_legacy.py": "Adapta los resultados de la biblioteca a la miniapp existente, con cursores temporales aislados por autorización y búsqueda.",
     "book_library.py": "Catálogos públicos de libros, condiciones de acceso y copias de lectura acotadas sin eludir DRM o préstamos.",
+    "book_original.py": "Entrega temporal y acotada de archivos originales, aislada por instancia y sin convertir ni eludir restricciones.",
     "book_search.py": "Limita y coordina búsquedas de catálogos, agrupa solicitudes equivalentes y respeta las pausas de los proveedores.",
     "public_media.py": "Miniaturas públicas acotadas y cacheadas; nunca solicita imágenes desde el navegador del usuario.",
     "group_tools.py": "Solo búsqueda pública extractiva, tasas y clima en grupos cifrados activados por el dueño; sin IA, APIs personales ni funciones privadas.",

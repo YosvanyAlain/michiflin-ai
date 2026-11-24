@@ -65,7 +65,8 @@ def _public_url(url: str) -> None:
         raise BookError('public_https_required') from None
 
 
-def _fetch(url: str, maximum: int = MAX_DOCUMENT, guard_archive: bool = False) -> tuple[bytes, str]:
+def _fetch(url: str, maximum: int = MAX_DOCUMENT, guard_archive: bool = False,
+           anonymous: bool = False) -> tuple[bytes, str]:
     # For a reading copy, validate each redirect too. In particular, an
     # arbitrary web link may redirect to an Archive loan's OCR or EPUB file.
     # Do not let that route bypass the same public-item check as catalogue UI.
@@ -74,9 +75,12 @@ def _fetch(url: str, maximum: int = MAX_DOCUMENT, guard_archive: bool = False) -
     for _ in range(10):
         _public_url(current)
         if guard_archive:
-            current = _guard_archive_url(current, checked)
+            current = (_guard_archive_url(current, checked, anonymous=True) if anonymous
+                       else _guard_archive_url(current, checked))
             _public_url(current)
         options = {'follow_redirects': False} if guard_archive else {}
+        if anonymous:
+            options['anonymous'] = True
         response = net.request('GET', current, stream=True, timeout=(10, 20), **options)
         try:
             target = response.headers.get('Location') if guard_archive and response.status_code in {301, 302, 303, 307, 308} else None
@@ -109,8 +113,8 @@ def _fetch(url: str, maximum: int = MAX_DOCUMENT, guard_archive: bool = False) -
     raise BookError('redirects')
 
 
-def _json(url: str) -> dict:
-    data, _ = _fetch(url, 3_000_000)
+def _json(url: str, *, anonymous: bool = False) -> dict:
+    data, _ = (_fetch(url, 3_000_000, anonymous=True) if anonymous else _fetch(url, 3_000_000))
     value = json.loads(data)
     if not isinstance(value, dict):
         raise BookError('catalogue_format')
@@ -156,7 +160,8 @@ def failure_code(exc: Exception) -> str:
                'catalogue_format', 'source_response_invalid', 'source_response_limit', 'public_https_required',
                'book_too_large', 'protected_book', 'epub_structure', 'pdf_unavailable_or_limit',
                'pdf_unreadable_pages', 'not_a_book_text', 'not_a_book_pdf', 'not_a_book_epub',
-               'not_a_book_html', 'no_readable_text', 'unrecognized_format', 'format', 'identifier', 'redirects'}
+               'not_a_book_html', 'no_readable_text', 'unrecognized_format', 'format', 'identifier', 'redirects',
+               'transfer_expired'}
     if code in allowed:
         return code
     if isinstance(exc, ValueError) and str(exc) == 'too_large':
@@ -680,7 +685,7 @@ def _archive_restricted(data: dict) -> bool:
 
 
 def archive_download(identifier: str, *, filename: str | None = None, expected_title: str = '',
-                     expected_authors: list | None = None) -> list[dict]:
+                     expected_authors: list | None = None, anonymous: bool = False) -> list[dict]:
     if not re.fullmatch(r'[A-Za-z0-9_.-]{1,160}', identifier) or identifier in {'.', '..'}:
         raise BookError('identifier')
     with _archive_gate:
@@ -690,7 +695,8 @@ def archive_download(identifier: str, *, filename: str | None = None, expected_t
         if reason := _paused_reason('archive'):
             raise BookError(reason)
         try:
-            data = _json('https://archive.org/metadata/' + quote(identifier, safe=''))
+            url = 'https://archive.org/metadata/' + quote(identifier, safe='')
+            data = _json(url, anonymous=True) if anonymous else _json(url)
         except Exception as exc:
             _pause_after_http('archive', exc, frozenset({429}))
             raise
@@ -753,7 +759,7 @@ def archive_download(identifier: str, *, filename: str | None = None, expected_t
     return sorted(candidates, key=lambda item: (order[item['format']], item['url']))[:4]
 
 
-def _guard_archive_url(url: str, checked: dict[tuple[str, str], str]) -> str:
+def _guard_archive_url(url: str, checked: dict[tuple[str, str], str], *, anonymous: bool = False) -> str:
     parsed = urlsplit(url)
     host = (parsed.hostname or '').lower().rstrip('.')
     if host != 'archive.org' and not host.endswith('.archive.org'):
@@ -768,7 +774,8 @@ def _guard_archive_url(url: str, checked: dict[tuple[str, str], str]) -> str:
         return url
     key = (identifier, filename)
     if key not in checked:
-        downloads = archive_download(identifier, filename=filename)
+        downloads = (archive_download(identifier, filename=filename, anonymous=True) if anonymous
+                     else archive_download(identifier, filename=filename))
         if not downloads:
             raise BookError('source_restricted')
         canonical = downloads[0]['url']

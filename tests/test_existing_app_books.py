@@ -35,14 +35,20 @@ def _book(source, number, *, identifier=None, archive_id=''):
 
 
 def test_updated_package_keeps_strict_release_fencing(monkeypatch):
-    # The upgrade changes only these UI files. It MUST NOT silently authorize
-    # the previous package while the owner requests current-only operation.
+    # Only the intended UI files change; the offline engines are explicit new
+    # assets. Never silently authorize a prior package in current-only mode.
     manifest = json.loads(Path('tests/fixtures/library-current-package.json').read_text())
     entries = app_package.entries(miniapp.APP_FILES)
-    assert set(manifest) == {name for name, _ in entries}
-    changed = {name for name, source in entries
-               if hashlib.sha256((miniapp.APP_DIR / source).read_bytes()).hexdigest() != manifest[name]}
-    assert changed == {'app.css', 'app.js', 'books.js'}
+    names = {name for name, _ in entries}
+    assert set(manifest) <= names
+    assert names - set(manifest) == {'book-epub-worker.js', 'book-original.js',
+        'vendor/books/fflate.min.js', 'vendor/books/jszip.min.js', 'vendor/books/epub.min.js',
+        'vendor/books/purify.min.js', 'vendor/books/pdf.min.mjs', 'vendor/books/pdf.worker.min.mjs',
+        'vendor/books/NOTICE.txt', 'vendor/books/LICENSE-fflate.txt', 'vendor/books/LICENSE-jszip.txt',
+        'vendor/books/LICENSE-epubjs.txt', 'vendor/books/LICENSE-dompurify.txt', 'vendor/books/LICENSE-pdfjs.txt'}
+    changed = {name for name, source in entries if name in manifest
+               and hashlib.sha256((miniapp.APP_DIR / source).read_bytes()).hexdigest() != manifest[name]}
+    assert changed == {'app.css', 'app.js', 'books.js', 'i18n.js', 'index.html'}
     monkeypatch.setattr(config, 'BOT_EPOCH', 'test-epoch')
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'fixture-release')
     monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)

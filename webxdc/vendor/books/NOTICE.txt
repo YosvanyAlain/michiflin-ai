@@ -1,0 +1,16 @@
+Offline reader components, unmodified distribution files
+
+fflate 0.8.3, MIT: https://github.com/101arrowz/fflate
+  fflate.min.js sha256 462ef8041fc970e3615a20a9dd2b2e3047a073b2da729ef4f02b634bba8b7b83
+JSZip 3.10.2, MIT or GPL-3.0: https://github.com/Stuk/jszip
+  jszip.min.js sha256 7f839b2d4688b845c105ebf5d2f9803075f91ea0fe72bdaac176c3a04dd3d2c1
+EPUB.js 0.3.93, BSD-2-Clause: https://github.com/futurepress/epub.js
+  epub.min.js sha256 06eae15745107b4aa508c95538275251f69bfb9f1175621fc458d9f42ed082d4
+DOMPurify 3.5.0, Apache-2.0 or MPL-2.0: https://github.com/cure53/DOMPurify
+  purify.min.js sha256 f69a46022ab1f53e969c8ebbca98172c8995785a9b3be72ea4a12d25b1a1bf67
+PDF.js / pdfjs-dist 4.10.38, Apache-2.0: https://github.com/mozilla/pdf.js
+  pdf.min.mjs sha256 27fc2a057a00f92a4334ad06e17dbd7259912954e9fb7f76400bcca5fd190a9c
+  pdf.worker.min.mjs sha256 1baa1844c89c80a5b2797c916e75ab29254be46d8e9cb53cb6364d7aad84be36
+
+The corresponding license texts are next to this notice. Components are loaded
+from this package only and do not require a CDN or network access.

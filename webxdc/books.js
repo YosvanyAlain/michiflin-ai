@@ -41,11 +41,41 @@ window.BookShelf = (() => {
     if (readerCleanup) { const cleanup = readerCleanup; readerCleanup = null; cleanup(); }
   }
   const database = () => new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore("books", { keyPath: "id" });
-    request.onsuccess = () => resolve(request.result);
+    const request = indexedDB.open(DB_NAME, 2);
+    let abandoned = false;
+    request.onupgradeneeded = event => {
+      const db = request.result, tx = request.transaction;
+      if (!db.objectStoreNames.contains("books")) db.createObjectStore("books", { keyPath: "id" });
+      const hadOriginals = db.objectStoreNames.contains("originals");
+      if (!hadOriginals) db.createObjectStore("originals");
+      if (event.oldVersion === 1 && !hadOriginals) {
+        // Atomically move old inline buffers into the new store. Keep any old
+        // decoded text as well; a failed upgrade rolls back both stores.
+        const cursor = tx.objectStore("books").openCursor(), originals = tx.objectStore("originals");
+        cursor.onsuccess = () => {
+          try {
+            const row = cursor.result;
+            if (!row) return;
+            const book = row.value, data = book && book.original_bytes;
+            if (book && typeof book.id === "string" && (data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
+              const meta = { ...book, original_available: true };
+              delete meta.original_bytes;
+              if (book.original_format === "txt" && typeof book.text === "string") meta.original_text_length = book.text.length;
+              originals.put(data, book.id); row.update(meta);
+            }
+            row.continue();
+          } catch (_) { try { tx.abort(); } catch (_) {} }
+        };
+      }
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      if (abandoned) { db.close(); return; }
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(new Error("storage"));
-    request.onblocked = () => reject(new Error("storage"));
+    request.onblocked = () => { abandoned = true; reject(new Error("storage")); };
   });
   async function operation(mode, action) {
     const db = await database();
@@ -55,24 +85,85 @@ window.BookShelf = (() => {
       tx.onerror = tx.onabort = () => reject(new Error("storage"));
     }); } finally { db.close(); }
   }
-  const all = () => operation("readonly", objectStore => objectStore.getAll());
-  const remove = id => operation("readwrite", objectStore => objectStore.delete(id));
+  // WebKit hosts may reject Blob/File values in IndexedDB. Store ArrayBuffers
+  // in a separate object store and load only the book being opened/exported;
+  // browsing the shelf must not materialize hundreds of megabytes of books.
+  const allMeta = () => operation("readonly", objectStore => objectStore.getAll());
+  const hasOriginal = book => !!(book && book.original_format &&
+    (book.original_available || book.original_bytes || book.original instanceof Blob));
+  async function loadBook(book) {
+    if (!book || !book.original_format) return book;
+    if (!BookOriginal.mime[book.original_format]) throw new Error("storage");
+    let blob = book.original instanceof Blob ? book.original : null;
+    if (!blob) {
+      let data = book.original_bytes;
+      if (!data && book.original_available) {
+        const db = await database();
+        try { data = await new Promise((resolve, reject) => {
+          const tx = db.transaction("originals", "readonly"), request = tx.objectStore("originals").get(book.id);
+          tx.oncomplete = () => resolve(request.result); tx.onerror = tx.onabort = () => reject(new Error("storage"));
+        }); } finally { db.close(); }
+      }
+      if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) throw new Error("storage");
+      blob = new Blob([data], { type: BookOriginal.mime[book.original_format] });
+    }
+    // Verify even a legacy inline Blob: storage is not a trusted source.
+    const checked = await BookOriginal.inspect(blob, book.original_format, false);
+    if (checked.sha256 !== book.original_sha256) throw new Error("hash");
+    const { original_bytes: _bytes, ...rest } = book;
+    return { ...rest, original: blob, text: book.original_format === "txt" ? checked.text : book.text };
+  }
+  async function storageBook(book) {
+    if (!(book.original instanceof Blob)) return { meta: book, bytes: null };
+    const { original, ...rest } = book;
+    return { meta: { ...rest, text: book.original_format === "txt" ? "" : book.text,
+      original_available: true, original_text_length: book.original_format === "txt" ? book.text.length : 0 },
+      bytes: await BookOriginal.bytes(original) };
+  }
+  const all = async () => { const out = []; for (const book of await allMeta()) out.push(await loadBook(book)); return out; };
+  async function remove(id) {
+    const db = await database();
+    try { return await new Promise((resolve, reject) => {
+      const tx = db.transaction(["books", "originals"], "readwrite");
+      tx.objectStore("books").delete(id); tx.objectStore("originals").delete(id);
+      tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(new Error("storage"));
+    }); } finally { db.close(); }
+  }
   const byteLength = value => new TextEncoder().encode(value).length;
   const clamp = (number, min, max) => Math.max(min, Math.min(max, number));
   // Only display the bot's bounded, explicitly localized library messages;
   // arbitrary exceptions may contain technical details or private URLs.
   const libraryError = error => {
     const message = error && typeof error.message === "string" ? error.message : "";
-    return /^(La fuente |La conexión |El archivo |El PDF |El EPUB |La ficha |No se pudo consultar la fuente |No se pudo leer el PDF |The source |The connection |The file |The PDF |The EPUB |The record |Could not query the source |Could not read the PDF )/.test(message) ? message.slice(0, 250) : "";
+    return /^(La fuente |La conexión |La transferencia |El archivo |El PDF |El EPUB |La ficha |No se pudo consultar la fuente |No se pudo leer el PDF |The source |The connection |The transfer |The file |The PDF |The EPUB |The record |Could not query the source |Could not read the PDF )/.test(message) ? message.slice(0, 250) : "";
   };
   const safeNumber = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const safeURL = value => {
     try { const url = new URL(String(value || "")); return url.protocol === "https:" && !url.username && !url.password ? url.href : ""; }
     catch (_) { return ""; }
   };
-  function exportText(book) {
+  const missingOriginal = () => toast(text("El archivo original local no está disponible o no supera la comprobación. Restaura una copia verificada.",
+    "The local original file is unavailable or failed verification. Restore a verified backup."), "bad");
+  async function exportText(book) {
+    const marker = $("#view").firstElementChild;
+    try { book = await loadBook(book); } catch (_) { return missingOriginal(); }
+    if (marker && !marker.isConnected) return;
+    if (book.original instanceof Blob) return BookOriginal.exportOriginal(book);
+    if (book.original_format) return missingOriginal();
+    // Older instances saved only extracted text: never label this reconstruction
+    // as the EPUB/PDF (or the exact original TXT) which is no longer available.
     exportSheet(new Blob([book.title + "\n" + (book.authors || []).join(", ") + "\n\n" + book.text],
-      { type: "text/plain;charset=utf-8" }), niceName(book.title, "libro") + ".txt");
+      { type: "text/plain;charset=utf-8" }), niceName(book.title, "libro") + "-copia.txt");
+  }
+  async function openLocal(book) {
+    const marker = $("#view").firstElementChild;
+    try { book = await loadBook(book); } catch (_) { return missingOriginal(); }
+    if (marker && !marker.isConnected) return;
+    if (book.original_format && !(book.original instanceof Blob)) return missingOriginal();
+    if (book.original instanceof Blob && ["epub", "pdf"].includes(book.original_format)) {
+      leave(); readerCleanup = BookOriginal.open(book); return;
+    }
+    reader(book);
   }
   function cover(book, localOnly = false) {
     const box = h("div", { class: "book-cover", "aria-label": book.title }, icon("book"));
@@ -128,9 +219,13 @@ window.BookShelf = (() => {
     return /\S/.test(value.slice(end)) || !result.some(row => row.kind !== "image") ? null : result;
   }
   function normalBook(input) {
+    const original = input && input.original instanceof Blob && ["txt", "epub", "pdf"].includes(input.original_format) &&
+      input.original.size > 0 && input.original.size <= BookOriginal.MAX_FILE && /^[a-f0-9]{64}$/.test(input.original_sha256 || "");
+    const validText = input && typeof input.text === "string" && byteLength(input.text) <= (original ? 3 * BookOriginal.MAX_FILE : MAX_TEXT_BYTES);
     if (!input || typeof input !== "object" || typeof input.id !== "string" || !input.id || input.id.length > 220 ||
         /[\u0000-\u001f]/.test(input.id) || typeof input.title !== "string" || !input.title.trim() || input.title.length > 500 ||
-        typeof input.text !== "string" || !input.text.trim() || byteLength(input.text) > MAX_TEXT_BYTES) throw new Error("invalid_book");
+        (Object.prototype.hasOwnProperty.call(input, "original") && !original) || (!original && (input.original_format || input.original_sha256)) ||
+        !validText || (!original && !input.text.trim()) || (original && input.original_format === "txt" && !input.text.trim())) throw new Error("invalid_book");
     const book = { id: input.id, title: input.title, text: input.text,
       authors: Array.isArray(input.authors) ? input.authors.filter(a => typeof a === "string").slice(0, 20).map(a => a.slice(0, 200)) : [],
       languages: Array.isArray(input.languages) ? input.languages.filter(a => typeof a === "string").slice(0, 8).map(a => a.slice(0, 20)) : [],
@@ -141,6 +236,12 @@ window.BookShelf = (() => {
       downloaded: safeNumber(input.downloaded, Date.now()), url: safeURL(input.url), cover_url: safeURL(input.cover_url),
       sha256: typeof input.sha256 === "string" ? input.sha256.slice(0, 100) : "",
       presentation_warning: ["layout_unavailable", "some_images_omitted"].includes(input.presentation_warning) ? input.presentation_warning : "" };
+    if (original) {
+      book.original = input.original; book.original_format = input.original_format;
+      book.original_sha256 = input.original_sha256;
+      book.original_name = typeof input.original_name === "string" ? input.original_name.slice(0, 300) : "";
+      book.text_encoding = typeof input.text_encoding === "string" ? input.text_encoding.slice(0, 30) : "";
+    }
     const visual = presentationFor({ text: book.text, presentation: input.presentation });
     if (visual) book.presentation = visual;
     return book;
@@ -172,6 +273,7 @@ window.BookShelf = (() => {
       typeof item.label === "string").slice(0, 30).map(item => ({ offset: item.offset, label: item.label.slice(0, 100) }));
   }
   function progressOf(book) {
+    if (book.original instanceof Blob && ["epub", "pdf"].includes(book.original_format)) return BookOriginal.fileState(book);
     const pages = makePages(book.text);
     return { offset: positionFor(book, pages), marks: localMarks(book) };
   }
@@ -372,8 +474,10 @@ window.BookShelf = (() => {
         speak(0);
       } catch (_) { toast(text("La voz del sistema no está disponible.", "System speech is unavailable."), "bad"); }
     } }, icon("audio"), text("Leer en voz alta", "Read aloud"));
-    const warning = visual ? (book.presentation_warning === "some_images_omitted" ? text("EPUB adaptado: algunas imágenes no se pudieron incluir.", "Adapted EPUB: some images could not be included.") : text("EPUB adaptado para lectura; la maquetación original puede variar.", "EPUB adapted for reading; original layout may differ.")) :
-      text("Copia de texto: no conserva la maquetación ni las ilustraciones originales.", "Text copy: original layout and illustrations are not preserved.");
+    const warning = book.original instanceof Blob && book.original_format === "txt" ?
+      text(`TXT original conservado. Vista de texto: ${book.text_encoding || "UTF-8"}.`, `Original TXT preserved. Text view: ${book.text_encoding || "UTF-8"}.`) :
+      visual ? (book.presentation_warning === "some_images_omitted" ? text("Copia EPUB adaptada: algunas imágenes no se pudieron incluir; el archivo original no está disponible.", "Adapted EPUB copy: some images could not be included; the original file is unavailable.") : text("Copia EPUB adaptada; el archivo original no está disponible.", "Adapted EPUB copy; the original file is unavailable.")) :
+        text("Copia de texto: no conserva el archivo original, su maquetación ni las ilustraciones.", "Text copy: the original file, layout and illustrations are not preserved.");
     fill(root, h("header", { class: "book-reader-head" },
       h("button", { class: "btn ghost small", onclick: () => { leave(); go("books", { tab: "saved" }); } }, icon("back"), text("Mi biblioteca", "My library")),
       h("h2", {}, book.title), h("p", { class: "book-byline" }, (book.authors || []).join(", ")),
@@ -387,7 +491,8 @@ window.BookShelf = (() => {
         contents, markDisclosure,
         h("div", { class: "book-reader-actions" }, mark, read,
           h("button", { class: "btn ghost small", onclick: stopSpeech }, icon("pause"), text("Detener voz", "Stop speech")),
-          h("button", { class: "btn ghost small", onclick: () => exportText(book) }, icon("share"), text("Exportar al lector del sistema", "Export to system reader")))),
+          h("button", { class: "btn ghost small", onclick: () => exportText(book) }, icon("share"), book.original instanceof Blob ?
+            text("Exportar archivo original", "Export original file") : text("Exportar copia de texto (no original)", "Export text copy (not original)")))),
       content, nav(1));
     fill(main, root); drawMarks(); applySettings();
     const onScroll = () => {
@@ -403,14 +508,18 @@ window.BookShelf = (() => {
   // Enforce the 40-book limit inside the same write transaction as the insert.
   // This remains correct if two downloads or an import finish concurrently.
   async function saveNew(book) {
+    const stored = await storageBook(book);
     const db = await database(); let saved = null, reason = "storage";
     try { return await new Promise((resolve, reject) => {
-      const tx = db.transaction("books", "readwrite"), objectStore = tx.objectStore("books"), request = objectStore.getAll();
+      const tx = db.transaction(["books", "originals"], "readwrite"), objectStore = tx.objectStore("books"), request = objectStore.getAll();
       request.onsuccess = () => {
-        const existing = request.result.find(item => item.id === book.id);
-        if (existing) { saved = existing; return; }
-        if (request.result.length >= MAX_BOOKS) { reason = "capacity"; tx.abort(); return; }
-        saved = book; objectStore.put(book);
+        try {
+          const existing = request.result.find(item => item.id === book.id);
+          if (existing) { saved = existing; return; }
+          if (request.result.length >= MAX_BOOKS) { reason = "capacity"; tx.abort(); return; }
+          saved = stored.meta; objectStore.put(stored.meta);
+          if (stored.bytes) tx.objectStore("originals").put(stored.bytes, book.id);
+        } catch (_) { try { tx.abort(); } catch (_) {} }
       };
       tx.oncomplete = () => resolve(saved);
       tx.onerror = tx.onabort = () => reject(new Error(reason));
@@ -419,20 +528,30 @@ window.BookShelf = (() => {
   // Merge, never overwrite a book with the same id, and commit all new books
   // in a single IndexedDB transaction. Progress is restored only afterwards.
   async function importBatch(records) {
+    const prepared = [];
+    for (const record of records) prepared.push({ ...record, stored: await storageBook(record.book) });
     const db = await database(); let result = null, reason = "storage";
     try { return await new Promise((resolve, reject) => {
-      const tx = db.transaction("books", "readwrite"), objectStore = tx.objectStore("books"), request = objectStore.getAll();
+      const tx = db.transaction(["books", "originals"], "readwrite"), objectStore = tx.objectStore("books"), request = objectStore.getAll();
       request.onsuccess = () => {
-        const seen = new Set(request.result.map(item => item.id)), added = [], skipped = [];
-        for (const record of records) {
-          // A repeated legacy TXT has a fresh local id but identical contents.
-          // Never overwrite an existing copy or its reading progress.
-          const sameText = record.isTxt && [...request.result, ...added.map(item => item.book)].some(item => item.text === record.book.text);
-          if (seen.has(record.book.id) || sameText) skipped.push(record.book.id);
-          else { seen.add(record.book.id); added.push(record); }
-        }
-        if (seen.size > MAX_BOOKS) { reason = "capacity"; tx.abort(); return; }
-        added.forEach(record => objectStore.put(record.book)); result = { added, skipped };
+        try {
+          const seen = new Set(request.result.map(item => item.id)), added = [], skipped = [];
+          for (const record of prepared) {
+            // Preserve two files with identical decoded text but different bytes.
+            // Exact SHA-256 duplicates and legacy text-only copies are skipped.
+            const existing = [...request.result, ...added.map(item => item.book)];
+            const sameOriginal = record.book.original_sha256 && existing.some(item => item.original_sha256 === record.book.original_sha256);
+            const sameText = record.isTxt && !(record.book.original instanceof Blob) && existing.some(item => item.text === record.book.text);
+            if (seen.has(record.book.id) || sameOriginal || sameText) skipped.push(record.book.id);
+            else { seen.add(record.book.id); added.push(record); }
+          }
+          if (seen.size > MAX_BOOKS) { reason = "capacity"; tx.abort(); return; }
+          added.forEach(record => {
+            objectStore.put(record.stored.meta);
+            if (record.stored.bytes) tx.objectStore("originals").put(record.stored.bytes, record.book.id);
+          });
+          result = { added, skipped };
+        } catch (_) { try { tx.abort(); } catch (_) {} }
       };
       tx.oncomplete = () => resolve(result);
       tx.onerror = tx.onabort = () => reject(new Error(reason));
@@ -447,36 +566,89 @@ window.BookShelf = (() => {
     const records = [];
     for (const file of files) {
       if (file.size > MAX_IMPORT_BYTES) throw new Error("size");
-      const value = await fileText(file);
       if (/\.json$/i.test(file.name)) {
-        const payload = JSON.parse(value);
-        if (!payload || payload.type !== "michiflin-library" || payload.version !== 1 || !Array.isArray(payload.books) || payload.books.length > MAX_BOOKS) throw new Error("format");
+        const payload = JSON.parse(await fileText(file));
+        if (!payload || payload.type !== "michiflin-library" || ![1, 2].includes(payload.version) || !Array.isArray(payload.books) || payload.books.length > MAX_BOOKS) throw new Error("format");
         for (const item of payload.books) {
-          const book = normalBook(item && item.book);
-          const p = item && item.progress && typeof item.progress === "object" ? item.progress : {};
+          if (!item || !item.book || typeof item.book !== "object") throw new Error("format");
+          const values = { ...item.book }; let limited = false;
+          if (item.original_base64 !== undefined) {
+            const data = item.original_base64, format = values.original_format;
+            if (payload.version !== 2 || !BookOriginal.mime[format] || typeof data !== "string" ||
+                data.length > 4 * Math.ceil(BookOriginal.MAX_FILE / 3) || data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new Error("format");
+            const blob = base64ToBlob(data, BookOriginal.mime[format]);
+            const checked = await BookOriginal.inspect(blob, format);
+            if (checked.sha256 !== values.original_sha256 || (format === "txt" && checked.text !== values.text)) throw new Error("hash");
+            values.original = blob; limited = checked.limited;
+          } else if (values.original_format || values.original_sha256) throw new Error("format");
+          const book = normalBook(values), p = item.progress && typeof item.progress === "object" ? item.progress : {};
           const offset = Number.isInteger(p.offset) ? clamp(p.offset, 0, Math.max(0, book.text.length - 1)) : 0;
           const marks = Array.isArray(p.marks) ? p.marks.filter(m => m && Number.isInteger(m.offset) && m.offset >= 0 && m.offset < book.text.length && typeof m.label === "string").slice(0, 30).map(m => ({ offset: m.offset, label: m.label.slice(0, 100) })) : [];
-          records.push({ book, offset, marks });
+          const filePosition = book.original_format === "pdf" && Number.isInteger(p.filePosition) && p.filePosition > 0 && p.filePosition <= 600 ? p.filePosition :
+            book.original_format === "epub" && typeof p.filePosition === "string" && p.filePosition.length <= 1000 ? p.filePosition : null;
+          const fileMarks = Array.isArray(p.fileMarks) ? p.fileMarks.filter(m => m && typeof m.label === "string" &&
+            (book.original_format === "pdf" ? Number.isInteger(m.page) && m.page > 0 && m.page <= 600 :
+              book.original_format === "epub" && typeof m.cfi === "string" && m.cfi.length <= 1000)).slice(0, 30).map(m =>
+                book.original_format === "pdf" ? { page: m.page, label: m.label.slice(0, 100) } : { cfi: m.cfi, label: m.label.slice(0, 100) }) : [];
+          records.push({ book, offset, marks, filePosition, fileMarks, limited });
         }
-      } else if (/\.txt$/i.test(file.name)) {
-        const name = file.name.replace(/\.txt$/i, "").slice(0, 500) || text("Libro importado", "Imported book");
-        // Local ID only; it is not used for authorization or cryptography.
-        const id = "import:" + Date.now().toString(36) + ":" + Math.random().toString(36).slice(2) + ":" + records.length;
-        const book = normalBook({ id, title: name, text: value.replace(/^\ufeff/, ""), authors: [], source: text("Importado", "Imported"), source_format: "txt" });
-        records.push({ book, offset: 0, marks: [], isTxt: true });
-      } else throw new Error("format");
+      } else {
+        const found = /\.(txt|epub|pdf)$/i.exec(file.name);
+        if (!found || file.size > BookOriginal.MAX_FILE) throw new Error("format");
+        const format = found[1].toLowerCase(), checked = await BookOriginal.inspect(file, format);
+        const name = file.name.replace(/\.(txt|epub|pdf)$/i, "").slice(0, 500) || text("Libro importado", "Imported book");
+        const book = normalBook({ id: "import:" + checked.sha256, title: name, text: checked.text, authors: [],
+          source: text("Importado", "Imported"), source_format: format, original_format: format, original: file,
+          original_name: file.name, original_sha256: checked.sha256, text_encoding: checked.encoding });
+        records.push({ book, offset: 0, marks: [], filePosition: null, fileMarks: [], limited: checked.limited, isTxt: format === "txt" });
+      }
       if (records.length > MAX_BOOKS) throw new Error("size");
     }
     return records;
   }
   async function exportBackup(books) {
-    const payload = { type: "michiflin-library", version: 1, exported: new Date().toISOString(),
-      books: books.map(book => ({ book: normalBook(book), progress: progressOf(book) })) };
+    const payload = { type: "michiflin-library", version: 2, exported: new Date().toISOString(), books: [] };
+    let expected = 0;
+    for (const raw of books) {
+      const book = normalBook(await loadBook(raw)), { original, ...metadata } = book;
+      const item = { book: metadata, progress: progressOf(book) };
+      if (original instanceof Blob) {
+        expected += 4 * Math.ceil(original.size / 3);
+        if (expected > MAX_IMPORT_BYTES || await FileKitCrypto.hashBlob(original) !== book.original_sha256) throw new Error("size_or_hash");
+        item.original_base64 = await blobToBase64(original);
+      }
+      payload.books.push(item);
+    }
     const blob = new Blob([JSON.stringify(payload)], { type: "application/json;charset=utf-8" });
     if (blob.size > MAX_IMPORT_BYTES) {
-      toast(text("La copia supera 40 MB. Exporta los libros individualmente como TXT.", "The backup exceeds 40 MB. Export books individually as TXT."), "bad"); return;
+      toast(text("La copia supera 40 MiB. Exporta los archivos originales individualmente.", "The backup exceeds 40 MiB. Export original files individually."), "bad"); return;
     }
     exportSheet(blob, "michiflin-biblioteca.json");
+  }
+  async function getOriginal(chosen, onProgress) {
+    const first = await bridge.call("books", { do: "original_start", url: chosen.url, format: chosen.format });
+    try {
+      if (!first || typeof first.transfer !== "string" || first.transfer.length > 100 || first.format !== chosen.format || !Number.isInteger(first.size) ||
+          first.size < 1 || first.size > BookOriginal.MAX_FILE || !/^[a-f0-9]{64}$/.test(first.sha256 || "") ||
+          !Number.isInteger(first.count) || first.count !== Math.ceil(first.size / 900000) || first.count > 9) throw new Error("incomplete");
+      const parts = [];
+      for (let index = 0; index < first.count; index++) {
+        onProgress(index, first.count);
+        const part = index === 0 ? first : await bridge.call("books", { do: "original_part", transfer: first.transfer, index });
+        if (!part || part.index !== index || part.count !== first.count || typeof part.data !== "string" ||
+            part.data.length > 1200000 || part.data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(part.data)) throw new Error("incomplete");
+        const blob = base64ToBlob(part.data, BookOriginal.mime[first.format]);
+        if (blob.size !== Math.min(900000, first.size - index * 900000)) throw new Error("incomplete");
+        parts.push(blob);
+      }
+      const blob = new Blob(parts, { type: BookOriginal.mime[first.format] });
+      const checked = await BookOriginal.inspect(blob, first.format);
+      if (blob.size !== first.size || checked.sha256 !== first.sha256) throw new Error("hash");
+      return { blob, checked, format: first.format };
+    } finally {
+      if (first && typeof first.transfer === "string" && first.transfer.length <= 100)
+        bridge.call("books", { do: "original_close", transfer: first.transfer }, { quiet: true }).catch(() => {});
+    }
   }
 
   async function mount(main, params = {}) {
@@ -501,49 +673,69 @@ window.BookShelf = (() => {
       openSheet(book.title, [h("p", {}, (book.authors || []).join(", ")),
         h("p", { class: "muted small" }, (book.source || "") + (book.access ? " · " + book.access : "")),
         h("p", {}, book.description || text("Consulta la ficha del proveedor para la descripción y las condiciones de acceso.", "See the provider record for the description and access terms.")),
-        h("p", { class: "note" }, text("La miniapp guarda una copia de lectura. Los EPUB compatibles pueden conservar títulos, énfasis y algunas imágenes; PDF se extrae a texto. No se eluden préstamos ni DRM. Comprueba los derechos en tu país.", "The app saves a reading copy. Compatible EPUBs can preserve headings, emphasis and some images; PDF is extracted as text. Loans and DRM are not bypassed. Check rights in your country.")),
+        h("p", { class: "note" }, text("Elige EPUB, PDF o TXT cuando la fuente lo ofrezca. La miniapp conserva y exporta los bytes originales; la vista segura puede omitir funciones activas. No se eluden préstamos ni DRM. Comprueba los derechos en tu país.", "Choose EPUB, PDF or TXT when offered by the source. The app keeps and exports original bytes; the safe view may omit active features. Loans and DRM are not bypassed. Check rights in your country.")),
         url ? h("a", { class: "btn ghost", href: url, target: "_blank", rel: "noopener noreferrer" }, text("Ficha y formatos originales", "Record and original formats")) : null]);
     };
     const addBook = book => {
       if (!book || typeof book.id !== "string" || typeof book.title !== "string" || shown.has(book.id)) return;
       const saved = local.get(book.id);
-      if (!saved && !(book.downloads || []).some(item => ["txt", "epub", "pdf"].includes(item.format))) return;
+      const downloads = Array.isArray(book.downloads) ? book.downloads.filter(item => item && ["txt", "epub", "pdf"].includes(item.format) && safeURL(item.url)).slice(0, 12) : [];
+      if (!saved && !downloads.length) return;
       shown.add(book.id);
+      const preferred = Math.max(0, downloads.findIndex(item => item.format === "epub"));
+      const picker = downloads.length > 1 ? h("select", { class: "book-format-picker", "aria-label": text("Formato original", "Original format") },
+        downloads.map((item, index) => h("option", { value: String(index), selected: index === preferred }, item.format.toUpperCase() + (downloads.filter(other => other.format === item.format).length > 1 ? ` ${index + 1}` : "")))) : null;
       const button = h("button", { class: "btn primary small", onclick: async () => {
-        if (local.has(book.id)) return reader(local.get(book.id));
-        button.disabled = true;
+        if (local.has(book.id)) return openLocal(local.get(book.id));
+        button.disabled = true; if (picker) picker.disabled = true;
         try {
-          const downloads = book.downloads || [];
-          if (!downloads.length) { details(book); return; }
-          const chosen = downloads.find(item => item.format === "epub") || downloads.find(item => item.format === "txt") || downloads[0];
-          status.textContent = text("Descargando la copia de lectura; puede tardar. Mantén la miniapp abierta hasta que aparezca «Abrir».", "Downloading the reading copy; this may take a while. Keep the miniapp open until “Open” appears.");
-          const response = await bridge.call("books", { do: "download", url: chosen.url, format: chosen.format, visual: true });
-          if (!response.complete || typeof response.text !== "string" || !response.text) throw new Error("incomplete");
-          const stored = normalBook({ ...book, text: response.text, sha256: response.sha256, downloaded: Date.now(),
-            source_format: response.source_format, presentation: response.presentation, presentation_warning: response.presentation_warning });
+          const chosen = downloads[picker ? Number(picker.value) : 0];
+          if (!chosen) { details(book); return; }
+          status.textContent = text("Descargando el archivo original; mantén abierta la miniapp hasta que aparezca «Abrir».", "Downloading the original file; keep the miniapp open until “Open” appears.");
+          const result = await getOriginal(chosen, (index, count) => {
+            status.textContent = text(`Recibiendo ${chosen.format.toUpperCase()} original: parte ${index + 1} de ${count}. Mantén abierta la miniapp.`,
+              `Receiving original ${chosen.format.toUpperCase()}: part ${index + 1} of ${count}. Keep the miniapp open.`);
+          });
+          const stored = normalBook({ ...book, text: result.checked.text, downloaded: Date.now(), source_format: result.format,
+            original: result.blob, original_format: result.format, original_sha256: result.checked.sha256,
+            original_name: niceName(book.title, "libro") + "." + result.format, text_encoding: result.checked.encoding });
           const savedCopy = await saveNew(stored); local.set(book.id, savedCopy);
-          button.textContent = text("Abrir", "Open");
-          status.textContent = text("Guardado en esta miniapp para leer sin conexión.", "Saved in this miniapp for offline reading.");
+          button.textContent = text("Abrir", "Open"); if (picker) picker.hidden = true;
+          status.textContent = hasOriginal(savedCopy) ? (result.checked.limited ?
+            text("Original guardado. Este EPUB contiene cifrado o fuentes ofuscadas no admitidas por el lector; puedes exportarlo sin modificar.", "Original saved. This EPUB contains encryption or obfuscated fonts unsupported by the reader; you can export it unchanged.") :
+            text("Archivo original comprobado y guardado en esta miniapp para leer sin conexión.", "Original file verified and saved in this miniapp for offline reading.")) :
+            text("Ya existía una copia de texto; no se sustituyó automáticamente.", "A text copy already existed; it was not replaced automatically.");
         } catch (error) {
           status.textContent = error.message === "capacity" ? text("Límite de 40 libros en esta instancia. Exporta o elimina una copia antes de añadir otra.", "This instance is limited to 40 books. Export or remove a copy before adding another.") :
             (libraryError(error) ? text("No se pudo guardar. ", "Could not save. ") + libraryError(error) :
-              text("No se pudo descargar o guardar. Revisa la conexión, el acceso de la fuente y el espacio disponible; consulta la ficha original.", "Could not download or save. Check the connection, source access and available storage; see the original record."));
-        } finally { button.disabled = false; }
+              error.message === "size" ? text("El archivo o su contenido supera el límite seguro; no se guardó.", "The file or its contents exceed the safe limit; nothing was saved.") :
+                text("No se pudo descargar o comprobar el original. No se guardó; revisa la conexión, el acceso y el espacio, o consulta la ficha original.", "Could not download or verify the original. Nothing was saved; check connection, access and storage, or see the original record."));
+        } finally { button.disabled = false; if (picker && !picker.hidden) picker.disabled = false; }
       } }, saved ? text("Abrir", "Open") : text("Descargar", "Download"));
-      const progress = saved ? Math.round(progressOf(saved).offset * 100 / saved.text.length) : null;
+      const original = hasOriginal(saved);
+      const progressLength = saved && (saved.text ? saved.text.length : saved.original_format === "txt" ? Number(saved.original_text_length || 0) : 0);
+      const progressOffset = saved && saved.text ? progressOf(saved).offset : saved ? Number(store.get("book.offset." + saved.id, 0)) || 0 : 0;
+      const progress = progressLength ? Math.round(clamp(progressOffset, 0, progressLength - 1) * 100 / progressLength) : null;
+      const tag = saved ? (original ? saved.original_format.toUpperCase() + text(" original", " original") : saved.original_format ? text("Original no disponible", "Original unavailable") : text("Copia de texto", "Text copy")) +
+        (Number.isFinite(progress) ? ` · ${progress}%` : "") : (book.source || text("Catálogo", "Catalogue"));
       const card = h("article", { class: "card book-card" }, cover(book, !!saved),
         h("div", { class: "book-card-info" }, h("h3", { class: "book-title" }, book.title),
           h("p", { class: "book-author muted small" }, (book.authors || []).join(", ") || text("Autor no indicado", "Author not listed")),
-          h("span", { class: "tag" }, saved ? text("Guardado · ", "Saved · ") + progress + "%" : (book.source || text("Catálogo", "Catalogue"))),
+          h("span", { class: "tag" }, tag), picker,
           h("div", { class: "book-actions" }, button, h("button", { class: "btn ghost small", onclick: () => details(book) }, text("Detalles", "Details")))));
-      if (active === "saved") add(card.querySelector(".book-actions"), h("button", { class: "btn ghost small", onclick: async () => {
-        if (await confirmBox(t("delete"), text("¿Eliminar solo esta copia de la miniapp? Esta acción no borra archivos exportados.", "Delete only this miniapp copy? Exported files are not deleted."), t("delete"))) {
-          try { await remove(book.id); local.delete(book.id); shown.delete(book.id); card.remove();
-            store.del("book.offset." + book.id); store.del("book.page." + book.id); store.del("book.marks." + book.id);
-            status.textContent = text("Copia eliminada de esta miniapp.", "Copy removed from this miniapp.");
-          } catch (_) { status.textContent = text("No se pudo eliminar la copia.", "Could not remove the copy."); }
-        }
-      } }, icon("trash"), t("delete")));
+      if (active === "saved") {
+        add(card.querySelector(".book-actions"), h("button", { class: "btn ghost small", onclick: () => exportText(saved) }, icon("share"),
+          original ? text("Exportar original", "Export original") : text("Exportar texto", "Export text")));
+        add(card.querySelector(".book-actions"), h("button", { class: "btn ghost small", onclick: async () => {
+          if (await confirmBox(t("delete"), text("¿Eliminar solo esta copia de la miniapp? Esta acción no borra archivos exportados.", "Delete only this miniapp copy? Exported files are not deleted."), t("delete"))) {
+            try { await remove(book.id); local.delete(book.id); shown.delete(book.id); card.remove();
+              store.del("book.offset." + book.id); store.del("book.page." + book.id); store.del("book.marks." + book.id);
+              store.del("book.filePosition." + book.id); store.del("book.fileMarks." + book.id);
+              status.textContent = text("Copia eliminada de esta miniapp.", "Copy removed from this miniapp.");
+            } catch (_) { status.textContent = text("No se pudo eliminar la copia.", "Could not remove the copy."); }
+          }
+        } }, icon("trash"), t("delete")));
+      }
       add(shelf, card);
     };
     function busy(value) {
@@ -590,23 +782,23 @@ window.BookShelf = (() => {
     const controls = h("div", { class: "book-search-panel" },
       h("div", { class: "book-search-row" }, query, searchButton, refresh),
       h("div", { class: "book-filters" }, sourcePicker, languagePicker));
-    const importInput = h("input", { type: "file", accept: ".txt,.json,text/plain,application/json", multiple: true, class: "book-file-input", "aria-label": text("Elegir archivos para importar", "Choose files to import") });
-    const importButton = h("button", { class: "btn ghost small", onclick: () => importInput.click() }, text("Importar TXT o copia", "Import TXT or backup"));
+    const importInput = h("input", { type: "file", accept: ".txt,.epub,.pdf,.json,text/plain,application/epub+zip,application/pdf,application/json", multiple: true, class: "book-file-input", "aria-label": text("Elegir archivos para importar", "Choose files to import") });
+    const importButton = h("button", { class: "btn ghost small", onclick: () => importInput.click() }, text("Importar libros o copia", "Import books or backup"));
     const backupButton = h("button", { class: "btn ghost small", onclick: async () => {
       if (!local.size) return toast(text("No hay libros para exportar.", "There are no books to export."), "bad");
       try { await exportBackup([...local.values()]); } catch (_) { toast(text("No se pudo preparar la copia.", "Could not prepare the backup."), "bad"); }
     } }, text("Copia de biblioteca", "Library backup"));
     const savedControls = h("div", { class: "book-saved-controls", hidden: true }, savedFilter,
       h("div", { class: "book-saved-actions" }, importButton, backupButton, importInput),
-      h("p", { class: "muted small" }, text("La copia incluye libros, marcadores y progreso de esta instancia; no está cifrada. Los TXT de la miniapp anterior se importan sin su progreso original.",
-        "The backup includes books, bookmarks and progress from this instance; it is not encrypted. TXT from the previous miniapp imports without its original progress.")));
+      h("p", { class: "muted small" }, text("La copia incluye los archivos originales disponibles, marcadores y progreso de esta instancia; no está cifrada. Los TXT de la miniapp anterior no recuperan su original EPUB/PDF ni su progreso.",
+        "The backup includes available original files, bookmarks and progress from this instance; it is not encrypted. TXT from the previous miniapp cannot restore the original EPUB/PDF or its progress.")));
     const drawSaved = () => {
       shown = new Set(); shelf.replaceChildren();
       const filter = savedFilter.value.trim().toLocaleLowerCase();
       [...local.values()].sort((a, b) => safeNumber(b.downloaded) - safeNumber(a.downloaded)).filter(book =>
         (book.title + " " + (book.authors || []).join(" ")).toLocaleLowerCase().includes(filter)).forEach(addBook);
       status.textContent = local.size ? text(`${shown.size} de ${local.size} libros guardados en esta instancia.`, `${shown.size} of ${local.size} books saved in this instance.`) :
-        text("Aún no hay libros guardados. Busca uno o importa un TXT.", "No books saved yet. Search or import a TXT.");
+        text("Aún no hay libros guardados. Busca uno o importa EPUB, PDF o TXT.", "No books saved yet. Search or import EPUB, PDF or TXT.");
     };
     savedFilter.addEventListener("input", drawSaved);
     importInput.addEventListener("change", async () => {
@@ -618,16 +810,22 @@ window.BookShelf = (() => {
         const records = await parseFiles(files), result = await importBatch(records);
         let progressSaved = true;
         for (const item of result.added) {
-          local.set(item.book.id, item.book);
+          local.set(item.book.id, item.stored.meta);
           progressSaved = store.set("book.offset." + item.book.id, item.offset, true) && progressSaved;
           progressSaved = store.set("book.marks." + item.book.id, item.marks, true) && progressSaved;
+          if (["epub", "pdf"].includes(item.book.original_format)) {
+            progressSaved = store.set("book.filePosition." + item.book.id, item.filePosition, true) && progressSaved;
+            progressSaved = store.set("book.fileMarks." + item.book.id, item.fileMarks, true) && progressSaved;
+          }
         }
         if (active === "saved" && shelf.isConnected) drawSaved();
         status.textContent = text(`Importados: ${result.added.length}. Ya existentes sin modificar: ${result.skipped.length}.`, `Imported: ${result.added.length}. Existing books unchanged: ${result.skipped.length}.`) +
+          (result.added.some(item => item.limited) ? text(" Hay EPUB con cifrado o fuentes ofuscadas no admitidas para lectura; se conserva el original exportable.", " Some EPUBs contain encryption or obfuscated fonts unsupported by the reader; the original remains exportable.") : "") +
           (progressSaved ? "" : text(" Los libros se guardaron, pero no se pudo restaurar todo el progreso.", " Books were saved, but not all progress could be restored."));
       } catch (error) {
         status.textContent = error.message === "capacity" ? text("No se importó nada: se supera el límite de 40 libros.", "Nothing was imported: the 40-book limit would be exceeded.") :
-          text("No se importó nada. Usa archivos TXT o una copia válida de esta biblioteca (máximo 40 MB) y comprueba el espacio disponible.", "Nothing was imported. Use TXT files or a valid library backup (40 MB maximum), and check available space.");
+          error.message === "protected" ? text("No se importó nada: el EPUB contiene protección o cifrado. No se eludió DRM.", "Nothing was imported: the EPUB contains protection or encryption. DRM was not bypassed.") :
+            text("No se importó nada. Usa EPUB, PDF o TXT válidos de hasta 8 MB, o una copia de biblioteca de hasta 40 MiB, y comprueba el espacio disponible.", "Nothing was imported. Use valid EPUB, PDF or TXT files up to 8 MB, or a library backup up to 40 MiB, and check available space.");
       } finally { importButton.disabled = false; }
     });
     const drawTab = value => {
@@ -640,7 +838,7 @@ window.BookShelf = (() => {
       h("h2", {}, text("Biblioteca", "Library")), h("p", { class: "muted" }, text("Descubre libros públicos y guarda copias para leer sin conexión.", "Discover public books and save copies to read offline."))),
       segmented(active, [["catalogue", text("Explorar", "Explore")], ["saved", text("Mi biblioteca", "My library")]], drawTab), controls, savedControls, status, shelf, more);
     controls.hidden = active !== "catalogue"; savedControls.hidden = active !== "saved";
-    try { local = new Map((await all()).filter(book => book && typeof book.id === "string" && typeof book.text === "string").map(book => [book.id, book])); }
+    try { local = new Map((await allMeta()).filter(book => book && typeof book.id === "string" && typeof book.text === "string").map(book => [book.id, book])); }
     catch (_) { status.textContent = text("El almacenamiento local no está disponible; no se puede confirmar que se guarden libros.", "Local storage is unavailable; books cannot be confirmed saved."); return; }
     if (!shelf.isConnected) return;
     if (active === "saved") drawSaved();

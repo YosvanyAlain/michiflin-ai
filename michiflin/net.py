@@ -119,12 +119,18 @@ def validate_public_url(url: str) -> str:
     return normalized
 
 
-def _retain_gateway(response: requests.Response, gateway: egress.EgressProxy, stream: bool) -> requests.Response:
-    if not stream:
+def _retain_gateway(response: requests.Response, gateway: egress.EgressProxy, stream: bool,
+                    owned_session: requests.Session | None = None) -> requests.Response:
+    def release() -> None:
         gateway.close()
+        if owned_session is not None:
+            owned_session.close()
+
+    if not stream:
+        release()
         return response
     close_method = weakref.WeakMethod(response.close)
-    finalizer = weakref.finalize(response, gateway.close)
+    finalizer = weakref.finalize(response, release)
 
     def close() -> None:
         try:
@@ -140,33 +146,45 @@ def _retain_gateway(response: requests.Response, gateway: egress.EgressProxy, st
 
 
 def request(method: str, url: str, proxy: bool = False, *, follow_redirects: bool = True,
-            **kwargs: Any) -> requests.Response:
-    """Use a DNS-pinning gateway; optionally validate and follow each redirect."""
+            anonymous: bool = False, **kwargs: Any) -> requests.Response:
+    """Use a DNS-pinning gateway; optionally avoid all stored credentials/cookies."""
     current = validate_public_url(url)
     kwargs["allow_redirects"] = False
     kwargs.setdefault("timeout", (15, 45))
-    http = session()
-    for _ in range(10):
-        upstream = WEB_PROXY if proxy else ""
-        gateway_limit = max(1_000_000_000, config.MAX_FILE_BYTES * 3 + 100_000_000)
-        gateway = egress.EgressProxy(upstream=upstream, max_bytes=gateway_limit, allow_http=True)
-        try:
-            request_kwargs = dict(kwargs)
-            request_kwargs["proxies"] = {"http": gateway.url, "https": gateway.url}
-            response = http.request(method, current, **request_kwargs)
-        except BaseException:
+    owned = requests.Session() if anonymous else None
+    if owned is not None:
+        # A public-book fetch must not inherit a person's browser cookies,
+        # .netrc credentials, environment proxies or authorization headers.
+        owned.trust_env = False
+        owned.headers.update(HEADERS)
+    http = owned if owned is not None else session()
+    try:
+        for _ in range(10):
+            upstream = WEB_PROXY if proxy else ""
+            gateway_limit = max(1_000_000_000, config.MAX_FILE_BYTES * 3 + 100_000_000)
+            gateway = egress.EgressProxy(upstream=upstream, max_bytes=gateway_limit, allow_http=True)
+            try:
+                request_kwargs = dict(kwargs)
+                request_kwargs["proxies"] = {"http": gateway.url, "https": gateway.url}
+                response = http.request(method, current, **request_kwargs)
+            except BaseException:
+                gateway.close()
+                raise
+            status = response.status_code
+            target = response.headers.get("Location") if follow_redirects and status in {301, 302, 303, 307, 308} else None
+            if not target:
+                retained = _retain_gateway(response, gateway, bool(kwargs.get("stream", False)), owned)
+                owned = None  # response.close/finalizer owns the anonymous session
+                return retained
+            response.close()
             gateway.close()
-            raise
-        status = response.status_code
-        target = response.headers.get("Location") if follow_redirects and status in {301, 302, 303, 307, 308} else None
-        if not target:
-            return _retain_gateway(response, gateway, bool(kwargs.get("stream", False)))
-        response.close()
-        gateway.close()
-        current = validate_public_url(urljoin(current, target))
-        if status == 303:
-            method = "GET"
-    raise ValueError("redirects")
+            current = validate_public_url(urljoin(current, target))
+            if status == 303:
+                method = "GET"
+        raise ValueError("redirects")
+    finally:
+        if owned is not None:
+            owned.close()
 
 
 def fetch(url: str, **kwargs: Any) -> requests.Response:

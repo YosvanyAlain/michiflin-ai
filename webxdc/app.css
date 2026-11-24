@@ -1826,3 +1826,22 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
   .book-filters { flex-direction: column; }
   .book-filters .input { flex: auto; width: 100%; }
 }
+
+/* Administration usage: long addresses and badges may wrap on small screens. */
+.share, .share > * { min-width: 0; max-width: 100%; }
+.share > .row { flex-wrap: wrap; }
+.share > .row > .grow { flex: 1 1 10rem; min-width: 0; white-space: normal; overflow: visible;
+  overflow-wrap: anywhere; word-break: break-word; display: block; -webkit-line-clamp: unset; }
+.share .badge { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.share small { overflow-wrap: anywhere; }
+
+/* Original formats: a viewport for the offline EPUB/PDF engines. */
+.book-format-picker { max-width: 100%; width: auto; min-width: 0; }
+.book-file-reader { min-width: 0; }
+.book-file-tools { display: grid; gap: 10px; margin: 8px 0; }
+.book-file-nav { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; }
+.book-file-page { min-width: 0; font-variant-numeric: tabular-nums; font-size: 12px; text-align: center; }
+.book-file-stage { width: 100%; min-width: 0; height: min(68vh, 780px); min-height: 300px; border: 1px solid var(--book-line); overflow: hidden; }
+.book-file-stage iframe { max-width: 100%; }
+.book-pdf-scroll { height: 100%; overflow: auto; background: #b3bbb6; }
+.book-pdf-canvas { display: block; margin: 0 auto; background: white; }

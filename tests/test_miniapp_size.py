@@ -19,7 +19,9 @@ pytest_plugins = ['tests.test_android_startup']  # provides the real extracted-p
 def test_compact_package_carries_exact_full_original_source_stream(stem, tmp_path, monkeypatch):
     monkeypatch.setattr(config, 'TEMP_ROOT', tmp_path)
     package = miniapp.build()
-    assert package.stat().st_size < 3_800_000
+    # Explicitly raised from 3.8 MB for bundled offline EPUB/PDF engines;
+    # see docs/lector-biblioteca-actualizacion.md for the mail-size trade-off.
+    assert package.stat().st_size < 4_600_000
     with zipfile.ZipFile(package) as archive:
         assert archive.testzip() is None
         assert set(archive.namelist()) == set(miniapp.package_names())

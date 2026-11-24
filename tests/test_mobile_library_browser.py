@@ -69,7 +69,8 @@ def test_library_download_persists_and_reopens_without_network():
         page.evaluate('''()=>{const original=bridge.call.bind(bridge);bridge.call=async(op,args)=>{
           if(op!=='books')return original(op,args);
           if(args.do==='search')return {books:[{id:'fixture:1',source:'Fixture',title:'Un libro completo',authors:['Autor'],url:'https://example.org/book',downloads:[{format:'txt',url:'https://example.org/book.txt'}]}],more:false};
-          if(args.do==='download')return {text:'Primera página.\\n\\nContenido completo del libro.',complete:true,sha256:'fixture',source_format:'txt'};
+          if(args.do==='original_start') {const blob=new Blob(['Primera página.\\n\\nContenido completo del libro.'],{type:'text/plain'});
+            return {transfer:'fixture',format:'txt',size:blob.size,index:0,count:1,sha256:await FileKitCrypto.hashBlob(blob),data:await blobToBase64(blob)};}
           return {};
         };go('books',{q:'libro'})}''')
         page.get_by_role('heading', name='Un libro completo', exact=True).wait_for(state='visible')
@@ -79,7 +80,7 @@ def test_library_download_persists_and_reopens_without_network():
         page.get_by_role('button', name='Abrir', exact=True).click()
         assert page.locator('.book-reading').inner_text().startswith('Primera página.')
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
-        assert page.get_by_role('button', name='Exportar al lector del sistema', exact=True).is_visible()
+        assert page.get_by_role('button', name='Exportar archivo original', exact=True).is_visible()
         page.reload()
         page.wait_for_function('cache.at > 0')
         page.evaluate("go('books',{tab:'saved'})")

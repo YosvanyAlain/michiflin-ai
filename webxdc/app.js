@@ -1212,7 +1212,9 @@ function hello(force = false, quiet = false) {
 
 async function sync(force, quiet = false) {
   try {
+    const started = healthClock();
     const data = await bridge.call("hello", {}, { quiet });
+    observeHealth(data.health, started);
     if (typeof data.session === "string" && data.session) store.set("botSession", data.session);
     Object.assign(cache, { version: data.version, admin: data.admin, models: data.models, health: data.health, settings: data.settings,
       maintenance_notice: data.maintenance_notice || null, modes: data.modes || null, lang: lang(), at: now() });
@@ -1315,11 +1317,48 @@ function homeActivity() {
       h("button", { class: "hero-action", onclick: () => pending ? pendingSheet() : goTab("downloads") }, icon("downloads"), t(pending ? "home_pending" : "tab_downloads"))));
 }
 
+// A fresh bot timestamp bounds the countdown without trusting the device's
+// wall clock. It is intentionally not persisted: cached data or a reopened
+// app cannot establish whether the bot restarted in the meantime.
+let healthObservation = null;
+function healthClock() { return { mono: performance.now(), wall: Date.now() }; }
+function observeHealth(data, start) {
+  const end = healthClock(), server = Number(data && data.now), restart = Number(data && data.restart);
+  healthObservation = data && start && [start.mono, start.wall, end.mono, end.wall, server, restart].every(Number.isFinite) &&
+    end.mono >= start.mono && server > 0 && restart > server && restart - server <= 172800 &&
+    Math.abs((end.wall - start.wall) - (end.mono - start.mono)) < 2000 ?
+    { server, restart, start, end } : null;
+}
+function restartLabel(expected = null) {
+  const obs = healthObservation, clock = healthClock();
+  if (!obs || clock.mono < obs.end.mono || clock.mono - obs.end.mono > 120000 ||
+      obs.end.mono - obs.start.mono > 120000 ||
+      Math.abs((clock.wall - obs.end.wall) - (clock.mono - obs.end.mono)) > 2000 ||
+      (expected !== null && (!Number.isFinite(expected) || Math.abs(expected - obs.restart) > 5))) return t("countdown_unknown");
+  // The server calculated its value between request and receipt. Display that
+  // uncertainty as a range when it spans more than two seconds.
+  const min = Math.floor(obs.restart - obs.server - (clock.mono - obs.start.mono) / 1000);
+  const max = Math.ceil(obs.restart - obs.server - (clock.mono - obs.end.mono) / 1000);
+  if (min <= 0) return t("countdown_unknown");
+  const clockString = value => `${String(Math.floor(value / 3600)).padStart(2, "0")}:${String(Math.floor(value % 3600 / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  return t("countdown_estimate", { value: max - min <= 2 ? clockString(Math.floor((min + max) / 2)) : `${clockString(min)}–${clockString(max)}` });
+}
+function restartCountdown(expected = null) {
+  return h("span", { "data-restart-countdown": expected === null ? "health" : String(expected),
+    title: t("countdown_hint") }, restartLabel(expected));
+}
+setInterval(() => document.querySelectorAll("[data-restart-countdown]").forEach(node => {
+  const value = node.dataset.restartCountdown;
+  node.textContent = restartLabel(value === "health" ? null : Number(value));
+}), 1000);
+
 function statusChips() {
-  if (!cache.health) return [h("span", { class: "chip" }, h("i", { class: "spinner" }), t("connecting"))];
+  const restartChip = () => h("button", { class: "chip", title: t("countdown_refresh"), onclick: () => hello(true, true) },
+    icon("clock"), t("restart_in"), " ", restartCountdown());
+  if (!cache.health) return [restartChip()];
   const active = cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
   return [
-    h("span", { class: "chip" }, icon("clock"), t("restart_in"), " ", until(cache.health.restart, t("restarting"))),
+    restartChip(),
     h("button", { class: "chip", onclick: () => goTab("downloads") }, icon("downloads"), t("active_jobs", { n: active })),
     h("span", { class: "chip subtle" }, icon("refresh"), t("updated"), " ", since(cache.at)),
   ];
@@ -3951,7 +3990,7 @@ function healthCards(data) {
   const capped = data.cap_mb > 0;
   return [
     h("div", { class: "rate-grid" },
-      tile("clock", t("restart_in"), until(data.restart, t("restarting"))),
+      tile("clock", t("restart_in"), restartCountdown(Number(data.restart))),
       tile("health", t("uptime"), fmtDuration(data.uptime)),
       tile("downloads", t("active"), String(data.active)),
       tile("file", t("queue_size"), fmtSize(data.queue_bytes)),
@@ -3982,7 +4021,9 @@ VIEWS.health = {
       refresh.classList.add("busy");
       drawSummary();
       try {
+        const started = healthClock();
         cache.health = await bridge.call("health");
+        observeHealth(cache.health, started);
         saveCache();
         draw();
       } catch (error) {
@@ -4051,7 +4092,7 @@ function hostSection(perf) {
     [t("host_provider"), host.provider], [t("host_system"), host.os], [t("host_cpu"), `${perf.cpu.model} · ${perf.cpu.cores} ${t("host_cores")}`],
     [t("host_kernel"), `${host.kernel} · ${host.arch} · Python ${host.python}`], [t("host_runner"), host.runner],
     [t("host_run"), host.run ? `#${host.number || "?"} · ${host.run}${host.attempt && host.attempt !== "1" ? ` · ${t("host_attempt", { n: host.attempt })}` : ""}` : ""],
-    [t("host_started"), fmtTime(host.started)], [t("restart_in"), until(host.ends, t("restarting"))],
+    [t("host_started"), fmtTime(host.started)], [t("restart_in"), restartCountdown(Number(host.ends))],
     [t("host_version"), host.sha ? (host.outdated ? t("host_outdated", { sha: host.sha, latest: host.latest }) : t("host_current", { sha: host.sha })) : ""],
   ].filter(([, value]) => value);
   return section(t("host_title"), h("div", { class: "card kv" }, ...rows.flatMap(([label, value]) => [h("span", {}, label), h("span", {}, value)])),
