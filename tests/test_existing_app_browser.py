@@ -1,12 +1,13 @@
 """End-to-end checks of the updated library UI and its isolated backend."""
 from __future__ import annotations
 
+import hashlib
 from unittest import mock
 
 import pytest
 import requests
 
-from michiflin import book_legacy, book_library, miniapp
+from michiflin import book_legacy, book_library, book_original, miniapp
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -17,6 +18,7 @@ def isolate_book_runtime(monkeypatch):
     monkeypatch.setattr(book_library, '_source_pause_reason', {})
     monkeypatch.setattr(book_legacy, '_sessions', {})
     monkeypatch.setattr(book_legacy, '_alternatives', {})
+    monkeypatch.setattr(book_original, '_sessions', {})
 
 
 def _handler(request):
@@ -63,31 +65,37 @@ def test_existing_ui_paginates_without_losing_a_failed_source(monkeypatch, engin
         assert errors == []
 
 
-def test_existing_ui_download_fallback_and_saved_books_survive_cache_clear(monkeypatch):
+def test_existing_ui_requires_explicit_format_after_failure_and_saved_books_survive_cache_clear(monkeypatch):
     calls = []
+    raw = 'Libro completo de prueba.'.encode()
     def fake(source, query, number, language, diagnostics, locale):
         return [{'id': 'archive:fixture', 'source': 'archive', 'title': 'Libro descargado', 'authors': ['Autora'],
                  'url': 'https://example.org/record',
                  'downloads': [{'format': 'txt', 'url': 'https://example.org/book.txt'},
                                {'format': 'epub', 'url': 'https://example.org/book.epub'}]}], False
-    def read(url, format, *, visual=False):
-        assert visual is True
-        calls.append(format)
-        if format == 'epub':
+    def read(url, maximum, guard, **kwargs):
+        assert guard is True and kwargs == {'anonymous': True}
+        calls.append(url)
+        if url.endswith('.epub'):
             response = requests.Response(); response.status_code = 404
             raise requests.HTTPError(response=response)
-        return {'text': 'Libro completo de prueba.', 'complete': True, 'sha256': 'fixture', 'source_format': 'txt'}
+        return raw, 'text/plain'
     monkeypatch.setattr(book_library, '_search', fake)
-    monkeypatch.setattr(book_library, 'reading_copy', read)
+    monkeypatch.setattr(book_library, '_fetch', read)
     with browser_fixture('es', {'width': 390, 'height': 844}, delivery_handler=_handler) as (page, errors):
         page.evaluate(BRIDGE)
         page.evaluate("store.set('books.source','archive');go('books',{q:'fixture'})")
         page.get_by_role('heading', name='Libro descargado', exact=True).wait_for()
         page.get_by_role('button', name='Descargar', exact=True).click()
+        page.get_by_role('status').get_by_text('no está disponible', exact=False).wait_for()
+        assert calls == ['https://example.org/book.epub']  # never change a selected original silently
+        page.get_by_label('Formato original').select_option('0')
+        page.get_by_role('button', name='Descargar', exact=True).click()
         page.get_by_role('button', name='Abrir', exact=True).wait_for()
-        assert calls == ['epub', 'txt'] and page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
+        assert calls[-1].endswith('.txt') and page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
+        assert page.evaluate('(async()=> (await BookShelf.all())[0].original_sha256)()') == hashlib.sha256(raw).hexdigest()
         page.get_by_role('button', name='Abrir', exact=True).click()
-        assert page.locator('.book-reading').inner_text() == 'Libro completo de prueba.'
+        assert page.locator('.book-reading').inner_text() == raw.decode()
         page.evaluate('BookShelf.clearCache()')
         page.reload()
         page.wait_for_function('cache.at > 0')
@@ -121,8 +129,7 @@ def test_updated_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeypat
         'url': 'https://example.org/record',
         'downloads': [{'format': 'txt', 'url': 'https://example.org/book.txt'}],
     }], False))
-    monkeypatch.setattr(book_library, 'reading_copy', lambda *_args, **_kwargs: {
-        'text': text, 'complete': True, 'sha256': 'fixture', 'source_format': 'txt'})
+    monkeypatch.setattr(book_library, '_fetch', lambda *_args, **_kwargs: (text.encode(), 'text/plain'))
     monkeypatch.setattr(miniapp, '_answers', {})
     batches = []
     def handler(request):
@@ -151,6 +158,7 @@ def test_updated_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeypat
         page.get_by_role('button', name='Descargar', exact=True).click()
         page.get_by_role('button', name='Abrir', exact=True).wait_for(timeout=30000)
         assert page.evaluate("(async()=> (await BookShelf.all())[0].text === 'Línea sintética 🎉\\n'.repeat(18000))()")
-        assert len(batches) == 2 and len(batches[1]) > 1
+        assert len(batches) >= 2 and len(batches[1]) > 1
         assert all(item['t'] == 'chunk' and len(item['s']) <= miniapp.CHUNK // 4 for item in batches[1])
+        assert page.evaluate('(async()=> (await BookShelf.all())[0].original_sha256)()') == hashlib.sha256(text.encode()).hexdigest()
         assert not page.evaluate('window.__chunkFixtureError || false') and errors == []

@@ -44,7 +44,8 @@ def install_books(page):
         if(op!=='books')return original(op,args);
         window.bookCalls.push(args);
         if(args.do==='search')return Promise.resolve({books:window.sampleBooks,more:false});
-        if(args.do==='download')return Promise.resolve({text:'Texto completo.',complete:true,sha256:'fixture',source_format:'txt'});
+        if(args.do==='original_start')return Promise.resolve({transfer:'synthetic',format:'txt',size:15,count:1,index:0,
+          sha256:'3842f60d8f4454e5f17a426eac12ba5069a08a5f68b96be391485bd67660cc59',data:btoa('Texto completo.')});
         return Promise.resolve({});
       };go('books',{q:'libro'});
     }''')

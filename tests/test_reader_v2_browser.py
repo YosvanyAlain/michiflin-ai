@@ -1,15 +1,13 @@
 """Offline reader and migration tests; all books, bridge and accounts are synthetic."""
 from __future__ import annotations
 
-import io
+import hashlib
 import json
 
 import pytest
-from PIL import Image
-
 from michiflin import book_library
 from tests.test_existing_app_browser import BRIDGE, _handler
-from tests.test_reader_epub_view import fixture_epub
+from tests.test_book_originals import sample_epub
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -73,12 +71,9 @@ def test_reader_controls_never_cover_text_and_settings_persist(engine, width, he
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
 def test_epub_search_download_reflows_heading_emphasis_and_image(monkeypatch, engine):
-    picture = io.BytesIO()
-    Image.new('RGB', (32, 16), '#669977').save(picture, 'PNG')
-    raw = fixture_epub(['<body><h1>Capítulo 🎉</h1><p>Una historia <em>hermosa</em>.</p>'
-                        '<img src="p.png" alt="Ilustración"><p>Fin.</p><script>bad()</script></body>'],
-                       {'OEBPS/p.png': picture.getvalue()})
-    monkeypatch.setattr(book_library, '_fetch', lambda *args: (raw, 'application/epub+zip'))
+    raw = sample_epub('<h1>Capítulo 🎉</h1><p>Una historia <em>hermosa</em>.</p>'
+                      '<img src="image.png" alt="Ilustración"/><p>Fin.</p><script>bad()</script>')
+    monkeypatch.setattr(book_library, '_fetch', lambda *args, **kwargs: (raw, 'application/epub+zip'))
     monkeypatch.setattr(book_library, '_search', lambda *_args: ([{
         'id': 'gutenberg:fixture', 'source': 'Project Gutenberg', 'title': 'EPUB real sintético', 'authors': ['Autora'],
         'url': 'https://example.org/record',
@@ -89,20 +84,24 @@ def test_epub_search_download_reflows_heading_emphasis_and_image(monkeypatch, en
         page.get_by_role('heading', name='EPUB real sintético', exact=True).wait_for()
         page.get_by_role('button', name='Descargar', exact=True).click()
         page.get_by_role('button', name='Abrir', exact=True).click(timeout=30000)
-        assert page.evaluate("window.libraryRequests.find(x=>x.do==='download').format") == 'epub'
-        assert page.locator('.book-reading h1').inner_text() == 'Capítulo 🎉'
-        assert page.locator('.book-reading em').inner_text() == 'hermosa'
-        assert page.locator('.book-reading img').get_attribute('alt') == 'Ilustración'
-        assert page.locator('.book-reading img').get_attribute('src').startswith('data:image/jpeg;base64,')
-        assert 'bad()' not in page.locator('.book-reading').inner_text()
+        assert page.evaluate("window.libraryRequests.find(x=>x.do==='original_start').format") == 'epub'
+        page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
+        frame = page.frame_locator('.book-file-stage iframe').first
+        assert frame.locator('h1').inner_text() == 'Capítulo 🎉'
+        assert frame.locator('em').inner_text() == 'hermosa'
+        assert frame.locator('img').get_attribute('alt') == 'Ilustración'
+        assert frame.locator('img').evaluate('el=>el.complete && el.naturalWidth > 0')
+        assert frame.locator('script').count() == 0
+        assert page.evaluate('(async()=> (await BookShelf.all())[0].original_sha256)()') == hashlib.sha256(raw).hexdigest()
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         page.locator('summary').get_by_text('Índice', exact=True).click()
-        assert page.locator('.book-contents').get_by_role('button', name='Capítulo 🎉').count() == 1
+        assert page.locator('.book-contents').get_by_role('button', name='Capítulo uno').count() == 1
         page.reload()
         page.wait_for_function('cache.at > 0 && !syncing')
         page.evaluate("go('books',{tab:'saved'})")
         page.get_by_role('button', name='Abrir', exact=True).click()
-        assert page.locator('.book-reading img').count() == 1 and errors == []
+        page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
+        assert page.frame_locator('.book-file-stage iframe').first.locator('img').count() == 1 and errors == []
 
 
 def test_search_error_is_not_misdiagnosed_as_source_and_paging_retry_does_not_skip():
@@ -144,8 +143,8 @@ def test_backup_round_trip_is_local_non_overwriting_and_keeps_progress():
         assert page.evaluate('window.__sentUpdates.length') == before
         # Simulate an empty *separate* instance by clearing only the synthetic
         # library. This does not access or modify a real Delta Chat message.
-        page.evaluate('''async()=>{const db=await new Promise(r=>{let q=indexedDB.open('michiflin-reading-library-v1',1);q.onsuccess=()=>r(q.result)});
-          await new Promise(r=>{let tx=db.transaction('books','readwrite');tx.objectStore('books').clear();tx.oncomplete=r});db.close();
+        page.evaluate('''async()=>{const db=await new Promise(r=>{let q=indexedDB.open('michiflin-reading-library-v1');q.onsuccess=()=>r(q.result)});
+          await new Promise(r=>{let tx=db.transaction(['books','originals'],'readwrite');tx.objectStore('books').clear();tx.objectStore('originals').clear();tx.oncomplete=r});db.close();
           store.del('book.offset.fixture:read');store.del('book.marks.fixture:read');store.set('unrelated.fixture','kept');go('books',{tab:'saved'});}''')
         file = {'name': 'backup.json', 'mimeType': 'application/json', 'buffer': json.dumps(payload, ensure_ascii=False).encode()}
         page.locator('.book-file-input').set_input_files(file)
@@ -245,12 +244,12 @@ def test_storage_failure_does_not_claim_progress_was_saved():
 
 def test_import_capacity_limit_is_atomic():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
-        page.evaluate('''async()=>{const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('michiflin-reading-library-v1',1);
+        page.evaluate('''async()=>{const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('michiflin-reading-library-v1');
           q.onupgradeneeded=()=>q.result.createObjectStore('books',{keyPath:'id'});q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
           await new Promise((resolve,reject)=>{const tx=db.transaction('books','readwrite'),os=tx.objectStore('books');
             for(let i=0;i<40;i++)os.put({id:'full:'+i,title:'Libro '+i,text:'Texto guardado',authors:[],downloaded:i});
             tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error)});db.close();go('books',{tab:'saved'});}''')
-        page.get_by_role('button', name='Importar TXT o copia', exact=True).wait_for()
+        page.get_by_role('button', name='Importar libros o copia', exact=True).wait_for()
         page.locator('.book-file-input').set_input_files({'name': 'extra.txt', 'mimeType': 'text/plain', 'buffer': b'extra'})
         page.get_by_role('status').get_by_text('No se importó nada', exact=False).wait_for()
         assert page.evaluate('(async()=> (await BookShelf.all()).length)()') == 40
@@ -260,7 +259,7 @@ def test_import_capacity_limit_is_atomic():
 
 def test_concurrent_downloads_cannot_exceed_library_capacity():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
-        page.evaluate('''async()=>{const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('michiflin-reading-library-v1',1);
+        page.evaluate('''async()=>{const db=await new Promise((resolve,reject)=>{const q=indexedDB.open('michiflin-reading-library-v1');
           q.onupgradeneeded=()=>q.result.createObjectStore('books',{keyPath:'id'});q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
           await new Promise((resolve,reject)=>{const tx=db.transaction('books','readwrite'),os=tx.objectStore('books');
             for(let i=0;i<39;i++)os.put({id:'full:'+i,title:'Libro '+i,text:'Texto guardado',authors:[]});
@@ -269,7 +268,8 @@ def test_concurrent_downloads_cannot_exceed_library_capacity():
           bridge.call=(op,args)=>{if(op!=='books')return orig(op,args);
             if(args.do==='search')return Promise.resolve({books:[1,2].map(i=>({id:'new:'+i,title:'Nuevo '+i,authors:[],source:'Fixture',
               url:'https://example.org/book',downloads:[{format:'txt',url:'https://example.org/'+i+'.txt'}]})),more:false});
-            if(args.do==='download')return new Promise(resolve=>window.__releaseBooks.push(()=>resolve({text:'Texto nuevo',complete:true,source_format:'txt'})));
+            if(args.do==='original_start')return new Promise(resolve=>window.__releaseBooks.push(()=>resolve({
+              transfer:'fixture',format:'txt',size:11,index:0,count:1,sha256:'7e0cf2d0a3e1f88b82105fe587cee6c6b701d8157efac1c7a445e4a0d2f308fc',data:'VGV4dG8gbnVldm8='})));
             return Promise.resolve({});};go('books',{q:'dos'});}''')
         page.get_by_role('heading', name='Nuevo 1').wait_for()
         page.get_by_role('button', name='Descargar', exact=True).nth(0).click()

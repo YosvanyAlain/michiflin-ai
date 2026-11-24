@@ -113,9 +113,9 @@ class Package(unittest.TestCase):
         with zipfile.ZipFile(target) as archive:
             self.assertEqual(sorted(archive.namelist()), sorted(miniapp.package_names()))
             self.assertIsNone(archive.testzip())
-        # The complete corresponding sources and offline WASM engine remain
-        # included; keep a regression budget below four decimal megabytes.
-        self.assertLess(target.stat().st_size, 3_800_000)
+        # The corresponding sources remain included. The explicitly documented
+        # 4.6 MB budget covers the newly bundled offline EPUB/PDF engines.
+        self.assertLess(target.stat().st_size, 4_600_000)
 
 
 

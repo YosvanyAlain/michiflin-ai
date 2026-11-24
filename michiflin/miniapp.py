@@ -39,7 +39,10 @@ APP_DIR = Path(__file__).resolve().parent.parent / "webxdc"
 # app_package.entries() provides the actual current package names and inputs.
 APP_FILES = (
     "index.html", "manifest.toml", "icon.png", "app.css", "i18n.js", "core.js", "qr.js", "mp4.js", "brands.js", "app.js", "live.js", "coder.js",
-    "utilities.js", "books.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
+    "utilities.js", "book-original.js", "book-epub-worker.js", "books.js", "notifications.js", "filekit-store.js", "filekit-worker.js", "filekit-join.js", "filekit.js",
+    "vendor/books/fflate.min.js", "vendor/books/jszip.min.js", "vendor/books/epub.min.js", "vendor/books/purify.min.js",
+    "vendor/books/pdf.min.mjs", "vendor/books/pdf.worker.min.mjs", "vendor/books/NOTICE.txt", "vendor/books/LICENSE-fflate.txt",
+    "vendor/books/LICENSE-jszip.txt", "vendor/books/LICENSE-epubjs.txt", "vendor/books/LICENSE-dompurify.txt", "vendor/books/LICENSE-pdfjs.txt",
     "vendor/7zip/sevenzip-wasm.js", "vendor/7zip/sevenzip-wasm.wasm", "vendor/7zip/LICENSE", "vendor/7zip/NOTICE.txt",
     "vendor/7zip/source-7zip-26.05.tar.gz", "vendor/7zip/source-wrapper-26.5.0.tar.gz",
     "vendor/noble/filekit-crypto.js", "vendor/noble/LICENSE-ciphers.txt", "vendor/noble/LICENSE-curves.txt",
@@ -2603,7 +2606,7 @@ def op_youtube_thumbs(chat_id: int, args: dict[str, Any], locale: str) -> Any:
 
 @op("books")
 def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
-    from . import book_legacy, book_library, public_media
+    from . import book_legacy, book_library, book_original, public_media
     action = str(args.get("do") or "search")
     scope = str(args.get("_book_scope") or "")
     try:
@@ -2622,6 +2625,12 @@ def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
                 return (book_legacy.reading_copy(scope, url, format, visual=True) if visual
                         else book_legacy.reading_copy(scope, url, format))
             return book_library.reading_copy(url, format, visual=True) if visual else book_library.reading_copy(url, format)
+        if action == "original_start":
+            return book_original.start(scope, str(args.get("url") or ""), str(args.get("format") or ""))
+        if action == "original_part":
+            return book_original.part(scope, str(args.get("transfer") or ""), args.get("index"))
+        if action == "original_close":
+            return book_original.close(scope, str(args.get("transfer") or ""))
         if action == "cover":
             return {"data": public_media.image_data(str(args.get("url") or ""), "low", cover=True)}
         raise ValueError("action")
@@ -2640,6 +2649,7 @@ def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             'epub_structure': ("El EPUB está incompleto o tiene una estructura no compatible. Consulta la ficha original.", "The EPUB is incomplete or its structure is unsupported. Check the original record."),
             'no_readable_text': ("La fuente no ofreció texto legible para esta copia.", "The source did not provide readable text for this copy."),
             'protected_book': ("El archivo está protegido o cifrado. No se eludió DRM.", "The file is protected or encrypted. DRM was not bypassed."),
+            'transfer_expired': ("La transferencia caducó o el bot se reinició. Vuelve a descargar el archivo.", "The transfer expired or the bot restarted. Download the file again."),
             'book_too_large': ("El archivo o su texto supera el límite seguro; no se guardó.", "The file or its text exceeds the safe limit; nothing was saved."),
         }
         fallback = ("No se pudo consultar la fuente o leer el libro. Prueba otro catálogo o revisa la ficha original.",
