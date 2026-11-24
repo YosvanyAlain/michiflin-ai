@@ -51,7 +51,7 @@ def install_books(page):
 
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
-def test_books_download_only_compact_and_reopen_cache(engine):
+def test_books_download_only_compact_and_reopen_with_fresh_search(engine):
     with browser_fixture('es', {'width': 390, 'height': 844}, engine=engine) as (page, errors):
         install_books(page)
         page.get_by_text('Libro descargable', exact=True).wait_for()
@@ -59,7 +59,7 @@ def test_books_download_only_compact_and_reopen_cache(engine):
         assert page.locator('.book-cover').bounding_box()['width'] <= 100
         page.evaluate("go('home');go('books',{q:'libro'})")
         page.get_by_text('Libro descargable', exact=True).wait_for()
-        assert page.evaluate("bookCalls.filter(x=>x.do==='search').length") == 1
+        assert page.evaluate("bookCalls.filter(x=>x.do==='search').length") == 2
         page.locator('.book-actions button').first.click()
         page.locator('.book-actions button').first.get_by_text('Abrir', exact=True).wait_for()
         page.locator('.book-actions button').first.click()

@@ -1,4 +1,4 @@
-"""End-to-end checks of the unchanged delivered library UI and new backend."""
+"""End-to-end checks of the updated library UI and its isolated backend."""
 from __future__ import annotations
 
 from unittest import mock
@@ -70,12 +70,13 @@ def test_existing_ui_download_fallback_and_saved_books_survive_cache_clear(monke
                  'url': 'https://example.org/record',
                  'downloads': [{'format': 'txt', 'url': 'https://example.org/book.txt'},
                                {'format': 'epub', 'url': 'https://example.org/book.epub'}]}], False
-    def read(url, format):
+    def read(url, format, *, visual=False):
+        assert visual is True
         calls.append(format)
-        if format == 'txt':
+        if format == 'epub':
             response = requests.Response(); response.status_code = 404
             raise requests.HTTPError(response=response)
-        return {'text': 'Libro completo de prueba.', 'complete': True, 'sha256': 'fixture', 'source_format': 'epub'}
+        return {'text': 'Libro completo de prueba.', 'complete': True, 'sha256': 'fixture', 'source_format': 'txt'}
     monkeypatch.setattr(book_library, '_search', fake)
     monkeypatch.setattr(book_library, 'reading_copy', read)
     with browser_fixture('es', {'width': 390, 'height': 844}, delivery_handler=_handler) as (page, errors):
@@ -84,7 +85,7 @@ def test_existing_ui_download_fallback_and_saved_books_survive_cache_clear(monke
         page.get_by_role('heading', name='Libro descargado', exact=True).wait_for()
         page.get_by_role('button', name='Descargar', exact=True).click()
         page.get_by_role('button', name='Abrir', exact=True).wait_for()
-        assert calls == ['txt', 'epub'] and page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
+        assert calls == ['epub', 'txt'] and page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
         page.get_by_role('button', name='Abrir', exact=True).click()
         assert page.locator('.book-reading').inner_text() == 'Libro completo de prueba.'
         page.evaluate('BookShelf.clearCache()')
@@ -111,8 +112,8 @@ def test_existing_ui_does_not_report_html_or_unverified_web_link_as_a_book(monke
 
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
-def test_unchanged_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeypatch, engine):
-    # Exercise the unchanged WebXDC bridge and the real Python chunker. The
+def test_updated_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeypatch, engine):
+    # Exercise the WebXDC bridge and the real Python chunker. The
     # sender, book and transport are synthetic, not a real Delta Chat account.
     text = 'Línea sintética 🎉\n' * 18000
     monkeypatch.setattr(book_library, '_search', lambda *_args: ([{
@@ -120,7 +121,7 @@ def test_unchanged_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeyp
         'url': 'https://example.org/record',
         'downloads': [{'format': 'txt', 'url': 'https://example.org/book.txt'}],
     }], False))
-    monkeypatch.setattr(book_library, 'reading_copy', lambda *_args: {
+    monkeypatch.setattr(book_library, 'reading_copy', lambda *_args, **_kwargs: {
         'text': text, 'complete': True, 'sha256': 'fixture', 'source_format': 'txt'})
     monkeypatch.setattr(miniapp, '_answers', {})
     batches = []

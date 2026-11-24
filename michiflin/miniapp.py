@@ -2617,7 +2617,11 @@ def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             return {"downloads": book_library.archive_download(str(args.get("id") or ""))}
         if action == "download":
             url, format = str(args.get("url") or ""), str(args.get("format") or "")
-            return book_legacy.reading_copy(scope, url, format) if scope else book_library.reading_copy(url, format)
+            visual = args.get("visual") is True
+            if scope:
+                return (book_legacy.reading_copy(scope, url, format, visual=True) if visual
+                        else book_legacy.reading_copy(scope, url, format))
+            return book_library.reading_copy(url, format, visual=True) if visual else book_library.reading_copy(url, format)
         if action == "cover":
             return {"data": public_media.image_data(str(args.get("url") or ""), "low", cover=True)}
         raise ValueError("action")
@@ -2630,6 +2634,11 @@ def op_books(chat_id: int, args: dict[str, Any], locale: str) -> Any:
             'source_restricted': ("La ficha indica restricciones o no ofrece un archivo público confirmado.", "The record indicates restrictions or no confirmed public file."),
             'source_not_found': ("El archivo ya no está disponible. Consulta la ficha original.", "The file is no longer available. Check the original record."),
             'network_timeout': ("La fuente agotó el tiempo de conexión. Prueba de nuevo más tarde.", "The source timed out. Try again later."),
+            'network_unavailable': ("La conexión con la fuente falló. Comprueba la conexión y prueba más tarde.", "The connection to the source failed. Check the connection and try later."),
+            'pdf_unreadable_pages': ("El PDF contiene páginas sin texto extraíble; puede ser un escaneo. Busca otra edición.", "The PDF has pages without extractable text; it may be a scan. Try another edition."),
+            'pdf_unavailable_or_limit': ("No se pudo leer el PDF dentro de los límites seguros. Consulta la ficha original.", "Could not read the PDF within safe limits. Check the original record."),
+            'epub_structure': ("El EPUB está incompleto o tiene una estructura no compatible. Consulta la ficha original.", "The EPUB is incomplete or its structure is unsupported. Check the original record."),
+            'no_readable_text': ("La fuente no ofreció texto legible para esta copia.", "The source did not provide readable text for this copy."),
             'protected_book': ("El archivo está protegido o cifrado. No se eludió DRM.", "The file is protected or encrypted. DRM was not bypassed."),
             'book_too_large': ("El archivo o su texto supera el límite seguro; no se guardó.", "The file or its text exceeds the safe limit; nothing was saved."),
         }
