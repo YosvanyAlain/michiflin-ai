@@ -109,6 +109,63 @@ def test_aborted_original_write_rolls_back_whole_import_transaction():
         assert errors == []
 
 
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+@pytest.mark.parametrize('failure', ['synchronous_exception', 'transaction_abort'])
+def test_delete_rolls_back_metadata_and_original_on_storage_failure_and_retries(engine, failure):
+    raw = b'\xef\xbb\xbfSynthetic original\r\nwith exact bytes.\n'
+    identifier = 'import:' + hashlib.sha256(raw).hexdigest()
+    with browser_fixture('es', {'width': 390, 'height': 844}, engine=engine) as (page, errors):
+        page.evaluate("go('books',{tab:'saved'})")
+        page.locator('.book-file-input').set_input_files(
+            {'name': 'atomic.txt', 'mimeType': 'text/plain', 'buffer': raw})
+        page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for(timeout=30000)
+        page.evaluate('''({id,failure})=>{
+          store.set('book.offset.'+id, 7, true);
+          window.__nativeDelete=IDBObjectStore.prototype.delete;
+          IDBObjectStore.prototype.delete=function(...args){
+            if(this.name==='originals'){
+              if(failure==='synchronous_exception')throw Error('synthetic-storage-failure');
+              this.transaction.abort();return null;
+            }
+            return window.__nativeDelete.apply(this,args);
+          };
+        }''', {'id': identifier, 'failure': failure})
+        page.locator('.book-card').get_by_role('button', name='Eliminar', exact=True).click()
+        page.locator('#sheet').get_by_role('button', name='Eliminar', exact=True).click()
+        page.get_by_role('status').get_by_text('No se pudo eliminar la copia', exact=False).wait_for(timeout=30000)
+        preserved = page.evaluate('''async(id)=>{
+          IDBObjectStore.prototype.delete=window.__nativeDelete;
+          const q=indexedDB.open('michiflin-reading-library-v1');
+          const db=await new Promise((resolve,reject)=>{q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+          const result=await new Promise((resolve,reject)=>{
+            const tx=db.transaction(['books','originals']), meta=tx.objectStore('books').get(id),
+              bytes=tx.objectStore('originals').get(id);
+            tx.oncomplete=()=>resolve({meta:!!meta.result, bytes:bytes.result ? Array.from(new Uint8Array(bytes.result)) : null,
+              offset:store.get('book.offset.'+id,null)});
+            tx.onabort=tx.onerror=()=>reject(tx.error);
+          });db.close();return result;
+        }''', identifier)
+        assert preserved == {'meta': True, 'bytes': list(raw), 'offset': 7}
+        assert page.locator('.book-card').count() == 1
+        page.locator('.book-card').get_by_role('button', name='Eliminar', exact=True).click()
+        page.locator('#sheet').get_by_role('button', name='Eliminar', exact=True).click()
+        page.get_by_role('status').get_by_text('Copia eliminada', exact=False).wait_for(timeout=30000)
+        removed = page.evaluate('''async(id)=>{
+          const q=indexedDB.open('michiflin-reading-library-v1');
+          const db=await new Promise((resolve,reject)=>{q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error)});
+          const result=await new Promise((resolve,reject)=>{
+            const tx=db.transaction(['books','originals']), meta=tx.objectStore('books').get(id),
+              bytes=tx.objectStore('originals').get(id);
+            tx.oncomplete=()=>resolve({meta:!!meta.result,bytes:!!bytes.result,
+              offset:store.get('book.offset.'+id,null)});
+            tx.onabort=tx.onerror=()=>reject(tx.error);
+          });db.close();return result;
+        }''', identifier)
+        assert removed == {'meta': False, 'bytes': False, 'offset': None}
+        assert page.locator('.book-card').count() == 0
+        assert errors == []
+
+
 def test_limit_is_atomic_and_existing_originals_are_not_overwritten():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         page.evaluate("go('books',{tab:'saved'})")

@@ -227,10 +227,13 @@ def _submit_source(source: str, query: str, page: int, language: str, locale: st
         _source_inflight[key] = future
 
         def release(completed: Future) -> None:
+            # The work is already finished. Return capacity before waiting for
+            # bookkeeping: another catalogue request may hold _source_lock
+            # while submitting several sources and must not see false saturation.
+            slots.release()
             with _source_lock:
                 if _source_inflight.get(key) is completed:
                     _source_inflight.pop(key, None)
-            slots.release()
 
         future.add_done_callback(release)
         return future

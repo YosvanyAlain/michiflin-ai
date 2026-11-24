@@ -10,6 +10,7 @@ import hashlib
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -284,6 +285,37 @@ def test_slow_single_source_keeps_page_and_reuses_the_inflight_request(monkeypat
         assert calls == [1]
     finally:
         release.set()
+
+
+def test_completed_catalogue_source_returns_capacity_before_inflight_cleanup(monkeypatch):
+    started, finish, released = threading.Event(), threading.Event(), threading.Event()
+
+    class ObservedSemaphore(threading.BoundedSemaphore):
+        def release(self, n=1):
+            super().release(n)
+            released.set()
+
+    def fake(source, query, number, language, diagnostics, locale):
+        started.set()
+        assert finish.wait(3)
+        return [_book(source, number)], False
+
+    monkeypatch.setattr(books, '_source_slots', ObservedSemaphore(1))
+    monkeypatch.setattr(books, '_source_inflight', {})
+    monkeypatch.setattr(books, '_search', fake)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        monkeypatch.setattr(books, '_source_pool', pool)
+        # A completed callback may need the same bookkeeping lock as the next
+        # caller. Its finished work must not falsely exhaust the shared pool.
+        with books._source_lock:
+            first = books._submit_source('google', 'first', 1, '', 'es', False)
+            assert first is not None and started.wait(2)
+            finish.set()
+            assert released.wait(2), 'completed work held the last slot while waiting for bookkeeping'
+            second = books._submit_source('archive', 'second', 1, '', 'es', False)
+            assert second is not None
+        assert first.result(timeout=3)['books'][0]['source'] == 'google'
+        assert second.result(timeout=3)['books'][0]['source'] == 'archive'
 
 
 def test_saturated_catalogue_pool_fails_closed_without_queueing_more_work(monkeypatch):
