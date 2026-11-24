@@ -782,7 +782,7 @@ def _guard_archive_url(url: str, checked: dict[tuple[str, str], str]) -> str:
     return canonical if actual and actual[1] != filename else url
 
 
-def reading_copy(url: str, format: str) -> dict:
+def reading_copy(url: str, format: str, *, visual: bool = False) -> dict:
     if format not in {'txt', 'epub', 'pdf', 'html', 'htm', 'auto'}:
         raise BookError('format')
     raw, content_type = _fetch(url, MAX_DOCUMENT, True)
@@ -804,6 +804,8 @@ def reading_copy(url: str, format: str) -> dict:
             format = 'txt'
         else:
             raise BookError('unrecognized_format')
+    presentation = None
+    presentation_warning = ''
     if format == 'txt':
         if looks_html or b'\x00' in raw[:4096] or 'application/json' in content_type:
             raise BookError('not_a_book_text')
@@ -830,6 +832,9 @@ def reading_copy(url: str, format: str) -> dict:
                     raise BookError('epub_structure')
                 prefix = package.rpartition('/')[0]
                 parts = []
+                visual_parts = [] if visual else None
+                image_budget = {'count': 0, 'bytes': 0, 'omitted': 0}
+                visual_run_count = 0
                 for name in names:
                     if not isinstance(name, str):
                         raise BookError('epub_structure')
@@ -843,7 +848,32 @@ def reading_copy(url: str, format: str) -> dict:
                     for tag in soup(['script', 'style', 'iframe', 'object', 'svg']):
                         tag.decompose()
                     parts.append(soup.get_text('\n', strip=True))
+                    if visual_parts is not None:
+                        try:
+                            from . import book_epub_view
+                            chapter_view = book_epub_view.chapter(archive, path, soup, image_budget)
+                            visual_parts.extend(chapter_view)
+                            visual_run_count += sum(len(block.get('runs', [])) for block in chapter_view)
+                            if len(visual_parts) > book_epub_view._MAX_BLOCKS or visual_run_count > 20_000:
+                                raise ValueError('too many blocks or inline runs')
+                        except (ValueError, RecursionError, MemoryError, OSError):
+                            # Complete text is still available even if a complex
+                            # book exceeds the safe presentation budget.
+                            visual_parts = None
+                            presentation_warning = 'layout_unavailable'
                 text = '\n\n'.join(parts)
+                if visual_parts:
+                    visual_text, visual_view = book_epub_view.compose(visual_parts)
+                    # Keep messages and retry caches bounded; no partial text or
+                    # raw HTML is ever substituted for the full reading copy.
+                    visual_size = len(json.dumps({'text': visual_text, 'view': visual_view}, ensure_ascii=False).encode())
+                    if visual_text.strip() and len(visual_text.encode()) <= MAX_TEXT and visual_size <= 2_750_000:
+                        text, presentation = visual_text, visual_view
+                        if image_budget['omitted']:
+                            presentation_warning = 'some_images_omitted'
+                    else:
+                        presentation_warning = 'layout_unavailable'
+
         except (zipfile.BadZipFile, KeyError, ET.ParseError, DefusedXmlException, UnicodeError, RuntimeError):
             raise BookError('epub_structure') from None
     elif format == 'pdf':
@@ -891,12 +921,21 @@ except Exception:
         for tag in html_soup(['script', 'style', 'nav', 'footer', 'iframe', 'object', 'svg']):
             tag.decompose()
         text = (html_soup.select_one('.mw-parser-output') or html_soup.find('main') or html_soup.find('article') or html_soup.body or html_soup).get_text('\n', strip=True)
-    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text).strip()
-    if not text:
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    # Presentation offsets are computed over the same UTF-16 string the app
+    # renders. Do not strip leading indentation from a preformatted block.
+    if presentation is None:
+        text = text.strip()
+    if not text.strip():
         raise BookError('no_readable_text')
     if len(text.encode()) > MAX_TEXT:
         raise BookError('book_too_large')
     is_page = format in {'html', 'htm'}
-    return {'text': text, 'format': 'reading_text', 'source_format': format, 'url': url,
-            'sha256': hashlib.sha256(text.encode()).hexdigest(), 'complete': not is_page,
-            'scope': 'page' if is_page else 'document'}
+    result = {'text': text, 'format': 'reading_text', 'source_format': format, 'url': url,
+              'sha256': hashlib.sha256(text.encode()).hexdigest(), 'complete': not is_page,
+              'scope': 'page' if is_page else 'document'}
+    if presentation is not None:
+        result['presentation'] = presentation
+    if presentation_warning:
+        result['presentation_warning'] = presentation_warning
+    return result

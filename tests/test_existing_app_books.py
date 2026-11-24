@@ -1,4 +1,4 @@
-"""Library improvements using the exact existing WebXDC package, never a new one.
+"""Library backend and strict compatibility checks for the updated package.
 
 All bridge data, identities and books here are synthetic. No production state,
 mail, external credentials or real user library are accessed.
@@ -34,25 +34,30 @@ def _book(source, number, *, identifier=None, archive_id=''):
             'downloads': [{'format': 'txt', 'url': f'https://example.org/{source}{number}.txt'}]}
 
 
-def test_entire_existing_package_and_strict_release_fingerprint_are_unchanged(monkeypatch):
+def test_updated_package_keeps_strict_release_fencing(monkeypatch):
+    # The upgrade changes only these UI files. It MUST NOT silently authorize
+    # the previous package while the owner requests current-only operation.
     manifest = json.loads(Path('tests/fixtures/library-current-package.json').read_text())
     entries = app_package.entries(miniapp.APP_FILES)
     assert set(manifest) == {name for name, _ in entries}
-    for name, source in entries:
-        assert hashlib.sha256((miniapp.APP_DIR / source).read_bytes()).hexdigest() == manifest[name], name
+    changed = {name for name, source in entries
+               if hashlib.sha256((miniapp.APP_DIR / source).read_bytes()).hexdigest() != manifest[name]}
+    assert changed == {'app.css', 'app.js', 'books.js'}
     monkeypatch.setattr(config, 'BOT_EPOCH', 'test-epoch')
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'fixture-release')
     monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)
     monkeypatch.setattr(config, 'REVOKE_LEGACY_MINIAPPS', True)
-    assert miniapp.app_build() == 'd7437b1b88'  # the exact original package under this epoch/release
-    assert miniapp.compatible_build({'epoch': 'test-epoch', 'build': 'd7437b1b88'})
-    assert not miniapp.compatible_build({'epoch': 'another-epoch', 'build': 'd7437b1b88'})
+    current = miniapp.app_build()
+    assert current != 'd7437b1b88'
+    assert miniapp.compatible_build({'epoch': 'test-epoch', 'build': current})
+    assert not miniapp.compatible_build({'epoch': 'test-epoch', 'build': 'd7437b1b88'})
+    assert not miniapp.compatible_build({'epoch': 'another-epoch', 'build': current})
     assert not miniapp.compatible_build({'epoch': 'test-epoch', 'build': 'retired000'})
-    # Also exercise the exact release label used by the active workflow. The
-    # epoch is a harmless fixture, never the real production identity.
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'public-private-20261119-v1')
-    assert miniapp.app_build() == '8cab451a13'
-    assert miniapp.compatible_build({'epoch': 'test-epoch', 'build': '8cab451a13'})
+    release = miniapp.app_build()
+    assert release != '8cab451a13'
+    assert miniapp.compatible_build({'epoch': 'test-epoch', 'build': release})
+    assert not miniapp.compatible_build({'epoch': 'test-epoch', 'build': '8cab451a13'})
 
 
 def test_legacy_combined_page_click_retries_failed_source_without_skipping(monkeypatch):

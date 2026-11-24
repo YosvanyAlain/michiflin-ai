@@ -245,7 +245,7 @@ function renderView(scroll = 0) {
   visibleNoticeCheck = null;
   const revision = ++renderRevision;
   if (typeof FileKitUI !== "undefined") FileKitUI.stop();
-  if (window.BookShelf) window.BookShelf.stopSpeech();
+  if (window.BookShelf) window.BookShelf.leave();
   if (window.liveWeb && current.view !== "live_web") window.liveWeb.stop();
   const definition = VIEWS[current.view];
   // Direct navigation can also open an unread result. Resolve just one; a
@@ -3916,7 +3916,7 @@ VIEWS.settings = {
       appRow(es ? "Modo del agente" : "Agent mode", select(prefs.agentMode || "agent", [["agent", t("agent")], ["smart_agent", "Michiflin Smart Agent"]], value => { prefs.agentMode = value; savePrefs(); })),
       appRow(es ? "Modelo de imagen preferido" : "Preferred image model", select(prefs.imageModel || "", [["", t("img_auto")], ...((cache.models?.images) || []).map(item => [item.key, item.label])], value => { prefs.imageModel = value; savePrefs(); })),
       link("shield", t("personal_title"), "personal_ai"), link("ai", t("models"), "ai"));
-    const cacheSettings = card(h("p", { class: "muted small" }, es ? "El catálogo se conserva 10 minutos; hasta 24 portadas durante un día. Los libros descargados no se borran al limpiar la caché." : "Catalogues are cached for 10 minutes; up to 24 covers for a day. Clearing the cache does not delete downloaded books."),
+    const cacheSettings = card(h("p", { class: "muted small" }, es ? "Las búsquedas solicitan resultados nuevos; hasta 24 portadas se conservan durante un día. Limpiar la caché no borra libros descargados." : "Searches request fresh results; up to 24 covers are cached for a day. Clearing the cache does not delete downloaded books."),
       h("button", { class: "btn ghost", onclick: async () => {
         if (await confirmBox(t("confirm"), es ? "¿Limpiar solo catálogo y portadas?" : "Clear only catalogue and cover cache?", t("confirm"))) {
           window.BookShelf.clearCache(); toast(t("done"), "ok");
@@ -4590,7 +4590,7 @@ boot();
   document.body.append(cue);
   let frame = 0;
   const update = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(() => {
-    cue.hidden = current.view === "live_web" || view.scrollHeight - view.clientHeight - view.scrollTop < 36;
+    cue.hidden = current.view === "live_web" || !!view.querySelector(".book-reader") || view.scrollHeight - view.clientHeight - view.scrollTop < 36;
     cue.querySelector("span").textContent = t("more_below"); cue.setAttribute("aria-label", t("more_below")); cue.title = t("more_below");
   }); };
   view.addEventListener("scroll", update, { passive: true });

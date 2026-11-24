@@ -78,6 +78,7 @@ def test_library_download_persists_and_reopens_without_network():
         assert page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
         page.get_by_role('button', name='Abrir', exact=True).click()
         assert page.locator('.book-reading').inner_text().startswith('Primera página.')
+        page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         assert page.get_by_role('button', name='Exportar al lector del sistema', exact=True).is_visible()
         page.reload()
         page.wait_for_function('cache.at > 0')

@@ -286,6 +286,7 @@ MODULES = {
     "app.py": "Cableado principal de Delta Chat: eventos, recepción ordenada, arranque y parada de trabajadores.",
     "app_compat.py": "Mantiene huellas históricas exactas para políticas y pruebas; current-only las rechaza en el despliegue previsto.",
     "app_package.py": "Selecciona los archivos del paquete, incluidas fuentes comprimidas sin pérdida y avisos de terceros.",
+    "book_epub_view.py": "Prepara una vista EPUB adaptada y acotada, sin HTML activo ni recursos remotos.",
     "book_legacy.py": "Adapta los resultados de la biblioteca a la miniapp existente, con cursores temporales aislados por autorización y búsqueda.",
     "book_library.py": "Catálogos públicos de libros, condiciones de acceso y copias de lectura acotadas sin eludir DRM o préstamos.",
     "book_search.py": "Limita y coordina búsquedas de catálogos, agrupa solicitudes equivalentes y respeta las pausas de los proveedores.",

@@ -107,10 +107,10 @@ def _remember_formats(scope: str, book: dict) -> None:
             _alternatives.pop(next(iter(_alternatives)))
 
 
-def reading_copy(scope: str, url: str, format: str) -> dict:
+def reading_copy(scope: str, url: str, format: str, *, visual: bool = False) -> dict:
     """Retry at most two public formats of this same previously shown record."""
     try:
-        return books.reading_copy(url, format)
+        return books.reading_copy(url, format, visual=True) if visual else books.reading_copy(url, format)
     except Exception as exc:
         if books.failure_code(exc) not in _RETRYABLE:
             raise
@@ -121,7 +121,8 @@ def reading_copy(scope: str, url: str, format: str) -> dict:
     last = original
     for item in choices:
         try:
-            return books.reading_copy(item['url'], item['format'])
+            return (books.reading_copy(item['url'], item['format'], visual=True) if visual
+                    else books.reading_copy(item['url'], item['format']))
         except Exception as exc:
             last = exc
             # Never try another link around authorization, 403, 429, loans or DRM.
