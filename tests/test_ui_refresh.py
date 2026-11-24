@@ -87,7 +87,7 @@ def test_books_are_idle_on_entry_and_query_all_catalogues(engine):
     with browser_fixture('es', {'width': 390, 'height': 844}, engine=engine) as (page, errors):
         page.evaluate("go('books')")
         page.get_by_placeholder('Título, autor o tema').wait_for()
-        assert page.locator('#view select').input_value() == 'all'
+        assert page.get_by_label('Catálogo', exact=True).input_value() == 'all'
         page.wait_for_timeout(250)
         assert page.evaluate("!window.__sentUpdates.some(x=>x.payload?.op==='books')")
         page.get_by_placeholder('Título, autor o tema').fill('El principito')
