@@ -125,8 +125,10 @@ window.BookShelf = (() => {
     const db = await database();
     try { return await new Promise((resolve, reject) => {
       const tx = db.transaction(["books", "originals"], "readwrite");
-      tx.objectStore("books").delete(id); tx.objectStore("originals").delete(id);
       tx.oncomplete = resolve; tx.onerror = tx.onabort = () => reject(new Error("storage"));
+      // A synchronous failure on the second delete must not commit the first.
+      try { tx.objectStore("books").delete(id); tx.objectStore("originals").delete(id); }
+      catch (_) { try { tx.abort(); } catch (_) {} reject(new Error("storage")); }
     }); } finally { db.close(); }
   }
   const byteLength = value => new TextEncoder().encode(value).length;
