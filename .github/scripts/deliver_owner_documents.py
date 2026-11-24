@@ -72,8 +72,9 @@ def source_zip(repo: Path, revision: str, destination: Path) -> str:
                 if (not member.isfile() or path.is_absolute() or ".." in path.parts
                         or not member.name or member.size > 30_000_000):
                     raise DeliveryError("unsafe_archive")
-                if member.name.startswith("docs/media/") or member.name == "docs/Manual_Michiflin.pdf":
-                    continue  # screenshots/video are non-code; the manual is sent separately
+                if (member.name.startswith(("docs/media/", "docs/manual-media/"))
+                        or member.name == "docs/Manual_Michiflin.pdf"):
+                    continue  # guide images/video are non-code; the illustrated manual is sent separately
                 if can_restore and member.name in compact_duplicates:
                     omitted_compact.append(member.name)
                     continue  # full historical gzip source is included; XZ duplicates can be rebuilt
@@ -93,7 +94,8 @@ def source_zip(repo: Path, revision: str, destination: Path) -> str:
     note = ("Michiflin AI - codigo fuente rastreado\n"
             f"Commit: {revision}\n"
             "Incluye codigo, pruebas, configuracion de ejemplo y documentacion textual.\n"
-            "Se omiten capturas/videos de docs/media; el manual PDF se envia aparte.\n"
+            "Se omiten capturas/videos de docs/media y docs/manual-media; el manual ilustrado se envia aparte.\n"
+            "Para volver a construir el manual con sus capturas, obten docs/manual-media del mismo commit.\n"
             + compact_note +
             "No incluye estado, cuentas, claves, secretos, historiales ni .git.\n"
             "Comprueba las huellas listadas en SHA256SUMS.txt.\n")

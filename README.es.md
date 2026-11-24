@@ -117,7 +117,7 @@ El despliegue actual en GitHub Actions es **temporal**: usarlo como servidor per
 
 La [guía integral en PDF](docs/Manual_Michiflin.pdf) explica el uso, el código, los límites y la migración. Para regenerarla desde el código fuente se necesitan las fuentes DejaVu instaladas y `pip install -r docs/requirements-manual.txt`; después, ejecuta `python tools/build_manual.py`. Las capturas incluidas en esa guía usan datos sintéticos y están identificadas como reales o simuladas.
 
-El ZIP opcional de código omite capturas y los dos archivos XZ redundantes para respetar el límite de adjuntos; conserva las fuentes gzip originales completas. Tras comprobar `SHA256SUMS.txt`, ejecuta `python tools/restore_compact_sources.py` antes de construir la miniapp. El script solo publica archivos con las huellas fijadas y no sobrescribe otros distintos. Si tu versión de liblzma produce bytes diferentes, obtén los XZ exactos del mismo commit del repositorio.
+El ZIP opcional de código omite `docs/media`, `docs/manual-media` y los dos archivos XZ redundantes para respetar el límite de adjuntos; conserva las fuentes gzip originales completas. El manual ilustrado se entrega por separado. Para regenerar el manual con sus imágenes, obtén `docs/manual-media` del mismo commit. Tras comprobar `SHA256SUMS.txt`, ejecuta `python tools/restore_compact_sources.py` antes de construir la miniapp. El script solo publica archivos con las huellas fijadas y no sobrescribe otros distintos. Si tu versión de liblzma produce bytes diferentes, obtén los XZ exactos del mismo commit del repositorio.
 
 ## Colaboraciones, sugerencias y apoyo de hospedaje
 
