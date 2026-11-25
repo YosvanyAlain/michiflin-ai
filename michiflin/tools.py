@@ -24,13 +24,17 @@ from .util import compact, local_time, tr, unlinked, host_of
 
 try:
     from ddgs import DDGS
+    from ddgs.ddgs import ENGINES as DDGS_ENGINES
 except ImportError:  # pragma: no cover
     DDGS = None  # type: ignore[assignment]
+    DDGS_ENGINES = {}  # type: ignore[assignment]
 
 UA = {"User-Agent": "MichiflinAI/5 (private Delta Chat assistant)"}
 _cache: dict[str, tuple[float, Any]] = {}
 _search_pause_lock = threading.Lock()
+_search_request_lock = threading.RLock()
 _search_paused_until = 0.0
+_search_local = threading.local()
 _SEARCH_CHALLENGE = re.compile(r"(?:captcha|ratelimit|rate[ -]?limit|too many requests|(?:http|status|code)?\s*429\b|bot[ -]?check|robot challenge)", re.I)
 
 
@@ -72,39 +76,81 @@ def _relevant(url: str, title: str, query: str) -> bool:
     return _words(query) <= _words(title)
 
 
-def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
-    """Keyless search with bounded retries; stop on a rate limit or challenge."""
+def _text_search_backends() -> tuple[str, ...]:
+    """Pick only installed engines: DDGS silently uses randomized auto for unknown names."""
+    try:
+        available = DDGS_ENGINES.get("text", {})
+        if not isinstance(available, dict):
+            return ()
+        return tuple(name for name in ("bing", "duckduckgo", "brave", "yahoo") if name in available)[:2]
+    except Exception:
+        return ()  # unknown package layout: fail closed rather than switch providers silently
+
+
+def clear_search_status() -> None:
+    _search_local.status = "unknown"
+
+
+def search_status() -> str:
+    """Outcome for this thread only, without a query, provider details or credentials."""
+    return str(getattr(_search_local, "status", "unknown"))
+
+
+def _pause_search() -> None:
     global _search_paused_until
     with _search_pause_lock:
+        _search_paused_until = time.monotonic() + 120.0
+    _search_local.status = "limited"
+
+
+def search_issue(locale: str) -> str:
+    """A careful, localized explanation only when the result cannot be called empty."""
+    if search_status() == "limited":
+        return tr(locale, "El buscador limita las solicitudes. Espera un poco antes de intentarlo de nuevo.",
+                  "The search provider is limiting requests. Wait a little before trying again.")
+    if search_status() == "unavailable":
+        return tr(locale, "La búsqueda no respondió. Revisa la conexión e inténtalo más tarde.",
+                  "Search did not respond. Check the connection and try again later.")
+    if search_status() == "busy":
+        return tr(locale, "Hay otra búsqueda en curso. Espera un momento y vuelve a intentarlo.",
+                  "Another search is in progress. Wait a moment and try again.")
+    if search_status() == "indeterminate":
+        return tr(locale, "No se obtuvieron resultados; el buscador también podría no estar disponible. Prueba otras palabras o inténtalo más tarde.",
+                  "No results were obtained; the search provider may also be unavailable. Try other words or try again later.")
+    return ""
+
+
+def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
+    """One named keyless provider; stop on errors, ambiguity, or a challenge."""
+    with _search_pause_lock:
         if time.monotonic() < _search_paused_until:
+            _search_local.status = "limited"
             return []
-    regions = ["us-en", "wt-wt"] if locale == "en" else ["xl-es", "es-es"]
-    started = time.time()
-    # Use one provider at a time, not DDGS's randomized multi-provider auto
-    # mode. Never switch providers to get around a rate limit or CAPTCHA.
-    for region, backend in ((regions[0], "bing"), (regions[0], "duckduckgo"), (regions[1], "bing"), (regions[1], "duckduckgo")):
-        with _search_pause_lock:
-            if time.monotonic() < _search_paused_until:
-                return []
-        if time.time() - started > 25:
-            break
-        try:
-            items = DDGS(timeout=10).text(query, region=region, safesearch="moderate", max_results=limit + 2, backend=backend)
-        except Exception as exc:
-            detail = type(exc).__name__ + " " + str(exc)
-            if _SEARCH_CHALLENGE.search(detail):
-                with _search_pause_lock:
-                    _search_paused_until = time.monotonic() + 120.0
-                return []
-            continue
-        found = []
-        for item in items or []:
-            url = str(item.get("href") or item.get("url") or "").strip()
-            if url.startswith("http") and _relevant(url, str(item.get("title") or ""), query):
-                found.append(Result(compact(item.get("title"), 140), url, compact(item.get("body"), 260)))
-        if found:
-            return found[:limit]
-    return []
+    backends = _text_search_backends()
+    if DDGS is None or not backends:
+        _search_local.status = "unavailable"
+        return []
+    # Some DDGS versions turn HTTP 429, other non-200 responses and empty
+    # results into the same "No results found" exception. A second provider or
+    # region would therefore risk routing around an undisclosed challenge.
+    # Also, an unknown backend silently selects randomized "auto" mode.
+    try:
+        items = DDGS(timeout=10).text(query, region="us-en" if locale == "en" else "xl-es",
+                                      safesearch="moderate", max_results=limit + 2, backend=backends[0])
+    except Exception as exc:
+        detail = type(exc).__name__ + " " + str(exc)
+        if _SEARCH_CHALLENGE.search(detail):
+            _pause_search()
+        else:
+            _search_local.status = "indeterminate" if "no results found" in detail.lower() else "unavailable"
+        return []
+    found = []
+    for item in items or []:
+        url = str(item.get("href") or item.get("url") or "").strip()
+        if url.startswith("http") and _relevant(url, str(item.get("title") or ""), query):
+            found.append(Result(compact(item.get("title"), 140), url, compact(item.get("body"), 260)))
+    _search_local.status = "ok" if found else "empty" if items else "indeterminate"
+    return found[:limit]
 
 
 def search_limited() -> bool:
@@ -114,14 +160,37 @@ def search_limited() -> bool:
 
 
 def search(query: str, locale: str, limit: int = 6, engine: str = "standard") -> list[Result]:
-    """Web results. Standard is keyless (but may rate-limit); advanced spends You.com calls and can fall back to standard."""
-    if DDGS is None or not query.strip():
+    """Standard is keyless; advanced uses You.com when configured, without challenge hopping."""
+    clear_search_status()
+    if not query.strip():
+        _search_local.status = "empty"
         return []
-    if engine == "advanced":
-        found = _cached(f"y:{limit}:{query.lower()}", 1800, lambda: _you_search(query, limit))
-        if found:
+    # Serialize outbound searches so a newly detected limit stops queued calls,
+    # not just subsequent calls on the same worker thread. Bound the wait so a
+    # timed-out request cannot start a provider call much later in the background.
+    if not _search_request_lock.acquire(timeout=5):
+        _search_local.status = "busy"
+        return []
+    try:
+        if search_limited():
+            _search_local.status = "limited"
+            return []
+        if engine == "advanced" and config.YDC_API_KEY:
+            found = _cached(f"y:{limit}:{query.lower()}", 1800, lambda: _you_search(query, limit))
+            if found:
+                _search_local.status = "ok"
+            elif search_status() == "unknown":
+                _search_local.status = "indeterminate"
             return found
-    return _cached(f"s:{locale}:{limit}:{query.lower()}", 600, lambda: _ddgs_text(query, locale, limit))
+        if DDGS is None:
+            _search_local.status = "unavailable"
+            return []
+        found = _cached(f"s:{locale}:{limit}:{query.lower()}", 600, lambda: _ddgs_text(query, locale, limit))
+        if found:
+            _search_local.status = "ok"
+        return found
+    finally:
+        _search_request_lock.release()
 
 
 def _views(count: Any, locale: str) -> str:
@@ -299,22 +368,35 @@ def you_left() -> int:
 
 
 def _you_search(query: str, limit: int) -> list[Result]:
-    """You.com Web Search within its free daily calls; empty when unavailable."""
+    """You.com Web Search within its free daily calls; no automatic provider hopping."""
     key = "you:search"
-    if not config.YDC_API_KEY or state.usage_today(key) >= config.YDC_DAILY or state.cooldown_until(key):
+    if not config.YDC_API_KEY:
+        _search_local.status = "unavailable"
+        return []
+    if state.usage_today(key) >= config.YDC_DAILY:
+        _search_local.status = "limited"
+        return []
+    if state.cooldown_until(key):
+        _search_local.status = "unavailable"
         return []
     try:
         response = requests.get("https://ydc-index.io/v1/search", params={"query": query, "count": min(20, limit + 2), "safesearch": "moderate"},
                                 headers={"X-API-Key": config.YDC_API_KEY}, timeout=20, allow_redirects=False)
     except requests.RequestException:
         state.set_cooldown(key, 300)
+        _search_local.status = "unavailable"
         return []
     if 300 <= int(response.status_code) < 400:
         state.set_cooldown(key, 600)
+        _search_local.status = "unavailable"
         return []
     state.record_usage(key, response.ok)
     if not response.ok:
         state.set_cooldown(key, 6 * 3600 if response.status_code in {401, 402, 403, 429} else 600)
+        if response.status_code == 429:
+            _pause_search()
+        else:
+            _search_local.status = "unavailable"
         return []
     found = []
     for item in ((response.json().get("results") or {}).get("web") or []):
@@ -323,6 +405,7 @@ def _you_search(query: str, limit: int) -> list[Result]:
         snippet = item.get("description") or (snippets[0] if snippets else "")
         if url.startswith("http"):
             found.append(Result(compact(item.get("title"), 140), url, compact(snippet, 260), date=str(item.get("page_age") or "")[:10]))
+    _search_local.status = "ok" if found else "empty"
     return found[:limit]
 
 
@@ -358,7 +441,8 @@ def search_text(query: str, locale: str) -> str:
     except Exception as exc:
         return tr(locale, f"⚠️ La búsqueda falló ({exc.__class__.__name__}).", f"⚠️ Search failed ({exc.__class__.__name__}).")
     if not results:
-        return tr(locale, "🔎 Sin resultados.", "🔎 No results.")
+        issue = search_issue(locale)
+        return "⚠️ " + issue if issue else tr(locale, "🔎 Sin resultados.", "🔎 No results.")
     lines = [f"🔎 {compact(query, 100)}", ""]
     lines += [links.entry(index, item.title, item.url, item.snippet) for index, item in enumerate(results, 1)]
     lines += ["", tr(locale, "Toca un comando para abrir la página.", "Tap a command to open the page.")]

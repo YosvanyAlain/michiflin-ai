@@ -11,6 +11,8 @@ def previous():
 
 
 def test_exact_previous_package_remains_usable_even_with_strict_release(monkeypatch):
+    # Optional compatibility is a separate mode from the deployed current-only policy.
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', False)
     monkeypatch.setattr(config, 'REVOKE_LEGACY_MINIAPPS', True)
     monkeypatch.setattr(config, 'BOT_EPOCH', 'synthetic-epoch')
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'synthetic-release')
@@ -19,8 +21,29 @@ def test_exact_previous_package_remains_usable_even_with_strict_release(monkeypa
     assert miniapp.compatible_build({'epoch': config.BOT_EPOCH, 'build': old})
     assert not miniapp.compatible_build({'epoch': 'foreign', 'build': old})
     assert not miniapp.compatible_build({'epoch': config.BOT_EPOCH, 'build': 'retired0000'})
+    # The actual chosen production policy must reject even this exact old build.
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)
+    assert not miniapp.compatible_build({'epoch': config.BOT_EPOCH, 'build': old})
+    assert miniapp.compatible_build({'epoch': config.BOT_EPOCH, 'build': miniapp.app_build()})
+    monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', False)
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'another-release')
     assert not miniapp.compatible_build({'epoch': config.BOT_EPOCH, 'build': old})
+
+
+def test_archived_live_bytes_match_pinned_community_manifest(tmp_path):
+    import hashlib
+    import json
+    import shutil
+    directory = Path('michiflin/compat/community-before')
+    manifest = json.loads((directory / 'manifest.json').read_text())
+    assert hashlib.sha256((directory / 'live.js').read_bytes()).hexdigest() == manifest['live.js']
+    copied = tmp_path / 'community-before'
+    shutil.copytree(directory, copied)
+    replaced = {'index.html', 'app.css', 'app.js', 'i18n.js', 'core.js', 'books.js', 'live.js'}
+    arguments = ('synthetic-epoch', str(miniapp.APP_DIR), miniapp.APP_FILES, copied, replaced, 'synthetic-release')
+    assert len(app_compat._uncached_pinned_build(*arguments)) == 10
+    (copied / 'live.js').write_text('tampered')
+    assert app_compat._uncached_pinned_build(*arguments) == ''  # altered assets fail closed
 
 
 def test_announce_once_inside_existing_instance_under_concurrent_hello(monkeypatch):

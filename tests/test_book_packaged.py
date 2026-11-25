@@ -9,6 +9,8 @@ from playwright.sync_api import sync_playwright
 
 from michiflin import app_package, config, miniapp
 from tests.test_book_originals import sample_epub, sample_pdf
+from tests.test_epub_internal_links import open_fixture, wait_for_target
+from tests.test_welcome_reader_edges import show_reading_area, tap_edge
 
 pytest_plugins = ['tests.test_android_startup']
 
@@ -41,7 +43,7 @@ def test_packaged_offline_reader_and_exact_export(packaged_app, engine, kind):
     with sync_playwright() as playwright:
         browser = getattr(playwright, engine).launch(**({'args': ['--no-sandbox']} if engine == 'chromium' else {}))
         try:
-            page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='es')
+            page = browser.new_page(viewport={'width': 390, 'height': 844}, locale='es', has_touch=True)
             errors, remote = [], []
             page.on('pageerror', lambda error: errors.append(str(error)))
             def stop_remote(route):
@@ -61,15 +63,51 @@ def test_packaged_offline_reader_and_exact_export(packaged_app, engine, kind):
                 assert iframe.locator('h1').inner_text() == 'Capítulo empaquetado'
                 assert iframe.locator('script').count() == 0
                 assert not page.evaluate('window.__book_attack || false')
+                show_reading_area(page, '.book-file-stage')
+                tap_edge(page, '.book-file-stage', 'right')
+                page.wait_for_function("() => document.querySelector('.book-file-page').textContent.includes('Sección 2 / 2')", timeout=15000)
             else:
                 assert page.locator('.book-pdf-canvas').evaluate('el=>el.width>0 && el.height>0')
-                page.get_by_role('button', name='Siguiente', exact=True).click()
+                show_reading_area(page, '.book-file-stage')
+                tap_edge(page, '.book-file-stage', 'right')
                 page.get_by_text('Página 2 / 3', exact=True).wait_for()
             page.evaluate('''()=>{window.exportSheet=async(blob,name)=>{window.__export={name,hash:await FileKitCrypto.hashBlob(blob),size:blob.size}}}''')
             page.get_by_role('button', name='Exportar archivo original', exact=True).click()
             page.wait_for_function('window.__export && window.__export.hash')
             assert page.evaluate('window.__export') == {'name': 'packaged.' + kind,
                                                        'hash': hashlib.sha256(raw).hexdigest(), 'size': len(raw)}
+            assert remote == [] and errors == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('engine', ['chromium', 'webkit'])
+def test_packaged_epub_links_remain_offline_and_sandboxed(packaged_app, engine):
+    _root, url = packaged_app
+    with sync_playwright() as playwright:
+        browser = getattr(playwright, engine).launch(**({'args': ['--no-sandbox']} if engine == 'chromium' else {}))
+        try:
+            page = browser.new_page(viewport={'width': 320, 'height': 640}, locale='es', has_touch=True)
+            errors, remote = [], []
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            def stop_remote(route):
+                remote.append(route.request.url)
+                route.abort()
+            page.route('**://remote.invalid/**', stop_remote)
+            page.goto(url, wait_until='domcontentloaded')
+            page.wait_for_function('window.__michiflinStartupDone && cache.at>0 && !syncing')
+            _book_id, original_url = open_fixture(page)
+            frame = page.frame_locator('.book-file-stage iframe').first
+            frame.get_by_text('Saltar en este capítulo', exact=True).tap()
+            wait_for_target(page, 'destino uno')
+            frame.get_by_text('Volver al comienzo', exact=True).tap()
+            wait_for_target(page, 'inicio')
+            frame.get_by_text('Ir al segundo capítulo', exact=True).focus()
+            page.keyboard.press('Enter')
+            page.wait_for_function("document.querySelector('.book-file-page').textContent.includes('Sección 2 / 2')", timeout=15000)
+            wait_for_target(page, 'destino-dos')
+            assert page.locator('.book-file-stage iframe').first.get_attribute('sandbox') == 'allow-same-origin'
+            assert page.url == original_url and not page.evaluate('window.__book_attack || false')
             assert remote == [] and errors == []
         finally:
             browser.close()

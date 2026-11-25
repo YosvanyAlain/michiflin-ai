@@ -1,6 +1,8 @@
-# Current-interface captures / Capturas de la interfaz actual
+# Interface captures / Capturas de la interfaz
 
-These screenshots and tours are generated from the current `webxdc/` renderer, **not a mock drawing of the interface**. They use the repository's offline test bridge, with a visible **DEMO · synthetic data / datos simulados** label. All addresses, queues, results and administrator examples are synthetic. No mailbox, provider key or real login is used.
+These screenshots and tours were generated from the `webxdc/` renderer identified by `capture-manifest.json`, **not a mock drawing of the interface**. The recordings predate the countdown and reader-edge corrections: the tour still shows the previous greeting and is not a current depiction of Home. They use the repository's offline test bridge, with a visible **DEMO · synthetic data / datos simulados** label. All addresses, queues, results and administrator examples are synthetic. No mailbox, provider key or real login is used.
+
+Las grabaciones son anteriores a la corrección de la cuenta regresiva y los bordes del lector: el recorrido todavía muestra el saludo anterior. Vuelve a generarlas para reflejar la interfaz nueva.
 
 Son capturas del renderizador real con un puente de pruebas sin conexión. **No demuestran** tiempos del correo, descargas completas de fuentes externas, disponibilidad de un modelo ni funcionamiento en un teléfono físico. Los clips son secuencias de fotogramas sostenidos durante dos segundos: no son una medida de velocidad ni una sesión continua por correo.
 
@@ -18,7 +20,7 @@ The tool uses only the local test fixture. Do not replace it with a private prod
 
 ## Tours in Spanish and English
 
-- `es/clip-tour.gif`, `en/clip-tour.gif` and their MP4 versions: the greeting on Home, the main tabs and Settings, an example unread bell and its notification center, and the optional five-step guide opened from Help. Startup has a brief local, theme-aware mark; it does **not** open a welcome card or guide automatically, and reduced-motion preferences disable its motion.
+- `es/clip-tour.gif`, `en/clip-tour.gif` and their MP4 versions: the former Home greeting, the main tabs and Settings, an example unread bell and its notification center, and the optional five-step guide opened from Help. Startup has a brief local, theme-aware mark; it does **not** open a welcome card or guide automatically, and reduced-motion preferences disable its motion.
 - `clip-web`: search and reader using a reserved example URL and a synthetic result.
 - `clip-download`: illustrative queued/completed states. This does not depict a real external download.
 - `clip-join`: the **current integrated file kit and join panel**, not the retired standalone joiner. It shows where to work, not a verified media-remux result.

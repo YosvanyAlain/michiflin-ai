@@ -321,14 +321,15 @@ window.BookShelf = (() => {
     leave();
     const main = $("#view"), pages = makePages(book.text), visual = presentationFor(book);
     let offset = positionFor(book, pages), page = 0, scrollTimer = null, releaseTimer = null, drawRevision = 0, suppressScroll = false;
+    const pendingTurns = [];
     const initial = store.get("book.readerPrefs", {});
     const settings = { theme: ["paper", "sepia", "night"].includes(initial.theme) ? initial.theme : "paper",
       font: ["serif", "sans"].includes(initial.font) ? initial.font : "serif",
       size: clamp(safeNumber(initial.size, 19), 16, 28), line: clamp(safeNumber(initial.line, 1.7), 1.4, 2.2),
       width: ["narrow", "normal", "wide"].includes(initial.width) ? initial.width : "normal" };
-    const root = h("div", { class: "book-reader", "data-theme": settings.theme, "data-font": settings.font, "data-width": settings.width });
+    const root = h("div", { class: "book-reader", "data-theme": settings.theme, "data-font": settings.font, "data-width": settings.width, "aria-busy": "true" });
     const content = h("article", { class: "book-reading", tabindex: "0", "aria-label": book.title });
-    const labels = [h("span", { class: "book-page-label", "aria-live": "polite" }), h("span", { class: "book-page-label" })];
+    const labels = [h("span", { class: "book-page-label", "aria-live": "polite" })];
     const progressWarning = h("p", { class: "book-progress-warning", hidden: true, role: "status" },
       text("No se pudo guardar el progreso local. Comprueba el espacio disponible y exporta el libro.", "Reading progress could not be saved locally. Check available storage and export the book."));
     const ranges = [];
@@ -359,8 +360,16 @@ window.BookShelf = (() => {
       const portion = clamp((top - rect.top) / Math.max(1, rect.height), 0, 1);
       return safeNumber(node.dataset.bookStart) + Math.round(portion * (safeNumber(node.dataset.bookEnd) - safeNumber(node.dataset.bookStart)));
     };
-    const restore = value => {
-      if (value <= pages[page].start) { main.scrollTop = 0; return; }
+    const restore = (value, placement = "position") => {
+      if (placement === "reading-end") {
+        main.scrollTop += content.getBoundingClientRect().bottom - main.getBoundingClientRect().bottom + 8;
+        return;
+      }
+      if (value <= pages[page].start) {
+        if (placement === "reading-start") main.scrollTop += content.getBoundingClientRect().top - main.getBoundingClientRect().top - 12;
+        else main.scrollTop = 0;
+        return;
+      }
       const nodes = [...content.querySelectorAll("[data-book-start]")];
       const node = nodes.find(item => safeNumber(item.dataset.bookEnd) > value) || nodes[nodes.length - 1];
       if (!node) return;
@@ -369,7 +378,9 @@ window.BookShelf = (() => {
       const fraction = clamp((value - from) / Math.max(1, to - from), 0, 1);
       main.scrollTop += rect.top - viewRect.top + fraction * rect.height - 12;
     };
-    const draw = value => {
+    const draw = (value, placement = "position", preservePending = false) => {
+      if (!preservePending) pendingTurns.length = 0;
+      root.setAttribute("aria-busy", "true");
       stopSpeech(); clearTimeout(scrollTimer); clearTimeout(releaseTimer); suppressScroll = true;
       const revision = ++drawRevision;
       const target = clamp(Math.floor(value), 0, Math.max(0, book.text.length - 1));
@@ -380,20 +391,62 @@ window.BookShelf = (() => {
       main.scrollTop = 0;
       requestAnimationFrame(() => {
         if (!root.isConnected || revision !== drawRevision) return;
-        restore(target);
+        restore(target, placement);
         releaseTimer = setTimeout(() => {
-          if (revision === drawRevision) { suppressScroll = false; if (root.isConnected) saveProgress(actualOffset()); }
+          if (revision === drawRevision) {
+            suppressScroll = false;
+            if (root.isConnected) {
+              saveProgress(actualOffset()); root.setAttribute("aria-busy", "false");
+              // Apply real taps made while the saved position was restoring,
+              // rather than silently losing them or undoing the restored place.
+              while (!suppressScroll && pendingTurns.length && root.isConnected) turnScreen(pendingTurns.shift());
+            }
+          }
         }, 120);
       });
     };
+    const turnPart = direction => {
+      const next = clamp(page + direction, 0, pages.length - 1);
+      if (next !== page) draw(pages[next].start, "reading-start");
+    };
+    // Text parts can be thousands of characters long. A screen-edge tap moves
+    // one viewport with overlap before advancing to the next part, so it does
+    // not skip all the unread text between the top and bottom of a part.
+    const turnScreen = direction => {
+      if (!root.isConnected) return;
+      if (suppressScroll) {
+        if (pendingTurns.length < 8) pendingTurns.push(direction);
+        return;
+      }
+      const view = main.getBoundingClientRect(), reading = content.getBoundingClientRect();
+      const step = Math.max(80, main.clientHeight * .8);
+      if (direction > 0) {
+        const toStart = reading.top - view.top - 12;
+        if (toStart > 1) main.scrollTop += toStart;
+        else {
+          const remaining = reading.bottom - view.bottom + 8;
+          if (remaining > 1) main.scrollTop += Math.min(step, remaining);
+          else if (page < pages.length - 1) { draw(pages[page + 1].start, "reading-start", true); return; }
+          else return;
+        }
+      } else {
+        const above = view.top + 12 - reading.top;
+        if (above > 1) main.scrollTop -= Math.min(step, above);
+        else if (page > 0) { draw(Math.max(pages[page - 1].start, pages[page - 1].end - 1), "reading-end", true); return; }
+        else return;
+      }
+      // Do not wait for a scroll event when the person closes the reader
+      // immediately after a tap; retain the visible position locally.
+      clearTimeout(scrollTimer); saveProgress(actualOffset());
+    };
     const nav = index => {
-      const previous = h("button", { class: "btn ghost", onclick: () => draw(pages[Math.max(0, page - 1)].start) }, icon("back"), text("Anterior", "Previous"));
-      const next = h("button", { class: "btn ghost", onclick: () => draw(pages[Math.min(pages.length - 1, page + 1)].start) }, text("Siguiente", "Next"), icon("next"));
+      const previous = h("button", { class: "btn ghost", onclick: () => turnPart(-1) }, icon("back"), text("Anterior", "Previous"));
+      const next = h("button", { class: "btn ghost", onclick: () => turnPart(1) }, text("Siguiente", "Next"), icon("next"));
       prevs.push(previous); nexts.push(next);
       const range = h("input", { type: "range", min: "0", max: "100", step: "1", value: "0", "aria-label": text("Ir a porcentaje del libro", "Go to book percentage"),
         onchange: event => draw(Math.floor(safeNumber(event.target.value) * Math.max(0, book.text.length - 1) / 100)) });
       ranges.push(range);
-      return h("div", { class: "book-nav", "aria-label": text("Navegación de lectura", "Reading navigation") },
+      return h("nav", { class: "book-nav", "aria-label": text("Navegación de lectura", "Reading navigation") },
         h("div", { class: "book-nav-buttons" }, previous, labels[index], next), range);
     };
     const applySettings = () => {
@@ -484,7 +537,7 @@ window.BookShelf = (() => {
       h("button", { class: "btn ghost small", onclick: () => { leave(); go("books", { tab: "saved" }); } }, icon("back"), text("Mi biblioteca", "My library")),
       h("h2", {}, book.title), h("p", { class: "book-byline" }, (book.authors || []).join(", ")),
       h("p", { class: "book-format-note" }, warning)),
-      nav(0), progressWarning,
+      progressWarning,
       h("details", { class: "book-toolbox" }, h("summary", {}, text("Herramientas de lectura", "Reading tools"),
         h("small", {}, text("Ajustes · búsqueda · marcadores", "Settings · find · bookmarks"))),
         appearance,
@@ -495,15 +548,22 @@ window.BookShelf = (() => {
           h("button", { class: "btn ghost small", onclick: stopSpeech }, icon("pause"), text("Detener voz", "Stop speech")),
           h("button", { class: "btn ghost small", onclick: () => exportText(book) }, icon("share"), book.original instanceof Blob ?
             text("Exportar archivo original", "Export original file") : text("Exportar copia de texto (no original)", "Export text copy (not original)")))),
-      content, nav(1));
+      h("p", { class: "book-edge-hint" }, text("Toca los bordes para avanzar o retroceder. Con teclado: ← y →.", "Tap the edges to move forward or back. With a keyboard: ← and →.")),
+      content, nav(0));
     fill(main, root); drawMarks(); applySettings();
+    // The reading area's vertical bounds exclude headers and controls, but
+    // its horizontal bounds include the side margins of the whole view.
+    const unbindPages = BookPageGestures.bind(main, () => {
+      const view = main.getBoundingClientRect(), reading = content.getBoundingClientRect();
+      return { left: view.left, right: view.right, top: Math.max(view.top, reading.top), bottom: Math.min(view.bottom, reading.bottom) };
+    }, turnScreen);
     const onScroll = () => {
       if (suppressScroll || !root.isConnected) return;
       offset = actualOffset();
       clearTimeout(scrollTimer); scrollTimer = setTimeout(() => saveProgress(offset), 250);
     };
     main.addEventListener("scroll", onScroll, { passive: true });
-    readerCleanup = () => { drawRevision++; clearTimeout(scrollTimer); clearTimeout(releaseTimer); if (root.isConnected && !suppressScroll) saveProgress(actualOffset()); main.removeEventListener("scroll", onScroll); };
+    readerCleanup = () => { drawRevision++; clearTimeout(scrollTimer); clearTimeout(releaseTimer); if (root.isConnected && !suppressScroll) saveProgress(actualOffset()); main.removeEventListener("scroll", onScroll); unbindPages(); };
     draw(offset);
   }
 

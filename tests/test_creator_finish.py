@@ -13,10 +13,11 @@ def test_home_actions_and_progressive_search(engine, language):
         page.emulate_media(reduced_motion="reduce")
         page.locator("#splash").wait_for(state="detached")
         assert page.locator(".home-brand-mark").count() == 0
-        # The greeting remains the first slide, even with activity shortcuts.
-        assert page.locator(".home-hero h2").inner_text() == page.evaluate("greeting()")
+        # The first slide contains only the countdown; the agent remains
+        # available through its ordinary shortcut rather than a second card.
+        assert page.locator(".home-countdown [data-restart-countdown]").count() == 1
         assert page.locator('.home-banner-controls button').first.get_attribute('aria-current') == 'true'
-        page.locator(".hero-action-primary").click()
+        page.locator(".tile-ai").click()
         assert page.evaluate("current.view") == "chat"
         assert page.evaluate("current.params.space") == "agent"
         page.evaluate("goTab('home')")
@@ -32,10 +33,11 @@ def test_home_actions_and_progressive_search(engine, language):
         assert not page.locator(".home-brand-mark").count()
         page.wait_for_function("store.get('notices',[]).some(n=>n.target?.view==='results')")
         page.evaluate("goTab('home')")
-        page.locator(".hero-action-primary").click()
+        page.locator('#notifications-toggle').click()
+        page.locator('.notice-center-main').first.click()
         assert page.evaluate("current.view") == "results"
         page.evaluate("goTab('home')")
-        page.locator(".hero-action:not(.hero-action-primary)").click()
+        page.locator('#tabs .tab[data-tab="downloads"]').click()
         assert page.evaluate("current.view") == "downloads"
         assert errors == []
 
@@ -52,8 +54,7 @@ def test_home_narrow_and_desktop_have_no_horizontal_overflow(engine, theme):
             page.wait_for_timeout(60)
             for name in [".hero", ".home-status", ".searchbox", ".tiles"]:
                 assert page.locator(name).evaluate("e => e.scrollWidth <= e.clientWidth + 1"), (width, theme, name)
-            for control in page.locator(".hero-action").all():
-                assert control.bounding_box()["height"] >= 44
+            assert page.locator(".home-countdown").bounding_box()["height"] >= 44
         # Rotating to shorter saved-data banners must not move the search box.
         before = page.locator(".searchbox").bounding_box()["y"]
         page.locator(".home-banner-controls button").nth(1).click()
@@ -63,6 +64,6 @@ def test_home_narrow_and_desktop_have_no_horizontal_overflow(engine, theme):
         page.locator(".home-banner-controls button").nth(0).click()
         # Text zoom/reflow: allow vertical growth, never clip labels/actions.
         page.set_viewport_size({"width": 320, "height": 568})
-        page.add_style_tag(content="body {font-size: 20px} .home-hero h2 {font-size: 38px}")
+        page.add_style_tag(content="body {font-size: 20px} .home-countdown-value {font-size: 38px}")
         assert page.locator(".home-hero").evaluate("e => e.scrollWidth <= e.clientWidth + 1")
         assert errors == []

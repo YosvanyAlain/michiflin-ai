@@ -546,7 +546,13 @@ details[open] > summary > .caret { transform: rotate(180deg); }
 .page-body td, .page-body th { padding: 4px 8px; border: 1px solid var(--line); }
 .page-body blockquote { margin: 0; padding-left: 12px; border-left: 3px solid var(--accent); color: var(--muted); }
 .page-body h1, .page-body h2, .page-body h3 { line-height: 1.3; }
-.pager { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; }
+.pager { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; min-width: 0; }
+.pager span { min-width: 0; text-align: center; overflow-wrap: anywhere; }
+@media (max-width: 400px) {
+  .pager { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pager span { grid-column: 1 / -1; grid-row: 1; }
+  .pager .btn { min-width: 0; max-width: 100%; padding-inline: 8px; white-space: normal; overflow-wrap: anywhere; }
+}
 .prose p { margin: 0 0 10px; line-height: 1.6; white-space: pre-wrap; }
 
 /* Apps */
@@ -780,15 +786,35 @@ details[open] > summary > .caret { transform: rotate(180deg); }
 /* The picture is ephemeral and contains private pages; it is never stored by the app. */
 .live-brief { margin: 0; }
 .live-privacy summary { cursor: pointer; color: var(--accent-strong); font-size: 13px; font-weight: 650; }
-.live-navigation { gap: 6px; }
-.live-screen-box { width: 100%; max-width: 480px; margin: 10px auto; overflow: visible; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
-/* At 100% the outer app must scroll naturally: a nested, capped scroller
-   traps the bottom of the frame on short phones. Pan locally only when zoomed. */
-.live-screen-box.live-zoomed { max-height: 76vh; overflow: auto; overscroll-behavior: contain; }
+.live-device-link { display: grid; gap: 4px; }
+.live-workspace { display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 480px !important; min-width: 0; }
+.live-navigation { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; flex: none; }
+.live-navigation .btn { min-width: 0; min-height: 44px; padding: 0 2px; font-size: 16px; }
+.live-navigation .btn:nth-child(4) { font-size: 12px; }
+/* At 100% the whole picture fits above the input; no second scroller clips it.
+   Magnified images intentionally pan inside the box instead. */
+.live-screen-box { flex: 1 1 0; min-height: 48px; width: 100%; max-width: 480px; margin: 0 auto; display: flex;
+  justify-content: center; align-items: center; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.live-screen-box.live-zoomed { display: block; overflow: auto; overscroll-behavior: contain; }
 .live-screen-box[hidden], .live-screen[hidden] { display: none; }
 .live-screen { display: block; width: 100%; max-width: none; height: auto; margin: 0; border-radius: 10px; cursor: crosshair; }
+.live-screen-box:not(.live-zoomed) .live-screen { width: auto !important; max-width: 100%; max-height: 100%; flex: none; }
 .live-screen.live-drag-active, .live-screen.live-scroll-active { touch-action: none; user-select: none; cursor: grab; }
-.live-gesture { flex: 0 1 auto; font-size: 12.5px; }
+/* Preserve the input and picture when a long notice wraps on a short viewport.
+   The notice remains scrollable and keyboard-focusable rather than being cut off. */
+.live-work-status { flex: 0 1 auto; min-height: 24px; max-height: 50px; overflow: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--muted) transparent; }
+.live-work-status::-webkit-scrollbar { width: 5px; }
+.live-work-status::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 5px; }
+.live-work-status .note { display: block; padding: 4px 8px; font-size: 12px; line-height: 1.3; }
+.live-composer { display: grid; gap: 5px; flex: none; }
+.live-compose-text { gap: 5px; }
+.live-compose-text .input { flex: 1 1 auto; min-width: 0; }
+.live-compose-text .btn { flex: none; padding-inline: 9px; }
+.live-compose-keys { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.live-compose-keys .btn { min-width: 0; min-height: 40px; padding: 0 4px; }
+.live-gestures .btn { min-width: 44px; }
+.live-gesture { flex: 0 1 auto; min-height: 36px; font-size: 12.5px; }
 .live-gesture input { flex: 0 0 auto; }
 .live-traffic { display: block; overflow-wrap: anywhere; }
 .live-traffic[hidden] { display: none; }
@@ -798,6 +824,13 @@ details[open] > summary > .caret { transform: rotate(180deg); }
 .live-options summary { cursor: pointer; font-size: 13px; font-weight: 650; }
 .live-options .segmented, .live-auto { margin-top: 8px; }
 .live-auto input { flex: 0 0 auto; }
+@media (max-width: 300px) { .live-navigation { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* When a keyboard leaves little vertical space, fit six 40px navigation
+   targets on one row at 280px width and preserve more of a wrapped notice. */
+.live-workspace.live-compact { gap: 3px; }
+.live-workspace.live-compact .live-navigation { grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; }
+.live-workspace.live-compact .live-navigation .btn { min-height: 40px; }
+.live-workspace.live-compact .live-screen-box { min-height: 44px; }
 .agent-mode { gap: 5px; margin-bottom: 10px; }
 
 /* Keep the two agent modes visible even after scrolling a long conversation. */
@@ -905,7 +938,7 @@ details[open] > summary > .caret { transform: rotate(180deg); }
 
 @media (max-width: 350px) { .tabs .tab { font-size: 10px; } }
 
-/* One accessible home area for the greeting, rates and saved weather. */
+/* One accessible home area for the countdown, rates and saved weather. */
 .home-carousel { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .home-banner-slot > .hero, .home-banner-slot > .rate-banner, .home-banner-slot > .weather-banner { min-height: 152px; }
 .home-banner-controls { display: flex; align-items: center; justify-content: center; gap: 4px; }
@@ -1632,6 +1665,13 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .home-carousel { width: 100%; max-width: 740px; margin-inline: auto; }
 .home-banner-slot > :is(.hero, .rate-banner, .weather-banner) { min-height: 170px; padding: 14px; gap: 9px; }
 .home-hero { grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; }
+.home-countdown { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 9px;
+  width: 100%; border: 0; text-align: left; font-variant-numeric: tabular-nums; }
+.home-countdown-label { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+.home-countdown-label .ic { width: 18px; height: 18px; flex: none; }
+.home-countdown-value { max-width: 100%; font-size: clamp(22px, 6vw, 34px); line-height: 1.2; overflow-wrap: anywhere; }
+.home-countdown-refresh { font-size: 12px; opacity: .82; }
+.home-countdown:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 3px; }
 .home-hero h2 { font-size: clamp(20px, 4.5vw, 26px); line-height: 1.15; margin-bottom: 6px; }
 .home-hero p { font-size: 12px; line-height: 1.4; }
 .hero-kicker { font-size: 11px; margin-bottom: 5px; }
@@ -1701,7 +1741,7 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 }
 
 /* Calm, compact controls. Gestures always have labelled keyboard alternatives. */
-.activity-hero { grid-template-columns: minmax(0, 1fr); }
+.activity-hero { grid-template-columns: minmax(0, 1fr) auto; }
 .activity-hero .hero-actions { align-self: end; }
 .notification-center-tools { position: sticky; top: -1px; z-index: 1; background: var(--surface); gap: 6px; padding: 4px 0 9px; }
 .notification-center-tools select { min-width: 80px; max-width: 100%; }
@@ -1780,6 +1820,7 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .book-reader-head h2 { margin: 20px 0 4px; font: 700 clamp(25px, 5vw, 38px)/1.15 Georgia, serif; letter-spacing: -.025em; }
 .book-byline { margin: 0; color: var(--book-muted); font-size: 14px; }
 .book-format-note { margin: 10px 0 0; color: var(--book-muted); font: 12px/1.45 system-ui, sans-serif; }
+.book-edge-hint { margin: 12px 0 0; color: var(--book-muted); font: 12px/1.45 system-ui, sans-serif; }
 .book-nav { margin: 8px 0; padding: 10px 0; border-block: 1px solid var(--book-line); }
 .book-nav-buttons { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .book-nav-buttons .btn { min-height: 42px; padding: 6px 9px; font-size: 12px; }
@@ -1839,8 +1880,20 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .book-format-picker { max-width: 100%; width: auto; min-width: 0; }
 .book-file-reader { min-width: 0; }
 .book-file-tools { display: grid; gap: 10px; margin: 8px 0; }
-.book-file-nav { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; }
-.book-file-page { min-width: 0; font-variant-numeric: tabular-nums; font-size: 12px; text-align: center; }
+.book-file-bottom-nav { margin-top: 12px; }
+.book-file-nav { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; }
+.book-file-nav .btn { min-width: 0; min-height: 42px; padding: 6px 9px; font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+.book-file-nav .btn .ic { width: 16px; height: 16px; }
+.book-file-page { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; font-size: 12px; text-align: center; }
+@media (max-width: 480px) {
+  .book-file-nav { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .book-file-page { grid-column: 1 / -1; grid-row: 1; overflow-wrap: normal; }
+  .book-file-nav .btn:first-child { grid-column: 1; grid-row: 2; }
+  .book-file-nav .btn:last-child { grid-column: 2; grid-row: 2; }
+}
+.book-file-area { display: grid; grid-template-columns: 14px minmax(0, 1fr) 14px; align-items: stretch; min-width: 0; }
+.book-edge-side { display: grid; place-items: center; color: var(--book-muted); pointer-events: none; }
+.book-edge-side .ic { width: 13px; height: 13px; }
 .book-file-stage { width: 100%; min-width: 0; height: min(68vh, 780px); min-height: 300px; border: 1px solid var(--book-line); overflow: hidden; }
 .book-file-stage iframe { max-width: 100%; }
 .book-pdf-scroll { height: 100%; overflow: auto; background: #b3bbb6; }

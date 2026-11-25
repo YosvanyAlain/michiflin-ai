@@ -1298,23 +1298,14 @@ function tiles(extra = [], omit = []) {
   return root;
 }
 
-// The greeting uses the device's local time, not an assumed place or location.
-function greeting(hour = new Date().getHours()) {
-  return t(hour >= 5 && hour < 12 ? "greet_morning" : hour >= 12 && hour < 19 ? "greet_afternoon" : "greet_evening");
-}
-
-function homeActivity() {
-  const pending = Object.values(bridge.pending()).filter(meta => !meta.quiet).length;
-  const jobs = cache.jobs.filter(job => !["ready", "done", "failed", "cancelled"].includes(job.status)).length;
-  const latest = store.get("notices", []).find(item => item.target && !item.hidden);
-  return h("div", { class: "hero home-hero activity-hero" },
-    h("div", { class: "hero-copy" }, h("span", { class: "hero-kicker" }, t("home_activity")),
-      h("h2", {}, greeting()),
-      h("p", {}, pending || jobs ? t("home_activity_pending", { n: pending + jobs }) : t("home_activity_ready"))),
-    h("div", { class: "hero-actions" },
-      latest ? h("button", { class: "hero-action hero-action-primary", onclick: () => openNotice(latest) }, icon("next"), t("home_last_result")) :
-        h("button", { class: "hero-action hero-action-primary", onclick: () => go("chat", { space: "agent" }) }, icon("ai"), t("home_ask")),
-      h("button", { class: "hero-action", onclick: () => pending ? pendingSheet() : goTab("downloads") }, icon("downloads"), t(pending ? "home_pending" : "tab_downloads"))));
+function homeCountdownBanner() {
+  // The first card is dedicated to the remaining time. A tap requests a fresh
+  // snapshot; no timer continues to claim certainty after a stale response.
+  return h("button", { class: "hero home-hero activity-hero home-countdown", type: "button",
+    title: t("countdown_refresh"), onclick: () => hello(true, true) },
+    h("span", { class: "home-countdown-label" }, icon("clock"), t("restart_in")),
+    h("strong", { class: "home-countdown-value" }, restartCountdown()),
+    h("span", { class: "home-countdown-refresh" }, t("countdown_refresh_short")));
 }
 
 // A fresh bot timestamp bounds the countdown without trusting the device's
@@ -1353,12 +1344,9 @@ setInterval(() => document.querySelectorAll("[data-restart-countdown]").forEach(
 }), 1000);
 
 function statusChips() {
-  const restartChip = () => h("button", { class: "chip", title: t("countdown_refresh"), onclick: () => hello(true, true) },
-    icon("clock"), t("restart_in"), " ", restartCountdown());
-  if (!cache.health) return [restartChip()];
+  if (!cache.health) return [];
   const active = cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
   return [
-    restartChip(),
     h("button", { class: "chip", onclick: () => goTab("downloads") }, icon("downloads"), t("active_jobs", { n: active })),
     h("span", { class: "chip subtle" }, icon("refresh"), t("updated"), " ", since(cache.at)),
   ];
@@ -1657,9 +1645,9 @@ function homeRatesBanner() {
 
 function homeCarousel() {
   const slot = h("div", { class: "home-banner-slot", "aria-live": "off" });
-  const labels = ["home_banner_greeting", "home_banner_rates", "home_banner_weather"];
+  const labels = ["home_banner_countdown", "home_banner_rates", "home_banner_weather"];
   const slides = [
-    homeActivity,
+    homeCountdownBanner,
     homeRatesBanner,
     homeWeatherBanner,
   ];
