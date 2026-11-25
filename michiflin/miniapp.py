@@ -2096,11 +2096,17 @@ def op_search(chat_id: int, args: dict[str, Any], locale: str) -> Any:
         found = tools.wiki_summary(query, locale)
         results = [tools.Result(found[0], found[2], found[1], "Wikipedia")] if found else []
     else:
+        tools.clear_search_status()
         try:
             results = ENGINES["web+" if advanced else engine if engine in ENGINES else "web"](query, locale)
         except Exception as exc:
-            log.info("search failed: %s", exc)
-            results = []
+            log.info("search failed: %s", exc.__class__.__name__)
+            raise AppError(tr(locale, "La búsqueda no respondió. Inténtalo más tarde.",
+                              "Search did not respond. Try again later.")) from None
+        if not results and (engine == "web" or engine not in ENGINES):
+            issue = tools.search_issue(locale)
+            if issue:
+                raise AppError(issue)
     return {"engine": engine, "q": query, "mode": "advanced" if advanced else "standard", "left": tools.you_left() if advanced else None,
             "results": [{"title": item.title, "url": item.url, "snippet": item.snippet, "source": item.source, "date": item.date} for item in results]}
 

@@ -111,6 +111,7 @@ def test_exact_pre_polish_package_is_preserved():
     epoch='test-polish-epoch'
     digest=hashlib.sha256(('epoch:'+epoch).encode())
     manifest=json.loads((app_compat._POLISH_BEFORE/'manifest.json').read_text())
+    assert hashlib.sha256((app_compat._POLISH_BEFORE/'live.js').read_bytes()).hexdigest() == manifest['live.js']
     for name in miniapp.APP_FILES:
         if name not in manifest:
             continue  # new assets never belonged to the archived package

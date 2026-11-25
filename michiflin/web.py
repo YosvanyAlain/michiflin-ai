@@ -31,6 +31,12 @@ def url_error(exc: Exception, locale: str) -> str:
         "empty_page": ("la página no tiene texto legible", "the page has no readable text"),
         "redirects": ("demasiadas redirecciones", "too many redirects"),
     }
+    if code in {"http_429", "rate_limited"}:
+        return tr(locale, "⚠️ El sitio limita las solicitudes. Espera antes de volver a intentarlo.",
+                  "⚠️ The site is limiting requests. Wait before trying again.")
+    if code == "challenge":
+        return tr(locale, "⚠️ El sitio solicita una verificación. No se intentó eludirla.",
+                  "⚠️ The site requested verification. No attempt was made to bypass it.")
     if code.startswith("http_"):
         return tr(locale, f"⚠️ El sitio respondió con error {code[5:]}.", f"⚠️ The site answered with error {code[5:]}.")
     if isinstance(exc, requests.Timeout):
@@ -55,6 +61,19 @@ def _is_media_host(url: str) -> bool:
     return bool(MEDIA_HOSTS.search(host) or MEDIA_HOSTS.search(target))
 
 
+def _probe_for_routing(url: str) -> files.FileInfo:
+    """Do not route a blocked page through a different proxy or reader path."""
+    if reader._site_paused(url):
+        raise files.ProbeBlocked("rate_limited", url)
+    try:
+        return files.probe(url, stop_on_block=True)
+    except files.ProbeBlocked as exc:
+        if str(exc) in {"http_429", "challenge"}:
+            reader._pause_site(url)
+            reader._pause_site(exc.final_url)
+        raise
+
+
 def route(chat_id: int, url: str, locale: str) -> None:
     """Plain URL: media card for streaming sites, file card for files, reader view for pages."""
     try:
@@ -67,10 +86,15 @@ def route(chat_id: int, url: str, locale: str) -> None:
         return
     progress.phase(f"🔎 Revisando {unlinked(host_of(url))}…", f"🔎 Checking {unlinked(host_of(url))}…")
     try:
-        info = files.probe(url)
+        info = _probe_for_routing(url)
+    except files.ProbeBlocked as exc:
+        chat.text(chat_id, url_error(exc, locale))
+        return
     except Exception as exc:
         info = None
-        log.info("probe failed for %s: %s", url, exc)
+        # URLs and transport exceptions can contain access tokens or private
+        # query strings; the fallback needs only a non-sensitive error category.
+        log.info("probe failed (%s)", exc.__class__.__name__)
     if info is not None and info.kind not in {"html", "xml"} and not (info.kind == "txt" and info.size and info.size < 200_000 and info.mime.startswith("text/html")):
         file_card(chat_id, info, locale)
         return
@@ -84,7 +108,7 @@ def read(chat_id: int, url: str, locale: str, page: int = 1) -> None:
         loaded = cached or reader.load(url)
     except reader.NotHtml:
         try:
-            file_card(chat_id, files.probe(url), locale)
+            file_card(chat_id, _probe_for_routing(url), locale)
         except Exception as exc:
             chat.text(chat_id, url_error(exc, locale))
         return

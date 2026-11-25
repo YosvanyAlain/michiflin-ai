@@ -135,7 +135,7 @@ def mobile_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> s
 
 
 _POLISH_BEFORE = Path(__file__).resolve().parent / "compat" / "polish-before"
-_POLISH_REPLACED = {"i18n.js", "index.html", "app.css", "app.js", "core.js", "brands.js", "books.js", "utilities.js"}
+_POLISH_REPLACED = {"i18n.js", "index.html", "app.css", "app.js", "core.js", "brands.js", "books.js", "utilities.js", "live.js"}
 
 
 def polish_previous_build(epoch: str, app_dir: str, files: tuple[str, ...]) -> str:
@@ -151,7 +151,10 @@ def community_previous_build(epoch: str, release: str, app_dir: str, files: tupl
             return ""
     except OSError:
         return ""
-    return _pinned_build(epoch, app_dir, files, directory, {"index.html", "app.css", "app.js", "i18n.js", "core.js", "books.js"}, release)
+    # Live changed in the integrated package too. Use the archived, manifest-
+    # verified bytes only when optional compatibility is explicitly enabled;
+    # MINIAPP_CURRENT_ONLY still rejects every previous build in miniapp.py.
+    return _pinned_build(epoch, app_dir, files, directory, {"index.html", "app.css", "app.js", "i18n.js", "core.js", "books.js", "live.js"}, release)
 
 
 def shipped_ui_build(epoch: str, release: str, value: str) -> bool:

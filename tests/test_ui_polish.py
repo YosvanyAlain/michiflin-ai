@@ -221,24 +221,18 @@ def test_retired_notice_fails_closed_and_reserves_before_sending(monkeypatch):
 
 @pytest.mark.parametrize('engine', ['chromium', 'webkit'])
 @pytest.mark.parametrize('locale', ['es', 'en'])
-def test_first_home_banner_greets_for_device_time_in_both_languages(engine, locale):
+def test_first_home_banner_is_only_the_restart_countdown_in_both_languages(engine, locale):
     with browser_fixture(locale, {'width': 320, 'height': 640}, engine=engine) as (page, errors):
         page.emulate_media(reduced_motion='reduce')
-        expected = (['Buenas noches', 'Buenas noches', 'Buenos días', 'Buenos días',
-                     'Buenas tardes', 'Buenas tardes', 'Buenas noches', 'Buenas noches']
-                    if locale == 'es' else
-                    ['Good evening', 'Good evening', 'Good morning', 'Good morning',
-                     'Good afternoon', 'Good afternoon', 'Good evening', 'Good evening'])
-        assert page.evaluate('[0,4,5,11,12,18,19,23].map(hour => greeting(hour))') == expected
         first = page.locator('.home-banner-controls button').first
-        assert first.get_attribute('aria-label') == ('Saludo' if locale == 'es' else 'Greeting')
+        assert first.get_attribute('aria-label') == ('Tiempo restante del bot' if locale == 'es' else 'Bot time remaining')
         assert first.get_attribute('aria-current') == 'true'
-        assert page.locator('.home-banner-slot .home-hero h2').inner_text() == page.evaluate('greeting()')
+        assert page.locator('.home-banner-slot .home-countdown [data-restart-countdown]').count() == 1
+        assert page.locator('.home-banner-slot .home-countdown .hero-action, .home-status [data-restart-countdown]').count() == 0
         assert page.locator('.home-banner-slot .rate-banner,.home-banner-slot .weather-banner').count() == 0
-        # Even an in-progress task keeps the greeting as the first banner.
+        # Tasks do not replace the countdown with a separate activity card.
         page.evaluate("cache.jobs.push({id:'synthetic',status:'downloading'}); bus.emit('jobs')")
-        assert page.locator('.home-banner-slot .home-hero h2').inner_text() == page.evaluate('greeting()')
-        assert ('tareas en curso' if locale == 'es' else 'tasks in progress') in page.locator('.home-hero p').inner_text()
+        assert page.locator('.home-banner-slot .home-countdown [data-restart-countdown]').count() == 1
         assert errors == []
 
 

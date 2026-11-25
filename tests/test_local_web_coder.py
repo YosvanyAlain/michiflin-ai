@@ -301,6 +301,7 @@ def test_search_stops_and_pauses_on_captcha_or_rate_limit(monkeypatch):
             attempted.append(kwargs["backend"])
             raise RuntimeError("HTTP 429 CAPTCHA")
     monkeypatch.setattr(tools, "DDGS", Challenged)
+    monkeypatch.setattr(tools, "_text_search_backends", lambda: ("bing", "duckduckgo"))
     monkeypatch.setattr(tools, "_search_paused_until", 0.0)
     assert tools._ddgs_text("synthetic", "en", 2) == []
     assert attempted == ["bing"]  # no engine/IP hopping after a challenge
@@ -477,6 +478,7 @@ def test_search_provider_rate_limit_is_reported_without_switching_or_opening_cac
             attempted.append(kwargs["backend"])
             raise RuntimeError("HTTP 429 CAPTCHA")
     monkeypatch.setattr(tools, "DDGS", Challenged)
+    monkeypatch.setattr(tools, "_text_search_backends", lambda: ("bing", "duckduckgo"))
     monkeypatch.setattr(tools, "_search_paused_until", 0.0)
     monkeypatch.setattr(tools, "_cache", {})
     monkeypatch.setattr(local_ai, "configured", lambda: True)

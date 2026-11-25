@@ -213,6 +213,19 @@ class FileInfo:
 # ---------------------------------------------------------------------------
 # Share-page resolvers.
 # ---------------------------------------------------------------------------
+class ProbeBlocked(ValueError):
+    """A website rejected a cautious routing probe; do not try another path."""
+
+    def __init__(self, code: str, final_url: str):
+        super().__init__(code)
+        self.final_url = final_url
+
+
+def _check_probe_response(response: requests.Response, stop_on_block: bool) -> None:
+    if stop_on_block and response.status_code in {401, 403, 429, 451, 503}:
+        raise ProbeBlocked(f"http_{response.status_code}", str(response.url or ""))
+
+
 def _drive(url: str) -> str:
     match = re.search(r"/file/d/([\w-]{10,})", url) or re.search(r"[?&]id=([\w-]{10,})", url)
     return f"https://drive.usercontent.google.com/download?id={match.group(1)}&export=download&confirm=t" if match else url
@@ -223,10 +236,26 @@ def _dropbox(url: str) -> str:
     return url if "dl=1" in url or "raw=1" in url else url + ("&" if "?" in url else "?") + "dl=1"
 
 
-def _mediafire(url: str) -> str:
-    response = net.fetch(url, timeout=(15, 30))
+def _mediafire(url: str, *, stop_on_block: bool = False) -> str:
+    response = net.fetch(url, timeout=(15, 30), retry_blocked=not stop_on_block, stream=stop_on_block)
     try:
-        match = re.search(r'href="(https://download\d*\.mediafire\.com/[^"]+)"', response.text) or re.search(r'"(https://download\d*\.mediafire\.com/[^"]+)"', response.text)
+        _check_probe_response(response, stop_on_block)
+        if stop_on_block:
+            # A cautious routing probe must not download an unbounded share
+            # page before it can recognize a verification challenge.
+            from . import reader
+            prefix = bytearray()
+            for chunk in response.iter_content(chunk_size=16384):
+                if chunk:
+                    prefix.extend(chunk[:200_000 - len(prefix)])
+                if len(prefix) >= 200_000:
+                    break
+            text = reader.decode_page(bytes(prefix), response.headers.get("Content-Type", ""))
+            if reader._challenge_markup(text):
+                raise ProbeBlocked("challenge", str(response.url or ""))
+        else:
+            text = response.text
+        match = re.search(r'href="(https://download\d*\.mediafire\.com/[^"]+)"', text) or re.search(r'"(https://download\d*\.mediafire\.com/[^"]+)"', text)
         return match.group(1) if match else url
     finally:
         response.close()
@@ -245,12 +274,16 @@ RESOLVERS: list[tuple[str, Callable[[str], str], str]] = [
 ]
 
 
-def resolve(url: str) -> tuple[str, str]:
+def resolve(url: str, *, stop_on_block: bool = False) -> tuple[str, str]:
     host = (urlparse(url).hostname or "").lower()
     for pattern, function, label in RESOLVERS:
         if re.search(pattern, host):
             try:
+                if function is _mediafire and stop_on_block:
+                    return _mediafire(url, stop_on_block=True), label
                 return function(url), label
+            except ProbeBlocked:
+                raise
             except (requests.RequestException, ValueError):
                 return url, label
     return url, ""
@@ -268,11 +301,13 @@ def _disposition_name(header: str) -> str:
     return name.strip().strip('"')
 
 
-def probe(url: str) -> FileInfo:
-    """Fetch only the first bytes to learn name, exact size, type and resume support."""
-    resolved, source = resolve(url)
-    response = net.fetch(resolved, stream=True, headers={"Range": "bytes=0-65535", "Accept-Encoding": "identity"}, timeout=(15, 40))
+def probe(url: str, *, stop_on_block: bool = False) -> FileInfo:
+    """Fetch initial bytes; cautious web routing stops instead of retrying restrictions."""
+    resolved, source = resolve(url, stop_on_block=stop_on_block)
+    response = net.fetch(resolved, stream=True, headers={"Range": "bytes=0-65535", "Accept-Encoding": "identity"},
+                         timeout=(15, 40), retry_blocked=not stop_on_block)
     try:
+        _check_probe_response(response, stop_on_block)
         if response.status_code >= 400:
             raise ValueError(f"http_{response.status_code}")
         head = b""
@@ -299,6 +334,10 @@ def probe(url: str) -> FileInfo:
     name = clean_filename(name, "archivo")
     hint = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     kind = sniff(head, hint)
+    if stop_on_block and (kind == "html" or "html" in content_type):
+        from . import reader
+        if reader._challenge_markup(reader.decode_page(head, content_type)):
+            raise ProbeBlocked("challenge", str(final_url or ""))
     if kind == "bin" and content_type:
         guessed = (mimetypes.guess_extension(content_type) or "").lstrip(".")
         kind = EXTENSION_ALIASES.get(guessed, guessed) if guessed in KINDS or EXTENSION_ALIASES.get(guessed) in KINDS else kind

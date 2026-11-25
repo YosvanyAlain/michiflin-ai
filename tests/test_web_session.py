@@ -235,11 +235,65 @@ class VaultAndBridgeTests(unittest.TestCase):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com")
         result = {"kind": "state", "storage": storage("test")}
         with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()):
-            self.assertEqual(session._reply(result, 1)["t"], "saved")
+            self.assertEqual(session._reply(result, 1, "save")["t"], "saved")
             session.stop()
-            self.assertEqual(session._reply(result, 2)["error"], "closed")
+            self.assertEqual(session._reply(result, 2, "save")["error"], "closed")
         web_vault.remove(ALICE, "youtube")
         self.assertIsNone(web_vault.load(ALICE, "youtube"))
+
+    def test_only_requested_worker_results_may_have_side_effects(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/", browser="graphical_saved")
+        result = {"kind": "state", "storage": storage("synthetic")}
+        with mock.patch.object(session, "_allowed", return_value=True), \
+             mock.patch.object(web_vault, "save") as save, \
+             mock.patch.object(session, "_send_capture") as capture, \
+             mock.patch.object(session, "_queue_video") as download:
+            for action in ("", "frame", "click", "text", "download", "capture"):
+                self.assertEqual(session._reply(result, 1, action)["error"], "action_failed")
+            self.assertEqual(session._reply({"kind": "capture", "image": ""}, 1, "frame")["error"], "action_failed")
+            self.assertEqual(session._reply({"kind": "page_url", "url": "https://youtube.com/"}, 1, "frame")["error"], "action_failed")
+            save.assert_not_called(); capture.assert_not_called(); download.assert_not_called()
+            self.assertEqual(session._reply(result, 2, "save"), {"t": "saved", "seq": 2})
+            save.assert_called_once_with(ALICE, "youtube", result["storage"])
+
+    def test_vault_failures_leave_previous_confirmed_state_unchanged(self):
+        owner, site = ALICE, "youtube"
+        previous = storage("previous-fixture")
+        web_vault.save(owner, site, previous)
+        target = web_vault._path(owner, site)
+        encrypted_before = target.read_bytes()
+        session = live_web.Session(10, "a" * 32, owner, site, "https://youtube.com/", browser="graphical_saved")
+        with mock.patch.object(session, "_allowed", return_value=True):
+            # A malformed or oversized result must not replace the earlier copy.
+            for value, error in (({"cookies": "bad", "origins": []}, "format"),
+                                 ({"cookies": [], "origins": [], "large": "x" * (web_vault.MAX_STATE_BYTES + 1)}, "too_large")):
+                self.assertEqual(session._reply({"kind": "state", "storage": value}, 1, "save")["error"], error)
+                self.assertEqual(target.read_bytes(), encrypted_before)
+                self.assertEqual(web_vault.load(owner, site), previous)
+            # Simulate a disk/atomic-rename error without exposing its contents.
+            with mock.patch.object(web_vault.os, "replace", side_effect=OSError("synthetic sensitive detail")):
+                reply = session._reply({"kind": "state", "storage": storage("new-fixture")}, 2, "save")
+            self.assertEqual(reply, {"t": "error", "seq": 2, "error": "vault"})
+            self.assertEqual(target.read_bytes(), encrypted_before)
+            self.assertEqual(web_vault.load(owner, site), previous)
+            self.assertEqual(list(target.parent.glob("*.tmp")), [])
+        # Corruption is an explicit error, not a partial or another user's state.
+        target.write_bytes(b"not-a-valid-encrypted-fixture")
+        with self.assertRaisesRegex(web_vault.VaultError, "vault"):
+            web_vault.load(owner, site)
+        self.assertIsNone(web_vault.load(BOB, site))
+
+    def test_missing_key_and_site_limit_do_not_erase_previous_session(self):
+        web_vault.save(ALICE, "youtube", storage("earlier"))
+        session = live_web.Session(10, "a" * 32, ALICE, "host:other.example", "https://other.example/", browser="graphical_saved")
+        result = {"kind": "state", "storage": storage("new")}
+        with mock.patch.object(session, "_allowed", return_value=True):
+            with mock.patch.dict(os.environ, {"WEB_SESSION_KEY": "short"}):
+                self.assertEqual(session._reply(result, 1, "save")["error"], "not_configured")
+            with mock.patch.object(web_vault, "MAX_SITES", 1):
+                self.assertEqual(session._reply(result, 2, "save")["error"], "site_limit")
+            self.assertEqual(web_vault.load(ALICE, "youtube"), storage("earlier"))
+            self.assertIsNone(web_vault.load(ALICE, "host:other.example"))
 
     def test_forget_serializes_with_a_concurrent_new_browser(self):
         """A new session cannot slip between stopping old workers and deleting storage."""
@@ -316,7 +370,7 @@ class VaultAndBridgeTests(unittest.TestCase):
 
                 def save():
                     try:
-                        replies.append(session._reply({"kind": "state", "storage": storage("inflight")}, 1))
+                        replies.append(session._reply({"kind": "state", "storage": storage("inflight")}, 1, "save"))
                     except Exception as exc:
                         errors.append(type(exc).__name__)
 
@@ -348,7 +402,7 @@ class VaultAndBridgeTests(unittest.TestCase):
                         self.assertEqual(replies[0]["t"], "saved")
                         self.assertTrue(done.is_set() and session.stopped.is_set())
                         self.assertIsNone(web_vault.load(ALICE, "youtube"))
-                        self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2)["error"], "closed")
+                        self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2, "save")["error"], "closed")
                 finally:
                     release.set()
                     with live_web._lock:
@@ -368,7 +422,7 @@ class VaultAndBridgeTests(unittest.TestCase):
                     def save():
                         try:
                             barrier.wait(5)
-                            replies.append(session._reply({"kind": "state", "storage": storage("racing")}, 1))
+                            replies.append(session._reply({"kind": "state", "storage": storage("racing")}, 1, "save"))
                         except Exception as exc:
                             errors.append(type(exc).__name__)
 
@@ -386,9 +440,9 @@ class VaultAndBridgeTests(unittest.TestCase):
                     self.assertFalse(saver.is_alive() or killer.is_alive(), "deadlock")
                     self.assertEqual(errors, [])
                     self.assertIn(replies[0]["t"], {"saved", "error"})  # either side may linearize first
-                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2)["error"], "closed")
+                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 2, "save")["error"], "closed")
                     state.set_kill_switch(ALICE, False)
-                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 3)["error"], "closed")
+                    self.assertEqual(session._reply({"kind": "state", "storage": storage("late")}, 3, "save")["error"], "closed")
 
     def test_guest_revocation_and_regrant_do_not_revive_old_browser(self):
         with mock.patch.object(config, "OWNER_ADDRESS", "owner@example.org"), \
@@ -402,11 +456,11 @@ class VaultAndBridgeTests(unittest.TestCase):
                 with mock.patch.object(live_web, "_authorized", side_effect=lambda _instance: (
                         ({"chat": 7}, ALICE) if access.service_allowed(ALICE) else None)):
                     item = {"kind": "state", "storage": storage("guest")}
-                    self.assertEqual(session._reply(item, 1)["t"], "saved")
+                    self.assertEqual(session._reply(item, 1, "save")["t"], "saved")
                     self.assertTrue(access.revoke_guest(ALICE))
-                    self.assertEqual(session._reply(item, 2)["error"], "closed")
+                    self.assertEqual(session._reply(item, 2, "save")["error"], "closed")
                     self.assertTrue(access.allow_guest(ALICE, access.snapshot()["revision"]))
-                    self.assertEqual(session._reply(item, 3)["error"], "closed")
+                    self.assertEqual(session._reply(item, 3, "save")["error"], "closed")
             finally:
                 access.reset()
 
@@ -424,7 +478,7 @@ class VaultAndBridgeTests(unittest.TestCase):
              mock.patch.object(live_web, "_authorized", return_value=({"chat": 7}, ALICE)), \
              mock.patch.object(config, "service_access_allowed", return_value=True), \
              mock.patch.object(chat, "send", side_effect=send):
-            result = session._reply({"kind": "capture", "image": base64.b64encode(jpeg).decode()}, 1)
+            result = session._reply({"kind": "capture", "image": base64.b64encode(jpeg).decode()}, 1, "capture")
         self.assertEqual(result["t"], "captured")
         self.assertEqual(len(captured), 1)
         self.assertFalse(captured[0].exists())
@@ -548,6 +602,36 @@ class BrowserFrameTests(unittest.TestCase):
             session.run()
         self.assertIn(mock.call(10, "a" * 32, {"t": "closed", "reason": "expired"}), send.call_args_list)
 
+    def test_run_binds_state_to_the_confirmed_save_request(self):
+        session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/", browser="graphical_saved")
+        worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()), route="direct", gateway=None)
+        sent = []
+
+        def send(_instance, _sid, message):
+            sent.append(message)
+            if message.get("seq") == 0:
+                session.submit({"action": "frame", "seq": 1})
+            elif message.get("seq") == 1:
+                session.submit({"action": "save", "seq": 2})
+            elif message.get("seq") == 2:
+                session.stop()
+            return True
+
+        synthetic = storage("only-after-confirmed-action")
+        responses = [{"kind": "frame", "image": ""}, {"kind": "state", "storage": synthetic},
+                     {"kind": "state", "storage": synthetic}]
+        with mock.patch.object(session, "_allowed", side_effect=lambda: not session.stopped.is_set()), \
+             mock.patch.object(session, "_hide_infobars", return_value=False), \
+             mock.patch.object(live_web, "_send", side_effect=send), \
+             mock.patch.object(web_vault, "load", return_value=None), mock.patch.object(web_vault, "save") as save, \
+             mock.patch.object(sandbox, "BrowserProcess") as factory, \
+             mock.patch.object(session, "_exchange", side_effect=responses):
+            factory.return_value.__enter__.return_value = worker
+            session.run()
+        self.assertIn({"t": "error", "seq": 1, "error": "action_failed", "route": "direct"}, sent)
+        self.assertIn({"t": "saved", "seq": 2, "route": "direct"}, sent)
+        save.assert_called_once_with(ALICE, "youtube", synthetic)
+
     def test_cross_site_address_is_rejected_before_reaching_browser(self):
         session = live_web.Session(10, "a" * 32, ALICE, "youtube", "https://youtube.com/")
         worker = SimpleNamespace(process=SimpleNamespace(stdout=io.BytesIO()), route="direct", gateway=None)
@@ -612,7 +696,7 @@ class BrowserFrameTests(unittest.TestCase):
              mock.patch.object(session, "_exchange", return_value={"kind": "frame", "image": ""}) as exchange:
             factory.return_value.__enter__.return_value = worker
             session.run()
-            forged = session._reply({"kind": "state", "storage": storage("synthetic")}, 3)
+            forged = session._reply({"kind": "state", "storage": storage("synthetic")}, 3, "save")
         load.assert_not_called()
         save.assert_not_called()
         factory.assert_called_once_with(worker_file="human_browser_worker.py", lifetime=live_web.LIFETIME_SECONDS + 60)

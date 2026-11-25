@@ -928,7 +928,7 @@ class AiRoutingTests(Base):
         self.assertEqual(ai.accepts(ai.model_by_key(gemini)), ["document", "image", "pdf", "audio"])
         self.assertEqual(ai.accepts(ai.model_by_key(groq)), ["document"])
 
-    def test_standard_search_tries_other_backends(self) -> None:
+    def test_standard_search_does_not_route_around_ambiguous_empty(self) -> None:
         from michiflin import tools
 
         attempts = []
@@ -939,14 +939,14 @@ class AiRoutingTests(Base):
 
             def text(self, query, region, safesearch, max_results, backend):
                 attempts.append((region, backend))
-                if len(attempts) < 3:
-                    raise RuntimeError("No results found.")
-                return [{"href": "https://example.org/a", "title": "A", "body": "body"}]
+                raise RuntimeError("No results found.")  # DDGS can also hide HTTP 429 this way
 
-        with mock.patch.object(tools, "DDGS", Engine), mock.patch.object(tools, "_you_search", side_effect=AssertionError("quota spent")):
+        with mock.patch.object(tools, "DDGS", Engine), mock.patch.object(tools, "_text_search_backends", return_value=("bing", "duckduckgo")), \
+                mock.patch.object(tools, "_you_search", side_effect=AssertionError("quota spent")):
             found = tools.search("prueba de busqueda unica", "es", 5)
-        self.assertEqual([item.url for item in found], ["https://example.org/a"])
-        self.assertEqual(len(attempts), 3)
+        self.assertEqual(found, [])
+        self.assertEqual(attempts, [("xl-es", "bing")])
+        self.assertEqual(tools.search_status(), "indeterminate")
 
     def test_errors_name_the_real_cause(self) -> None:
         model = ai.candidates("chat")[0]
@@ -1806,21 +1806,25 @@ class NavigationAndReactionTests(Base):
         from michiflin import access, agent, local_ai
         agent._memory.clear()
         local_ai._memory.clear()
+        self.addCleanup(agent._memory.clear)
+        self.addCleanup(local_ai._memory.clear)
         with mock.patch.object(chat, "sender", return_value="guest@example.org"):
             guest = agent.memory(4242)
         guest.document = "a private upload"
-        local_ai._memory[(4242, "guest@example.org")] = ["private turn"]
+        # Use the current conversation representation and clean up the owner
+        # fixture too; leaving an old-style list poisoned later tests in-process.
+        local_ai.remember(4242, "guest@example.org", "private turn", "private reply")
         with mock.patch.object(chat, "sender", return_value="owner@example.org"), \
                 mock.patch.object(config, "OWNER_ADDRESS", "owner@example.org"):
             kept = agent.memory(1)
             kept.document = "the owner's own upload"
-            local_ai._memory[(1, "owner@example.org")] = ["owner turn"]
+            local_ai.remember(1, "owner@example.org", "owner turn", "owner reply")
             access._forget_guest_context()
         self.assertNotIn(4242, agent._memory)
-        self.assertNotIn((4242, "guest@example.org"), local_ai._memory)
+        self.assertEqual(local_ai.history(4242, "guest@example.org"), [])
         self.assertIn(1, agent._memory)
         self.assertEqual(agent._memory[1].document, "the owner's own upload")
-        self.assertIn((1, "owner@example.org"), local_ai._memory)
+        self.assertEqual(local_ai.history(1, "owner@example.org"), [["user", "owner turn"], ["assistant", "owner reply"]])
 
     def test_memory_is_not_handed_to_another_sender(self) -> None:
         """A chat id alone is not an identity: never reuse a stranger's context."""
