@@ -26,7 +26,7 @@ def test_administration_addresses_badges_and_bars_wrap(engine, width):
         assert errors == []
 
 
-def test_restart_countdown_uses_bounded_fresh_snapshot_and_reports_unknown():
+def test_restart_countdown_keeps_one_estimate_and_marks_stale_data():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         page.wait_for_function('cache.at > 0 && !syncing')
         result = page.evaluate('''()=>{
@@ -47,15 +47,17 @@ def test_restart_countdown_uses_bounded_fresh_snapshot_and_reports_unknown():
         outcomes = page.evaluate('''()=>{
           const c=healthClock();
           healthObservation={server:100,restart:3700,start:{mono:c.mono-20000,wall:c.wall-20000},end:c};
-          const delayed=restartLabel();
-          healthObservation.end.mono-=121000;healthObservation.end.wall-=121000;
-          const stale=restartLabel();
+          const delayed=restartLabel(), uncertain=restartEstimate().uncertain;
+          healthObservation={server:100,restart:3700,start:{mono:c.mono-123000,wall:c.wall-123000},
+            end:{mono:c.mono-121000,wall:c.wall-121000}};
+          const stale=restartLabel(), staleMarked=restartEstimate().stale;
           healthObservation={server:100,restart:3700,start:c,end:{mono:c.mono,wall:c.wall-60000}};
           const clockJump=restartLabel();
           healthObservation={server:100,restart:101,start:{mono:c.mono-5000,wall:c.wall-5000},end:c};
           const ended=restartLabel();
-          return {delayed,stale,clockJump,ended};
+          return {delayed,uncertain,stale,staleMarked,clockJump,ended};
         }''')
-        assert '–' in outcomes['delayed']  # latency shown as a range, not false precision
-        assert outcomes['stale'] == outcomes['clockJump'] == outcomes['ended'] == 'desconocido'
+        assert outcomes['delayed'].count(':') == 2 and '–' not in outcomes['delayed']
+        assert outcomes['uncertain'] and outcomes['staleMarked'] and 'aprox.' in outcomes['stale']
+        assert outcomes['clockJump'] == outcomes['ended'] == 'desconocido'
         assert errors == []

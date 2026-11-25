@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import math
 import re
 import threading
@@ -153,6 +154,128 @@ def _ddgs_text(query: str, locale: str, limit: int) -> list[Result]:
     return found[:limit]
 
 
+_FREE_SEARCH_URL = "https://api.you.com/mcp/free"
+_FREE_SEARCH_USAGE = "you:free-mcp"
+# The advertised keyless limit is 100 requests/day. Keep a margin for shared
+# usage and diagnostic calls; count attempts rather than only successes.
+_FREE_SEARCH_DAILY = 90
+_MCP_MAX_RESPONSE = 2 * 1024 * 1024
+
+
+class _FreeSearchLimited(Exception):
+    pass
+
+
+class _FreeSearchUnavailable(Exception):
+    pass
+
+
+def _mcp_response(session: Any, payload: dict[str, Any], session_id: str = "") -> tuple[dict[str, Any], str]:
+    headers = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json", **UA}
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    response = session.post(_FREE_SEARCH_URL, headers=headers, json=payload, timeout=(8, 18),
+                            allow_redirects=False, stream=True)
+    try:
+        status = int(response.status_code)
+        if status == 429:
+            raise _FreeSearchLimited()
+        if payload.get("method") == "notifications/initialized" and status in {200, 202, 204}:
+            return {}, session_id
+        if status != 200:
+            raise _FreeSearchUnavailable()
+        data = bytearray()
+        for part in response.iter_content(65536):
+            data.extend(part)
+            if len(data) > _MCP_MAX_RESPONSE:
+                raise _FreeSearchUnavailable()
+        raw = data.decode("utf-8")
+        if "text/event-stream" in str(response.headers.get("Content-Type", "")).lower():
+            events = [line[5:].strip() for line in raw.splitlines() if line.startswith("data:")]
+            raw = events[-1] if events else ""
+        decoded = json.loads(raw)
+        if not isinstance(decoded, dict) or decoded.get("id") != payload.get("id"):
+            raise _FreeSearchUnavailable()
+        if decoded.get("error"):
+            detail = str(decoded["error"])[:4000]
+            if _SEARCH_CHALLENGE.search(detail) or re.search(r"quota|daily limit", detail, re.I):
+                raise _FreeSearchLimited()
+            raise _FreeSearchUnavailable()
+        sid = str(response.headers.get("Mcp-Session-Id", "") or session_id)
+        if len(sid) > 200 or "\r" in sid or "\n" in sid:
+            raise _FreeSearchUnavailable()
+        return decoded, sid
+    finally:
+        response.close()
+
+
+def _free_search(query: str, locale: str, limit: int) -> list[Result]:
+    """Use the official keyless MCP profile, with no paid key or fallback."""
+    del locale  # Search text itself controls language; no hidden query rewriting.
+    if state.usage_today(_FREE_SEARCH_USAGE) >= _FREE_SEARCH_DAILY:
+        _search_local.status = "limited"
+        return []
+    if state.cooldown_until(_FREE_SEARCH_USAGE):
+        _search_local.status = "limited" if state.cooldown_reason(_FREE_SEARCH_USAGE) == "limited" else "unavailable"
+        return []
+    try:
+        with requests.Session() as session:
+            init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-03-26", "capabilities": {},
+                "clientInfo": {"name": "Michiflin", "version": "1.0"}}}
+            initial, sid = _mcp_response(session, init)
+            if not isinstance(initial.get("result"), dict):
+                raise _FreeSearchUnavailable()
+            _mcp_response(session, {"jsonrpc": "2.0", "method": "notifications/initialized"}, sid)
+            # A timeout may still consume provider quota. Record one attempt
+            # before the query leaves; the normal state save is deferred and a
+            # crash can lose it. Never automatically repeat the query.
+            state.record_usage(_FREE_SEARCH_USAGE, True)
+            request = {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "you-search", "arguments": {"query": query, "count": min(20, limit + 2), "safesearch": "moderate"}}}
+            response, _ = _mcp_response(session, request, sid)
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise _FreeSearchUnavailable()
+        if result.get("isError"):
+            detail = str(result.get("content", ""))[:4000]
+            if _SEARCH_CHALLENGE.search(detail) or re.search(r"quota|daily limit", detail, re.I):
+                raise _FreeSearchLimited()
+            raise _FreeSearchUnavailable()
+        body = result.get("structuredContent")
+        if not isinstance(body, dict):
+            content = result.get("content")
+            if not isinstance(content, list) or len(content) != 1 or not isinstance(content[0], dict):
+                raise _FreeSearchUnavailable()
+            body = json.loads(str(content[0].get("text") or ""))
+        web = body.get("results", {}).get("web") if isinstance(body, dict) and isinstance(body.get("results"), dict) else None
+        if not isinstance(web, list):
+            raise _FreeSearchUnavailable()
+        found = []
+        for item in web[:limit + 2]:
+            if not isinstance(item, dict):
+                continue
+            url, title = str(item.get("url") or "").strip(), str(item.get("title") or "")
+            parts = urlsplit(url)
+            if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or not _relevant(url, title, query):
+                continue
+            contents = item.get("contents") if isinstance(item.get("contents"), dict) else {}
+            highlights = contents.get("highlights") if isinstance(contents.get("highlights"), list) else []
+            snippets = item.get("snippets") if isinstance(item.get("snippets"), list) else []
+            snippet = item.get("description") or (snippets[0] if snippets else "") or (highlights[0] if highlights else "")
+            found.append(Result(compact(title, 140), url, compact(snippet, 260), "You.com", str(item.get("page_age") or "")[:10]))
+        _search_local.status = "ok" if found else "empty"
+        return found[:limit]
+    except _FreeSearchLimited:
+        state.set_cooldown(_FREE_SEARCH_USAGE, 6 * 3600, "limited")
+        _pause_search()
+        return []
+    except (requests.RequestException, ValueError, TypeError, KeyError, _FreeSearchUnavailable):
+        state.set_cooldown(_FREE_SEARCH_USAGE, 60, "unavailable")
+        _search_local.status = "unavailable"
+        return []
+
+
 def search_limited() -> bool:
     """Report an active rate-limit/challenge pause without retrying it."""
     with _search_pause_lock:
@@ -160,7 +283,7 @@ def search_limited() -> bool:
 
 
 def search(query: str, locale: str, limit: int = 6, engine: str = "standard") -> list[Result]:
-    """Standard is keyless; advanced uses You.com when configured, without challenge hopping."""
+    """Standard uses the official free profile; advanced is a separate keyed choice."""
     clear_search_status()
     if not query.strip():
         _search_local.status = "empty"
@@ -175,17 +298,17 @@ def search(query: str, locale: str, limit: int = 6, engine: str = "standard") ->
         if search_limited():
             _search_local.status = "limited"
             return []
-        if engine == "advanced" and config.YDC_API_KEY:
+        if engine == "advanced":
+            if not config.YDC_API_KEY:
+                _search_local.status = "unavailable"
+                return []
             found = _cached(f"y:{limit}:{query.lower()}", 1800, lambda: _you_search(query, limit))
             if found:
                 _search_local.status = "ok"
             elif search_status() == "unknown":
                 _search_local.status = "indeterminate"
             return found
-        if DDGS is None:
-            _search_local.status = "unavailable"
-            return []
-        found = _cached(f"s:{locale}:{limit}:{query.lower()}", 600, lambda: _ddgs_text(query, locale, limit))
+        found = _cached(f"s:{locale}:{limit}:{query.lower()}", 600, lambda: _free_search(query, locale, limit))
         if found:
             _search_local.status = "ok"
         return found

@@ -7,6 +7,7 @@ import io
 import pytest
 from pypdf import PdfWriter
 
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -22,7 +23,7 @@ def test_password_pdf_is_preserved_and_exportable_without_decryption(engine):
         page.evaluate("go('books',{tab:'saved'})")
         page.locator('.book-file-input').set_input_files({'name': 'protected.pdf', 'mimeType': 'application/pdf', 'buffer': raw})
         page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for(timeout=30000)
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('No se eludió ninguna protección', exact=False).wait_for(timeout=30000)
         assert page.locator('.book-pdf-canvas').count() == 0
         page.evaluate('''() => {window.exportSheet=async (blob,name)=>{

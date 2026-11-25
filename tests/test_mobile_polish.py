@@ -62,9 +62,16 @@ def test_books_download_only_compact_and_reopen_with_fresh_search(engine):
         page.get_by_text('Libro descargable', exact=True).wait_for()
         assert page.evaluate("bookCalls.filter(x=>x.do==='search').length") == 2
         page.locator('.book-actions button').first.click()
-        page.locator('.book-actions button').first.get_by_text('Abrir', exact=True).wait_for()
-        page.locator('.book-actions button').first.click()
-        page.get_by_text('Texto completo.', exact=True).wait_for()
+        page.get_by_role('button', name='Guardado', exact=True).wait_for()
+        page.locator('[data-key="saved"]').click()
+        page.get_by_role('heading', name='Libro descargable', exact=True).wait_for()
+        page.get_by_role('button', name='Exportar original', exact=True).wait_for()
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
+        assert page.evaluate('''async () => {
+          const books = await BookShelf.all();
+          return books.length === 1 && books[0].original_format === 'txt' &&
+            await books[0].original.text() === 'Texto completo.';
+        }''')
         assert errors == []
 
 

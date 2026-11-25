@@ -559,6 +559,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                                      "100% frame is clipped by an inner vertical scroller")
                 switch_label = ("Deslizar en la vista para mover la página" if language == "es"
                                 else "Swipe on the view to scroll the page")
+                page.locator('.live-extra-controls > summary').click()
                 swipe = page.get_by_label(switch_label)
                 swipe.check()
                 image.scroll_into_view_if_needed()
@@ -581,6 +582,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertFalse(any(item.get("action") == "click" for item in actions))
                 page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
                 swipe.uncheck()
+                page.locator('.live-session-options > summary').click()
                 page.locator(".live-zoom").get_by_role("tab", name="150%").click()
                 self.assertGreater(box.evaluate("e => e.scrollHeight - e.clientHeight"), 0)
                 self.assertEqual(errors, [])
@@ -593,6 +595,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             page.get_by_role("button", name="Iniciar navegador").click()
             page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
             page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            page.locator('.live-extra-controls > summary').click()
             swipe = page.get_by_label("Deslizar en la vista para mover la página")
             swipe.check()
             image = page.locator(".live-screen")
@@ -627,6 +630,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.get_by_role("button", name="Iniciar navegador").tap()
                 page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
                 page.locator(".live-screen-box:not([aria-busy])").wait_for()
+                page.locator('.live-extra-controls > summary').click()
                 page.get_by_label("Deslizar en la vista para mover la página").check()
                 image = page.locator(".live-screen")
                 image.scroll_into_view_if_needed()
@@ -695,6 +699,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             install_live_frame_fixture(page)
             page.get_by_role("button", name="Iniciar navegador").click()
             page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
+            page.locator('.live-session-options > summary').click()
             human = page.get_by_role("tab", name="Gráfico temporal")
             self.assertFalse(human.is_disabled(), "mode change must not silently become unusable")
             human.click()
@@ -725,6 +730,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                   };
                   go('live_web', {name:'Fixture', url:'https://fixture.example'});
                 }""")
+                page.locator('.live-session-options > summary').click()
                 page.get_by_role("tab", name="Gráfico temporal" if language == "es" else "Temporary graphical").click()
                 start = page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser")
                 start.click()
@@ -749,6 +755,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
             page.wait_for_function("window.__testLiveActions.some(x => x.action === 'click')")
             page.wait_for_function("window.liveWeb.ready && !window.liveWeb.pending")
             page.locator(".live-screen-box:not([aria-busy])").wait_for()
+            page.locator('.live-session-options > summary').click()
             human = page.get_by_role("tab", name="Gráfico temporal")
             self.assertFalse(human.is_disabled())
             human.tap()
@@ -797,6 +804,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                   go('results', {q:'fixture video', engine:'web'});
                 }""")
                 page.get_by_role("button", name="Abrir en Live" if language == "es" else "Open in Live").click(timeout=15000)
+                page.locator('.live-session-options > summary').click()
                 page.evaluate("""() => {
                   Object.defineProperty(navigator, 'clipboard', {configurable:true, value:{writeText:() => Promise.reject(new Error('blocked'))}});
                   document.execCommand = () => false;
@@ -822,6 +830,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 self.assertFalse(mode.is_disabled())  # changing mode now requires an explicit close confirmation
                 self.assertEqual(mode.get_attribute("aria-selected"), "true")
                 self.assertTrue(page.evaluate("window.__liveActions.some(x => x.t === 'start' && x.browser === 'human')"))
+                page.locator('.live-extra-controls > summary').click()
                 self.assertFalse(page.get_by_role("button", name="Guardar sesión" if language == "es" else "Save session").is_visible())
                 self.assertFalse(page.get_by_role("button", name="Descargar este video" if language == "es" else "Download this video").is_visible())
                 close_window = page.get_by_role("button", name="Cerrar ventana actual" if language == "es" else "Close current window")

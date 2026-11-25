@@ -7,6 +7,19 @@ window.BookShelf = (() => {
   const MAX_IMPORT_BYTES = 40 * 1024 * 1024, MAX_PRESENTATION = 5000;
   const coverPending = new Map(), coverQueue = [];
   let coverBusy = 0, speechRevision = 0, readerCleanup = null;
+  // Identifiers only, scoped to this WebXDC instance. A successful new insert
+  // increments the badge; opening My library acknowledges it without touching
+  // any book, original bytes, progress or another miniapp's storage.
+  let newBookIds = [...new Set(store.get("books.newIds", []).filter(id => typeof id === "string" && id.length <= 220))].slice(0, MAX_BOOKS);
+  function markNewBook(id) {
+    if (!newBookIds.includes(id)) newBookIds.push(id);
+    newBookIds = newBookIds.slice(-MAX_BOOKS);
+    store.set("books.newIds", newBookIds, true);
+  }
+  function acknowledgeNewBooks() {
+    newBookIds = [];
+    store.set("books.newIds", newBookIds, true);
+  }
   const cached = store.get("books.coverCache", []);
   const recentCovers = new Map(cached.filter(entry => Array.isArray(entry) && entry.length === 2 &&
     entry[1] && typeof entry[1].at === "number" && Date.now() - entry[1].at < 86400000));
@@ -156,16 +169,6 @@ window.BookShelf = (() => {
     // as the EPUB/PDF (or the exact original TXT) which is no longer available.
     exportSheet(new Blob([book.title + "\n" + (book.authors || []).join(", ") + "\n\n" + book.text],
       { type: "text/plain;charset=utf-8" }), niceName(book.title, "libro") + "-copia.txt");
-  }
-  async function openLocal(book) {
-    const marker = $("#view").firstElementChild;
-    try { book = await loadBook(book); } catch (_) { return missingOriginal(); }
-    if (marker && !marker.isConnected) return;
-    if (book.original_format && !(book.original instanceof Blob)) return missingOriginal();
-    if (book.original instanceof Blob && ["epub", "pdf"].includes(book.original_format)) {
-      leave(); readerCleanup = BookOriginal.open(book); return;
-    }
-    reader(book);
   }
   function cover(book, localOnly = false) {
     const box = h("div", { class: "book-cover", "aria-label": book.title }, icon("book"));
@@ -571,7 +574,7 @@ window.BookShelf = (() => {
   // This remains correct if two downloads or an import finish concurrently.
   async function saveNew(book) {
     const stored = await storageBook(book);
-    const db = await database(); let saved = null, reason = "storage";
+    const db = await database(); let saved = null, added = false, reason = "storage";
     try { return await new Promise((resolve, reject) => {
       const tx = db.transaction(["books", "originals"], "readwrite"), objectStore = tx.objectStore("books"), request = objectStore.getAll();
       request.onsuccess = () => {
@@ -579,11 +582,11 @@ window.BookShelf = (() => {
           const existing = request.result.find(item => item.id === book.id);
           if (existing) { saved = existing; return; }
           if (request.result.length >= MAX_BOOKS) { reason = "capacity"; tx.abort(); return; }
-          saved = stored.meta; objectStore.put(stored.meta);
+          saved = stored.meta; added = true; objectStore.put(stored.meta);
           if (stored.bytes) tx.objectStore("originals").put(stored.bytes, book.id);
         } catch (_) { try { tx.abort(); } catch (_) {} }
       };
-      tx.oncomplete = () => resolve(saved);
+      tx.oncomplete = () => resolve({ book: saved, added });
       tx.onerror = tx.onabort = () => reject(new Error(reason));
     }); } finally { db.close(); }
   }
@@ -715,7 +718,7 @@ window.BookShelf = (() => {
 
   async function mount(main, params = {}) {
     leave();
-    let local = new Map(), revision = 0, active = params.tab === "saved" ? "saved" : "catalogue", page = 0, pending = false;
+    let local = new Map(), revision = 0, active = params.tab === "saved" ? "saved" : "catalogue", page = 0, pending = false, shelfLoaded = false, initialShelf = null;
     let source = store.get("books.source", "all"), language = store.get("books.language", ""), shown = new Set(), slowTimer = null;
     const shelf = h("div", { class: "book-shelf" });
     const status = h("p", { class: "book-status muted small", role: "status", "aria-live": "polite" });
@@ -735,7 +738,7 @@ window.BookShelf = (() => {
       openSheet(book.title, [h("p", {}, (book.authors || []).join(", ")),
         h("p", { class: "muted small" }, (book.source || "") + (book.access ? " · " + book.access : "")),
         h("p", {}, book.description || text("Consulta la ficha del proveedor para la descripción y las condiciones de acceso.", "See the provider record for the description and access terms.")),
-        h("p", { class: "note" }, text("Elige EPUB, PDF o TXT cuando la fuente lo ofrezca. La miniapp conserva y exporta los bytes originales; la vista segura puede omitir funciones activas. No se eluden préstamos ni DRM. Comprueba los derechos en tu país.", "Choose EPUB, PDF or TXT when offered by the source. The app keeps and exports original bytes; the safe view may omit active features. Loans and DRM are not bypassed. Check rights in your country.")),
+        h("p", { class: "note" }, text("Elige EPUB, PDF o TXT cuando la fuente lo ofrezca. La miniapp conserva y exporta los archivos originales; ábrelos con otra aplicación. No se eluden préstamos ni DRM. Comprueba los derechos en tu país.", "Choose EPUB, PDF or TXT when offered by the source. The app keeps and exports the original files; open them in another app. Loans and DRM are not bypassed. Check rights in your country.")),
         url ? h("a", { class: "btn ghost", href: url, target: "_blank", rel: "noopener noreferrer" }, text("Ficha y formatos originales", "Record and original formats")) : null]);
     };
     const addBook = book => {
@@ -745,15 +748,15 @@ window.BookShelf = (() => {
       if (!saved && !downloads.length) return;
       shown.add(book.id);
       const preferred = Math.max(0, downloads.findIndex(item => item.format === "epub"));
-      const picker = downloads.length > 1 ? h("select", { class: "book-format-picker", "aria-label": text("Formato original", "Original format") },
+      const picker = !saved && downloads.length > 1 ? h("select", { class: "book-format-picker", "aria-label": text("Formato original", "Original format") },
         downloads.map((item, index) => h("option", { value: String(index), selected: index === preferred }, item.format.toUpperCase() + (downloads.filter(other => other.format === item.format).length > 1 ? ` ${index + 1}` : "")))) : null;
-      const button = h("button", { class: "btn primary small", onclick: async () => {
-        if (local.has(book.id)) return openLocal(local.get(book.id));
+      const button = h("button", { class: "btn primary small", disabled: !!saved, onclick: async () => {
+        if (local.has(book.id)) return;
         button.disabled = true; if (picker) picker.disabled = true;
         try {
           const chosen = downloads[picker ? Number(picker.value) : 0];
           if (!chosen) { details(book); return; }
-          status.textContent = text("Descargando el archivo original; mantén abierta la miniapp hasta que aparezca «Abrir».", "Downloading the original file; keep the miniapp open until “Open” appears.");
+          status.textContent = text("Descargando el archivo original; mantén abierta la miniapp hasta que se guarde.", "Downloading the original file; keep the miniapp open until it is saved.");
           const result = await getOriginal(chosen, (index, count) => {
             status.textContent = text(`Recibiendo ${chosen.format.toUpperCase()} original: parte ${index + 1} de ${count}. Mantén abierta la miniapp.`,
               `Receiving original ${chosen.format.toUpperCase()}: part ${index + 1} of ${count}. Keep the miniapp open.`);
@@ -761,30 +764,32 @@ window.BookShelf = (() => {
           const stored = normalBook({ ...book, text: result.checked.text, downloaded: Date.now(), source_format: result.format,
             original: result.blob, original_format: result.format, original_sha256: result.checked.sha256,
             original_name: niceName(book.title, "libro") + "." + result.format, text_encoding: result.checked.encoding });
-          const savedCopy = await saveNew(stored); local.set(book.id, savedCopy);
-          button.textContent = text("Abrir", "Open"); if (picker) picker.hidden = true;
-          status.textContent = hasOriginal(savedCopy) ? (result.checked.limited ?
-            text("Original guardado. Este EPUB contiene cifrado o fuentes ofuscadas no admitidas por el lector; puedes exportarlo sin modificar.", "Original saved. This EPUB contains encryption or obfuscated fonts unsupported by the reader; you can export it unchanged.") :
-            text("Archivo original comprobado y guardado en esta miniapp para leer sin conexión.", "Original file verified and saved in this miniapp for offline reading.")) :
+          const outcome = await saveNew(stored), savedCopy = outcome.book; local.set(book.id, savedCopy);
+          if (outcome.added && !(active === "saved" && shelf.isConnected)) markNewBook(book.id);
+          paintSavedTab();
+          // A download may finish after the person has navigated to a new
+          // library view. Notify that view without repeating the download.
+          if (outcome.added) bus.emit("books-saved");
+          button.textContent = text("Guardado", "Saved"); if (picker) picker.hidden = true;
+          status.textContent = hasOriginal(savedCopy) ?
+            text("Original comprobado y guardado en Mi biblioteca; expórtalo para abrirlo en otra aplicación.", "Original verified and saved in My library; export it to open it in another app.") :
             text("Ya existía una copia de texto; no se sustituyó automáticamente.", "A text copy already existed; it was not replaced automatically.");
+          if (active === "saved" && shelf.isConnected) drawSaved();
         } catch (error) {
           status.textContent = error.message === "capacity" ? text("Límite de 40 libros en esta instancia. Exporta o elimina una copia antes de añadir otra.", "This instance is limited to 40 books. Export or remove a copy before adding another.") :
             (libraryError(error) ? text("No se pudo guardar. ", "Could not save. ") + libraryError(error) :
               error.message === "size" ? text("El archivo o su contenido supera el límite seguro; no se guardó.", "The file or its contents exceed the safe limit; nothing was saved.") :
                 text("No se pudo descargar o comprobar el original. No se guardó; revisa la conexión, el acceso y el espacio, o consulta la ficha original.", "Could not download or verify the original. Nothing was saved; check connection, access and storage, or see the original record."));
-        } finally { button.disabled = false; if (picker && !picker.hidden) picker.disabled = false; }
-      } }, saved ? text("Abrir", "Open") : text("Descargar", "Download"));
+        } finally { button.disabled = local.has(book.id); if (picker && !picker.hidden) picker.disabled = false; }
+      } }, saved ? text("Guardado", "Saved") : text("Descargar", "Download"));
       const original = hasOriginal(saved);
-      const progressLength = saved && (saved.text ? saved.text.length : saved.original_format === "txt" ? Number(saved.original_text_length || 0) : 0);
-      const progressOffset = saved && saved.text ? progressOf(saved).offset : saved ? Number(store.get("book.offset." + saved.id, 0)) || 0 : 0;
-      const progress = progressLength ? Math.round(clamp(progressOffset, 0, progressLength - 1) * 100 / progressLength) : null;
-      const tag = saved ? (original ? saved.original_format.toUpperCase() + text(" original", " original") : saved.original_format ? text("Original no disponible", "Original unavailable") : text("Copia de texto", "Text copy")) +
-        (Number.isFinite(progress) ? ` · ${progress}%` : "") : (book.source || text("Catálogo", "Catalogue"));
+      const tag = saved ? (original ? saved.original_format.toUpperCase() + text(" original", " original") : saved.original_format ? text("Original no disponible", "Original unavailable") : text("Copia de texto", "Text copy")) : (book.source || text("Catálogo", "Catalogue"));
       const card = h("article", { class: "card book-card" }, cover(book, !!saved),
         h("div", { class: "book-card-info" }, h("h3", { class: "book-title" }, book.title),
           h("p", { class: "book-author muted small" }, (book.authors || []).join(", ") || text("Autor no indicado", "Author not listed")),
           h("span", { class: "tag" }, tag), picker,
-          h("div", { class: "book-actions" }, button, h("button", { class: "btn ghost small", onclick: () => details(book) }, text("Detalles", "Details")))));
+          h("div", { class: "book-actions" }, active === "saved" ? null : button,
+            h("button", { class: "btn ghost small", onclick: () => details(book) }, text("Detalles", "Details")))));
       if (active === "saved") {
         add(card.querySelector(".book-actions"), h("button", { class: "btn ghost small", onclick: () => exportText(saved) }, icon("share"),
           original ? text("Exportar original", "Export original") : text("Exportar texto", "Export text")));
@@ -868,6 +873,11 @@ window.BookShelf = (() => {
       if (!files.length) return;
       importButton.disabled = true;
       try {
+        // The shelf can still be loading when a fast client selects a file.
+        // Finish that initial read first, so its draw cannot overwrite the
+        // import result or replace newly imported metadata with an older view.
+        if (!shelfLoaded && initialShelf) await initialShelf;
+        if (!shelfLoaded) throw new Error("storage");
         status.textContent = text("Comprobando archivos…", "Checking files…");
         const records = await parseFiles(files), result = await importBatch(records);
         let progressSaved = true;
@@ -882,7 +892,7 @@ window.BookShelf = (() => {
         }
         if (active === "saved" && shelf.isConnected) drawSaved();
         status.textContent = text(`Importados: ${result.added.length}. Ya existentes sin modificar: ${result.skipped.length}.`, `Imported: ${result.added.length}. Existing books unchanged: ${result.skipped.length}.`) +
-          (result.added.some(item => item.limited) ? text(" Hay EPUB con cifrado o fuentes ofuscadas no admitidas para lectura; se conserva el original exportable.", " Some EPUBs contain encryption or obfuscated fonts unsupported by the reader; the original remains exportable.") : "") +
+          (result.added.some(item => item.limited) ? text(" Hay EPUB con cifrado o fuentes ofuscadas; se conserva el original sin descifrar y otra aplicación podría no abrirlo.", " Some EPUBs contain encryption or obfuscated fonts; the original is kept without decryption and another app may not open it.") : "") +
           (progressSaved ? "" : text(" Los libros se guardaron, pero no se pudo restaurar todo el progreso.", " Books were saved, but not all progress could be restored."));
       } catch (error) {
         status.textContent = error.message === "capacity" ? text("No se importó nada: se supera el límite de 40 libros.", "Nothing was imported: the 40-book limit would be exceeded.") :
@@ -893,17 +903,44 @@ window.BookShelf = (() => {
     const drawTab = value => {
       stopSpeech(); active = value; revision++; busy(false); shelf.replaceChildren(); shown = new Set(); more.hidden = true;
       controls.hidden = value !== "catalogue"; savedControls.hidden = value !== "saved";
-      if (value === "saved") drawSaved();
-      else { page = 0; status.textContent = text("Busca por título, autor o tema; la respuesta llega a través del bot.", "Search by title, author or topic; the response arrives through the bot."); }
+      if (value === "saved") {
+        if (shelfLoaded) { acknowledgeNewBooks(); paintSavedTab(); drawSaved(); }
+        else status.textContent = text("Cargando biblioteca…", "Loading library…");
+      } else { page = 0; status.textContent = text("Busca por título, autor o tema; la respuesta llega a través del bot.", "Search by title, author or topic; the response arrives through the bot."); }
     };
-    add(main, h("div", { class: "book-library-intro" }, h("p", { class: "book-eyebrow" }, text("TU RINCÓN DE LECTURA", "YOUR READING SPACE")),
-      h("h2", {}, text("Biblioteca", "Library")), h("p", { class: "muted" }, text("Descubre libros públicos y guarda copias para leer sin conexión.", "Discover public books and save copies to read offline."))),
-      segmented(active, [["catalogue", text("Explorar", "Explore")], ["saved", text("Mi biblioteca", "My library")]], drawTab), controls, savedControls, status, shelf, more);
+    const libraryTabs = segmented(active, [["catalogue", text("Explorar", "Explore")], ["saved", text("Mi biblioteca", "My library")]], drawTab);
+    function paintSavedTab() {
+      const tab = libraryTabs.querySelector('[data-key="saved"]');
+      if (!tab) return;
+      const count = newBookIds.length;
+      fill(tab, text("Mi biblioteca", "My library"), count ? h("span", { class: "book-new-count", "aria-hidden": "true" }, String(count)) : null);
+      tab.setAttribute("aria-label", count ? text(`Mi biblioteca · ${count} libro${count === 1 ? "" : "s"} nuevo${count === 1 ? "" : "s"}`,
+        `My library · ${count} new book${count === 1 ? "" : "s"}`) : text("Mi biblioteca", "My library"));
+    }
+    paintSavedTab();
+    bus.on("books-saved", async () => {
+      if (!shelf.isConnected) return;
+      try {
+        // Let an older initial snapshot finish before reading the download;
+        // otherwise its later redraw can hide a newly saved book.
+        if (!shelfLoaded && initialShelf) await initialShelf;
+        if (!shelfLoaded || !shelf.isConnected) return;
+        local = new Map((await allMeta()).filter(book => book && typeof book.id === "string" && typeof book.text === "string").map(book => [book.id, book]));
+        if (!shelf.isConnected) return;
+        shelfLoaded = true;
+        if (active === "saved") { acknowledgeNewBooks(); drawSaved(); }
+        paintSavedTab();
+      } catch (_) { /* Keep the last known shelf; never claim an unverified write. */ }
+    });
+    add(main, h("div", { class: "book-library-intro" }, h("p", { class: "book-eyebrow" }, text("TUS LIBROS", "YOUR BOOKS")),
+      h("h2", {}, text("Biblioteca", "Library")), h("p", { class: "muted" }, text("Descubre libros públicos, guarda sus archivos y expórtalos a otra aplicación.", "Discover public books, save their files and export them to another app."))),
+      libraryTabs, controls, savedControls, status, shelf, more);
     controls.hidden = active !== "catalogue"; savedControls.hidden = active !== "saved";
-    try { local = new Map((await allMeta()).filter(book => book && typeof book.id === "string" && typeof book.text === "string").map(book => [book.id, book])); }
+    initialShelf = allMeta();
+    try { local = new Map((await initialShelf).filter(book => book && typeof book.id === "string" && typeof book.text === "string").map(book => [book.id, book])); shelfLoaded = true; }
     catch (_) { status.textContent = text("El almacenamiento local no está disponible; no se puede confirmar que se guarden libros.", "Local storage is unavailable; books cannot be confirmed saved."); return; }
     if (!shelf.isConnected) return;
-    if (active === "saved") drawSaved();
+    if (active === "saved") { acknowledgeNewBooks(); paintSavedTab(); drawSaved(); }
     else if (params.q && params.q.trim()) search();
     else status.textContent = text("Busca por título, autor o tema; la respuesta llega a través del bot.", "Search by title, author or topic; the response arrives through the bot.");
   }

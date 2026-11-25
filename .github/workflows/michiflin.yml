@@ -73,6 +73,9 @@ jobs:
       # Explicit one-shot owner request, inert on every other revision.
       OWNER_REQUESTED_APP_REVISION: ${{ vars.OWNER_REQUESTED_APP_REVISION }}
       OWNER_APP_RECOVERY_REVISION: ${{ vars.OWNER_APP_RECOVERY_REVISION }}
+      # Explicit community release: exact reviewed revision plus a separate,
+      # permanent one-shot marker in the private backup repository.
+      RELEASE_APP_SEND_REVISION: ${{ vars.RELEASE_APP_SEND_REVISION }}
       # Store retirement is independently armed; a refresh never deletes files.
       UI_RETIRE_STORE_REVISION: ${{ vars.UI_RETIRE_STORE_REVISION }}
       # One-time migration is also armed only for an exact reviewed commit.
@@ -527,6 +530,15 @@ jobs:
 
       - name: Apply the owner-requested public private-chat cutover once
         run: python tools/open_private_invite_access.py
+
+      - name: Deliver the explicitly requested current miniapp once
+        if: ${{ github.repository == 'YosvanyAlain/michiflin-ai' && github.ref == 'refs/heads/main' && env.RELEASE_APP_SEND_REVISION != '' && env.RELEASE_APP_SEND_REVISION == github.sha }}
+        # A failed or uncertain announcement must not prevent the bot serving.
+        # The permanent marker and encrypted intent prevent automatic retries.
+        continue-on-error: true
+        env:
+          CONFIRM_RELEASE_DELIVERY: "1"
+        run: python tools/deliver_release_once.py
 
       - name: Private chats and restricted public group tools
         shell: bash

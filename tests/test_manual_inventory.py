@@ -18,11 +18,13 @@ def test_manual_describes_every_current_python_module():
     assert all(isinstance(description, str) and description.strip() for description in descriptions.values())
 
 
-def test_manual_pdf_and_generator_describe_countdown_and_reader_navigation():
+def test_manual_pdf_and_generator_describe_countdown_and_current_library():
     root = Path(__file__).resolve().parents[1]
     source = (root / 'tools' / 'build_manual.py').read_text(encoding='utf-8')
-    phrases = ('tiempo estimado hasta el reinicio del bot', 'Biblioteca y lectura', 'márgenes exteriores', 'Los enlaces internos EPUB')
+    phrases = ('tiempo estimado hasta el reinicio del bot', 'Biblioteca y lectura',
+               'esta versión no ofrece lectura interna', 'La búsqueda web normal usa el servicio MCP gratuito')
     assert all(phrase in source for phrase in phrases)
+    assert 'usa los márgenes exteriores' not in source
     # The separately delivered source ZIP intentionally omits the PDF.
     manual = root / 'docs' / 'Manual_Michiflin.pdf'
     if manual.exists():
@@ -30,3 +32,4 @@ def test_manual_pdf_and_generator_describe_countdown_and_reader_navigation():
         text = re.sub(r'\s+', ' ', ' '.join(page.extract_text() or '' for page in pages))
         assert all(phrase in text for phrase in phrases)
         assert 'El primer banner de Inicio saluda según la hora local' not in text
+        assert 'usa los márgenes exteriores' not in text

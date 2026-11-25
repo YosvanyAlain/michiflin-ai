@@ -91,11 +91,12 @@ def test_existing_ui_requires_explicit_format_after_failure_and_saved_books_surv
         assert calls == ['https://example.org/book.epub']  # never change a selected original silently
         page.get_by_label('Formato original').select_option('0')
         page.get_by_role('button', name='Descargar', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).wait_for()
+        page.get_by_role('button', name='Guardado', exact=True).wait_for()
         assert calls[-1].endswith('.txt') and page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
         assert page.evaluate('(async()=> (await BookShelf.all())[0].original_sha256)()') == hashlib.sha256(raw).hexdigest()
-        page.get_by_role('button', name='Abrir', exact=True).click()
-        assert page.locator('.book-reading').inner_text() == raw.decode()
+        assert page.evaluate('(async()=> (await BookShelf.all())[0].text)()') == raw.decode()
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
+        assert page.locator('.book-reading').count() == 0
         page.evaluate('BookShelf.clearCache()')
         page.reload()
         page.wait_for_function('cache.at > 0')
@@ -156,7 +157,8 @@ def test_updated_ui_reassembles_and_saves_a_large_chunked_reading_copy(monkeypat
         }''')
         page.get_by_role('heading', name='Libro extenso', exact=True).wait_for()
         page.get_by_role('button', name='Descargar', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).wait_for(timeout=30000)
+        page.get_by_role('button', name='Guardado', exact=True).wait_for(timeout=30000)
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
         assert page.evaluate("(async()=> (await BookShelf.all())[0].text === 'Línea sintética 🎉\\n'.repeat(18000))()")
         assert len(batches) >= 2 and len(batches[1]) > 1
         assert all(item['t'] == 'chunk' and len(item['s']) <= miniapp.CHUNK // 4 for item in batches[1])

@@ -7,6 +7,7 @@ import hashlib
 import pytest
 
 from tests.test_book_originals import sample_pdf
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -52,12 +53,12 @@ def test_v1_upgrade_preserves_text_and_inline_bytes_without_loading_originals_on
         assert metadata['meta']['original_available'] is True
         assert 'original_bytes' not in metadata['meta']
         page.evaluate('window.__originalReads=0')
-        page.locator('.book-card').filter(has_text='PDF anterior').get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page, 'PDF anterior')
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert page.evaluate('window.__originalReads') == 1
         assert 'Página 2 / 3' in page.locator('.book-file-page').inner_text()
         page.get_by_role('button', name='Mi biblioteca', exact=True).click()
-        page.locator('.book-card').filter(has_text='Copia anterior').get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page, 'Copia anterior')
         assert page.locator('.book-reading').inner_text() == 'Texto antiguo conservado.'
         assert errors == []
 
@@ -78,7 +79,7 @@ def test_corrupted_stored_original_is_not_opened_exported_or_included_in_backup(
             tx.oncomplete=resolve;tx.onabort=tx.onerror=()=>reject(tx.error);
           });db.close();window.__exports=0;window.exportSheet=()=>{window.__exports++};
         }''' % hashlib.sha256(raw).hexdigest())
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('#toasts').get_by_text('no supera la comprobación', exact=False).wait_for()
         assert page.locator('.book-reader').count() == 0
         page.get_by_role('button', name='Exportar original', exact=True).click()
@@ -219,6 +220,6 @@ def test_failed_v1_upgrade_rolls_back_and_can_be_retried(engine):
         assert base64.b64decode(preserved['data']) == raw
         page.evaluate("go('books',{tab:'saved'})")
         page.get_by_role('heading', name='PDF antes del fallo').wait_for(timeout=30000)
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert errors == []

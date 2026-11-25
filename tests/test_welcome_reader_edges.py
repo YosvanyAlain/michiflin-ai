@@ -10,6 +10,7 @@ import pytest
 
 from tests.test_book_originals import sample_epub, sample_pdf
 from tests.test_reader_v2_browser import sample_book, seed
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -50,7 +51,7 @@ def import_one(page, name, mime, data):
     page.locator('.book-file-input').set_input_files({'name': name, 'mimeType': mime, 'buffer': data})
     page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for(timeout=30000)
     book_id = page.evaluate('(async()=> (await BookShelf.all())[0].id)()')
-    page.get_by_role('button', name='Abrir', exact=True).click()
+    open_test_reader(page)
     return book_id
 
 
@@ -73,16 +74,17 @@ def test_countdown_is_the_only_first_card_and_refreshes_honestly(engine, locale,
         page.wait_for_function("() => !document.querySelector('.home-countdown [data-restart-countdown]').textContent.includes(':')", timeout=5000)
         assert value.inner_text() == ('desconocido' if locale == 'es' else 'unknown')
         before = page.evaluate("__sentUpdates.filter(u=>u.payload?.op==='hello').length")
-        card.tap()
+        card.locator('.home-countdown-action').tap()
         page.wait_for_function("before => __sentUpdates.filter(u=>u.payload?.op==='hello').length === before+1", arg=before)
         page.wait_for_function("() => document.querySelector('.home-countdown [data-restart-countdown]').textContent.includes(':')", timeout=5000)
-        # Large latency displays a range instead of an invented exact time;
-        # even that longer label fits a small screen without clipping.
+        # Large latency is still one explicitly approximate time, accompanied
+        # by an uncertainty warning; it must fit without clipping.
         page.evaluate("""() => {
           const c=healthClock();
           healthObservation={server:100,restart:3700,start:{mono:c.mono-60000,wall:c.wall-60000},end:c};
         }""")
-        page.wait_for_function("() => document.querySelector('.home-countdown [data-restart-countdown]').textContent.includes('–')", timeout=5000)
+        page.wait_for_function("() => document.querySelector('[data-countdown-freshness]').textContent.includes('" + ('lenta' if locale == 'es' else 'Slow') + "')", timeout=5000)
+        assert '–' not in value.inner_text() and value.inner_text().count(':') == 2
         assert card.evaluate('el=>el.scrollWidth <= el.clientWidth + 1')
         assert value.evaluate("el=>el.getBoundingClientRect().bottom <= el.closest('.home-countdown').getBoundingClientRect().bottom+1")
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1')
@@ -102,7 +104,7 @@ def test_text_edges_change_parts_without_top_bar_and_keep_progress(engine, kind)
             book = sample_book()
             seed(page, book)
             page.evaluate("go('books',{tab:'saved'})")
-            page.get_by_role('button', name='Abrir', exact=True).click()
+            open_test_reader(page)
             book_id = book['id']
         else:
             data = ('Primera línea del original.\n\n' + ''.join(
@@ -150,13 +152,13 @@ def test_text_edges_change_parts_without_top_bar_and_keep_progress(engine, kind)
         assert saved > 4500
         assert page.evaluate("__sentUpdates.filter(u=>u.payload?.op==='books').length") == before_books
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-page-label').wait_for(state='attached')
         assert page.locator('.book-page-label').inner_text().startswith('Parte 2 /')
         page.reload()
         page.wait_for_function('window.__michiflinStartupDone && cache.at > 0 && !syncing')
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-page-label').wait_for(state='attached')
         assert page.locator('.book-page-label').inner_text().startswith('Parte 2 /')
         assert abs(page.evaluate("id => store.get('book.offset.'+id)", book_id) - saved) < 500
@@ -169,7 +171,7 @@ def test_text_edges_do_not_steal_selection_scroll_long_press_or_controls(engine)
         book = sample_book()
         seed(page, book)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         show_reading_area(page, '.book-reading')
         page.evaluate("""() => {const node=document.querySelector('.book-reading p').firstChild;
           const r=document.createRange();r.setStart(node,0);r.setEnd(node,8);
@@ -237,7 +239,7 @@ def test_pdf_edges_page_from_stage_and_screen_margin_and_preserve_state(engine):
         tap_edge(page, '.book-file-stage', 'left', inside=True)
         page.wait_for_function("id => store.get('book.filePosition.'+id) === 2", arg=book_id)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert 'Página 2 / 3' in page.locator('.book-file-page').inner_text()
         show_reading_area(page, '.book-file-stage')
@@ -290,7 +292,7 @@ def test_epub_margins_turn_pages_without_covering_links_or_selection(engine):
         page.touchscreen.tap(stage['x'] - 7, stage['y'] + stage['height'] / 2)
         page.wait_for_function("() => document.querySelector('.book-file-page').textContent.includes('página 2 /')", timeout=15000)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert 'página 2 /' in page.locator('.book-file-page').inner_text()
         assert page.locator('.book-file-stage iframe').first.get_attribute('sandbox') == 'allow-same-origin'
@@ -308,7 +310,7 @@ def test_touch_fallback_without_pointer_events_still_turns_once(engine):
                          init_script="Object.defineProperty(window,'PointerEvent',{value:undefined,configurable:true});") as (page, errors):
         seed(page, sample_book())
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         show_reading_area(page, '.book-reading')
         before = page.evaluate("document.querySelector('#view').scrollTop")
         tap_edge(page, '.book-reading', 'right')

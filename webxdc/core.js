@@ -383,9 +383,13 @@ function niceName(text, fallback = "file") {
 }
 
 async function sendToChat(blob, name, text = "") {
+  if (!window.webxdc || typeof window.webxdc.sendToChat !== "function") throw new Error("unsupported");
   try {
     await window.webxdc.sendToChat({ file: { name, blob }, text });
   } catch (error) {
+    // Cancellation is not a reason to open a second chooser. Fall back to the
+    // portable base64 representation only for a rejected Blob draft.
+    if (error && error.name === "AbortError") return;
     if (blob.size > 40 * 1024 * 1024) throw error;
     await window.webxdc.sendToChat({ file: { name, base64: await blobToBase64(blob) }, text });
   }
@@ -393,20 +397,25 @@ async function sendToChat(blob, name, text = "") {
 
 async function saveFile(blob, name) {
   const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file] });
-      return;
-    } catch (error) {
-      if (error.name === "AbortError") return;
-    }
+  let canShare = false;
+  try { canShare = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })); }
+  catch (_) { /* Unsupported capability detection. */ }
+  if (canShare) {
+    try { await navigator.share({ files: [file] }); }
+    catch (error) { if (!error || error.name !== "AbortError") throw error; }
+    return;
   }
+  // In a WebXDC sandbox an <a download> can fail silently. Ask the host to
+  // open its own chooser instead; some clients offer Save to device there.
+  // This API does not report whether the person saved, shared or cancelled.
+  if (window.webxdc && typeof window.webxdc.sendToChat === "function") return sendToChat(blob, name);
   const url = URL.createObjectURL(blob);
   const anchor = h("a", { href: url, download: name });
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
+  toast(t("export_check_download"));
 }
 
 function exportSheet(blob, name, text = "") {
@@ -415,7 +424,7 @@ function exportSheet(blob, name, text = "") {
     try {
       await job();
     } catch (error) {
-      toast(t("export_failed"), "bad");
+      if (!error || error.name !== "AbortError") toast(t("export_failed"), "bad");
     }
   };
   openSheet(t("export"), [

@@ -91,7 +91,7 @@ def test_multichunk_original_through_dispatcher_and_bridge(monkeypatch, engine):
         }''')
         page.get_by_role('heading', name='Libro de varias partes').wait_for(timeout=30000)
         page.get_by_role('button', name='Descargar', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).wait_for(timeout=60000)
+        page.get_by_role('button', name='Guardado', exact=True).wait_for(timeout=60000)
         page.wait_for_function("__bookCompleted.includes('original_close')", timeout=30000)
         expected_scope = hashlib.sha256(json.dumps([17, 23, 'owner@example.invalid', 'fixture', 'build', 'grant-1'], ensure_ascii=True).encode()).hexdigest()
         assert scopes == [expected_scope] and scopes[0] != 'attacker-controlled'
@@ -107,6 +107,11 @@ def test_multichunk_original_through_dispatcher_and_bridge(monkeypatch, engine):
         stored = page.evaluate('''async()=>{const b=(await BookShelf.all())[0];return {
           hash:b.original_sha256,size:b.original.size,textLength:b.text.length,format:b.original_format}}''')
         assert stored == {'hash': hashlib.sha256(raw).hexdigest(), 'size': len(raw), 'textLength': len(raw), 'format': 'txt'}
-        page.get_by_role('button', name='Abrir', exact=True).click()
-        assert page.locator('.book-reading').inner_text().startswith('Original synthetic book data.')
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
+        assert page.locator('.book-reading').count() == 0
+        page.locator('[data-key=saved]').click()
+        page.evaluate("() => { window.exportSheet=async(blob,name)=>{window.__fixtureExportHash=await FileKitCrypto.hashBlob(blob)}; }")
+        page.get_by_role('button', name='Exportar original', exact=True).click()
+        page.wait_for_function('window.__fixtureExportHash')
+        assert page.evaluate('window.__fixtureExportHash') == hashlib.sha256(raw).hexdigest()
         assert not page.evaluate('window.__fixtureError || false') and errors == []

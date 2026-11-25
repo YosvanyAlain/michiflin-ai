@@ -1299,19 +1299,25 @@ function tiles(extra = [], omit = []) {
 }
 
 function homeCountdownBanner() {
-  // The first card is dedicated to the remaining time. A tap requests a fresh
-  // snapshot; no timer continues to claim certainty after a stale response.
-  return h("button", { class: "hero home-hero activity-hero home-countdown", type: "button",
-    title: t("countdown_refresh"), onclick: () => hello(true, true) },
-    h("span", { class: "home-countdown-label" }, icon("clock"), t("restart_in")),
-    h("strong", { class: "home-countdown-value" }, restartCountdown()),
-    h("span", { class: "home-countdown-refresh" }, t("countdown_refresh_short")));
+  const active = cache.jobs.filter(job => !["done", "failed", "cancelled"].includes(job.status)).length;
+  const root = h("div", { class: "hero home-hero activity-hero home-countdown" },
+    h("button", { class: "home-countdown-action", type: "button", title: t("countdown_refresh"), onclick: () => hello(true, true) },
+      h("span", { class: "home-countdown-label" }, icon("clock"), t("restart_in")),
+      h("strong", { class: "home-countdown-value" }, restartCountdown()),
+      h("span", { class: "home-countdown-refresh", "data-countdown-freshness": "" }, t("countdown_refresh_short"))),
+    h("div", { class: "home-countdown-meta" },
+      h("button", { class: "home-countdown-queue", type: "button", onclick: () => goTab("downloads") },
+        icon("downloads"), t("active_jobs", { n: active })),
+      h("span", { class: "home-countdown-updated" }, icon("refresh"), cache.at ? [t("updated"), " ", since(cache.at)] : t("countdown_no_update"))));
+  paintCountdown(root);
+  return root;
 }
 
-// A fresh bot timestamp bounds the countdown without trusting the device's
-// wall clock. It is intentionally not persisted: cached data or a reopened
-// app cannot establish whether the bot restarted in the meantime.
+// The monotonic interval survives navigation within this opening, but is not
+// persisted across openings: a cached snapshot cannot prove the bot is still
+// in the same session. A stale estimate remains explicitly marked as such.
 let healthObservation = null;
+let lastHomeHealthRefresh = -Infinity;
 function healthClock() { return { mono: performance.now(), wall: Date.now() }; }
 function observeHealth(data, start) {
   const end = healthClock(), server = Number(data && data.now), restart = Number(data && data.restart);
@@ -1320,36 +1326,64 @@ function observeHealth(data, start) {
     Math.abs((end.wall - start.wall) - (end.mono - start.mono)) < 2000 ?
     { server, restart, start, end } : null;
 }
-function restartLabel(expected = null) {
+function restartEstimate(expected = null) {
   const obs = healthObservation, clock = healthClock();
-  if (!obs || clock.mono < obs.end.mono || clock.mono - obs.end.mono > 120000 ||
+  if (!obs || clock.mono < obs.end.mono || clock.mono - obs.end.mono > 86400000 ||
       obs.end.mono - obs.start.mono > 120000 ||
       Math.abs((clock.wall - obs.end.wall) - (clock.mono - obs.end.mono)) > 2000 ||
-      (expected !== null && (!Number.isFinite(expected) || Math.abs(expected - obs.restart) > 5))) return t("countdown_unknown");
-  // The server calculated its value between request and receipt. Display that
-  // uncertainty as a range when it spans more than two seconds.
-  const min = Math.floor(obs.restart - obs.server - (clock.mono - obs.start.mono) / 1000);
-  const max = Math.ceil(obs.restart - obs.server - (clock.mono - obs.end.mono) / 1000);
-  if (min <= 0) return t("countdown_unknown");
-  const clockString = value => `${String(Math.floor(value / 3600)).padStart(2, "0")}:${String(Math.floor(value % 3600 / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
-  return t("countdown_estimate", { value: max - min <= 2 ? clockString(Math.floor((min + max) / 2)) : `${clockString(min)}–${clockString(max)}` });
+      (expected !== null && (!Number.isFinite(expected) || Math.abs(expected - obs.restart) > 5))) return null;
+  const min = obs.restart - obs.server - (clock.mono - obs.start.mono) / 1000;
+  const max = obs.restart - obs.server - (clock.mono - obs.end.mono) / 1000;
+  if (min <= 0) return null;
+  return { seconds: Math.max(0, Math.floor((min + max) / 2)),
+    stale: clock.mono - obs.end.mono > 120000, uncertain: max - min > 5 };
+}
+function restartLabel(expected = null) {
+  const estimate = restartEstimate(expected);
+  if (!estimate) return t("countdown_unknown");
+  const value = estimate.seconds;
+  const time = `${String(Math.floor(value / 3600)).padStart(2, "0")}:${String(Math.floor(value % 3600 / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  return t("countdown_estimate", { value: time });
 }
 function restartCountdown(expected = null) {
   return h("span", { "data-restart-countdown": expected === null ? "health" : String(expected),
     title: t("countdown_hint") }, restartLabel(expected));
 }
-setInterval(() => document.querySelectorAll("[data-restart-countdown]").forEach(node => {
-  const value = node.dataset.restartCountdown;
-  node.textContent = restartLabel(value === "health" ? null : Number(value));
-}), 1000);
+function paintCountdown(root) {
+  const estimate = restartEstimate();
+  root.dataset.urgency = !estimate ? "unknown" : estimate.seconds <= 300 ? "critical" : estimate.seconds <= 3600 ? "soon" : "normal";
+  const freshness = root.querySelector("[data-countdown-freshness]");
+  if (freshness) freshness.textContent = !estimate ? t("countdown_refresh_short") :
+    estimate.stale ? t("countdown_stale") : estimate.uncertain ? t("countdown_uncertain") : t("countdown_refresh_short");
+  // Keep the two useful indicators current even while a control has focus and
+  // the carousel deliberately avoids rebuilding the slide.
+  const queue = root.querySelector(".home-countdown-queue"), updated = root.querySelector(".home-countdown-updated");
+  const active = cache.jobs.filter(job => !["done", "failed", "cancelled"].includes(job.status)).length;
+  if (queue && queue.dataset.active !== String(active)) {
+    queue.dataset.active = String(active);
+    fill(queue, icon("downloads"), t("active_jobs", { n: active }));
+  }
+  const at = String(cache.at || 0);
+  if (updated && updated.dataset.observed !== at) {
+    updated.dataset.observed = at;
+    fill(updated, icon("refresh"), cache.at ? [t("updated"), " ", since(cache.at)] : t("countdown_no_update"));
+  }
+}
+setInterval(() => {
+  document.querySelectorAll("[data-restart-countdown]").forEach(node => {
+    const value = node.dataset.restartCountdown;
+    node.textContent = restartLabel(value === "health" ? null : Number(value));
+  });
+  document.querySelectorAll(".home-countdown").forEach(paintCountdown);
+}, 1000);
 
-function statusChips() {
-  if (!cache.health) return [];
-  const active = cache.jobs.filter((job) => !["done", "failed", "cancelled"].includes(job.status)).length;
-  return [
-    h("button", { class: "chip", onclick: () => goTab("downloads") }, icon("downloads"), t("active_jobs", { n: active })),
-    h("span", { class: "chip subtle" }, icon("refresh"), t("updated"), " ", since(cache.at)),
-  ];
+function refreshStaleHealthOnHome() {
+  const clock = healthClock();
+  if (healthObservation && clock.mono - healthObservation.end.mono > 120000 &&
+      clock.mono - lastHomeHealthRefresh > 120000 && !syncing) {
+    lastHomeHealthRefresh = clock.mono;
+    hello(true, true);
+  }
 }
 
 function searchBox(initial = {}, replace = false, compact = false) {
@@ -1713,15 +1747,12 @@ function homeCarousel() {
 VIEWS.home = {
   title: () => "Michiflin AI",
   render(main) {
-    const status = h("div", { class: "chips home-status" });
-    const drawStatus = () => fill(status, ...statusChips());
-    ["health", "jobs", "hello"].forEach((kind) => bus.on(kind, drawStatus));
-    drawStatus();
     add(main,
-      homeCarousel(), status, searchBox({}, false, true),
+      homeCarousel(), searchBox({}, false, true),
       section(t("shortcuts"), tiles([], ["health", "rates"])),
       h("button", { class: "card link-card", onclick: () => go("help") }, icon("help"),
         h("span", { class: "grow" }, h("b", {}, t("help_title")), h("small", {}, t("help_sub"))), icon("next")));
+    refreshStaleHealthOnHome();
   },
 };
 

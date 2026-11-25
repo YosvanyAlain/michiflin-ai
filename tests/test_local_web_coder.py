@@ -471,26 +471,23 @@ def test_partial_sources_are_kept_when_a_page_rate_limits(monkeypatch):
 
 def test_search_provider_rate_limit_is_reported_without_switching_or_opening_cached_sources(monkeypatch):
     attempted = []
-    class Challenged:
-        def __init__(self, **_kwargs):
-            pass
-        def text(self, _query, **kwargs):
-            attempted.append(kwargs["backend"])
-            raise RuntimeError("HTTP 429 CAPTCHA")
-    monkeypatch.setattr(tools, "DDGS", Challenged)
-    monkeypatch.setattr(tools, "_text_search_backends", lambda: ("bing", "duckduckgo"))
+    def challenged(query, _locale, _limit):
+        attempted.append(query)
+        tools._pause_search()
+        return []
+    monkeypatch.setattr(tools, "_free_search", challenged)
     monkeypatch.setattr(tools, "_search_paused_until", 0.0)
     monkeypatch.setattr(tools, "_cache", {})
     monkeypatch.setattr(local_ai, "configured", lambda: True)
     monkeypatch.setattr(local_ai.smart_agent, "_read", lambda *_a, **_kw: pytest.fail("opened a page after challenge"))
     result = local_ai.complete("Busca información pública de pruebas sintéticas", "es", research=True, synthesize=False)
-    assert result.status == "web_limited" and attempted == ["bing"]
+    assert result.status == "web_limited" and len(attempted) == 1
     assert "detuve la búsqueda" in local_ai.display(result, "es")
     # Even a cached result does not lead to page fetches during the pause.
     tools._cache["s:es:10:información pública de pruebas sintéticas"] = (
         time.monotonic(), [tools.Result("cached", "https://cached.example.test/")])
     again = local_ai.complete("Busca información pública de pruebas sintéticas", "es", research=True, synthesize=False)
-    assert again.status == "web_limited" and attempted == ["bing"]
+    assert again.status == "web_limited" and len(attempted) == 1
 
 
 def test_nonrelevant_partial_search_still_reports_the_challenge_and_protects_history(monkeypatch):

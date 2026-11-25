@@ -8,6 +8,7 @@ import json
 import pytest
 
 from tests.test_book_originals import sample_epub, sample_pdf
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -28,7 +29,7 @@ def test_original_epub_import_read_sandbox_and_exact_export(engine):
         stored = page.evaluate("""async () => { const book = (await BookShelf.all())[0]; return {
           format:book.original_format, hash:book.original_sha256, size:book.original.size, name:book.original_name }; }""")
         assert stored == {'format': 'epub', 'hash': hashlib.sha256(raw).hexdigest(), 'size': len(raw), 'name': 'example.epub'}
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         iframe = page.frame_locator('.book-file-stage iframe').first
         assert iframe.locator('h1').inner_text() == 'Capítulo uno'
@@ -57,7 +58,7 @@ def test_original_pdf_import_pages_and_exact_export(engine):
         page.evaluate("go('books',{tab:'saved'})")
         page.locator('.book-file-input').set_input_files({'name': 'example.pdf', 'mimeType': 'application/pdf', 'buffer': raw})
         page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for(timeout=30000)
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert page.locator('.book-pdf-canvas').evaluate('el=>el.width > 0 && el.height > 0')
         assert 'Página 1 / 3' in page.locator('.book-file-page').inner_text()
@@ -84,7 +85,7 @@ def test_backup_round_trip_restores_exact_originals_and_pdf_progress(engine):
         page.evaluate("go('books',{tab:'saved'})")
         page.locator('.book-file-input').set_input_files(files)
         page.get_by_role('status').get_by_text('Importados: 3', exact=False).wait_for(timeout=30000)
-        page.locator('.book-card').filter(has_text='paginas').get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page, 'paginas')
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         page.get_by_role('button', name='Siguiente', exact=True).click()
         page.get_by_text('Página 2 / 3', exact=True).wait_for()
@@ -118,7 +119,7 @@ def test_backup_round_trip_restores_exact_originals_and_pdf_progress(engine):
             actual = page.evaluate('''async(name)=>{const b=(await BookShelf.all()).find(x=>x.original_name===name);
               const bytes=new Uint8Array(await b.original.arrayBuffer());let s='';for(const x of bytes)s+=String.fromCharCode(x);return btoa(s);}''', name)
             assert base64.b64decode(actual) == original
-        page.locator('.book-card').filter(has_text='paginas').get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page, 'paginas')
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert 'Página 2 / 3' in page.locator('.book-file-page').inner_text()
         page.locator('summary').get_by_text('Herramientas de lectura', exact=True).click()
@@ -136,7 +137,7 @@ def test_legacy_text_is_honestly_labelled_and_cannot_recreate_original():
         page.locator('.book-file-input').set_input_files({'name': 'old.json', 'mimeType': 'application/json', 'buffer': json.dumps(payload).encode()})
         page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for()
         assert page.locator('.book-card .tag').inner_text().startswith('Copia de texto')
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert 'no está disponible' in page.locator('.book-format-note').inner_text() or 'no conserva el archivo original' in page.locator('.book-format-note').inner_text()
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         assert page.get_by_role('button', name='Exportar copia de texto (no original)', exact=True).is_visible()
@@ -149,7 +150,7 @@ def test_epub_with_encryption_metadata_remains_exportable_but_not_decrypted():
         page.evaluate("go('books',{tab:'saved'})")
         page.locator('.book-file-input').set_input_files({'name': 'locked.epub', 'mimeType': 'application/epub+zip', 'buffer': raw})
         page.get_by_role('status').get_by_text('fuentes ofuscadas', exact=False).wait_for(timeout=30000)
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('No se eludió ninguna protección', exact=False).wait_for(timeout=30000)
         assert page.locator('.book-file-stage iframe').count() == 0
         assert page.evaluate('(async()=> (await BookShelf.all())[0].original_sha256)()') == hashlib.sha256(raw).hexdigest()

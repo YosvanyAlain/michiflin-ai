@@ -5,6 +5,7 @@ import pytest
 
 from tests.test_book_originals import sample_epub, sample_pdf
 from tests.test_reader_v2_browser import sample_book, seed
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 from tests.test_welcome_reader_edges import import_one, show_reading_area, tap_edge
 
@@ -100,7 +101,7 @@ def test_epub_waits_for_restored_location_and_keeps_early_touch(engine):
             return book;
           };
         }""")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.wait_for_function('window.__heldEpubLocations.length > 0', timeout=30000)
         assert 'Abriendo' in page.locator('.book-file-status').inner_text()
         assert page.locator('.book-file-reader').get_attribute('aria-busy') == 'true'
@@ -118,7 +119,7 @@ def test_epub_waits_for_restored_location_and_keeps_early_touch(engine):
         # position if the person closes before the relocation arrives.
         page.evaluate("go('books',{tab:'saved'})")
         page.evaluate("() => {window.__holdEpubLocations=true;window.__heldEpubLocations=[];}")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.wait_for_function('window.__heldEpubLocations.length > 0', timeout=30000)
         page.evaluate("""() => {const v=document.querySelector('#view'),s=document.querySelector('.book-file-stage');
           v.scrollTop += s.getBoundingClientRect().top-v.getBoundingClientRect().top-8;}""")
@@ -142,7 +143,7 @@ def test_epub_saved_visible_position_survives_a_viewport_change(engine):
         page.evaluate("""() => {const factory=window.ePub;window.ePub=function(...args){
           const book=factory.apply(this,args),render=book.renderTo.bind(book);
           book.renderTo=(...values) => window.__visibleRendition=render(...values);return book;};}""")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         show_reading_area(page, '.book-file-stage')
         tap_edge(page, '.book-file-stage', 'right')
@@ -158,7 +159,7 @@ def test_epub_saved_visible_position_survives_a_viewport_change(engine):
         assert page.evaluate(visible, saved)
         page.evaluate("go('books',{tab:'saved'})")
         page.set_viewport_size({'width': 390, 'height': 844})
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         page.wait_for_function(visible, arg=saved, timeout=15000)
         assert errors == []
@@ -173,7 +174,7 @@ def test_text_ready_state_tracks_delayed_restoration_before_positioning(engine):
           window.requestAnimationFrame=callback => raf(time => setTimeout(() => callback(time),400));
         }""")
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-reader[aria-busy="true"]').wait_for(state='attached')
         show_reading_area(page, '.book-reading')
         assert page.locator('.book-reader').get_attribute('aria-busy') == 'false'
@@ -204,7 +205,7 @@ def test_real_touch_before_restore_is_applied_after_saved_position(engine, kind)
         # Keep restoration pending while the browser dispatches an actual touch.
         page.evaluate("""() => {const raf=window.requestAnimationFrame.bind(window);
           window.requestAnimationFrame=callback => raf(time => setTimeout(() => callback(time),1500));}""")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-reader[aria-busy="true"]').wait_for(state='attached')
         point = page.evaluate("""() => {
           const view=document.querySelector('#view'), reading=document.querySelector('.book-reading');
@@ -228,7 +229,7 @@ def test_closing_during_pending_restore_keeps_last_confirmed_position(engine):
         page.evaluate("go('books',{tab:'saved'})")
         page.evaluate("""() => {window.__oldRAF=window.requestAnimationFrame.bind(window);
           window.requestAnimationFrame=callback => __oldRAF(time => setTimeout(() => callback(time),1200));}""")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-reader[aria-busy="true"]').wait_for(state='attached')
         point = page.evaluate("""() => {const view=document.querySelector('#view'), reading=document.querySelector('.book-reading');
           view.scrollTop += reading.getBoundingClientRect().top-view.getBoundingClientRect().top-8;
@@ -240,7 +241,7 @@ def test_closing_during_pending_restore_keeps_last_confirmed_position(engine):
         page.wait_for_timeout(1500)
         assert page.evaluate("store.get('book.offset.fixture:read')") == 600
         page.evaluate('() => { window.requestAnimationFrame = window.__oldRAF; }')
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-reader[aria-busy="false"]').wait_for(state='attached')
         assert abs(page.evaluate("store.get('book.offset.fixture:read')") - 600) < 80
         assert errors == []
@@ -251,7 +252,7 @@ def test_text_tap_saves_position_even_if_reader_closes_in_the_same_event_turn(en
     with browser_fixture('es', {'width': 320, 'height': 640}, engine=engine, touch=True) as (page, errors):
         seed(page, sample_book())
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         show_reading_area(page, '.book-reading')
         result = page.evaluate("""() => {
           const v=document.querySelector('#view').getBoundingClientRect();
@@ -267,7 +268,7 @@ def test_text_tap_saves_position_even_if_reader_closes_in_the_same_event_turn(en
         }""")
         assert result['before'] > 100
         assert result['after'] == result['before']
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.wait_for_function("store.get('book.offset.fixture:read') > 100")
         assert abs(page.evaluate("store.get('book.offset.fixture:read')") - result['before']) < 200
         assert errors == []
@@ -278,7 +279,7 @@ def test_multitouch_cancel_and_reader_teardown_do_not_turn_pages(engine):
     with browser_fixture('es', {'width': 320, 'height': 640}, engine=engine, touch=True) as (page, errors):
         seed(page, sample_book())
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         show_reading_area(page, '.book-reading')
         before_scroll = page.evaluate("document.querySelector('#view').scrollTop")
         page.evaluate("""() => {

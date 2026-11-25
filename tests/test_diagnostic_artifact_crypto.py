@@ -67,6 +67,31 @@ def test_only_fixed_schema_is_encrypted_and_existing_destination_is_preserved(tm
     assert not (tmp_path / 'rejected.enc').exists()
 
 
+def test_restore_trace_encryption_is_strict_and_roundtrips(tmp_path):
+    private, public = _pair()
+    source, dest = tmp_path / 'source.json', tmp_path / 'source.enc'
+    good = {'schema': 1, 'read_only': True, 'mail_io_started': False,
+            'asset_id': 123, 'bytes': 1000, 'sha256': 'a' * 64}
+    source.write_text(json.dumps(good))
+    # Counts-only mode must continue rejecting strings, even hashes.
+    with pytest.raises(ValueError):
+        crypto.encrypt_aggregate(source, dest, public)
+    crypto.encrypt_restore_trace(source, dest, public)
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o600
+    assert json.loads(crypto.decrypt_blob(dest.read_bytes(), private)) == good
+    with pytest.raises(FileExistsError):
+        crypto.encrypt_restore_trace(source, dest, public)
+    bad = [dict(good, address='private@example.org'), dict(good, sha256='not-a-hash'),
+           dict(good, asset_id=True), dict(good, bytes=0), dict(good, bytes=256_000_001),
+           dict(good, mail_io_started=True)]
+    for index, value in enumerate(bad):
+        source.write_text(json.dumps(value))
+        target = tmp_path / f'rejected-{index}.enc'
+        with pytest.raises(ValueError):
+            crypto.encrypt_restore_trace(source, target, public)
+        assert not target.exists()
+
+
 def test_symlink_source_is_rejected(tmp_path):
     _private, public = _pair()
     source = tmp_path / 'source.json'

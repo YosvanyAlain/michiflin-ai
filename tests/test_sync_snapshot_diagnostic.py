@@ -153,10 +153,12 @@ def test_backup_diagnostic_requires_key_before_restore_and_uploads_only_cipherte
     inspect = workflow.split('  inspect-backup:', 1)[1].split('  old-action-logs:', 1)[0]
     assert 'diagnostic_public_key:' in workflow
     assert 'DIAGNOSTIC_PUBLIC_KEY: ${{ inputs.diagnostic_public_key }}' in inspect
-    assert inspect.index('diagnostic_artifact_crypto.py validate') < inspect.index('state_backup.restore()')
+    assert inspect.index('diagnostic_artifact_crypto.py validate') < inspect.index('tools/diagnostic_restore_trace.py')
+    trace = (root / 'tools/diagnostic_restore_trace.py').read_text()
+    assert 'state_backup.restore()' in trace
     assert inspect.index('diagnostic_artifact_crypto.py encrypt') < inspect.index('actions/upload-artifact@')
-    assert 'path: ${{ runner.temp }}/sync-diagnostic.enc' in inspect
-    assert 'path: ${{ runner.temp }}/backup-inventory.enc' in inspect
-    assert 'path: ${{ runner.temp }}/sync-diagnostic.json' not in inspect
-    assert 'path: ${{ runner.temp }}/backup-inventory.json' not in inspect
-    assert 'rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json"' in inspect
+    for name in ('sync-diagnostic', 'backup-inventory', 'backup-source'):
+        assert f'path: ${{{{ runner.temp }}}}/{name}.enc' in inspect
+        assert f'path: ${{{{ runner.temp }}}}/{name}.json' not in inspect
+        assert f'"$RUNNER_TEMP/{name}.json"' in inspect
+    assert 'diagnostic_artifact_crypto.py encrypt-trace "$RUNNER_TEMP/backup-source.json"' in inspect

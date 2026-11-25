@@ -200,12 +200,20 @@ def _verified_binding(entry: dict[str, Any]) -> bool:
 
 
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None,
-             recovery_revision: str = "") -> int:
+             recovery_revision: str = "", announce_release: bool = False) -> int:
     locale = locale if locale in {"es", "en"} else "es"
     recipient = address or chat.sender()
     if not _verified_binding({"chat": chat_id, "addr": recipient}):
         return 0
-    if updated:
+    if announce_release:
+        text = tr(locale,
+                  "✨ Nueva miniapp de Michiflin AI: mejoras en inicio, búsqueda, Live y biblioteca. Abre esta versión desde este mensaje. "
+                  "Las versiones anteriores ya no podrán conectarse al bot; sus datos locales se conservan y no se trasladan automáticamente. "
+                  "Exporta lo que necesites antes de borrar nada.",
+                  "✨ New Michiflin AI mini app: improvements to home, search, Live and the library. Open this version from this message. "
+                  "Older versions will no longer connect to the bot; their local data stays there and does not transfer automatically. "
+                  "Export what you need before deleting anything.")
+    elif updated:
         text = tr(locale, "✨ Michiflin AI se actualizó. La app anterior se conserva con sus proyectos e historial; "
                           "esta nueva instancia tiene almacenamiento independiente.",
                   "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
@@ -224,7 +232,7 @@ def send_app(chat_id: int, locale: str, updated: bool = False, address: str = ""
             "report it without deleting the chat or reinstalling Delta Chat.")
     # A first contact has not reported its device language yet. Use a short
     # Spanish fallback, never the owner's preference or a duplicate translation.
-    advisory = maintenance.text(locale) if updated or recovery_revision else ""
+    advisory = maintenance.text(locale) if updated or recovery_revision or announce_release else ""
     if advisory:
         text += "\n\n🛠️ " + advisory
     send_args: dict[str, Any] = {"file": build(), "filename": "Michiflin AI.xdc", "viewtype": "Webxdc"}

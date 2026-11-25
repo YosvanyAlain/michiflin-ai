@@ -12,6 +12,7 @@ import binascii
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -74,14 +75,14 @@ def decrypt_blob(blob: bytes, private_key: str) -> bytes:
     return ChaCha20Poly1305(_derive(shared)).decrypt(nonce, ciphertext, MAGIC + ephemeral_public)
 
 
-def encrypt_aggregate(source: Path, destination: Path, public_key: str) -> None:
+def _read_source(source: Path) -> tuple[bytes, object]:
     if source.is_symlink() or not source.is_file() or source.stat().st_size > MAX_BYTES:
-        raise ValueError('invalid aggregate source')
+        raise ValueError('invalid diagnostic source')
     data = source.read_bytes()
-    value = json.loads(data)
-    if (not isinstance(value, dict) or value.get('schema') != 1 or value.get('read_only') is not True
-            or not all(type(item) in (int, bool) or item is None for item in value.values())):
-        raise ValueError('aggregate schema required')
+    return data, json.loads(data)
+
+
+def _write_encrypted(data: bytes, destination: Path, public_key: str) -> None:
     encrypted = encrypt_blob(data, public_key)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, 'O_NOFOLLOW'):
@@ -93,6 +94,28 @@ def encrypt_aggregate(source: Path, destination: Path, public_key: str) -> None:
         os.fsync(output.fileno())
 
 
+def encrypt_aggregate(source: Path, destination: Path, public_key: str) -> None:
+    data, value = _read_source(source)
+    if (not isinstance(value, dict) or value.get('schema') != 1 or value.get('read_only') is not True
+            or not all(type(item) in (int, bool) or item is None for item in value.values())):
+        raise ValueError('aggregate schema required')
+    _write_encrypted(data, destination, public_key)
+
+
+def encrypt_restore_trace(source: Path, destination: Path, public_key: str) -> None:
+    """Encrypt only the exact asset identity, never arbitrary string fields."""
+    data, value = _read_source(source)
+    if (not isinstance(value, dict)
+            or set(value) != {'schema', 'read_only', 'mail_io_started', 'asset_id', 'bytes', 'sha256'}
+            or type(value['schema']) is not int or value['schema'] != 1
+            or value['read_only'] is not True or value['mail_io_started'] is not False
+            or type(value['asset_id']) is not int or value['asset_id'] <= 0
+            or type(value['bytes']) is not int or not 0 < value['bytes'] <= 256_000_000
+            or not isinstance(value['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', value['sha256'])):
+        raise ValueError('restore trace schema required')
+    _write_encrypted(data, destination, public_key)
+
+
 def main() -> int:
     try:
         public_key = os.environ.get('DIAGNOSTIC_PUBLIC_KEY', '')
@@ -100,15 +123,16 @@ def main() -> int:
             validate_public_key(public_key)
             print('DIAGNOSTIC_ENCRYPTION_KEY_VALID')
             return 0
-        if len(sys.argv) == 4 and sys.argv[1] == 'encrypt':
-            encrypt_aggregate(Path(sys.argv[2]), Path(sys.argv[3]), public_key)
-            print('DIAGNOSTIC_AGGREGATE_ENCRYPTED')
+        if len(sys.argv) == 4 and sys.argv[1] in {'encrypt', 'encrypt-trace'}:
+            function = encrypt_restore_trace if sys.argv[1] == 'encrypt-trace' else encrypt_aggregate
+            function(Path(sys.argv[2]), Path(sys.argv[3]), public_key)
+            print('DIAGNOSTIC_ENCRYPTED')
             return 0
     except Exception:
         # Error messages can contain paths or invalid input; print a fixed marker only.
         print('DIAGNOSTIC_ENCRYPTION_FAILED', file=sys.stderr)
         return 1
-    print('Usage: diagnostic_artifact_crypto.py validate | encrypt SOURCE DESTINATION', file=sys.stderr)
+    print('Usage: diagnostic_artifact_crypto.py validate | encrypt|encrypt-trace SOURCE DESTINATION', file=sys.stderr)
     return 2
 
 

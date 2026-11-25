@@ -928,7 +928,7 @@ class AiRoutingTests(Base):
         self.assertEqual(ai.accepts(ai.model_by_key(gemini)), ["document", "image", "pdf", "audio"])
         self.assertEqual(ai.accepts(ai.model_by_key(groq)), ["document"])
 
-    def test_standard_search_does_not_route_around_ambiguous_empty(self) -> None:
+    def test_ddgs_does_not_route_around_ambiguous_empty(self) -> None:
         from michiflin import tools
 
         attempts = []
@@ -943,7 +943,7 @@ class AiRoutingTests(Base):
 
         with mock.patch.object(tools, "DDGS", Engine), mock.patch.object(tools, "_text_search_backends", return_value=("bing", "duckduckgo")), \
                 mock.patch.object(tools, "_you_search", side_effect=AssertionError("quota spent")):
-            found = tools.search("prueba de busqueda unica", "es", 5)
+            found = tools._ddgs_text("prueba de busqueda unica", "es", 5)
         self.assertEqual(found, [])
         self.assertEqual(attempts, [("xl-es", "bing")])
         self.assertEqual(tools.search_status(), "indeterminate")

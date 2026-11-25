@@ -204,7 +204,8 @@ VIEWS.live_web = {
     const secret = field({ type: "password", placeholder: t("live_type_placeholder"), autocomplete: "off",
       "aria-label": t("live_type_label"), enterkeyhint: "send" });
     const address = field({ type: "url", value: params.url, maxlength: "4096", placeholder: t("live_address"), "aria-label": t("live_address") });
-    const controls = h("div", { class: "stack live-extra-controls", hidden: true });
+    const controls = h("details", { class: "live-extra-controls live-options", hidden: true },
+      h("summary", {}, t("live_more_controls")));
     const navigation = h("nav", { class: "live-navigation", hidden: true, "aria-label": t("live_navigation_label") });
     let positionedFirstFrame = false;
     let gesture = null, pageSwipe = null, suppressClick = false, suppressTimer = 0, pressedWhileBusy = false;
@@ -606,7 +607,7 @@ VIEWS.live_web = {
       h("div", { class: "row live-compose-text" }, secret, h("button", { class: "btn small primary", onclick: sendText }, t("live_type"))),
       h("div", { class: "live-compose-keys" }, showButton, quickZoom, keyButton("Tab", "Tab"), keyButton("Enter", "Enter"), keyButton("Backspace", "⌫")));
     add(workspace, navigation, screenBox, workStatus, composer);
-    add(controls,
+    add(controls, h("div", { class: "stack live-extra-body" },
       h("small", { class: "muted" }, t("live_navigation_hint")),
       h("div", { class: "row wrap live-gestures" },
         h("label", { class: "row live-gesture" }, swipeToggle, t("live_swipe_short")),
@@ -622,19 +623,17 @@ VIEWS.live_web = {
       h("div", { class: "row wrap" }, saveButton,
         h("button", { class: "btn ghost", onclick: () =>
           confirmLiveAction("capture", t("live_capture"), t("live_capture_q"))
-        }, t("live_capture")), downloadButton));
+        }, t("live_capture")), downloadButton)));
     const privacy = h("details", { class: "live-privacy" }, h("summary", {}, t("live_privacy_more")),
-      h("p", { class: "muted small" }, t("live_privacy")), h("p", { class: "muted small" }, t("live_personal_hint")));
+      h("p", { class: "muted small" }, t("live_privacy")), h("p", { class: "muted small" }, t("live_personal_hint")),
+      h("p", { class: "muted small" }, t("live_accessibility_hint")));
     const siteRow = h("div", { class: "row" }, h("small", { class: "site-address" }, params.url),
       h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")));
-    const external = h("div", { class: "live-device-link" },
-      h("a", { class: "link", href: new URL(params.url).href, target: "_blank", rel: "noopener noreferrer" }, t("live_external_open")),
-      h("small", { class: "muted" }, t("live_external_hint")), h("small", { class: "muted" }, t("live_accessibility_hint")));
-    add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy,
-      siteRow, external, stored,
-      h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote,
-      h("div", { class: "row wrap" }, start, disconnect), introStatus, route, traffic,
-      workspace, controls, viewSettings);
+    const sessionOptions = h("details", { class: "live-session-options live-options" }, h("summary", {}, t("live_session_options")),
+      h("div", { class: "stack live-extra-body" }, siteRow, stored,
+        h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote, disconnect, viewSettings));
+    add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy, sessionOptions,
+      h("div", { class: "row wrap" }, start), introStatus, route, traffic, workspace, controls);
     applyMode("graphical_saved");
     updateStored();
   },

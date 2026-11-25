@@ -132,14 +132,11 @@ def test_search_result_reader_picture_pagination_and_navigation(monkeypatch, eng
 
 def test_search_limit_is_visible_in_the_existing_ui_instead_of_no_results(monkeypatch):
     attempts = []
-    class Challenged:
-        def __init__(self, **_kwargs):
-            pass
-        def text(self, _query, **kwargs):
-            attempts.append(kwargs['backend'])
-            raise RuntimeError('HTTP 429 CAPTCHA')
-    monkeypatch.setattr(tools, 'DDGS', Challenged)
-    monkeypatch.setattr(tools, '_text_search_backends', lambda: ('duckduckgo', 'brave'))
+    def challenged(query, _locale, _limit):
+        attempts.append(query)
+        tools._pause_search()
+        return []
+    monkeypatch.setattr(tools, '_free_search', challenged)
     monkeypatch.setattr(tools, '_cache', {})
     monkeypatch.setattr(tools, '_search_paused_until', 0.0)
     def handler(request):
@@ -161,7 +158,7 @@ def test_search_limit_is_visible_in_the_existing_ui_instead_of_no_results(monkey
         query.press('Enter')
         page.locator('.failure').get_by_text('El buscador limita las solicitudes', exact=False).wait_for()
         assert page.get_by_text('Sin resultados. Prueba con otras palabras.').count() == 0
-        assert attempts == ['duckduckgo'] and errors == []
+        assert attempts == ['consulta sintética'] and errors == []
 
 
 def test_candidate_app_pager_fits_a_320px_screen():

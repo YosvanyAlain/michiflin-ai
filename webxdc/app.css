@@ -823,6 +823,10 @@ details[open] > summary > .caret { transform: rotate(180deg); }
 .live-options { padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; }
 .live-options summary { cursor: pointer; font-size: 13px; font-weight: 650; }
 .live-options .segmented, .live-auto { margin-top: 8px; }
+.live-extra-controls[hidden] { display: none; }
+.live-extra-body { gap: 8px; padding-top: 9px; }
+.live-session-options, .live-extra-controls { max-width: 480px; width: 100%; box-sizing: border-box; }
+.live-session-options .site-address { overflow-wrap: anywhere; }
 .live-auto input { flex: 0 0 auto; }
 @media (max-width: 300px) { .live-navigation { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 /* When a keyboard leaves little vertical space, fit six 40px navigation
@@ -1665,13 +1669,24 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .home-carousel { width: 100%; max-width: 740px; margin-inline: auto; }
 .home-banner-slot > :is(.hero, .rate-banner, .weather-banner) { min-height: 170px; padding: 14px; gap: 9px; }
 .home-hero { grid-template-columns: minmax(0, 1fr) 52px; gap: 10px; }
-.home-countdown { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 9px;
-  width: 100%; border: 0; text-align: left; font-variant-numeric: tabular-nums; }
+.home-countdown { display: flex; flex-direction: column; align-items: stretch; justify-content: center; gap: 5px;
+  width: 100%; border: 0; text-align: left; font-variant-numeric: tabular-nums; transition: background .3s; }
+.home-countdown[data-urgency="normal"] { background: linear-gradient(125deg, #0a5754, #08796a 65%, #229988); }
+.home-countdown[data-urgency="soon"] { background: linear-gradient(125deg, #80510b, #b47616 65%, #c99432); }
+.home-countdown[data-urgency="critical"] { background: linear-gradient(125deg, #8f2832, #bd3541 65%, #df6055); }
+.home-countdown[data-urgency="unknown"] { background: linear-gradient(125deg, #405c63, #557880); }
+.home-countdown-action { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 0; min-width: 0;
+  border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .home-countdown-label { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
 .home-countdown-label .ic { width: 18px; height: 18px; flex: none; }
-.home-countdown-value { max-width: 100%; font-size: clamp(22px, 6vw, 34px); line-height: 1.2; overflow-wrap: anywhere; }
-.home-countdown-refresh { font-size: 12px; opacity: .82; }
-.home-countdown:focus-visible { outline: 3px solid var(--accent-strong); outline-offset: 3px; }
+.home-countdown-value { max-width: 100%; font-size: clamp(25px, 7vw, 40px); letter-spacing: -.035em; line-height: 1.06; overflow-wrap: anywhere; }
+.home-countdown-refresh { font-size: 11px; opacity: .92; }
+.home-countdown-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; }
+.home-countdown-queue, .home-countdown-updated { display: inline-flex; align-items: center; gap: 4px; color: inherit; }
+.home-countdown-queue { min-height: 32px; padding: 2px 8px; border: 1px solid #ffffff55; border-radius: 999px; background: #ffffff1e; font: inherit; cursor: pointer; }
+.home-countdown-updated { opacity: .94; }
+.home-countdown-meta .ic { width: 14px; height: 14px; }
+.home-countdown-action:focus-visible, .home-countdown-queue:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
 .home-hero h2 { font-size: clamp(20px, 4.5vw, 26px); line-height: 1.15; margin-bottom: 6px; }
 .home-hero p { font-size: 12px; line-height: 1.4; }
 .hero-kicker { font-size: 11px; margin-bottom: 5px; }
@@ -1687,6 +1702,8 @@ button.notice { width: 100%; border: 0; background: transparent; color: inherit;
 .forecast-day .ic { width: 18px; height: 18px; }
 .weather-banner-copy strong { font-size: 25px; }
 .rate-banner-foot { font-size: 10px; }
+.book-new-count { display: inline-grid; place-items: center; min-width: 20px; height: 20px; margin-left: 6px;
+  padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 750; }
 .book-shelf { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
 .book-card { padding: 8px; gap: 5px; max-width: 174px; }
 .book-cover { width: min(100%, 98px); height: 124px; aspect-ratio: auto; align-self: center; border-radius: 5px; }

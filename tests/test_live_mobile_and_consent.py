@@ -75,13 +75,13 @@ def test_view_and_typing_fit_together_on_small_screens(language, engine, width, 
             box = button.bounding_box()
             assert box["width"] >= 40 and box["height"] >= 40, (label, box)
         link_name = "Abrir dirección inicial en el navegador del dispositivo" if language == "es" else "Open initial address in the device browser"
-        link = page.get_by_role("link", name=link_name)
-        assert link.get_attribute("href") == "https://fixture.example/"
-        assert link.get_attribute("target") == "_blank"
-        assert set(link.get_attribute("rel").split()) == {"noopener", "noreferrer"}
-        external_hint = page.locator(".live-device-link").inner_text()
-        assert ("no se copia a Live" if language == "es" else "not copied to Live") in external_hint
-        assert ("un lector de pantalla no puede leer" if language == "es" else "a screen reader cannot read") in external_hint
+        assert page.get_by_role("link", name=link_name).count() == 0
+        assert page.locator(".live-device-link").count() == 0
+        page.locator('.live-privacy > summary').click()
+        privacy = page.locator('.live-privacy').inner_text()
+        assert ("un lector de pantalla no puede leer" if language == "es" else "a screen reader cannot read") in privacy
+        assert ("no se copia al bot" if language == "es" else "not copied to the bot") in privacy
+        page.locator('.live-privacy > summary').click()
         status_label = "Estado del navegador; desplázate para leerlo completo" if language == "es" else "Browser status; scroll to read it in full"
         assert page.get_by_role("region", name=status_label).count() == 1
         destination = os.environ.get("MICHIFLIN_SCREENSHOT_DIR")
@@ -216,6 +216,8 @@ def test_long_error_keeps_controls_reachable_in_a_reduced_viewport(language, eng
 def test_save_requires_confirmation_and_failure_is_not_reported_as_success(language, engine):
     with browser_fixture(language, {"width": 360, "height": 640}, engine=engine) as (page, errors):
         start_fixture(page, language)
+        page.locator('.live-extra-controls > summary').click()
+        page.locator('.live-session-options > summary').click()
         name = "Guardar sesión" if language == "es" else "Save session"
         cancel = "Cancelar" if language == "es" else "Cancel"
         save = page.locator("#view").get_by_role("button", name=name, exact=True)
@@ -248,6 +250,7 @@ def test_save_requires_confirmation_and_failure_is_not_reported_as_success(langu
 def test_expired_session_cannot_save_from_an_old_confirmation():
     with browser_fixture("es", {"width": 360, "height": 640}) as (page, errors):
         start_fixture(page)
+        page.locator('.live-extra-controls > summary').click()
         page.get_by_role("button", name="Guardar sesión", exact=True).click()
         page.evaluate("""() => window.__testLiveRespond({v:1, sid:window.liveWeb.sid, t:'closed', reason:'expired'})""")
         page.locator("#sheet .btn.danger").click()
@@ -270,6 +273,7 @@ def test_keyboard_focus_common_keys_and_secret_visibility_are_accessible():
         assert reveal.get_attribute("aria-pressed") == "true" and field.get_attribute("type") == "text"
         reveal.click()
         assert reveal.get_attribute("aria-pressed") == "false" and field.get_attribute("type") == "password"
+        page.locator('.live-session-options > summary').click()
         quick = page.locator(".live-compose-keys button").nth(1)
         assert "Ajustar" in quick.get_attribute("aria-label")
         quick.click()

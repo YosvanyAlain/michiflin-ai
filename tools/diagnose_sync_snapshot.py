@@ -183,7 +183,11 @@ def diagnose(root: Path) -> dict:
     result['latest_app_activity_age_seconds'] = max(0, int(time.time() - max(active))) if active else None
     result['snapshot_json_age_seconds'] = max(0, int(time.time() - state_path.stat().st_mtime))
     if os.getenv('SYNC_DIAGNOSTIC_OFFLINE_RPC') == '1' and marker:
+        # The older owner-only probe temporarily changes the environment;
+        # retain the actual runtime recovery choice for recipient selection.
+        email_recovery = os.getenv('EMAIL_KEY_RECOVERY', '0').lower() in {'1', 'true', 'yes', 'on'}
         result.update(inspect_offline_core(root, marker, apps))
+        result.update(inspect_release_users(root, marker, data, current, email_recovery))
     # Schema intentionally permits only counts, booleans and null; no sensitive strings.
     assert all(isinstance(v, (bool, int)) or v is None for k, v in result.items() if k != 'schema')
     return result
@@ -217,6 +221,55 @@ def inspect_offline_core(root: Path, marker: dict, apps: dict) -> dict:
                 result['offline_updates_beyond_cursor'] += len(updates)
             except Exception:
                 pass
+    return result
+
+
+def inspect_release_users(root: Path, marker: dict, data: dict, current: str, email_recovery: bool = False) -> dict:
+    """Count eligible recipients on the isolated copy, without mail I/O.
+
+    No identities, message contents, keys or addresses leave this process.
+    The result is a point-in-time check, not a promise of future authorization
+    or delivery; the one-shot sender rechecks every recipient at handoff.
+    """
+    import subprocess
+    from deltachat2 import IOTransport, Rpc
+    from michiflin import access, community, config, release_selection, state
+    config.BOT_EPOCH = str(marker['epoch'])
+    config.BOT_EPOCH_STRICT = True
+    config.BOT_VERIFIED_CONTACTS_ONLY = True
+    config.OWNER_PGP_FINGERPRINT = str(marker['owner_fingerprint'])
+    config.OWNER_ADDRESS = str(marker['owner_address']).strip().casefold()
+    config.INVITE_AUTO_ACCESS = True
+    config.OWNER_ONLY = False
+    config.EMAIL_KEY_RECOVERY = email_recovery
+    config.MINIAPP_CURRENT_ONLY = True
+    config.REVOKE_LEGACY_MINIAPPS = True
+    state.data.update(data)  # isolated in-memory copy; never state.load() or save()
+    access.restore_policy()
+    result = {'offline_release_selection_completed': False, 'offline_release_eligible_users': 0,
+              'offline_release_owner_users': 0, 'offline_release_guest_users': 0,
+              'offline_release_already_current': 0, 'offline_release_active_grants': len(community.addresses()),
+              'offline_release_unprocessed_incoming': 0, 'offline_release_saved_inbox': 0}
+    with IOTransport(accounts_dir=str(root / 'accounts'), stderr=subprocess.DEVNULL) as io:
+        rpc = Rpc(io)
+        accounts = rpc.get_all_account_ids()
+        if len(accounts) != 1:
+            return result
+        account = int(accounts[0])
+        selected = release_selection.select(rpc, account, current)
+        owners = sum(config.is_owner_admin(item.address) for item in selected)
+        result.update(offline_release_eligible_users=len(selected), offline_release_owner_users=owners,
+                      offline_release_guest_users=len(selected) - owners,
+                      offline_release_already_current=sum(item.already_current for item in selected),
+                      offline_release_selection_completed=True)
+        for msg_id in rpc.get_next_msgs(account):
+            msg = rpc.get_message(account, msg_id)
+            if getattr(msg, 'from_id', None) not in (0, 1, 2) and not getattr(msg, 'is_info', False):
+                result['offline_release_unprocessed_incoming'] += 1
+        inbox = data.get('inbox', {})
+        if not isinstance(inbox, dict):
+            raise ValueError('invalid_inbox')
+        result['offline_release_saved_inbox'] = len(inbox)
     return result
 
 

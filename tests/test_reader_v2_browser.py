@@ -8,6 +8,7 @@ import pytest
 from michiflin import book_library
 from tests.test_existing_app_browser import BRIDGE, _handler
 from tests.test_book_originals import sample_epub
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 
 
@@ -41,7 +42,7 @@ def test_reader_controls_never_cover_text_and_settings_persist(engine, width, he
     with browser_fixture('es', {'width': width, 'height': height}, engine=engine) as (page, errors):
         seed(page, book, old_page=1)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert page.locator('.book-page-label').first.inner_text().startswith('Parte 2 /')
         assert 'Copia de texto' in page.locator('.book-format-note').inner_text()
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
@@ -62,7 +63,7 @@ def test_reader_controls_never_cover_text_and_settings_persist(engine, width, he
         page.get_by_role('button', name='Marcar lugar', exact=True).click()
         assert page.evaluate("store.get('book.marks.fixture:read',[]).length") == 1
         page.get_by_role('button', name='Mi biblioteca', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert page.locator('.book-reader').get_attribute('data-theme') == 'night'
         assert page.locator('.book-reading').evaluate('n=>getComputedStyle(n).fontSize') == '24px'
         assert page.locator('.book-page-label').first.inner_text().startswith('Parte 2 /')
@@ -83,7 +84,8 @@ def test_epub_search_download_reflows_heading_emphasis_and_image(monkeypatch, en
         page.evaluate("store.set('books.source','gutenberg');go('books',{q:'fixture'})")
         page.get_by_role('heading', name='EPUB real sintético', exact=True).wait_for()
         page.get_by_role('button', name='Descargar', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).click(timeout=30000)
+        page.get_by_role('button', name='Guardado', exact=True).wait_for(timeout=30000)
+        open_test_reader(page)
         assert page.evaluate("window.libraryRequests.find(x=>x.do==='original_start').format") == 'epub'
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         frame = page.frame_locator('.book-file-stage iframe').first
@@ -99,7 +101,7 @@ def test_epub_search_download_reflows_heading_emphasis_and_image(monkeypatch, en
         page.reload()
         page.wait_for_function('cache.at > 0 && !syncing')
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         assert page.frame_locator('.book-file-stage iframe').first.locator('img').count() == 1 and errors == []
 
@@ -174,7 +176,7 @@ def test_legacy_txt_import_and_invalid_multi_file_are_all_or_nothing():
         page.locator('.book-file-input').set_input_files(old)
         page.get_by_role('status').get_by_text('Ya existentes sin modificar: 1', exact=False).wait_for()
         assert page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert 'Texto ñ 🎉' in page.locator('.book-reading').inner_text()
         assert '0%' in page.locator('.book-page-label').first.inner_text()
         assert errors == []
@@ -189,7 +191,7 @@ def test_imported_markup_and_remote_images_cannot_execute_or_hide_text():
         page.evaluate("go('books',{tab:'saved'})")
         page.locator('.book-file-input').set_input_files({'name': 'evil.json', 'mimeType': 'application/json', 'buffer': json.dumps(payload).encode()})
         page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for()
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert page.locator('.book-reading').inner_text() == 'El texto completo'
         assert page.locator('.book-reading img').count() == 0
         assert page.locator('.book-reader-head img').count() == 0
@@ -202,7 +204,7 @@ def test_reader_find_is_offline_and_jumps_to_later_part():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         seed(page, book)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         before = page.evaluate('window.__sentUpdates.length')
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         page.locator('summary').get_by_text('Buscar en el libro', exact=True).click()
@@ -219,7 +221,7 @@ def test_bookmark_retains_reading_position_when_toolbar_is_revisited():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         seed(page, book)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-reading p').nth(15).scroll_into_view_if_needed()
         page.wait_for_timeout(400)
         before = page.evaluate("store.get('book.offset.fixture:read')")
@@ -237,7 +239,7 @@ def test_storage_failure_does_not_claim_progress_was_saved():
         page.evaluate('''()=>{const original=Storage.prototype.setItem;
           Storage.prototype.setItem=function(key,value){if(key.startsWith('mf.book.offset.'))throw Error('quota');return original.call(this,key,value)};
           go('books',{tab:'saved'});}''')
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         assert page.get_by_role('status').get_by_text('No se pudo guardar el progreso local', exact=False).is_visible()
         assert page.locator('.book-reading').is_visible() and errors == []
 
@@ -276,10 +278,10 @@ def test_concurrent_downloads_cannot_exceed_library_capacity():
         page.get_by_role('button', name='Descargar', exact=True).nth(1).click()
         page.wait_for_function('window.__releaseBooks.length === 2')
         page.evaluate('window.__releaseBooks.forEach(f=>f())')
-        page.wait_for_function("document.querySelectorAll('.book-card .btn.primary:not([disabled])').length === 2")
+        page.get_by_role('status').get_by_text('Límite de 40 libros', exact=False).wait_for()
         assert page.evaluate('(async()=> (await BookShelf.all()).length)()') == 40
-        assert page.get_by_role('button', name='Abrir', exact=True).count() == 1
-        assert 'Límite de 40 libros' in page.get_by_role('status').inner_text()
+        assert page.get_by_role('button', name='Guardado', exact=True).count() == 1
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
         assert errors == []
 
 
@@ -304,7 +306,7 @@ def test_saved_shelf_and_reader_never_fetch_a_missing_cover_from_bot():
         page.evaluate('''()=>{const original=bridge.call.bind(bridge);window.__bookCalls=[];
           bridge.call=(op,args)=>{if(op==='books'){window.__bookCalls.push(args);return Promise.resolve({})}return original(op,args)};
           go('books',{tab:'saved'});}''')
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.wait_for_timeout(500)
         assert page.evaluate('window.__bookCalls') == [] and errors == []
 
@@ -315,7 +317,7 @@ def test_find_treats_punctuation_as_literal_and_unicode_offsets_remain_correct()
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         seed(page, book)
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         page.locator('summary').get_by_text('Buscar en el libro', exact=True).click()
         page.get_by_label('Buscar dentro del libro').fill('[signos]+')
@@ -348,7 +350,7 @@ def test_read_aloud_uses_only_voices_declared_local():
         page.evaluate('''()=>{window.__spoken=[];window.__voices=[{lang:'es-ES',localService:false}];
           Object.defineProperty(window,'speechSynthesis',{configurable:true,value:{cancel(){},getVoices(){return window.__voices},speak(u){window.__spoken.push(u)}}});
           window.SpeechSynthesisUtterance=function(value){this.text=value};go('books',{tab:'saved'});}''')
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
         page.get_by_role('button', name='Leer en voz alta', exact=True).click()
         assert page.evaluate('window.__spoken.length') == 0

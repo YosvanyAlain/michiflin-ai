@@ -7,6 +7,7 @@ import zipfile
 import pytest
 
 from tests.test_book_originals import sample_epub
+from tests.book_reader_harness import open_test_reader
 from tests.test_webxdc_browser import browser_fixture
 from tests.test_welcome_reader_edges import import_one, show_reading_area, tap_edge
 
@@ -89,7 +90,7 @@ def test_real_touch_opens_percent_encoded_fragment_and_persists_position(engine)
         page.wait_for_function("({id,old}) => store.get('book.filePosition.'+id) !== old", arg={'id': book_id, 'old': original_position})
         assert network == []  # no HTTP request, not even to the local app origin
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).click()
+        open_test_reader(page)
         page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
         wait_for_target(page, 'destino uno')
         assert page.locator('.book-file-stage iframe').first.get_attribute('sandbox') == 'allow-same-origin'

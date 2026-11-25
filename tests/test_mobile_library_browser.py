@@ -63,7 +63,7 @@ def test_image_results_stay_near_prompt_and_models_have_real_marks():
         assert errors == []
 
 
-def test_library_download_persists_and_reopens_without_network():
+def test_library_download_persists_and_exports_without_internal_reader():
     with browser_fixture('es', {'width': 390, 'height': 844}) as (page, errors):
         page.wait_for_function('cache.at > 0')
         page.evaluate('''()=>{const original=bridge.call.bind(bridge);bridge.call=async(op,args)=>{
@@ -75,16 +75,19 @@ def test_library_download_persists_and_reopens_without_network():
         };go('books',{q:'libro'})}''')
         page.get_by_role('heading', name='Un libro completo', exact=True).wait_for(state='visible')
         page.get_by_role('button', name='Descargar', exact=True).click()
-        page.get_by_role('button', name='Abrir', exact=True).wait_for(state='visible')
+        page.get_by_role('button', name='Guardado', exact=True).wait_for(state='visible')
         assert page.evaluate('(async()=> (await BookShelf.all()).length)()') == 1
-        page.get_by_role('button', name='Abrir', exact=True).click()
-        assert page.locator('.book-reading').inner_text().startswith('Primera página.')
-        page.locator('summary').get_by_text('Herramientas de lectura', exact=False).click()
-        assert page.get_by_role('button', name='Exportar archivo original', exact=True).is_visible()
+        assert page.get_by_role('button', name='Abrir', exact=True).count() == 0
+        page.locator('[data-key=saved]').click()
+        page.evaluate("() => { window.exportSheet=async(blob,name)=>{window.__fixtureExport={name,text:await blob.text()}}; }")
+        page.get_by_role('button', name='Exportar original', exact=True).click()
+        page.wait_for_function('window.__fixtureExport')
+        assert page.evaluate('window.__fixtureExport.text').startswith('Primera página.')
+        assert page.locator('.book-reading').count() == 0
         page.reload()
         page.wait_for_function('cache.at > 0')
         page.evaluate("go('books',{tab:'saved'})")
-        page.get_by_role('button', name='Abrir', exact=True).wait_for(state='visible')
+        page.get_by_role('button', name='Exportar original', exact=True).wait_for(state='visible')
         assert page.locator('.book-card').count() == 1
         assert errors == []
 

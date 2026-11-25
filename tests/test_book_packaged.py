@@ -8,6 +8,7 @@ import pytest
 from playwright.sync_api import sync_playwright
 
 from michiflin import app_package, config, miniapp
+from tests.book_reader_harness import open_test_reader
 from tests.test_book_originals import sample_epub, sample_pdf
 from tests.test_epub_internal_links import open_fixture, wait_for_target
 from tests.test_welcome_reader_edges import show_reading_area, tap_edge
@@ -56,7 +57,7 @@ def test_packaged_offline_reader_and_exact_export(packaged_app, engine, kind):
             page.locator('.book-file-input').set_input_files({
                 'name': 'packaged.' + kind, 'mimeType': 'application/epub+zip' if kind == 'epub' else 'application/pdf', 'buffer': raw})
             page.get_by_role('status').get_by_text('Importados: 1', exact=False).wait_for(timeout=30000)
-            page.get_by_role('button', name='Abrir', exact=True).click()
+            open_test_reader(page)
             page.locator('.book-file-status').get_by_text('Lectura sin conexión', exact=False).wait_for(timeout=30000)
             if kind == 'epub':
                 iframe = page.frame_locator('.book-file-stage iframe').first

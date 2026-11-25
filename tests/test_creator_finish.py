@@ -52,7 +52,7 @@ def test_home_narrow_and_desktop_have_no_horizontal_overflow(engine, theme):
         for width in [320, 390, 768, 1280]:
             page.set_viewport_size({"width": width, "height": 844})
             page.wait_for_timeout(60)
-            for name in [".hero", ".home-status", ".searchbox", ".tiles"]:
+            for name in [".hero", ".home-countdown-meta", ".searchbox", ".tiles"]:
                 assert page.locator(name).evaluate("e => e.scrollWidth <= e.clientWidth + 1"), (width, theme, name)
             assert page.locator(".home-countdown").bounding_box()["height"] >= 44
         # Rotating to shorter saved-data banners must not move the search box.
