@@ -992,7 +992,7 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.locator('.tab[data-tab="web"]:visible').click()
                 self.assertTrue(page.get_by_text("Buscar en internet" if language == "es" else "Search the web", exact=True).is_visible())
                 self.assertTrue(page.get_by_text("Abrir una dirección en Live" if language == "es" else "Open an address in Live", exact=True).is_visible())
-                for name in ("YouTube", "Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Arena.ai", "Revolico", "Z.AI"):
+                for name in ("YouTube", "Instagram", "Facebook", "TikTok", "DeepSeek Chat", "Revolico", "Z.AI"):
                     self.assertEqual(page.get_by_text(name, exact=True).count(), 0, name)
                 self.assertTrue(page.evaluate("'youtube' in VIEWS && !['accounts', 'youtube_account', 'facebook_account', 'tiktok_account'].some(k => k in VIEWS)"))
                 self.assertEqual(page.locator('#view .segmented [data-key="web"]').get_attribute("aria-selected"), "true")

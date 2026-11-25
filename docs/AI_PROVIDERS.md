@@ -20,7 +20,6 @@ Messages, attachments, and code submitted to a model leave the Michiflin server 
 
 ## Evaluated services
 
-- **Arena.ai:** no integration or website login automation was added. Its terms restrict automated or programmatic access unless an applicable authorization or license permits it. Inputs may be shared with third-party model providers. See the [API](https://platform.arena.ai/docs) and [terms](https://help.arena.ai/articles/5629909088-terms-of-use).
 - **DeepSeek:** its official API charges for tokens and successful Search/Fetch requests, so it is excluded from the free route. Third-party aggregators may offer DeepSeek models through their own free routes and conditions. See [pricing](https://api-docs.deepseek.com/quick_start/pricing/) and [Search/Fetch](https://api-docs.deepseek.com/guides/search/).
 - **Z.AI:** only Flash variants identified as free in its [pricing table](https://docs.z.ai/guides/overview/pricing) are included. The table does not establish a universal daily allowance for these variants; Michiflin's limits are internal controls, not provider guarantees.
 - **OpenRouter:** `openrouter/free` routes to free models. No paid fallback is configured; the provider warns that paid fallbacks can incur charges. Availability and limits can change; see [limits](https://openrouter.ai/docs/api_reference/limits) and the [free router](https://openrouter.ai/docs/cookbook/get-started/free-models-router-playground).

@@ -63,6 +63,16 @@ def diagnose(root: Path) -> dict:
               'apps_incompatible_build': 0, 'apps_owner_recipient': 0,
               'apps_missing_blob': 0, 'pending_outgoing': 0, 'failed_outgoing': 0,
               'all_core_webxdc': 0, 'unregistered_core_webxdc': 0, 'status_updates': 0}
+    # Fixed aggregate counters only: the plan contains no address in this output.
+    plans = data.get('requested_release_deliveries', {})
+    plan = plans.get('integrated-private-update-20261119-v1') if isinstance(plans, dict) else None
+    records = plan.get('recipients', {}) if isinstance(plan, dict) else {}
+    result['requested_release_plan_present'] = isinstance(plan, dict)
+    result['requested_release_plan_complete'] = isinstance(plan, dict) and plan.get('phase') == 'complete'
+    result['requested_release_planned'] = len(records) if isinstance(records, dict) else None
+    for category in ('reserved', 'registered', 'delivered', 'pending', 'failed', 'skipped', 'uncertain'):
+        result['requested_release_' + category] = (sum(isinstance(item, dict) and item.get('state') == category
+                                                       for item in records.values()) if isinstance(records, dict) else None)
     intents = data.get('owner_refresh_intents', {})
     result['requested_refresh_reserved'] = int(requested_valid and isinstance(intents, dict) and requested in intents)
     # Counts describe only metadata in this point-in-time snapshot. They cannot
@@ -184,6 +194,7 @@ def diagnose(root: Path) -> dict:
     result['snapshot_json_age_seconds'] = max(0, int(time.time() - state_path.stat().st_mtime))
     if os.getenv('SYNC_DIAGNOSTIC_OFFLINE_RPC') == '1' and marker:
         result.update(inspect_offline_core(root, marker, apps))
+        result.update(inspect_release_users(root, marker, data, current))
     # Schema intentionally permits only counts, booleans and null; no sensitive strings.
     assert all(isinstance(v, (bool, int)) or v is None for k, v in result.items() if k != 'schema')
     return result
@@ -217,6 +228,39 @@ def inspect_offline_core(root: Path, marker: dict, apps: dict) -> dict:
                 result['offline_updates_beyond_cursor'] += len(updates)
             except Exception:
                 pass
+    return result
+
+
+def inspect_release_users(root: Path, marker: dict, data: dict, current: str) -> dict:
+    """Count the proposed targets on an isolated copy without mail I/O.
+
+    Reproduce clean_owner_identity.activate's strict flags and current invite
+    policy; no identity, message, address or fingerprint is returned.
+    """
+    import subprocess
+    from deltachat2 import IOTransport, Rpc
+    from michiflin import access, config, release_selection, state
+    config.BOT_EPOCH = str(marker['epoch'])
+    config.BOT_EPOCH_STRICT = True
+    config.BOT_VERIFIED_CONTACTS_ONLY = True
+    config.OWNER_PGP_FINGERPRINT = str(marker['owner_fingerprint'])
+    config.INVITE_AUTO_ACCESS = True
+    config.OWNER_ONLY = False
+    config.EMAIL_KEY_RECOVERY = False
+    config.MINIAPP_CURRENT_ONLY = True
+    state.data.update(data)  # in-memory copy; do not call state.load() or save()
+    access.restore_policy()
+    result = {'offline_release_eligible_users': 0, 'offline_release_owner_users': 0,
+              'offline_release_guest_users': 0, 'offline_release_selection_completed': False}
+    with IOTransport(accounts_dir=str(root / 'accounts'), stderr=subprocess.DEVNULL) as io:
+        rpc = Rpc(io)
+        accounts = rpc.get_all_account_ids()
+        if len(accounts) != 1:
+            return result
+        selected = release_selection.select(rpc, int(accounts[0]), current)
+        owners = sum(config.is_owner_admin(str(entry.get('addr') or '')) for entry in selected)
+        result.update(offline_release_eligible_users=len(selected), offline_release_owner_users=owners,
+                      offline_release_guest_users=len(selected) - owners, offline_release_selection_completed=True)
     return result
 
 

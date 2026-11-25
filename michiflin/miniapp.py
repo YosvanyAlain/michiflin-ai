@@ -200,12 +200,15 @@ def _verified_binding(entry: dict[str, Any]) -> bool:
 
 
 def send_app(chat_id: int, locale: str, updated: bool = False, address: str = "", interrupted: Any = None,
-             recovery_revision: str = "") -> int:
+             recovery_revision: str = "", release_caption: bool = False) -> int:
     locale = locale if locale in {"es", "en"} else "es"
     recipient = address or chat.sender()
     if not _verified_binding({"chat": chat_id, "addr": recipient}):
         return 0
-    if updated:
+    if release_caption:
+        text = tr(locale, "✨ Nueva actualización. La app anterior conserva sus datos; no se trasladan.",
+                  "✨ New update. Your previous app keeps its data; it does not transfer.")
+    elif updated:
         text = tr(locale, "✨ Michiflin AI se actualizó. La app anterior se conserva con sus proyectos e historial; "
                           "esta nueva instancia tiene almacenamiento independiente.",
                   "✨ Michiflin AI was updated. The previous app and its projects and history are kept; "
