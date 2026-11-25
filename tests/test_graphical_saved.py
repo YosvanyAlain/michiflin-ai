@@ -46,13 +46,13 @@ def test_graphical_saved_bridge_keeps_legacy_and_temporary_modes_distinct(monkey
     temp = live_web.Session(2, "b" * 32, "alice@example.org", "host:fixture.example", "https://fixture.example/", browser="human")
     saved = live_web.Session(3, "c" * 32, "alice@example.org", "host:fixture.example", "https://fixture.example/", browser="graphical_saved")
     assert old.browser == "controlled" and temp.browser == "human" and saved.browser == "graphical_saved"
-    assert temp._reply({"kind": "state", "storage": {"cookies": [], "origins": []}}, 1)["error"] == "human_no_saved_session"
+    assert temp._reply({"kind": "state", "storage": {"cookies": [], "origins": []}}, 1, "save")["error"] == "human_no_saved_session"
     with mock.patch.object(saved, "_allowed", return_value=True), mock.patch.object(web_vault, "save") as vault_save:
         state = {"cookies": [], "origins": []}
-        assert saved._reply({"kind": "state", "storage": state}, 2) == {"t": "saved", "seq": 2}
+        assert saved._reply({"kind": "state", "storage": state}, 2, "save") == {"t": "saved", "seq": 2}
         vault_save.assert_called_once_with("alice@example.org", "host:fixture.example", state)
     with mock.patch.object(saved, "_queue_video", return_value={"t": "queued", "seq": 3}) as enqueue:
-        assert saved._reply({"kind": "page_url", "url": "https://fixture.example/video"}, 3)["t"] == "queued"
+        assert saved._reply({"kind": "page_url", "url": "https://fixture.example/video"}, 3, "download")["t"] == "queued"
         enqueue.assert_called_once_with("https://fixture.example/video", 3)
 
 
@@ -94,7 +94,11 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
             parsed = urlsplit(self.path)
             paths.append(parsed.path)
             if parsed.path == "/event":
-                events.append(parse_qs(parsed.query))
+                observation = parse_qs(parsed.query)
+                # HttpOnly cookies cannot be seen by page JavaScript; observe
+                # the synthetic cookie header on the fixture server instead.
+                observation["request_cookie"] = [self.headers.get("Cookie", "")]
+                events.append(observation)
                 event.set()
                 body = b"ok"
             else:
@@ -127,6 +131,8 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
                 })();
                 </script></body></html>'''
             self.send_response(200)
+            if parsed.path == "/seed":
+                self.send_header("Set-Cookie", "fixture_http_only=server; Path=/; Secure; HttpOnly; SameSite=Lax")
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -181,13 +187,17 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
                 assert exchange(worker.process, {"url": "https://fixture.example/seed", "detail": "economy"})["kind"] == "frame"
                 seeded = wait_for_path("/seed")
                 assert seeded["local"] == ["first"] and seeded["idb"] == ["first"]
+                assert "fixture_http_only=server" in seeded["request_cookie"][0]
+                assert "fixture_http_only" not in seeded["cookie"][0]  # inaccessible to JavaScript
                 legacy_state = exchange(worker.process, {"action": "save", "seq": 1})["storage"]
                 assert legacy_state["cookies"] and legacy_state["origins"]
+                assert any(cookie["name"] == "fixture_http_only" and cookie["httpOnly"] and cookie["secure"]
+                           for cookie in legacy_state["cookies"])
                 assert any(origin.get("indexedDB") for origin in legacy_state["origins"])
             owner, site = "alice@example.org", "host:fixture.example"
             web_vault.save(owner, site, legacy_state)
             raw = web_vault._path(owner, site).read_bytes()
-            assert b"fixture_session" not in raw and b"fixture-local" not in raw
+            assert b"fixture_session" not in raw and b"fixture_http_only" not in raw and b"fixture-local" not in raw
             assert web_vault.load("bob@example.org", site) is None
             assert web_vault.load(owner, "host:other.example") is None
             with sandbox.BrowserProcess("human_browser_worker.py") as worker:
@@ -196,6 +206,7 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
                 assert first["kind"] == "frame", first.get("error")
                 restored = wait_for_path("/restore")
                 assert restored["cookie"] == ["fixture_session=first"]
+                assert "fixture_http_only=server" in restored["request_cookie"][0]
                 assert restored["local"] == ["first"] and restored["idb"] == ["first"]
                 # Screenshot is the actual graphical desktop, including its chrome.
                 assert first["width"] == 480 and first["height"] == 760
@@ -209,6 +220,7 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
                 assert state["kind"] == "state", state.get("error")
                 saved_state = state["storage"]
                 assert any(c["name"] == "fixture_session" and c["value"] == "second" for c in saved_state["cookies"])
+                assert any(c["name"] == "fixture_http_only" and c["httpOnly"] and c["secure"] for c in saved_state["cookies"])
                 assert any(o.get("indexedDB") for o in saved_state["origins"])
                 # The existing private downloader consumes the same cookie jar;
                 # its provider/network compatibility is not guaranteed here.
@@ -236,13 +248,78 @@ def test_storage_roundtrip_legacy_graphical_and_legacy_offline(tmp_path, monkeyp
                 assert exchange(worker.process, {"url": "https://fixture.example/back", "storage": web_vault.load(owner, site)})["kind"] == "frame"
                 restored = wait_for_path("/back")
                 assert restored["cookie"] == ["fixture_session=second"]
+                assert "fixture_http_only=server" in restored["request_cookie"][0]
                 assert restored["local"] == ["second"] and restored["idb"] == ["first"]
             with sandbox.BrowserProcess("human_browser_worker.py") as worker:
                 assert exchange(worker.process, {"url": "https://fixture.example/temporary", "storage": saved_state})["kind"] == "frame"
                 restored = wait_for_path("/temporary")
                 assert restored["local"] == ["null"] and restored["idb"] == ["missing"]
                 assert "fixture_session" not in restored.get("cookie", [""])[0]
+                assert "fixture_http_only" not in restored["request_cookie"][0]
                 assert exchange(worker.process, {"action": "save", "seq": 1})["error"] == "human_no_saved_session"
+            # Exercise the actual Session coordinator, private worker pipe and
+            # vault together. The UI tests separately verify its explicit action
+            # is emitted only after confirmation. No personal account is used.
+            messages, condition = [], threading.Condition()
+
+            def collect(_instance, sid, reply):
+                with condition:
+                    messages.append((sid, reply))
+                    condition.notify_all()
+                return True
+
+            def wait_reply(sid, seq, kind):
+                with condition:
+                    found = condition.wait_for(lambda: any(
+                        item_sid == sid and reply.get("seq") == seq and reply.get("t") == kind
+                        for item_sid, reply in messages), timeout=50)
+                    assert found, f"fixture session did not return {kind} for sequence {seq}"
+                    return next(reply for item_sid, reply in messages
+                                if item_sid == sid and reply.get("seq") == seq and reply.get("t") == kind)
+
+            carol, sid_a, sid_b = "carol@example.org", "e" * 32, "f" * 32
+            events.clear()
+            first_session = live_web.Session(30, sid_a, carol, site, "https://fixture.example/seed", browser="graphical_saved")
+            second_session = None
+            with mock.patch.object(live_web, "_send", side_effect=collect), \
+                 mock.patch.object(live_web.Session, "_allowed", lambda self: not self.stopped.is_set()), \
+                 mock.patch.object(live_web.Session, "_hide_infobars", return_value=True):
+                try:
+                    assert web_vault.load(carol, site) is None
+                    first_session.start()
+                    wait_reply(sid_a, 0, "frame")
+                    wait_for_path("/seed")
+                    assert web_vault.load(carol, site) is None  # opening alone never saves
+                    first_session.submit({"action": "save", "seq": 1})
+                    ack = wait_reply(sid_a, 1, "saved")
+                    assert "fixture_session" not in json.dumps(ack) and "storage" not in ack
+                    saved = web_vault.load(carol, site)
+                    assert any(c["name"] == "fixture_session" and c["value"] == "first" for c in saved["cookies"])
+                    assert any(c["name"] == "fixture_http_only" and c["httpOnly"] and c["secure"] for c in saved["cookies"])
+                    assert any(o.get("indexedDB") for o in saved["origins"])
+                    ciphertext = web_vault._path(carol, site).read_bytes()
+                    assert b"fixture_session" not in ciphertext and b"fixture_http_only" not in ciphertext
+                    assert web_vault.load("other@example.org", site) is None
+                    assert web_vault.load(carol, "host:other.example") is None
+                    first_session.submit({"action": "close", "seq": 2})
+                    wait_reply(sid_a, 2, "closed")
+                    first_session.thread.join(15)
+                    assert not first_session.thread.is_alive()
+                    events.clear()
+                    second_session = live_web.Session(31, sid_b, carol, site, "https://fixture.example/restore", browser="graphical_saved")
+                    second_session.start()
+                    wait_reply(sid_b, 0, "frame")
+                    restored = wait_for_path("/restore")
+                    assert restored["cookie"] == ["fixture_session=first"]
+                    assert "fixture_http_only=server" in restored["request_cookie"][0]
+                    assert restored["local"] == ["first"] and restored["idb"] == ["first"]
+                    second_session.submit({"action": "close", "seq": 1})
+                    wait_reply(sid_b, 1, "closed")
+                finally:
+                    first_session.stop(); first_session.thread.join(15)
+                    if second_session:
+                        second_session.stop(); second_session.thread.join(15)
+                assert second_session is not None and not second_session.thread.is_alive()
         # The unmodified production graphical-saved worker rejects the same
         # self-signed certificate. Its Playwright connection is a private pipe,
         # never a TCP DevTools listener or exposed browser endpoint.

@@ -397,7 +397,8 @@ def _with_proxy_fallback(work: Callable[..., Any]) -> Callable[..., Any]:
         except Exception as exc:
             if not (config.WEB_PROXY and network_error(exc)):
                 raise
-            log.info("browser retry via configured upstream proxy: %s", str(exc).splitlines()[0][:160])
+            # Browser errors may embed a URL with private query parameters.
+            log.info("browser retry via configured upstream proxy (%s)", exc.__class__.__name__)
             with egress.EgressProxy(upstream=config.WEB_PROXY, allow_http=True) as upstream:
                 return work(browser, *args, proxy=upstream.url)
     return run

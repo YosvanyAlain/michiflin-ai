@@ -306,13 +306,19 @@ def install_live_frame_fixture(page) -> None:
       window.webxdc.joinRealtimeChannel = () => {
         let listener;
         return {
-          setListener(fn) { listener = fn; },
+          setListener(fn) {
+            listener = fn;
+            window.__testLiveRespond = msg => listener(new TextEncoder().encode(JSON.stringify(msg)));
+          },
           send(data) {
             const req = JSON.parse(new TextDecoder().decode(data));
             window.__testLiveActions.push(req);
             if (req.t !== 'start' && req.t !== 'action') return;
-            const msg = { v: 1, sid: req.sid, t: req.action === 'close' ? 'closed' : 'frame',
+            const kind = req.action === 'close' ? 'closed' : req.action === 'save' ?
+              (window.__testLiveSaveError ? 'error' : 'saved') : 'frame';
+            const msg = { v: 1, sid: req.sid, t: kind,
               seq: req.seq || 0, image, width: 480, height: 760, rendered: req.detail || 'economy' };
+            if (req.action === 'save' && window.__testLiveSaveError) msg.error = window.__testLiveSaveError;
             setTimeout(() => listener(new TextEncoder().encode(JSON.stringify(msg))), window.__testLiveDelay || 100);
           },
           leave() {},
@@ -420,7 +426,8 @@ class WebXDCBrowserSmoke(unittest.TestCase):
                 page.emulate_media(reduced_motion="reduce")
                 self.assertEqual(page.locator(".home-carousel").count(), 1)
                 self.assertEqual(page.locator(".home-banner-controls button").count(), 3)
-                self.assertTrue(page.locator('.activity-hero .hero-action').count() >= 1)
+                self.assertEqual(page.locator('.activity-hero [data-restart-countdown]').count(), 1)
+                self.assertEqual(page.locator('.home-status [data-restart-countdown]').count(), 0)
                 rate_name = "Tasas de cambio" if language == "es" else "Exchange rates"
                 weather_name = "Clima" if language == "es" else "Weather"
                 page.locator(".home-banner-controls").get_by_role("button", name=rate_name).click()

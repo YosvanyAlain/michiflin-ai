@@ -393,7 +393,7 @@ class Session:
                 reply["error"] = "proxy_unavailable"
         return reply
 
-    def _reply(self, result: dict[str, Any], seq: int) -> dict[str, Any]:
+    def _reply(self, result: dict[str, Any], seq: int, action: str = "") -> dict[str, Any]:
         kind = result.get("kind")
         if kind == "frame":
             return {"t": "frame", "seq": seq, "image": result.get("image", ""), "width": result.get("width"),
@@ -401,6 +401,13 @@ class Session:
                     "warning": result.get("warning", "")}
         if self.browser == "human" and kind in {"state", "page_url"}:
             return {"t": "error", "seq": seq, "error": "human_no_saved_session"}
+        # A worker result may have side effects only for the corresponding
+        # explicit request. In particular, an unsolicited initial or refresh
+        # response must never silently persist a browser state.
+        if ((kind == "state" and action != "save") or
+                (kind == "capture" and action != "capture") or
+                (kind == "page_url" and action != "download")):
+            return {"t": "error", "seq": seq, "error": "action_failed"}
         if kind == "state":
             # Linearize persistence with both kill-switch transitions and guest
             # revocation. A concurrent disconnect also takes self.mutex first.
@@ -528,7 +535,7 @@ class Session:
                         result = self._exchange(worker, reader, worker_request, 45)
                     if not self._allowed():
                         return
-                    reply = self._route_reply(self._reply(result, seq), worker)
+                    reply = self._route_reply(self._reply(result, seq, str(request["action"])), worker)
                     with self.mutex:
                         self.last_seq, self.inflight, self.last_reply = seq, 0, reply
                     _send(self.instance, self.sid, reply)

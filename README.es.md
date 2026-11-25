@@ -34,7 +34,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/clip-tour.gif" width="260" alt="Recorrido por la miniapp">
   <img src="docs/media/es/clip-web.gif" width="260" alt="Buscar y leer una página">
 </p>
-<p align="center"><sub>Recorrido de la interfaz actual · datos simulados visibles (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>)</sub></p>
+<p align="center"><sub>Recorrido de una interfaz anterior · datos simulados (<a href="docs/media/es/clip-tour.mp4">MP4</a>) · Buscar y leer (<a href="docs/media/es/clip-web.mp4">MP4</a>). El saludo del vídeo precede a la cuenta regresiva de esta candidata.</sub></p>
 
 | Pestaña | Para qué sirve |
 |---|---|
@@ -45,6 +45,10 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
 | **Descargas** | Cola, enlaces guardados y kit integrado: copias locales, servidor temporal, selección, acciones masivas, comprimidos y unión |
 | **Ajustes** | Idioma, apariencia, estilo visual y acento; buscador, modo Nauta, Kill switch y ajustes del bot |
 
+El lector web muestra una versión simplificada y paginada. Las miniaturas pequeñas están desactivadas por defecto y se activan en **Ajustes → Búsqueda y clima → Imágenes en páginas**. La navegación visual Live necesita un cliente compatible con tiempo real. La candidata adapta el paginador a pantallas estrechas; la app ya instalada no cambia por sí sola. Consulta [ajustes, privacidad y límites del lector](docs/navegacion-web.md).
+
+En Live, la vista móvil reúne navegación y escritura; Zoom amplía la imagen y los demás controles quedan debajo. **Guardar sesión** siempre pide confirmación y el modo temporal no carga ni guarda sesiones. Si Google rechaza el navegador, se ofrece abrir la dirección inicial en el dispositivo: esa sesión no se copia a Live. Consulta [privacidad, consentimiento y límites de Live](docs/WEB_ACCESS.md).
+
 <p align="center">
   <img src="docs/media/es/ai.png" width="200" alt="Espacios de IA">
   <img src="docs/media/es/images.png" width="200" alt="Estudio de imágenes">
@@ -52,7 +56,7 @@ Este documento es un anexo breve. La documentación completa está en inglés: [
   <img src="docs/media/es/settings.png" width="200" alt="Ajustes">
 </p>
 
-En **Ajustes** puedes elegir entre 13 estilos: Michiflin, Material You inspirado, Océano, Nácar, Ónix, Esmeralda, Zafiro, Amatista, Rubí, Cobre, Ártico, Moca y Aurora. Cada uno admite claro, oscuro o sistema y acentos independientes. Material You es una inspiración: no extrae los colores del dispositivo. El primer banner saluda según la hora local. Los banners respetan movimiento reducido; el clima usa la observación guardada de Open-Meteo sin consultas adicionales para animarlo. Para el clima escribe y elige tu ciudad: no se consulta la ubicación del dispositivo y la actualización automática requiere activación expresa.
+En **Ajustes** puedes elegir entre 13 estilos: Michiflin, Material You inspirado, Océano, Nácar, Ónix, Esmeralda, Zafiro, Amatista, Rubí, Cobre, Ártico, Moca y Aurora. Cada uno admite claro, oscuro o sistema y acentos independientes. Material You es una inspiración: no extrae los colores del dispositivo. El primer banner muestra la cuenta regresiva estimada hasta el reinicio del bot; si no hay una respuesta reciente, indica que se desconoce y puedes tocarlo para actualizar. Los banners respetan movimiento reducido; el clima usa la observación guardada de Open-Meteo sin consultas adicionales para animarlo. Para el clima escribe y elige tu ciudad: no se consulta la ubicación del dispositivo y la actualización automática requiere activación expresa.
 
 Solo la campana muestra el contador de avisos no leídos y se mueve en silencio mientras los haya, salvo si el sistema pide movimiento reducido. Ábrela para consultar, ocultar o eliminar avisos sin borrar resultados ni mensajes. Iniciar una solicitud no crea un aviso de respuesta; el progreso de la cola es independiente. Si la espera termina localmente sin respuesta, queda un registro en el centro de notificaciones, sin indicador de respuesta; una respuesta que llegue después de ese límite podría no mostrarse, así que revisa cargos y descargas antes de repetir. Al tocar una sección se puede abrir el resultado no leído más reciente; **Ver respuestas pendientes** o la campana dan acceso a los demás sin borrarlos, incluso cuando comparten chat, galería o cola. Un resultado fuera del encuadre, dentro de una sección cerrada, cubierto por una hoja o aún en transición permanece pendiente hasta mostrarse. En el chat, una respuesta nueva no desplaza a quien está leyendo mensajes anteriores. Los avisos generales se marcan como vistos cuando sus filas aparecen en el centro de notificaciones. Hasta seis resultados compartidos de búsquedas, utilidades, páginas, transcripciones, fichas musicales, traducciones o consultas de clima se conservan 12 horas (máximo 180 kB cada uno), si caben en el almacenamiento local. Si el almacenamiento falla o una respuesta es demasiado grande, el resultado o error puede quedar solo en memoria durante esa apertura. Si falta o caduca, se informa sin repetir la consulta. También se guardan la última traducción, el último clima y detalles acotados de fallos de imagen o de descargas. Al abrir una respuesta antigua del Programador, se muestra su resumen si sigue disponible; los archivos corresponden al proyecto actual. Los errores de imagen incluyen la descripción solicitada y pueden quitarse en la vista o al borrar imágenes o historial en Ajustes. Son avisos dentro de esa miniapp, no notificaciones del sistema; el almacenamiento puede fallar o ser independiente entre instancias.
 

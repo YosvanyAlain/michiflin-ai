@@ -150,6 +150,24 @@ for (const reason of ["paused", "stale_app"]) {
   assert.strictEqual(test.leaves(), 1);
 }
 
+// Oversized text is rejected before channel.send, keeps the session ready and
+// must not be reported as sent; a shorter retry reuses the same sequence.
+{
+  const test = boot(), messages = [];
+  test.web.start("https://example.org/", (message) => messages.push(message));
+  const sid = test.web.sid;
+  test.receive({ v: 1, sid, t: "frame", seq: 0, image: "first" });
+  const before = test.sent.length;
+  assert.strictEqual(test.web.action("text", { text: "x".repeat(16000) }), false);
+  assert.strictEqual(test.sent.length, before);
+  assert.strictEqual(test.web.ready, true);
+  assert.strictEqual(test.web.pending, null);
+  assert.strictEqual(messages.at(-1).error, "too_large");
+  assert.strictEqual(test.web.action("text", { text: "fixture" }), true);
+  assert.strictEqual(test.sent.at(-1).seq, 1);
+  test.web.stop();
+}
+
 // The byte counter records application payloads, including retries and old
 // packets, but not transport overhead or billing. It resets on a new session.
 {

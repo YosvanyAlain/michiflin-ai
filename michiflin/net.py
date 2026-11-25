@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import secrets
 import socket
 import threading
 import weakref
@@ -40,6 +41,25 @@ _jars: dict[str, requests.cookies.RequestsCookieJar] = {}
 _jars_lock = threading.Lock()
 
 
+class _PrivateCookieJar(requests.cookies.RequestsCookieJar):
+    """Track mutations and replacement, including a change that is later undone."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._generation = secrets.token_bytes(16)
+        self._revision = 0
+
+    def set_cookie(self, cookie: Any, *args: Any, **kwargs: Any) -> None:
+        with self._cookies_lock:
+            super().set_cookie(cookie, *args, **kwargs)
+            self._revision += 1
+
+    def clear(self, domain: str | None = None, path: str | None = None, name: str | None = None) -> None:
+        with self._cookies_lock:
+            super().clear(domain, path, name)
+            self._revision += 1
+
+
 def _identity() -> str:
     # Import lazily to avoid making the network layer part of chat's import graph.
     try:
@@ -47,14 +67,25 @@ def _identity() -> str:
         address = chat.sender().strip().lower()
     except Exception:
         address = ""
-    return address or f"thread:{threading.get_ident()}"
+    if not address:
+        return f"thread:{threading.get_ident()}"
+    try:
+        from . import access
+        grant = access.session_stamp(address)
+    except Exception:
+        # Do not reuse any private jar when the current grant cannot be known.
+        return f"untrusted:{address}:{threading.get_ident()}:{secrets.token_hex(16)}"
+    # Revoking and regranting an address must not give the new verified grant
+    # the old grant's website cookies. Owner and uncontrolled legacy sessions
+    # have an empty stamp and retain their existing per-address behavior.
+    return f"contact:{address}\0grant:{grant}"
 
 
 def _jar(identity: str) -> requests.cookies.RequestsCookieJar:
     with _jars_lock:
         jar = _jars.get(identity)
         if jar is None:
-            jar = requests.cookies.RequestsCookieJar()
+            jar = _PrivateCookieJar()
             for name, value, domain in CONSENT_COOKIES:
                 jar.set(name, value, domain=domain, path="/")
             _jars[identity] = jar
@@ -67,19 +98,28 @@ def _jar(identity: str) -> requests.cookies.RequestsCookieJar:
 def session() -> requests.Session:
     """Thread-local HTTP session bound to the current contact's private cookie jar."""
     identity = _identity()
+    jar = _jar(identity)
     current = getattr(_local, "session", None)
-    if current is None or getattr(_local, "identity", None) != identity:
+    # A bounded jar may have been evicted and recreated while this thread still
+    # held a Session for the same identity. Never send that stale jar's cookies.
+    if current is None or getattr(_local, "identity", None) != identity or current.cookies is not jar:
         current = requests.Session()
         current.headers.update(HEADERS)
-        current.cookies = _jar(identity)
+        current.cookies = jar
         _local.session = current
         _local.identity = identity
     return current
 
 
+def cookie_context() -> tuple[str, requests.cookies.RequestsCookieJar]:
+    """Current contact and grant identity with its private in-memory cookie jar."""
+    identity = _identity()
+    return identity, _jar(identity)
+
+
 def cookie_jar() -> requests.cookies.RequestsCookieJar:
-    """Cookie jar for the current contact (used to seed a private browser context)."""
-    return _jar(_identity())
+    """Cookie jar for the current contact and access grant (used to seed a browser)."""
+    return cookie_context()[1]
 
 
 def _blocked(address: str) -> bool:
@@ -187,11 +227,11 @@ def request(method: str, url: str, proxy: bool = False, *, follow_redirects: boo
             owned.close()
 
 
-def fetch(url: str, **kwargs: Any) -> requests.Response:
-    """GET with a single retry through the optional egress proxy when a site blocks us."""
+def fetch(url: str, *, retry_blocked: bool = True, **kwargs: Any) -> requests.Response:
+    """GET; callers can refuse proxy retries after a site blocks or limits access."""
     try:
         response = request("GET", url, **kwargs)
-        if response.status_code in {403, 429, 451, 503} and WEB_PROXY:
+        if response.status_code in {403, 429, 451, 503} and WEB_PROXY and retry_blocked:
             response.close()
             return request("GET", url, proxy=True, **kwargs)
         return response

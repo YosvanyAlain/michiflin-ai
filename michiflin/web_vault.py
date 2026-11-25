@@ -163,6 +163,10 @@ def save(owner: str, site: str, storage: dict[str, Any]) -> None:
         raise VaultError("vault") from None
     finally:
         temporary.unlink(missing_ok=True)
+    # The saved visual session is separate from reader cookies, but a change
+    # should conservatively invalidate any in-flight reader result for its owner.
+    from . import reader
+    reader.invalidate_sender(owner)
 
 
 def remove(owner: str, site: str) -> bool:
@@ -170,6 +174,8 @@ def remove(owner: str, site: str) -> bool:
     try:
         existed = target.exists()
         target.unlink(missing_ok=True)
-        return existed
     except OSError:
         raise VaultError("vault") from None
+    from . import reader
+    reader.invalidate_sender(owner)
+    return existed

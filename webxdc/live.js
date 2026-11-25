@@ -12,6 +12,36 @@ function liveSite(value) {
   return "host:" + host;
 }
 
+// Fit the interaction area to the space actually visible within the app.
+// visualViewport can shrink when a phone keyboard overlays the layout viewport;
+// the containing client still decides how its own keyboard behaves.
+function fitLiveWorkspace(alignFocused = false) {
+  const main = document.querySelector('.view[data-view="live_web"]');
+  const work = main && main.querySelector(".live-workspace");
+  if (!work || work.hidden) return;
+  const rect = main.getBoundingClientRect(), viewport = window.visualViewport;
+  const top = Math.max(rect.top, viewport ? viewport.offsetTop : 0);
+  const bottom = Math.min(rect.bottom, viewport ? viewport.offsetTop + viewport.height : window.innerHeight);
+  const height = Math.max(160, Math.min(720, Math.floor(bottom - top - 12)));
+  work.style.height = height + "px";
+  // Short visual viewports need space for a readable two-line status without
+  // hiding the input. Normal-height screens keep the larger touch targets.
+  work.classList.toggle("live-compact", height < 260);
+  if (alignFocused && work.contains(document.activeElement)) {
+    requestAnimationFrame(() => {
+      if (!work.isConnected || work.hidden) return;
+      const current = window.visualViewport;
+      const visibleTop = Math.max(main.getBoundingClientRect().top, current ? current.offsetTop : 0);
+      main.scrollTop += work.getBoundingClientRect().top - visibleTop;
+    });
+  }
+}
+if (typeof window.addEventListener === "function") window.addEventListener("resize", () => fitLiveWorkspace(true));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", () => fitLiveWorkspace(true));
+  window.visualViewport.addEventListener("scroll", () => fitLiveWorkspace(false));
+}
+
 window.liveWeb = {
   channel: null, sid: "", seq: 0, pending: null, ready: false, openingSeen: false, detail: "economy", browser: "graphical_saved",
   startTimer: 0, startDeadline: 0, actionTimer: 0, autoTimer: 0, onMessage: null, onTraffic: null,
@@ -22,7 +52,11 @@ window.liveWeb = {
   send(body) {
     if (!this.channel) return;
     const data = new TextEncoder().encode(JSON.stringify({ v: 1, sid: this.sid, ...body }));
-    if (data.length > 15000) throw new Error("too_large");
+    if (data.length > 15000) {
+      const error = new Error("too_large");
+      error.liveLocalLimit = true;
+      throw error;
+    }
     this.channel.send(data);
     // Payload bytes only: not ETECSA billing, protocol overhead, or mail traffic.
     this.sentBytes += data.byteLength;
@@ -86,7 +120,7 @@ window.liveWeb = {
     if (!this.ready || this.pending) return false;
     const request = { t: "action", action, seq: this.seq + 1, ...args, detail: this.detail };
     this.pending = request;
-    let attempts = 0;
+    let attempts = 0, sent = false;
     const retry = () => {
       if (!this.pending || this.pending.seq !== request.seq) return;
       if (++attempts > 5) {
@@ -95,16 +129,24 @@ window.liveWeb = {
         if (this.onMessage) this.onMessage({ t: "error", error: "unconfirmed" });
         return;
       }
-      try { this.send(request); } catch (error) {
+      try { this.send(request); sent = true; } catch (error) {
         this.pending = null;
-        this.ready = false;
-        if (this.onMessage) this.onMessage({ t: "error", error: error.message || "browser_failed" });
+        if (error.liveLocalLimit && !sent) {
+          // Rejected locally before channel.send: the user may shorten the
+          // text and retry the same sequence without reopening the browser.
+          if (this.onMessage) this.onMessage({ t: "error", seq: request.seq, error: "too_large" });
+        } else {
+          this.ready = false;
+          if (this.onMessage) this.onMessage({ t: "error", error: error.message || "browser_failed" });
+        }
         return;
       }
       this.actionTimer = setTimeout(retry, 8000);
     };
     retry();
-    return true;
+    // In particular, do not clear typed text if the first send failed (for
+    // example because the UTF-8 payload exceeded the realtime size limit).
+    return sent;
   },
   setAuto(enabled) {
     clearInterval(this.autoTimer);
@@ -145,6 +187,9 @@ VIEWS.live_web = {
     window.liveWeb.detail = "economy";
     window.liveWeb.browser = "graphical_saved";
     const status = h("div", { class: "note", role: "status" }, t("live_click_start"));
+    const introStatus = h("div", { class: "live-intro-status" }, status);
+    const workStatus = h("div", { class: "live-work-status", role: "region", tabindex: "0", "aria-label": t("live_status_label") });
+    const workspace = h("section", { class: "live-workspace", hidden: true, "aria-label": t("live_workspace") });
     const route = h("small", { class: "muted live-route", hidden: true });
     const traffic = h("small", { class: "muted live-traffic", hidden: true });
     const reportTraffic = (sent, received) => {
@@ -156,14 +201,16 @@ VIEWS.live_web = {
     const picture = h("img", { class: "live-screen", alt: t("live_screen"), hidden: true, draggable: "false" });
     const screenBox = h("div", { class: "live-screen-box", hidden: true, tabindex: "0", role: "region", "aria-label": t("live_screen") }, picture);
     const viewSettings = h("div", { class: "stack live-settings" });
-    const secret = field({ type: "password", placeholder: t("live_type_placeholder"), autocomplete: "off" });
-    const address = field({ type: "url", value: params.url, maxlength: "4096", placeholder: t("live_address") });
-    const controls = h("div", { class: "stack", hidden: true });
-    const navigation = h("div", { class: "row wrap live-navigation", hidden: true });
+    const secret = field({ type: "password", placeholder: t("live_type_placeholder"), autocomplete: "off",
+      "aria-label": t("live_type_label"), enterkeyhint: "send" });
+    const address = field({ type: "url", value: params.url, maxlength: "4096", placeholder: t("live_address"), "aria-label": t("live_address") });
+    const controls = h("div", { class: "stack live-extra-controls", hidden: true });
+    const navigation = h("nav", { class: "live-navigation", hidden: true, "aria-label": t("live_navigation_label") });
     let positionedFirstFrame = false;
     let gesture = null, pageSwipe = null, suppressClick = false, suppressTimer = 0, pressedWhileBusy = false;
     let lastTarget = { x: 240, y: 380 }, activeMode = null, nextMode = null;
     let frameLoading = false, frameVersion = 0;
+    let zoomValue = "100", zoomPicker = null, quickZoom = null;
     const auto = h("input", { type: "checkbox", disabled: true, onchange: (event) => window.liveWeb.setAuto(event.target.checked) });
     const pauseAuto = () => { auto.checked = false; window.liveWeb.setAuto(false); };
     const swipeToggle = h("input", { type: "checkbox", disabled: true, "aria-label": t("live_swipe_page"), onchange: (event) => {
@@ -227,20 +274,34 @@ VIEWS.live_web = {
     };
     const run = (action, args) => {
       try {
-        if (frameLoading || !window.liveWeb.action(action, args)) { toast(t("live_wait_action"), "bad"); return false; }
+        if (frameLoading || !window.liveWeb.ready || window.liveWeb.pending) { toast(t("live_wait_action"), "bad"); return false; }
+        if (!window.liveWeb.action(action, args)) return false;
         status.textContent = t("live_wait_action");
         return true;
       } catch (error) { status.textContent = t(errKey(error.message)); return false; }
     };
     const scrollAt = (amount, target = lastTarget) => run("scroll", { amount, x: target.x, y: target.y });
     const setZoom = (value) => {
+      zoomValue = value;
       picture.style.width = value + "%";
       screenBox.classList.toggle("live-zoomed", value !== "100");
       screenBox.scrollLeft = 0; screenBox.scrollTop = 0;
+      if (zoomPicker) zoomPicker.querySelectorAll("button").forEach((button) => {
+        const selected = button.dataset.key === value;
+        button.classList.toggle("on", selected);
+        button.setAttribute("aria-selected", String(selected));
+      });
+      if (quickZoom) {
+        const label = t("live_quick_zoom", { value: value === "100" ? t("live_zoom_fit") : value + "%" });
+        quickZoom.textContent = value === "100" ? t("live_zoom_short") : value + "%";
+        quickZoom.setAttribute("aria-label", label);
+        quickZoom.title = label;
+      }
+      if (window.liveWeb.ready) status.textContent = t(value === "100" ? "live_ready" : "live_zoom_pan");
     };
+    zoomPicker = segmented("100", [["100", t("live_zoom_fit")], ["150", "150%"], ["200", "200%"]], setZoom);
     add(viewSettings,
-      h("div", { class: "row live-zoom" }, h("small", { class: "muted" }, t("live_zoom")),
-        segmented("100", [["100", "100%"], ["150", "150%"], ["200", "200%"]], setZoom)),
+      h("div", { class: "row live-zoom" }, h("small", { class: "muted" }, t("live_zoom")), zoomPicker),
       h("small", { class: "muted" }, t("live_zoom_hint")),
       h("details", { class: "live-options" }, h("summary", {}, t("live_view_options")),
         h("small", { class: "muted" }, t("live_detail_hint")),
@@ -265,13 +326,15 @@ VIEWS.live_web = {
       frameVersion += 1; frameLoading = false; picture.onload = null; picture.onerror = null;
       screenBox.removeAttribute("aria-busy");
       picture.removeAttribute("src"); picture.hidden = true; screenBox.hidden = true;
-      controls.hidden = true; navigation.hidden = true; closeButton.hidden = true; secret.value = "";
+      controls.hidden = true; navigation.hidden = true; closeButton.hidden = true; workspace.hidden = true;
+      introStatus.append(status);
+      secret.value = ""; secret.type = "password"; showButton.setAttribute("aria-pressed", "false");
       start.hidden = false; positionedFirstFrame = false; activeMode = null;
       lastTarget = { x: 240, y: 380 };
       route.hidden = true; route.textContent = "";
     };
     const receive = (message) => {
-      if (!main.isConnected) return;
+      if (!workspace.isConnected) return;
       if (message.route === "proxy" || message.route === "direct") {
         route.textContent = t(message.route === "proxy" ? "live_route_proxy" : "live_route_direct");
         route.hidden = false;
@@ -306,13 +369,16 @@ VIEWS.live_web = {
         controls.hidden = false;
         navigation.hidden = false;
         closeButton.hidden = false;
+        workspace.hidden = false;
+        workStatus.append(status);
         start.hidden = true;
         status.textContent = t(message.warning === "proxy_unavailable" ? "live_proxy_unavailable"
           : message.warning ? "live_action_warning"
           : window.liveWeb.detail === "sharp" && message.rendered === "economy" ? "live_reduced" : "live_ready");
+        fitLiveWorkspace();
         if (message.seq === 0 && !positionedFirstFrame) {
           positionedFirstFrame = true;
-          requestAnimationFrame(() => { if (main.isConnected && !navigation.hidden) navigation.scrollIntoView({ block: "start" }); });
+          requestAnimationFrame(() => { if (main.isConnected && !workspace.hidden) workspace.scrollIntoView({ block: "start" }); });
         }
       } else if (message.t === "saved") {
         stored.textContent = t("live_stored");
@@ -462,7 +528,12 @@ VIEWS.live_web = {
       if (event.key === "Enter") { event.preventDefault(); openAddress(); }
     });
     const disconnect = h("button", { class: "btn small ghost", onclick: async () => {
+      const sid = window.liveWeb.sid;
       if (!await confirmBox(t("live_forget"), t("live_forget_q"), t("live_forget"))) return;
+      if (!disconnect.isConnected || window.liveWeb.sid !== sid) {
+        if (disconnect.isConnected) status.textContent = t("live_session_changed");
+        return;
+      }
       window.liveWeb.stop();
       start.disabled = false;
       clearView();
@@ -472,62 +543,98 @@ VIEWS.live_web = {
         status.textContent = t("live_forgotten");
       } catch (error) { status.textContent = t("live_closed"); toast(error.message, "bad"); }
     } }, t("live_forget"));
+    const navButton = (label, text, onclick) => h("button", {
+      class: "btn small ghost", "aria-label": label, title: label, onclick,
+    }, text);
     add(navigation,
-      h("small", { class: "muted" }, t("live_page_scroll")),
-      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_up"), onclick: () => scrollAt(-240) }, "↑"),
-      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_down"), onclick: () => scrollAt(240) }, "↓"),
-      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_up"), onclick: () => scrollAt(-600) }, "↑↑"),
-      h("button", { class: "btn small ghost", "aria-label": t("live_scroll_page_down"), onclick: () => scrollAt(600) }, "↓↓"),
-      closeButton,
-      h("label", { class: "row live-gesture" }, swipeToggle, t("live_swipe_short")),
-      h("label", { class: "row live-gesture" }, dragToggle, t("live_drag_short")));
-    const closeWindowButton = h("button", { class: "btn small ghost", hidden: true, onclick: async () => {
-      if (await confirmBox(t("live_human_close_window"), t("live_human_close_window_q"), t("live_human_close_window"))) {
-        run("key", { key: "CloseWindow" });
+      navButton(t("live_history_back"), "←", () => run("back")),
+      navButton(t("live_history_forward"), "→", () => run("forward")),
+      navButton(t("live_reload_page"), "↻", () => run("reload")),
+      navButton(t("live_refresh"), t("live_view_short"), () => run("frame")),
+      navButton(t("live_scroll_up"), "↑", () => scrollAt(-240)),
+      navButton(t("live_scroll_down"), "↓", () => scrollAt(240)));
+    const confirmLiveAction = async (action, title, question, args) => {
+      const sid = window.liveWeb.sid, mode = activeMode;
+      if (!sid || !window.liveWeb.ready || window.liveWeb.pending || frameLoading) {
+        toast(t("live_wait_action"), "bad"); return;
       }
-    } }, t("live_human_close_window"));
-    const saveButton = h("button", { class: "btn primary", onclick: async () => {
-      if (await confirmBox(t("live_save"), t("live_save_q"), t("live_save"))) run("save");
-    } }, t("live_save"));
-    const downloadButton = h("button", { class: "btn ghost", onclick: async () => {
-      if (await confirmBox(t("live_download"), t("live_download_q"), t("live_download"))) run("download");
-    } }, t("live_download"));
+      if (!await confirmBox(title, question, title)) return;
+      // The consent belongs to this specific open browser, not to another site
+      // or a new session that appeared while the confirmation was visible.
+      if (!workspace.isConnected || window.liveWeb.sid !== sid || activeMode !== mode || window.liveWeb.browser !== mode) {
+        if (workspace.isConnected) status.textContent = t("live_session_changed");
+        return;
+      }
+      run(action, args);
+    };
+    const closeWindowButton = h("button", { class: "btn small ghost", hidden: true, onclick: () =>
+      confirmLiveAction("key", t("live_human_close_window"), t("live_human_close_window_q"), { key: "CloseWindow" })
+    }, t("live_human_close_window"));
+    const saveButton = h("button", { class: "btn primary", onclick: () =>
+      confirmLiveAction("save", t("live_save"), t("live_save_q"))
+    }, t("live_save"));
+    const downloadButton = h("button", { class: "btn ghost", onclick: () =>
+      confirmLiveAction("download", t("live_download"), t("live_download_q"))
+    }, t("live_download"));
+    const sendText = () => {
+      const text = secret.value;
+      if (!text) return;
+      // The workers accept at most 4096 Unicode characters. Keep the text in
+      // the field on a local validation failure or when a previous step waits.
+      if (text.length > 8192 || [...text].length > 4096 || text.includes("\0")) {
+        status.textContent = t("live_text_limit"); return;
+      }
+      if (run("text", { text })) secret.value = "";
+    };
+    secret.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); sendText(); }
+    });
+    secret.addEventListener("focus", () => fitLiveWorkspace(true));
+    const showButton = h("button", { class: "btn small ghost", "aria-label": t("live_show"), title: t("live_show"),
+      "aria-pressed": "false", onclick: () => {
+        const revealed = secret.type === "password";
+        secret.type = revealed ? "text" : "password";
+        showButton.setAttribute("aria-pressed", String(revealed));
+      } }, icon("eye"));
+    quickZoom = h("button", { class: "btn small ghost", "aria-label": t("live_quick_zoom", { value: t("live_zoom_fit") }),
+      title: t("live_quick_zoom", { value: t("live_zoom_fit") }), onclick: () =>
+        setZoom(zoomValue === "100" ? "150" : zoomValue === "150" ? "200" : "100")
+    }, t("live_zoom_short"));
+    const keyButton = (key, label) => h("button", { class: "btn small ghost", "aria-label": t("live_key_label", { key: label }),
+      title: t("live_key_label", { key: label }), onclick: () => run("key", { key }) }, label);
+    const composer = h("div", { class: "live-composer" },
+      h("div", { class: "row live-compose-text" }, secret, h("button", { class: "btn small primary", onclick: sendText }, t("live_type"))),
+      h("div", { class: "live-compose-keys" }, showButton, quickZoom, keyButton("Tab", "Tab"), keyButton("Enter", "Enter"), keyButton("Backspace", "⌫")));
+    add(workspace, navigation, screenBox, workStatus, composer);
     add(controls,
-      h("div", { class: "row wrap" },
-        h("button", { class: "btn small ghost", onclick: () => run("back") }, "← ", t("back")),
-        h("button", { class: "btn small ghost", onclick: () => run("forward") }, t("next"), " →"),
-        h("button", { class: "btn small ghost", "aria-label": t("refresh"), onclick: () => run("reload") }, "↻"),
-        h("button", { class: "btn small ghost", onclick: () => run("frame") }, t("live_refresh"))),
+      h("small", { class: "muted" }, t("live_navigation_hint")),
+      h("div", { class: "row wrap live-gestures" },
+        h("label", { class: "row live-gesture" }, swipeToggle, t("live_swipe_short")),
+        h("label", { class: "row live-gesture" }, dragToggle, t("live_drag_short")),
+        navButton(t("live_scroll_page_up"), "↑↑", () => scrollAt(-600)),
+        navButton(t("live_scroll_page_down"), "↓↓", () => scrollAt(600)), closeButton),
       h("small", { class: "muted" }, t("live_address_hint")),
       h("div", { class: "row" }, address, h("button", { class: "btn small", onclick: openAddress }, t("go"))),
       h("p", { class: "muted small" }, t("live_click_hint")),
-      h("div", { class: "row" }, secret,
-        h("button", { class: "btn small", onclick: () => {
-          const text = secret.value;
-          if (!text) return;
-          if (run("text", { text })) secret.value = "";
-        } }, t("live_type"))),
       h("div", { class: "row wrap" },
-        h("button", { class: "btn small ghost", onclick: () => { secret.type = secret.type === "password" ? "text" : "password"; } }, t("live_show")),
-        ...[["Tab", "Tab"], ["Shift+Tab", "⇤"], ["Enter", "Enter"], ["Backspace", "⌫"],
-            ["Space", t("live_key_space")], ["Escape", "Esc"], ["ArrowLeft", "←"], ["ArrowRight", "→"]].map(([key, label]) =>
-          h("button", { class: "btn small ghost", "aria-label": t("live_key_label", { key: label }),
-                        onclick: () => run("key", { key }) }, label)), closeWindowButton),
-      h("div", { class: "row wrap" },
-        saveButton,
-        h("button", { class: "btn ghost", onclick: async () => {
-          if (await confirmBox(t("live_capture"), t("live_capture_q"), t("live_capture"))) run("capture");
-        } }, t("live_capture")),
-        downloadButton));
+        ...[["Shift+Tab", "⇤"], ["Space", t("live_key_space")], ["Escape", "Esc"],
+            ["ArrowLeft", "←"], ["ArrowRight", "→"]].map(([key, label]) => keyButton(key, label)), closeWindowButton),
+      h("div", { class: "row wrap" }, saveButton,
+        h("button", { class: "btn ghost", onclick: () =>
+          confirmLiveAction("capture", t("live_capture"), t("live_capture_q"))
+        }, t("live_capture")), downloadButton));
     const privacy = h("details", { class: "live-privacy" }, h("summary", {}, t("live_privacy_more")),
       h("p", { class: "muted small" }, t("live_privacy")), h("p", { class: "muted small" }, t("live_personal_hint")));
     const siteRow = h("div", { class: "row" }, h("small", { class: "site-address" }, params.url),
       h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")));
+    const external = h("div", { class: "live-device-link" },
+      h("a", { class: "link", href: new URL(params.url).href, target: "_blank", rel: "noopener noreferrer" }, t("live_external_open")),
+      h("small", { class: "muted" }, t("live_external_hint")), h("small", { class: "muted" }, t("live_accessibility_hint")));
     add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy,
-      siteRow, stored,
+      siteRow, external, stored,
       h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote,
-      h("div", { class: "row wrap" }, start, disconnect), status, route, traffic,
-      navigation, screenBox, viewSettings, controls);
+      h("div", { class: "row wrap" }, start, disconnect), introStatus, route, traffic,
+      workspace, controls, viewSettings);
     applyMode("graphical_saved");
     updateStored();
   },
