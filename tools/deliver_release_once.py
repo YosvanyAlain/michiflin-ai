@@ -129,8 +129,20 @@ def _acquire_once() -> None:
             raise StopSafely('once_marker_not_acquired')
         body = response.json()
         if (not isinstance(body, dict) or body.get('ref') != 'refs/tags/' + ONCE_TAG
-                or not isinstance(body.get('object'), dict) or body['object'].get('sha') != anchor
-                or state_backup._get_ref(token, repo, ONCE_TAG) != anchor):
+                or not isinstance(body.get('object'), dict) or body['object'].get('sha') != anchor):
+            raise StopSafely('once_marker_not_confirmed')
+        # GitHub's read replicas may briefly return 404 after a confirmed 201.
+        # Retry only the readback, never the creation POST. A mismatch or an
+        # unconfirmed marker still blocks all mail and any blind retry.
+        for delay in (0, 1, 2, 4, 8, 8):
+            if delay:
+                time.sleep(delay)
+            observed = state_backup._get_ref(token, repo, ONCE_TAG)
+            if observed == anchor:
+                break
+            if observed is not None:
+                raise StopSafely('once_marker_not_confirmed')
+        else:
             raise StopSafely('once_marker_not_confirmed')
     except StopSafely:
         raise

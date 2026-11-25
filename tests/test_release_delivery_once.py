@@ -283,6 +283,40 @@ def test_remote_once_tag_accepts_only_first_confirmed_atomic_creation(monkeypatc
         delivery._acquire_once()
 
 
+@pytest.mark.parametrize('visible_after,confirmed', [(2, True), (99, False)])
+def test_only_marker_readback_is_retried_after_a_confirmed_creation(monkeypatch, visible_after, confirmed):
+    import state_backup
+    anchor = 'a' * 40
+    state = {'created': False, 'reads': 0, 'posts': 0}
+    monkeypatch.setattr(state_backup, 'configuration', lambda: ('synthetic', 'owner/private', 'synthetic'))
+    monkeypatch.setattr(state_backup, '_assert_private', lambda *_: None)
+    monkeypatch.setattr(state_backup, '_release', lambda *_: {'id': 1})
+    def get_ref(_token, _repo, tag):
+        if tag in {state_backup.RELEASE_TAG, state_backup.CLEAN_OWNER_READY_TAG}:
+            return anchor
+        assert tag == delivery.ONCE_TAG
+        if not state['created']:
+            return None
+        state['reads'] += 1
+        return anchor if state['reads'] > visible_after else None
+    def post(_url, **kwargs):
+        state['posts'] += 1
+        state['created'] = True
+        return SimpleNamespace(status_code=201, json=lambda: {'ref': kwargs['json']['ref'], 'object': {'sha': anchor}})
+    monkeypatch.setattr(state_backup, '_get_ref', get_ref)
+    monkeypatch.setattr(requests, 'post', post)
+    waits = []
+    monkeypatch.setattr(delivery.time, 'sleep', waits.append)
+    if confirmed:
+        delivery._acquire_once()
+        assert state['reads'] == 3 and waits == [1, 2]
+    else:
+        with pytest.raises(delivery.StopSafely, match='once_marker_not_confirmed'):
+            delivery._acquire_once()
+        assert state['reads'] == 6 and waits == [1, 2, 4, 8, 8]
+    assert state['posts'] == 1  # no repeated marker claim or mail
+
+
 def test_ambiguous_atomic_creation_does_not_authorize_send(monkeypatch):
     import state_backup
     refs = {state_backup.RELEASE_TAG: 'a' * 40, state_backup.CLEAN_OWNER_READY_TAG: 'a' * 40}
