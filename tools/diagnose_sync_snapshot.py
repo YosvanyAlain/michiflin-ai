@@ -6,12 +6,55 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+_RELEASE_STATES = frozenset({'planned', 'attempting', 'registered', 'delivered', 'pending', 'failed',
+                             'skipped', 'skipped_current', 'uncertain', 'encryption_unconfirmed'})
+
+
+def release_delivery_summary(data: dict, expected_revision: str, epoch: str, build: str) -> dict:
+    """Aggregate only the current release's checkpointed state; never export identities.
+
+    'delivered' means the old process observed an encrypted relay handoff, not
+    that a human opened or read the application. An absent or malformed ledger
+    never implies it is safe to repeat the announcement.
+    """
+    output = {'release_ledger_present': False, 'release_ledger_valid': False,
+              'release_ledger_delivery_is_not_client_read_proof': True}
+    all_records = data.get('requested_release_deliveries', {})
+    if not isinstance(all_records, dict):
+        return output
+    if 'ux-update-20261119-v1' not in all_records:
+        return output
+    output['release_ledger_present'] = True
+    record = all_records['ux-update-20261119-v1']
+    if (not isinstance(record, dict) or type(record.get('version')) is not int or record.get('version') != 1
+            or re.fullmatch(r'[0-9a-f]{40}', expected_revision) is None
+            or record.get('revision') != expected_revision or record.get('epoch') != epoch
+            or record.get('build') != build or not isinstance(record.get('phase'), str)
+            or record.get('phase') not in {'planned', 'complete'}
+            or re.fullmatch(r'[0-9a-f]{64}', str(record.get('package_sha256') or '')) is None
+            or re.fullmatch(r'[0-9a-f]{64}', str(record.get('salt') or '')) is None):
+        return output
+    recipients = record.get('recipients')
+    if (not isinstance(recipients, dict) or len(recipients) > 10000 or not all(
+        isinstance(k, str) and re.fullmatch(r'[0-9a-f]{64}', k) and isinstance(v, dict)
+        and isinstance(v.get('state'), str) and v.get('state') in _RELEASE_STATES
+        and re.fullmatch(r'[0-9a-f]{64}', str(v.get('binding') or ''))
+        for k, v in recipients.items())):
+        return output
+    output.update(release_ledger_valid=True, release_plan_complete=record['phase'] == 'complete',
+                  release_ledger_recipients=len(recipients))
+    for status in sorted(_RELEASE_STATES):
+        output['release_checkpointed_' + status] = sum(value['state'] == status for value in recipients.values())
+    return output
 
 
 def diagnose(root: Path) -> dict:
@@ -63,6 +106,7 @@ def diagnose(root: Path) -> dict:
               'apps_incompatible_build': 0, 'apps_owner_recipient': 0,
               'apps_missing_blob': 0, 'pending_outgoing': 0, 'failed_outgoing': 0,
               'all_core_webxdc': 0, 'unregistered_core_webxdc': 0, 'status_updates': 0}
+    result.update(release_delivery_summary(data, requested, epoch, current))
     intents = data.get('owner_refresh_intents', {})
     result['requested_refresh_reserved'] = int(requested_valid and isinstance(intents, dict) and requested in intents)
     # Counts describe only metadata in this point-in-time snapshot. They cannot
