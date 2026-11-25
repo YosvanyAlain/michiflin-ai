@@ -36,8 +36,8 @@ def _book(source, number, *, identifier=None, archive_id=''):
 
 
 def test_updated_package_keeps_strict_release_fencing(monkeypatch):
-    # Only the intended reader, UI and Live files change; the offline engines
-    # are explicit new assets. Never authorize a prior build in current-only mode.
+    # Only the intended reader, UI, export and Live files change; the offline
+    # engines are explicit new assets. Never authorize a prior build in current-only mode.
     manifest = json.loads(Path('tests/fixtures/library-current-package.json').read_text())
     entries = app_package.entries(miniapp.APP_FILES)
     names = {name for name, _ in entries}
@@ -49,7 +49,8 @@ def test_updated_package_keeps_strict_release_fencing(monkeypatch):
         'vendor/books/LICENSE-epubjs.txt', 'vendor/books/LICENSE-dompurify.txt', 'vendor/books/LICENSE-pdfjs.txt'}
     changed = {name for name, source in entries if name in manifest
                and hashlib.sha256((miniapp.APP_DIR / source).read_bytes()).hexdigest() != manifest[name]}
-    assert changed == {'app.css', 'app.js', 'books.js', 'i18n.js', 'index.html', 'live.js'}
+    # core.js changes the host-aware export chooser and cancellation handling.
+    assert changed == {'app.css', 'app.js', 'books.js', 'core.js', 'i18n.js', 'index.html', 'live.js'}
     monkeypatch.setattr(config, 'BOT_EPOCH', 'test-epoch')
     monkeypatch.setattr(config, 'MINIAPP_RELEASE', 'fixture-release')
     monkeypatch.setattr(config, 'MINIAPP_CURRENT_ONLY', True)

@@ -243,7 +243,9 @@ VIEWS.live_web = {
       human_unavailable: "live_human_unavailable", human_address_unready: "live_human_address_unready",
       human_no_saved_session: "live_human_no_saved_session", human_close_popup_first: "live_human_close_popup_first", multiple_pages: "live_multiple_pages",
       not_video: "live_not_video", queue_failed: "live_queue_failed", capture_failed: "live_capture_failed" }[code] || "live_failed");
-    const modeNote = h("small", { class: "muted" }, t("live_mode_graphical_saved_hint"));
+    // Show the selected mode's session/privacy behaviour before Start, even
+    // when the optional controls remain collapsed on a small screen.
+    const modeNote = h("small", { class: "muted live-mode-note", "aria-live": "polite" }, t("live_mode_graphical_saved_hint"));
     const modePicker = segmented("graphical_saved", [["graphical_saved", t("live_mode_graphical_saved")], ["human", t("live_mode_human")]], async (value) => {
       if (!window.liveWeb.channel) { applyMode(value); return; }
       const previous = activeMode || window.liveWeb.browser;
@@ -631,8 +633,8 @@ VIEWS.live_web = {
       h("button", { class: "btn small ghost", onclick: () => copyText(params.url) }, t("copy_link")));
     const sessionOptions = h("details", { class: "live-session-options live-options" }, h("summary", {}, t("live_session_options")),
       h("div", { class: "stack live-extra-body" }, siteRow, stored,
-        h("small", { class: "muted" }, t("live_mode_label")), modePicker, modeNote, disconnect, viewSettings));
-    add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy, sessionOptions,
+        h("small", { class: "muted" }, t("live_mode_label")), modePicker, disconnect, viewSettings));
+    add(main, h("p", { class: "note live-brief" }, t("live_privacy_brief")), privacy, modeNote, sessionOptions,
       h("div", { class: "row wrap" }, start), introStatus, route, traffic, workspace, controls);
     applyMode("graphical_saved");
     updateStored();

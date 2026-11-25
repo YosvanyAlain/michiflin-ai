@@ -168,6 +168,10 @@ def test_graphical_saved_live_discloses_control_and_shows_explicit_actions(langu
         page.get_by_role("button", name="Iniciar navegador" if language == "es" else "Start browser").click()
         page.wait_for_function("document.querySelector('.live-screen')?.naturalWidth === 480")
         assert page.evaluate("window.__testLiveActions.some(x=>x.t==='start' && x.browser==='graphical_saved')")
+        # Nonessential actions are collapsed for small screens, but can be
+        # explicitly opened and retain their confirmations.
+        assert not page.locator('.live-extra-controls').evaluate('el => el.open')
+        page.locator('.live-extra-controls > summary').click()
         assert page.get_by_role("button", name="Guardar sesión" if language == "es" else "Save session").is_visible()
         assert page.get_by_role("button", name="Descargar este video" if language == "es" else "Download this video").is_visible()
         assert page.get_by_role("button", name="Cerrar ventana actual" if language == "es" else "Close current window").is_visible()

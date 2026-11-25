@@ -190,6 +190,10 @@ def test_live_is_compact_with_accessible_privacy_and_no_device_link(engine):
     with browser_fixture('es', {'width': 320, 'height': 740}, engine=engine) as (page, errors):
         install_live_frame_fixture(page)
         assert page.locator('.live-brief').is_visible()
+        # The default mode can restore saved cookies, so disclose that before
+        # starting even though the option panel remains collapsed.
+        assert page.locator('.live-mode-note').is_visible()
+        assert 'restaura tu sesión guardada' in page.locator('.live-mode-note').inner_text()
         assert not page.locator('.live-privacy').evaluate('el=>el.open')
         assert not page.locator('.live-session-options').evaluate('el=>el.open')
         assert page.locator('.live-device-link').count() == 0

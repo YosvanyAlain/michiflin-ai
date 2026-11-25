@@ -22,7 +22,7 @@ def test_existing_local_project_and_chat_remain_viewable_offline(language):
         }""")
         assert page.get_by_text("index.html", exact=True).count() == 1
         page.get_by_role("button", name="Código fuente (ZIP)" if language == "es" else "Source code (ZIP)").click()
-        page.get_by_role("button", name="Guardar o compartir" if language == "es" else "Save or share").click()
+        page.get_by_role("button", name="Guardar fuera o compartir" if language == "es" else "Save outside or share").click()
         page.wait_for_function("window.__savedOffline && window.__savedOffline.bytes.length > 0")
         saved = page.evaluate("window.__savedOffline")
         with zipfile.ZipFile(io.BytesIO(bytes(saved["bytes"]))) as archive:
