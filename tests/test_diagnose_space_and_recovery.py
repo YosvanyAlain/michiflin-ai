@@ -17,22 +17,23 @@ def make_state(root: Path) -> Path:
     blob = folder / 'dc.db-blobs'
     blob.mkdir(parents=True)
     (root / 'accounts' / 'accounts.toml').write_text('[[accounts]]\ndir = "one"\n')
-    (root / 'michiflin-state.json').write_text('{"apps": {}}')
+    local = {'apps': {}, 'jobs': {'1': {'kind': 'file', 'url': 'https://example.invalid/file',
+                                         'chat': 13, 'messages': [1, 3, 4]}}}
+    (root / 'michiflin-state.json').write_text(json.dumps(local))
     marker = {'version': 1, 'confirmed': True, 'fresh_account': True, 'epoch': 'a' * 48,
               'owner_fingerprint': 'B' * 40, 'bot_fingerprint': 'C' * 40,
               'owner_address': 'owner@example.invalid', 'owner_chat': 10}
     (root / backup.CLEAN_OWNER_ORIGIN).write_text(json.dumps(marker))
     with sqlite3.connect(folder / 'dc.db') as db:
-        db.execute('CREATE TABLE msgs (param TEXT, type INTEGER, from_id INTEGER, state INTEGER, deleted INTEGER)')
-        rows = [('f=$BLOBDIR/private-app.xdc', 80, 1, 26, 0),
-                ('f=$BLOBDIR/private-book.pdf', 20, 12, 10, 0),
-                ('f=$BLOBDIR/archive.zip', 20, 1, 26, 0),
-                ('f=$BLOBDIR/inflight.bin', 20, 1, 20, 0),
-                ('f=$BLOBDIR/archive.zip', 20, 12, 10, 1)]
-        db.executemany('INSERT INTO msgs VALUES (?,?,?,?,?)', rows)
-    for name, content in [('private-app.xdc', b'a' * 12), ('private-book.pdf', b'b' * 23),
-                          ('archive.zip', b'c' * 34), ('inflight.bin', b'd' * 45),
-                          ('unclassified.bin', b'e' * 56)]:
+        db.execute('CREATE TABLE msgs (id INTEGER PRIMARY KEY, param TEXT, type INTEGER, from_id INTEGER, state INTEGER, deleted INTEGER, chat_id INTEGER)')
+        rows = [('f=$BLOBDIR/private-app.xdc', 80, 1, 26, 0, 13),
+                ('f=$BLOBDIR/private-book.pdf', 20, 12, 10, 0, 13),
+                ('f=$BLOBDIR/archive.zip', 20, 1, 26, 0, 13),
+                ('f=$BLOBDIR/inflight.bin', 20, 1, 20, 0, 13)]
+        db.executemany('INSERT INTO msgs (param,type,from_id,state,deleted,chat_id) VALUES (?,?,?,?,?,?)', rows)
+    for name, content in [('private-app.xdc', b'a' * 12), ('private-app-copy.xdc', b'a' * 12),
+                          ('private-book.pdf', b'b' * 23), ('archive.zip', b'c' * 34),
+                          ('inflight.bin', b'd' * 45), ('unclassified.bin', b'e' * 56)]:
         (blob / name).write_bytes(content)
     return root
 
@@ -41,16 +42,43 @@ def test_footprint_counts_categories_without_names(tmp_path):
     state = make_state(tmp_path / 'state')
     report = diagnostic.footprint(state)
     assert report['account_database_count'] == 1
-    assert report['kind_webxdc_count'] == 1 and report['kind_webxdc_bytes'] == 12
+    assert report['kind_webxdc_count'] == 2 and report['kind_webxdc_bytes'] == 24
     assert report['kind_document_count'] == 1 and report['kind_document_bytes'] == 23
     assert report['kind_archive_count'] == 1 and report['kind_archive_bytes'] == 34
     assert report['ref_webxdc_reference_bytes'] == 12
     assert report['ref_incoming_or_unknown_reference_bytes'] == 23
     assert report['ref_outgoing_delivered_only_reference_bytes'] == 34
     assert report['ref_outgoing_unsettled_reference_bytes'] == 45
-    assert report['ref_no_direct_msg_reference_bytes'] == 56
+    assert report['ref_no_direct_msg_reference_bytes'] == 68
+    assert report['known_delivered_url_download_count'] == 1
+    assert report['known_delivered_url_download_bytes'] == 34
+    assert report['duplicate_blob_count'] == 1 and report['duplicate_blob_bytes'] == 12
+    assert report['duplicate_webxdc_count'] == 1 and report['duplicate_webxdc_bytes'] == 12
+    assert type(report['dbstat_available']) is bool
     assert 'private-book' not in json.dumps(report)
     assert all(type(item) in (int, bool) for item in report.values())
+
+
+def test_download_candidates_fail_closed_on_shared_or_wrong_chat(tmp_path):
+    state = make_state(tmp_path / 'state')
+    db_path = state / 'accounts' / 'one' / 'dc.db'
+    assert diagnostic.known_download_references(state, db_path) == {'archive.zip'}
+    with sqlite3.connect(db_path) as db:
+        db.execute('INSERT INTO msgs (param,type,from_id,state,deleted,chat_id) VALUES (?,?,?,?,?,?)',
+                   ('f=$BLOBDIR/archive.zip', 20, 12, 10, 0, 13))
+    assert diagnostic.known_download_references(state, db_path) == set()
+    data = json.loads((state / 'michiflin-state.json').read_text())
+    data['jobs']['1']['chat'] = 14
+    (state / 'michiflin-state.json').write_text(json.dumps(data))
+    assert diagnostic.known_download_references(state, db_path) == set()
+
+
+def test_download_candidates_exclude_user_local_filekit(tmp_path):
+    state = make_state(tmp_path / 'state')
+    data = json.loads((state / 'michiflin-state.json').read_text())
+    data['jobs']['1']['filekit_local'] = True
+    (state / 'michiflin-state.json').write_text(json.dumps(data))
+    assert diagnostic.known_download_references(state, state / 'accounts' / 'one' / 'dc.db') == set()
 
 
 def test_footprint_fails_closed_for_symlinks(tmp_path):

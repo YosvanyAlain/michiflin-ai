@@ -91,13 +91,87 @@ def blob_references(databases: list[Path]) -> dict[str, set[str]]:
     return result
 
 
+def database_space(database: Path) -> dict[str, int | bool]:
+    """Group storage only by fixed internal tables; never emit schema names or content."""
+    groups = {'msgs': 'messages', 'msgs_status_updates': 'webxdc_updates', 'imap': 'imap', 'smtp': 'smtp',
+              'contacts': 'contacts', 'chats': 'chats', 'keypairs': 'keys', 'config': 'config'}
+    result: dict[str, int | bool] = {'dbstat_available': False, 'sqlite_freelist_bytes': 0}
+    for name in (*groups.values(), 'other'):
+        result['sqlite_' + name + '_bytes'] = 0
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True, timeout=30)) as db:
+        result['sqlite_freelist_bytes'] = db.execute('PRAGMA freelist_count').fetchone()[0] * db.execute('PRAGMA page_size').fetchone()[0]
+        try:
+            objects = {name: table for name, table in db.execute('SELECT name,tbl_name FROM sqlite_schema')}
+            pages = list(db.execute('SELECT name,SUM(pgsize) FROM dbstat GROUP BY name'))
+        except sqlite3.OperationalError:
+            return result  # Some SQLite builds lack dbstat; never guess.
+        for name, amount in pages:
+            category = groups.get(objects.get(name, ''), 'other')
+            result['sqlite_' + category + '_bytes'] += int(amount or 0)
+        result['dbstat_available'] = True
+    return result
+
+
+def known_download_references(root: Path, database: Path) -> set[str]:
+    """Find conservative potential candidates, without excluding or deleting them.
+
+    Only queue-recorded, non-filekit URL downloads matched by message id,
+    chat, sender and delivered state qualify. Any conflicting message reference
+    blocks the file. This is an inventory, not proof of every possible DB use.
+    """
+    data = json.loads((root / 'michiflin-state.json').read_text())
+    jobs = data.get('jobs') if isinstance(data, dict) else None
+    if not isinstance(jobs, dict):
+        raise ValueError('queue_metadata_invalid')
+    claimed: dict[int, set[int]] = {}
+    for job in jobs.values():
+        if (not isinstance(job, dict) or job.get('filekit_local') or job.get('kind') not in ('file', 'video', 'audio')
+                or not isinstance(job.get('url'), str) or not re.match(r'^https?://', job['url'], flags=re.I)
+                or type(job.get('chat')) is not int or job['chat'] <= 9 or not isinstance(job.get('messages'), list)):
+            continue
+        for message_id in job['messages']:
+            if type(message_id) is int and message_id > 0:
+                claimed.setdefault(message_id, set()).add(job['chat'])
+    good: set[str] = set()
+    bad: set[str] = set()
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True, timeout=30)) as db:
+        columns = {row[1] for row in db.execute('PRAGMA table_info(msgs)')}
+        if not {'id', 'param', 'type', 'from_id', 'state', 'deleted', 'chat_id'}.issubset(columns):
+            raise ValueError('message_schema_unrecognized')
+        for mid, param, kind, sender, status, deleted, chat_id in db.execute(
+                'SELECT id,param,type,from_id,state,deleted,chat_id FROM msgs WHERE param IS NOT NULL'):
+            if not isinstance(param, str):
+                continue
+            for name in re.findall(r'(?:^|\n)f=\$BLOBDIR/([^\r\n]+)', param):
+                if not name or Path(name).name != name:
+                    continue
+                valid = (not deleted and sender == 1 and kind != 80 and status in (26, 28)
+                         and claimed.get(mid) == {chat_id} and '.xdc' not in {x.lower() for x in Path(name).suffixes})
+                (good if valid else bad).add(name)
+    return good - bad
+
+
+def file_digest(path: Path) -> bytes:
+    digest = hashlib.sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.digest()
+
+
 def footprint(root: Path) -> dict[str, int | bool]:
     accounts = root / 'accounts'
     databases = [p for p in accounts.rglob('dc.db') if p.is_file() and not p.is_symlink()]
     references = blob_references(databases)
+    possible_downloads = known_download_references(root, databases[0])
+    seen_hashes: set[tuple[int, bytes]] = set()
     report: dict[str, int | bool] = {'schema': 1, 'read_only': True, 'mail_io_started': False,
                                     'regular_file_count': 0, 'uncompressed_file_bytes': 0,
-                                    'account_database_count': len(databases)}
+                                    'account_database_count': len(databases),
+                                    'known_delivered_url_download_count': 0, 'known_delivered_url_download_bytes': 0,
+                                    'duplicate_blob_count': 0, 'duplicate_blob_bytes': 0,
+                                    'duplicate_webxdc_count': 0, 'duplicate_webxdc_bytes': 0}
+    report.update(database_space(databases[0]))
     for category in CATEGORIES:
         report['kind_' + category + '_count'] = 0
         report['kind_' + category + '_bytes'] = 0
@@ -121,6 +195,18 @@ def footprint(root: Path) -> dict[str, int | bool]:
         report['kind_' + category + '_count'] += 1
         report['kind_' + category + '_bytes'] += size
         if blob:
+            if path.name in possible_downloads:
+                report['known_delivered_url_download_count'] += 1
+                report['known_delivered_url_download_bytes'] += size
+            fingerprint = (size, file_digest(path))
+            if fingerprint in seen_hashes:
+                report['duplicate_blob_count'] += 1
+                report['duplicate_blob_bytes'] += size
+                if category == 'webxdc':
+                    report['duplicate_webxdc_count'] += 1
+                    report['duplicate_webxdc_bytes'] += size
+            else:
+                seen_hashes.add(fingerprint)
             flags = references.get(path.name, set())
             if 'webxdc' in flags:
                 relation = 'webxdc_reference'
