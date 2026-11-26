@@ -50,6 +50,19 @@ def test_rehearsal_is_lossless_and_changes_no_source(monkeypatch, tmp_path):
     assert 'STATE_BACKUP_COMPRESSION' not in os.environ
 
 
+def test_expected_tmp_omission_is_reported_separately(monkeypatch, tmp_path):
+    monkeypatch.setenv('MICHIFLIN_CLEAN_EPOCH', 'a' * 48)
+    state = make_state(tmp_path / 'source')
+    (state / 'scratch.tmp').write_text('temporary')
+    report = d.rehearsal(state, tmp_path, 1234)
+    assert report['all_selected_nondatabase_files_identical'] is False
+    assert report['missing_file_count'] == 1
+    assert report['missing_transient_sidecar_or_tmp_count'] == 1
+    assert report['all_durable_nondatabase_contents_identical'] is True
+    assert report['all_durable_nondatabase_modes_identical'] is True
+    assert (state / 'scratch.tmp').exists()  # the rehearsal did not delete it
+
+
 def test_fingerprint_detects_modified_or_missing_database_rows(tmp_path):
     state = make_state(tmp_path / 'source')
     db_path = state / 'accounts' / 'one' / 'dc.db'

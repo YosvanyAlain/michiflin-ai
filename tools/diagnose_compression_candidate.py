@@ -128,6 +128,14 @@ def rehearsal(root: Path, runner_temp: Path, original_bytes: int) -> dict[str, i
         backup._install_restored(compressed, target)
         after_files = files(target, db_relative)
         after_db = database_fingerprint(target / db_relative)
+    missing = before_files.keys() - after_files.keys()
+    extra = after_files.keys() - before_files.keys()
+    common = before_files.keys() & after_files.keys()
+    content_changed = {name for name in common if (before_files[name][0], before_files[name][2])
+                       != (after_files[name][0], after_files[name][2])}
+    mode_changed = {name for name in common if before_files[name][1] != after_files[name][1]}
+    sidecars = {str(db_relative) + '-wal', str(db_relative) + '-shm'}
+    intentional = {name for name in missing if name in sidecars or name.endswith('.tmp')}
     projected = encrypted_size(len(compressed))
     return {'schema': 1, 'read_only': True, 'mail_io_started': False,
             'backup_uploaded': False, 'source_snapshot_bytes': original_bytes,
@@ -135,7 +143,12 @@ def rehearsal(root: Path, runner_temp: Path, original_bytes: int) -> dict[str, i
             'xz_headroom_bytes': max(0, backup.MAX_RELEASE_BACKUP_BYTES - projected),
             'xz_would_fit': projected <= backup.MAX_RELEASE_BACKUP_BYTES,
             'compression_seconds': duration, 'compared_regular_files': len(before_files),
+            'missing_file_count': len(missing), 'extra_file_count': len(extra),
+            'missing_transient_sidecar_or_tmp_count': len(intentional),
+            'nondatabase_content_changed_count': len(content_changed), 'nondatabase_mode_changed_count': len(mode_changed),
             'all_selected_nondatabase_files_identical': before_files == after_files,
+            'all_durable_nondatabase_contents_identical': not (missing - intentional) and not extra and not content_changed,
+            'all_durable_nondatabase_modes_identical': not (missing - intentional) and not extra and not mode_changed,
             'core_database_tables_identical': before_db == after_db,
             'database_quick_check_passed': True, 'clean_origin_verified': True,
             'legacy_gzip_only_reader_rejects_new_format': legacy_rejected}
