@@ -312,11 +312,13 @@ jobs:
           python tools/diagnose_sync_snapshot.py > "$RUNNER_TEMP/sync-diagnostic.json"
           python tools/diagnose_backup_inventory.py > "$RUNNER_TEMP/backup-inventory.json"
           python tools/diagnose_space_and_recovery.py > "$RUNNER_TEMP/space-recovery.json"
+          python tools/diagnose_compression_candidate.py > "$RUNNER_TEMP/compression-rehearsal.json"
           python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/sync-diagnostic.enc"
           python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/backup-inventory.enc"
           python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/space-recovery.json" "$RUNNER_TEMP/space-recovery.enc"
+          python tools/diagnostic_artifact_crypto.py encrypt "$RUNNER_TEMP/compression-rehearsal.json" "$RUNNER_TEMP/compression-rehearsal.enc"
           python tools/diagnostic_artifact_crypto.py encrypt-trace "$RUNNER_TEMP/backup-source.json" "$RUNNER_TEMP/backup-source.enc"
-          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/space-recovery.json" "$RUNNER_TEMP/backup-source.json"
+          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/space-recovery.json" "$RUNNER_TEMP/compression-rehearsal.json" "$RUNNER_TEMP/backup-source.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sync-diagnostic-encrypted
@@ -341,11 +343,17 @@ jobs:
           path: ${{ runner.temp }}/space-recovery.enc
           retention-days: 1
           if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compression-rehearsal-encrypted
+          path: ${{ runner.temp }}/compression-rehearsal.enc
+          retention-days: 1
+          if-no-files-found: error
       - name: Remove isolated private copy and plaintext reports
         if: always()
         run: |
           rm -rf "$CONFIG_DIR" "$RUNNER_TEMP/private-restore.log"
-          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/space-recovery.json" "$RUNNER_TEMP/backup-source.json"
+          rm -f "$RUNNER_TEMP/sync-diagnostic.json" "$RUNNER_TEMP/backup-inventory.json" "$RUNNER_TEMP/space-recovery.json" "$RUNNER_TEMP/compression-rehearsal.json" "$RUNNER_TEMP/backup-source.json"
 
   old-action-logs:
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task == 'maintenance')

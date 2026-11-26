@@ -133,9 +133,17 @@ def _is_sqlite(path: Path) -> bool:
 
 
 def archive(source: Path) -> bytes:
-    """Build an in-memory gzip archive; live databases are copied as consistent, compacted snapshots."""
+    """Build a lossless in-memory archive with consistent, compacted database snapshots.
+
+    The optional xz format retains all selected files; unlike dropping files it
+    can reduce duplicate sequences across different miniapp packages. Readers
+    must support it before a writer enables it. The default remains gzip.
+    """
     if not source.is_dir():
         raise FileNotFoundError(f"State directory does not exist: {source}")
+    compression = os.getenv("STATE_BACKUP_COMPRESSION", "gzip").strip().lower()
+    if compression not in {"gzip", "xz"}:
+        raise ValueError("unsupported backup compression; previous backups were kept")
     snapshots: dict[str, Path] = {}
     scratch = Path(tempfile.mkdtemp(prefix=".snapshot-"))
     try:
@@ -161,7 +169,8 @@ def archive(source: Path) -> bytes:
             return member
 
         data = io.BytesIO()
-        with tarfile.open(fileobj=data, mode="w:gz") as tar:
+        archive_mode = "w:xz" if compression == "xz" else "w:gz"
+        with tarfile.open(fileobj=data, mode=archive_mode) as tar:
             tar.add(str(source), arcname="michiflin", recursive=False)
             for path in sorted(source.rglob("*")):
                 if path.is_symlink():
@@ -201,10 +210,21 @@ def _skip_bulky(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
     return member
 
 
+def _open_backup_tar(data: bytes) -> tarfile.TarFile:
+    """Accept only the two supported compression formats, never guess an archive type."""
+    if data.startswith(b"\x1f\x8b"):
+        mode = "r:gz"
+    elif data.startswith(b"\xfd7zXZ\x00"):
+        mode = "r:xz"
+    else:
+        raise ValueError("unknown backup archive compression; previous copies were kept")
+    return tarfile.open(fileobj=io.BytesIO(data), mode=mode)
+
+
 def safely_extract(data: bytes, destination: Path) -> None:
     """Extract a trusted encrypted archive while still rejecting unsafe paths."""
     destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+    with _open_backup_tar(data) as tar:
         members = tar.getmembers()
         root = destination.resolve()
         for member in members:
@@ -656,7 +676,7 @@ def _native_origin_valid(value: object) -> bool:
 
 def _verify_native_origin(plaintext: bytes) -> None:
     """An isolated namespace must also carry the explicitly selected provenance."""
-    with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as tar:
+    with _open_backup_tar(plaintext) as tar:
         try:
             member = tar.getmember("michiflin/.github-native-origin-v1.json")
         except KeyError:
@@ -691,7 +711,7 @@ def _clean_origin_valid(value: object) -> bool:
 
 def _verify_clean_origin(plaintext: bytes) -> None:
     """Require a marker bound to the independently confirmed new identity."""
-    with tarfile.open(fileobj=io.BytesIO(plaintext), mode="r:gz") as tar:
+    with _open_backup_tar(plaintext) as tar:
         try:
             member = tar.getmember("michiflin/" + CLEAN_OWNER_ORIGIN)
         except KeyError:
